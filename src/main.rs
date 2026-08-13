@@ -186,6 +186,13 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
 }
 
 fn main() -> Result<()> {
+    // Die quietly on closed pipes (dsh-tui --dump-frame | head) instead of
+    // panicking in println!.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let args = parse_args()?;
 
     if args.check_runtime {
