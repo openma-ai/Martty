@@ -1,5 +1,5 @@
 {
-  "name": "@deepseek-ai-harness/tui",
+  "name": "@openma/deepseek-harness-tui",
   "version": "0.0.1-beta",
   "description": "DeepSeek Build (dsh-tui) — grok-build style terminal UI for the deepseek-harness agent runtime; standalone CLI or dsh profile bundle",
   "license": "MIT",

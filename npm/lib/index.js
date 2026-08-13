@@ -4,7 +4,7 @@
  *
  * Install into a profile and launch:
  *
- *     dsh plugin --profile tui add @deepseek-ai-harness/tui
+ *     dsh plugin --profile tui add @openma/deepseek-harness-tui
  *     dsh --profile tui
  *
  * The runner spawns the platform-native `dsh-tui` binary with the host TTY
@@ -50,7 +50,7 @@ function nativeBinary() {
       have = fs.readdirSync(path.join(__dirname, '..', 'vendor'))
     } catch {}
     throw new Error(
-      `@deepseek-ai-harness/tui: no native binary for ${key}` +
+      `@openma/deepseek-harness-tui: no native binary for ${key}` +
         ` (packaged: ${have.join(', ') || 'none'});` +
         ' rebuild the package on this machine with scripts/build-npm.sh',
     )

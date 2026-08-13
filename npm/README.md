@@ -1,4 +1,4 @@
-# @deepseek-ai-harness/tui
+# @openma/deepseek-harness-tui
 
 DeepSeek Build (`dsh-tui`) — grok-build style terminal UI for the deepseek-harness agent runtime.
 
@@ -10,7 +10,7 @@ This package bundles a platform-native binary and installs two commands:
 ## Install
 
 ```sh
-npm i -g @deepseek-ai-harness/tui@beta
+npm i -g @openma/deepseek-harness-tui@beta
 ```
 
 Or from a local tarball built from source:
@@ -36,7 +36,7 @@ The deepseek-harness runtime is discovered separately from this package. Either:
 ## Uninstall
 
 ```sh
-npm uninstall -g @deepseek-ai-harness/tui
+npm uninstall -g @openma/deepseek-harness-tui
 ```
 
 ## Rebuild
