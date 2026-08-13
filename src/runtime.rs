@@ -26,6 +26,8 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     /// Environment for the child process, mirroring the SDK's injection.
+    /// Credentials fall back to the local dsh install's store (~/.dsh), so a
+    /// machine with a configured dsh needs no exported DEEPSEEK_API_KEY.
     pub fn child_env(&self) -> Vec<(String, String)> {
         let mut env = vec![
             ("DSH_CORDIS_CONFIG".into(), self.cordis.clone()),
@@ -37,13 +39,121 @@ impl RuntimeConfig {
         }
         if let Some(key) = &self.api_key {
             env.push(("DEEPSEEK_API_KEY".into(), key.clone()));
+        } else if std::env::var("DEEPSEEK_API_KEY").is_err() {
+            let local = local_dsh();
+            if let Some(key) = local.api_key {
+                env.push(("DEEPSEEK_API_KEY".into(), key));
+            }
+            if self.base_url.is_none() && std::env::var("DEEPSEEK_BASE_URL").is_err() {
+                if let Some(url) = local.base_url {
+                    env.push(("DEEPSEEK_BASE_URL".into(), url));
+                }
+            }
         }
         env
     }
 
     pub fn has_credentials(&self) -> bool {
-        self.api_key.is_some() || std::env::var("DEEPSEEK_API_KEY").is_ok()
+        self.api_key.is_some()
+            || std::env::var("DEEPSEEK_API_KEY").is_ok()
+            || local_dsh().api_key.is_some()
     }
+
+    /// Human description of where the API key comes from.
+    pub fn credential_source(&self) -> Option<&'static str> {
+        if self.api_key.is_some() {
+            Some("--api-key flag")
+        } else if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            Some("environment")
+        } else if local_dsh().api_key.is_some() {
+            Some("local dsh (~/.dsh)")
+        } else {
+            None
+        }
+    }
+}
+
+/// Facts borrowed from a local `dsh` installation.
+#[derive(Default, Clone, Debug)]
+pub struct LocalDsh {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Read the local dsh credential store and settings (best effort).
+pub fn local_dsh() -> LocalDsh {
+    let Ok(home) = std::env::var("HOME") else {
+        return LocalDsh::default();
+    };
+    let root = Path::new(&home).join(".dsh");
+    let mut out = LocalDsh::default();
+    if let Ok(creds) = std::fs::read_to_string(root.join(".credentials.yaml")) {
+        out.api_key = yaml_top_level_env(&creds, "DEEPSEEK_API_KEY");
+        out.base_url = yaml_top_level_env(&creds, "DEEPSEEK_BASE_URL");
+    }
+    if let Ok(settings) = std::fs::read_to_string(root.join("settings.yaml")) {
+        let (provider, model) = yaml_agent_default_model(&settings);
+        out.provider = provider;
+        out.model = model;
+    }
+    out
+}
+
+fn unquote(v: &str) -> String {
+    let v = v.trim();
+    let v = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(v);
+    let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
+    v.to_string()
+}
+
+/// `KEY: value` at zero indentation where KEY is an env-style name.
+fn yaml_top_level_env(yaml: &str, key: &str) -> Option<String> {
+    for line in yaml.lines() {
+        if line.starts_with([' ', '\t', '#']) {
+            continue;
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        if k.trim() == key {
+            let v = unquote(v);
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// provider/model under the `agent-default-model:` block.
+fn yaml_agent_default_model(yaml: &str) -> (Option<String>, Option<String>) {
+    let mut in_block = false;
+    let mut provider = None;
+    let mut model = None;
+    for line in yaml.lines() {
+        if !line.starts_with([' ', '\t']) {
+            in_block = line.trim_end() == "agent-default-model:";
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        let Some((k, v)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let v = unquote(v);
+        if v.is_empty() {
+            continue;
+        }
+        match k.trim() {
+            "provider" => provider = Some(v),
+            "model" => model = Some(v),
+            _ => {}
+        }
+    }
+    (provider, model)
 }
 
 const WHEEL_RUNTIME_DIR: &str = "deepseek_harness_runtime/runtime";

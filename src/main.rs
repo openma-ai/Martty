@@ -138,6 +138,7 @@ fn parse_args() -> Result<Args> {
 }
 
 fn build_config(args: &Args) -> Result<RuntimeConfig> {
+    let local = runtime::local_dsh();
     let workspace = match &args.workspace {
         Some(w) => std::fs::canonicalize(w)
             .with_context(|| format!("workspace not found: {w}"))?
@@ -177,8 +178,19 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
         cordis,
         workspace,
         session_root,
-        provider: args.provider.clone(),
-        model: args.model.clone(),
+        // Route defaults borrow the local dsh install's configured default
+        // (settings.yaml agent-default-model) before falling back to stock.
+        provider: args
+            .provider
+            .clone()
+            .or(local.provider)
+            .unwrap_or_else(|| "deepseek-official".into()),
+        model: args
+            .model
+            .clone()
+            .or_else(|| std::env::var("DSH_MODEL").ok())
+            .or(local.model)
+            .unwrap_or_else(|| "deepseek-v4-flash".into()),
         max_tokens: args.max_tokens,
         base_url: args.base_url.clone(),
         api_key: args.api_key.clone(),
