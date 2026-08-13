@@ -7,15 +7,17 @@ This package bundles a platform-native binary and installs two commands:
 - `dsh-tui` (primary)
 - `dsb` (alias)
 
-## Install (local tarball)
+## Install
 
-This package is built and installed locally (no registry publish):
+```sh
+npm i -g @deepseek-ai-harness/tui@beta
+```
+
+Or from a local tarball built from source:
 
 ```sh
 # From the repo root, after building the tarball:
 npm i -g ./dist/<tgz>
-# e.g.
-npm i -g ./dist/deepseek-ai-harness-tui-0.1.0.tgz
 ```
 
 ## Runtime discovery

@@ -1,8 +1,16 @@
 {
   "name": "@deepseek-ai-harness/tui",
-  "version": "0.1.0",
+  "version": "0.0.1-beta",
   "description": "DeepSeek Build (dsh-tui) — grok-build style terminal UI for the deepseek-harness agent runtime; standalone CLI or dsh profile bundle",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openma-ai/deepseek-harness-tui.git"
+  },
+  "homepage": "https://github.com/openma-ai/deepseek-harness-tui#readme",
+  "bugs": {
+    "url": "https://github.com/openma-ai/deepseek-harness-tui/issues"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
