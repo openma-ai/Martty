@@ -1,0 +1,8 @@
+# @deepseek-ai-harness/tui bundle patch: mounts the native dsh-tui runner over
+# the profile's base bundle under the stable plugin id `tui-runner`. The runner
+# spawns the platform-native TUI binary on the host TTY and bridges the agent
+# through @deepseek-ai/dsh-sdk-jsonrpc-server over inherited pipe fds.
+
+- insert:
+    - id: tui-runner
+      name: '@deepseek-ai-harness/tui'

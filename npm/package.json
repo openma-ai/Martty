@@ -1,0 +1,42 @@
+{
+  "name": "@deepseek-ai-harness/tui",
+  "version": "0.1.0",
+  "description": "DeepSeek Build (dsh-tui) — grok-build style terminal UI for the deepseek-harness agent runtime; standalone CLI or dsh profile bundle",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-tui": "bin/dsh-tui.js",
+    "dsb": "bin/dsh-tui.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "vendor",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-sdk-jsonrpc-server": "^0.0.1-rc.5"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "tui",
+    "agent",
+    "deepseek-harness",
+    "dsh-plugin"
+  ]
+}
