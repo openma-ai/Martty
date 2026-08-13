@@ -113,7 +113,7 @@ pub struct Theme {
     pub fg_tertiary: Color,
     /// `--dsw-alias-label-caption`
     pub caption: Color,
-    /// `--dsw-alias-brand-primary-new-color…` — remapped to white/black
+    /// `--dsw-alias-brand-primary-new-color…` — the DeepSeek blue accent
     pub brand: Color,
     /// `--dsw-alias-state-business-primary`
     pub brand_soft: Color,
@@ -147,8 +147,8 @@ impl Theme {
             fg_secondary: BLUISH_300,
             fg_tertiary: BLUISH_500,
             caption: BLUISH_600,
-            brand: BLUISH_50,
-            brand_soft: BLUISH_400,
+            brand: DEEPSEEK_450,
+            brand_soft: DEEPSEEK_400,
             bubble_bg: BLUISH_900,
             bubble_fg: BLUISH_75,
             border: BLUISH_850,
@@ -170,8 +170,8 @@ impl Theme {
             fg_secondary: BLUISH_750,
             fg_tertiary: BLUISH_700,
             caption: BLUISH_400,
-            brand: BLUISH_1000,
-            brand_soft: BLUISH_750,
+            brand: DEEPSEEK_500,
+            brand_soft: DEEPSEEK_450,
             bubble_bg: BLUISH_75,
             bubble_fg: BLUISH_1000,
             border: BLUISH_200,
@@ -231,12 +231,12 @@ pub fn lerp(a: Color, b: Color, t: f32) -> Color {
 mod tests {
     use super::*;
 
-    /// Monochrome invariant: the brand accent is plain white (dark) /
-    /// black (light), i.e. identical to the primary label color.
+    /// Accent invariant: the brand accent is the DeepSeek blue — gray body,
+    /// blue accents (主体灰色，蓝色点缀).
     #[test]
-    fn brand_is_monochrome() {
-        assert_eq!(Theme::dark().brand, Theme::dark().fg);
-        assert_eq!(Theme::light().brand, Theme::light().fg);
+    fn brand_is_deepseek_blue() {
+        assert_eq!(Theme::dark().brand, DEEPSEEK_450);
+        assert_eq!(Theme::light().brand, DEEPSEEK_500);
     }
 
     /// The only colored accent left is red for errors.
@@ -254,7 +254,7 @@ mod tests {
         for t in [Theme::dark(), Theme::light()] {
             for c in [
                 t.bg, t.surface, t.panel, t.fg, t.fg_secondary, t.fg_tertiary,
-                t.caption, t.brand, t.brand_soft, t.bubble_bg, t.bubble_fg,
+                t.caption, t.bubble_bg, t.bubble_fg,
                 t.border, t.code_bg, t.ok, t.warn, t.chip_bg,
             ] {
                 assert!(is_gray(c), "expected grayscale, got {c:?}");

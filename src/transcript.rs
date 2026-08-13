@@ -91,6 +91,9 @@ pub struct Transcript {
     agent_seq: usize,
     pub usage: UsageTotals,
     pub last_finish: Option<String>,
+    /// Provenance-reported model of the last assembled assistant message —
+    /// the ground truth of what actually answered.
+    pub last_model: Option<String>,
     pub expand_all: bool,
 }
 
@@ -106,6 +109,7 @@ impl Transcript {
             agent_seq: 0,
             usage: UsageTotals::default(),
             last_finish: None,
+            last_model: None,
             expand_all: false,
         }
     }
@@ -312,6 +316,9 @@ impl Transcript {
                 text,
                 model,
             } => {
+                if model.is_some() && session == self.root_session {
+                    self.last_model = model.clone();
+                }
                 let idx = self.open_assistant.remove(&session);
                 match idx {
                     Some(idx) => {

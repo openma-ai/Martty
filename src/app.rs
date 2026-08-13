@@ -167,6 +167,8 @@ pub struct App {
     pub session_id: String,
     pub cfg: RuntimeConfig,
     pub demo: bool,
+    /// dsh plugin mode: the host owns runtime, credentials, and catalog.
+    pub attached: bool,
     pub quit: bool,
     pub queued: usize,
     shell_seq: u64,
@@ -192,6 +194,7 @@ impl App {
         cfg: RuntimeConfig,
         session_id: String,
         demo: bool,
+        attached: bool,
         bus_tx: Sender<AppEvent>,
     ) -> Self {
         App {
@@ -214,6 +217,7 @@ impl App {
             session_id,
             cfg,
             demo,
+            attached,
             quit: false,
             queued: 0,
             shell_seq: 0,
@@ -515,7 +519,10 @@ impl App {
     }
 
     fn open_model_picker(&mut self) {
-        let mut items: Vec<String> = MODEL_PRESETS.iter().map(|s| s.to_string()).collect();
+        // Host catalog snapshot (plugin mode: the shim exports the REAL model
+        // list); fall back to stock presets otherwise.
+        let mut items: Vec<String> = host_catalog_models()
+            .unwrap_or_else(|| MODEL_PRESETS.iter().map(|s| s.to_string()).collect());
         if !items.contains(&self.cfg.model) {
             items.insert(0, self.cfg.model.clone());
         }
@@ -888,4 +895,33 @@ pub fn timestamp() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("{secs:x}")
+}
+
+/// Model ids from the host catalog snapshot: either inline JSON in
+/// `DSH_TUI_MODELS` or a JSON file at `DSH_TUI_MODELS_FILE` (written by the
+/// dsh plugin shim and refreshed on llm registry changes). Accepts
+/// `["model-id", ...]` or `[{"id": "...", ...}, ...]`.
+pub fn host_catalog_models() -> Option<Vec<String>> {
+    let raw = match std::env::var("DSH_TUI_MODELS") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => {
+            let path = std::env::var("DSH_TUI_MODELS_FILE").ok()?;
+            std::fs::read_to_string(path).ok()?
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let arr = value.as_array()?;
+    let mut out = Vec::new();
+    for item in arr {
+        match item {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Object(_) => {
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    out.push(id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }

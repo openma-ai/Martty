@@ -156,7 +156,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if app.scroll_up > 0 {
         right.push_str(&format!("▲{} · ", app.scroll_up));
     }
-    right.push_str(&format!("{} · {}", app.cfg.model, app.session_id));
+    // Prefer the provenance-reported model (what actually answered).
+    let shown_model = app
+        .transcript
+        .last_model
+        .clone()
+        .unwrap_or_else(|| app.cfg.model.clone());
+    right.push_str(&format!("{} · {}", shown_model, app.session_id));
     if u.input + u.output > 0 {
         right.push_str(&format!(" · ↑{} ↓{}", fmt_tokens(u.input), fmt_tokens(u.output)));
         if u.cached > 0 {
@@ -194,7 +200,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     )];
     if app.input.is_empty() {
         let placeholder = match app.state {
-            RunState::Idle => "describe a task — /commands · !shell · esc clears",
+            RunState::Idle => "describe what you want to build — / commands · ! shell",
             _ => "queue a follow-up… (alt+enter interrupts and sends now)",
         };
         spans.push(Span::styled(
@@ -321,18 +327,18 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     out.extend(logo::wordmark_lines(theme, width));
     out.push(Line::default());
 
-    // Slogans: DeepSeek brand + harness architecture line.
+    // Hero slogan, mirroring the Web UI: whale + "Into the Unknown".
     out.push(centered(
         width,
         vec![Span::styled(
-            "深度求索 · 探索未至之境".to_string(),
-            Style::default().fg(theme.fg_secondary),
+            "Into the Unknown".to_string(),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         )],
     ));
     out.push(centered(
         width,
         vec![Span::styled(
-            "everything is a plugin — powered by deepseek-harness".to_string(),
+            "深度求索 · everything is a plugin".to_string(),
             Style::default().fg(theme.caption),
         )],
     ));
@@ -358,7 +364,11 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     out.push(kv("runtime", runtime_short));
     if app.demo {
         out.push(kv("mode", "demo — scripted turns, no API calls".into()));
-    } else if !app.cfg.has_credentials() {
+    } else if app.attached {
+        out.push(kv("credentials", "host dsh (credential seam)".into()));
+    } else if let Some(source) = app.cfg.credential_source() {
+        out.push(kv("credentials", source.into()));
+    } else {
         out.push(Line::from(vec![
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
@@ -453,7 +463,7 @@ mod tests {
             api_key: None,
         };
         let (tx, _rx) = mpsc::channel();
-        App::new(Theme::dark(), cfg, "dsh-test".into(), true, tx)
+        App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx)
     }
 
     #[test]

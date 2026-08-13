@@ -246,7 +246,7 @@ fn main() -> Result<()> {
 
     let controller = Controller::start(cfg.clone(), args.demo, attached_rt, bus_tx.clone());
     let theme = ui::theme_for(&args.theme);
-    let mut app = App::new(theme, cfg, session_id, args.demo, bus_tx.clone());
+    let mut app = App::new(theme, cfg, session_id, args.demo, args.attach_fds, bus_tx.clone());
 
     // input pump
     {
@@ -362,7 +362,7 @@ fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
     let cfg = build_config(&args_demo)?;
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
     let theme = ui::theme_for(&args.theme);
-    let mut app = App::new(theme, cfg, "dsh-demo".into(), true, bus_tx.clone());
+    let mut app = App::new(theme, cfg, "dsh-demo".into(), true, false, bus_tx.clone());
 
     // Run one scripted demo turn synchronously through the real pipeline.
     app.transcript.push_user("查看这个仓库并修复失败的测试".into(), false);
