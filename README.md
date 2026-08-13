@@ -8,7 +8,7 @@ in the exact DeepSeek Web UI palette, whale included.
 
 深度求索 · 探索未至之境 — *everything is a plugin.*
 
-![dsh-tui — whale banner above a live plugin-mode turn](assets/promo/social-preview.png)
+![dsh-tui — the whale banner, DEEPSEEK HARNESS wordmark, Into the Unknown](assets/screenshots/banner.jpg)
 
 The whale is rasterized by `scripts/gen_logo.py` from the actual favicon SVG
 shipped by the harness Web UI; the wordmark is figlet `ansi_shadow` tinted
