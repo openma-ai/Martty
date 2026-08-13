@@ -1,0 +1,8 @@
+/target
+/dist
+/.venv
+/npm/vendor
+/npm/node_modules
+*.tgz
+__pycache__/
+.DS_Store
