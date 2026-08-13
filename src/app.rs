@@ -40,7 +40,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "model", usage: "/model [id]", desc: "switch model (restarts runtime)" },
     SlashCommand { name: "theme", usage: "/theme [dark|light]", desc: "toggle the DeepSeek palette" },
     SlashCommand { name: "session", usage: "/session", desc: "show session + runtime info" },
-    SlashCommand { name: "logo", usage: "/logo", desc: "print the whale" },
+    SlashCommand { name: "logo", usage: "/logo", desc: "bring the whale back" },
     SlashCommand { name: "quit", usage: "/quit", desc: "exit dsh-tui" },
 ];
 
@@ -152,6 +152,8 @@ pub struct App {
     pub input: Input,
     pub state: RunState,
     pub state_note: String,
+    /// Welcome banner (whale + wordmark) — shown until the first real prompt.
+    pub show_banner: bool,
     pub run_started: Option<Instant>,
     pub spinner_idx: usize,
     pub scroll_up: usize, // lines above the bottom; 0 = follow
@@ -198,6 +200,7 @@ impl App {
             input: Input::new(),
             state: RunState::Idle,
             state_note: String::new(),
+            show_banner: true,
             run_started: None,
             spinner_idx: 0,
             scroll_up: 0,
@@ -649,10 +652,13 @@ impl App {
                     .push_notice(NoticeLevel::Info, "scrollback cleared".into());
             }
             "quit" => self.quit = true,
-            "logo" => self.transcript.push_notice(
-                NoticeLevel::Info,
-                "the whale lives in the banner — resize the terminal and it adapts".into(),
-            ),
+            "logo" => {
+                self.show_banner = true;
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    "🐳 the whale is back — it dives on your next prompt".into(),
+                );
+            }
             "theme" => {
                 let next = match arg {
                     "light" => Theme::light(),
@@ -723,7 +729,10 @@ keys — grok-build homage set
         let creds = if self.demo {
             "demo mode (no API calls)".to_string()
         } else if self.cfg.has_credentials() {
-            "api key present".to_string()
+            match self.cfg.credential_source() {
+                Some(src) => format!("api key present · {src}"),
+                None => "api key present".to_string(),
+            }
         } else {
             "DEEPSEEK_API_KEY not set".to_string()
         };
@@ -771,6 +780,7 @@ keys — grok-build homage set
 
         self.input.history.push(text.clone());
         self.input.clear();
+        self.show_banner = false;
         let running = matches!(self.state, RunState::Running | RunState::Starting);
         self.transcript.push_user(text.clone(), running);
         if running {
@@ -803,6 +813,7 @@ keys — grok-build homage set
         }
         self.input.history.push(text.clone());
         self.input.clear();
+        self.show_banner = false;
         self.transcript.push_user(text.clone(), !interrupted);
         if !interrupted && matches!(self.state, RunState::Running | RunState::Starting) {
             self.queued += 1;
@@ -820,6 +831,7 @@ keys — grok-build homage set
 
     /// Submit a prompt programmatically (used by DSH_TUI_AUTOPROMPT).
     pub fn auto_prompt(&mut self, text: &str, ctl: &Controller) {
+        self.show_banner = false;
         self.input.set(text.to_string());
         self.submit(ctl);
     }

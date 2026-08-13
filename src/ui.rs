@@ -63,7 +63,11 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         area.width.saturating_sub(2),
         area.height,
     );
-    let mut lines = banner_lines(app, inner.width);
+    let mut lines = if app.show_banner {
+        banner_lines(app, inner.width)
+    } else {
+        Vec::new()
+    };
     lines.extend(app.transcript.lines(&theme, inner.width, app.spinner()));
 
     let total = lines.len();
@@ -307,7 +311,8 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Welcome banner: whale, wordmark, slogans, session facts.
+/// Welcome banner: whale, wordmark, slogans, session facts. Shown while
+/// `app.show_banner` is set; the whale dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let mut out = vec![Line::default()];
@@ -426,5 +431,43 @@ pub fn theme_for(name: &str) -> Theme {
     match name {
         "light" => Theme::light(),
         _ => Theme::dark(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::RuntimeConfig;
+    use std::sync::mpsc;
+
+    fn test_app() -> App {
+        let cfg = RuntimeConfig {
+            bin: "dsh-runtime".into(),
+            cordis: "cordis".into(),
+            workspace: "/tmp".into(),
+            session_root: "/tmp".into(),
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, _rx) = mpsc::channel();
+        App::new(Theme::dark(), cfg, "dsh-test".into(), true, tx)
+    }
+
+    #[test]
+    fn banner_shows_until_first_prompt() {
+        let mut app = test_app();
+        assert!(app.show_banner, "banner defaults to on");
+        assert!(
+            dump_frame(&mut app, 84, 40).contains("██████"),
+            "wordmark visible on launch"
+        );
+        app.show_banner = false;
+        assert!(
+            !dump_frame(&mut app, 84, 40).contains("██████"),
+            "whale dives once the banner is dismissed"
+        );
     }
 }

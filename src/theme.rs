@@ -1,8 +1,9 @@
 //! DeepSeek Harness Web UI design tokens, mapped 1:1 from
 //! `packages/client/ui-theme/src/styles/design-platform.css`.
 //!
-//! Static palette (`--dsw-static-*`) plus the light/dark alias sets
-//! (`--dsw-alias-*`, `--dsw-specific-*`) that the Web UI derives from it.
+//! Static palette (`--dsw-static-*`) plus semantic themes that are a
+//! cold monochrome remap of the Web UI neutral-bluish scale: strictly
+//! black/gray/white, with red as the only colored accent (errors).
 
 use ratatui::style::Color;
 
@@ -93,7 +94,8 @@ pub enum Mode {
     Light,
 }
 
-/// Semantic colors, following the Web UI alias tables.
+/// Semantic colors — a cold monochrome remap of the Web UI neutral-bluish
+/// scale (the alias slot names are kept for reference).
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub mode: Mode,
@@ -111,7 +113,7 @@ pub struct Theme {
     pub fg_tertiary: Color,
     /// `--dsw-alias-label-caption`
     pub caption: Color,
-    /// `--dsw-alias-brand-primary-new-color…` — the DeepSeek blue
+    /// `--dsw-alias-brand-primary-new-color…` — remapped to white/black
     pub brand: Color,
     /// `--dsw-alias-state-business-primary`
     pub brand_soft: Color,
@@ -138,23 +140,23 @@ impl Theme {
     pub fn dark() -> Self {
         Theme {
             mode: Mode::Dark,
-            bg: BLUISH_950,
-            surface: BLUISH_875,
-            panel: BLUISH_850,
+            bg: BLUISH_1000,
+            surface: BLUISH_950,
+            panel: BLUISH_900,
             fg: BLUISH_50,
             fg_secondary: BLUISH_300,
-            fg_tertiary: BLUISH_400,
+            fg_tertiary: BLUISH_500,
             caption: BLUISH_600,
-            brand: DEEPSEEK_450,
-            brand_soft: DEEPSEEK_400,
-            bubble_bg: BLUISH_850,
-            bubble_fg: BLUISH_100,
-            border: BLUISH_800,
-            code_bg: BLUISH_900,
-            ok: GREEN_500,
-            warn: AMBER_500,
+            brand: BLUISH_50,
+            brand_soft: BLUISH_400,
+            bubble_bg: BLUISH_900,
+            bubble_fg: BLUISH_75,
+            border: BLUISH_850,
+            code_bg: BLUISH_950,
+            ok: BLUISH_200,
+            warn: BLUISH_500,
             err: RED_400,
-            chip_bg: BLUISH_800,
+            chip_bg: BLUISH_850,
         }
     }
 
@@ -165,17 +167,17 @@ impl Theme {
             surface: BLUISH_50,
             panel: BLUISH_60,
             fg: BLUISH_1000,
-            fg_secondary: BLUISH_700,
-            fg_tertiary: BLUISH_600,
+            fg_secondary: BLUISH_750,
+            fg_tertiary: BLUISH_700,
             caption: BLUISH_400,
-            brand: DEEPSEEK_500,
-            brand_soft: DEEPSEEK_450,
-            bubble_bg: DEEPSEEK_50,
+            brand: BLUISH_1000,
+            brand_soft: BLUISH_750,
+            bubble_bg: BLUISH_75,
             bubble_fg: BLUISH_1000,
             border: BLUISH_200,
-            code_bg: BLUISH_75,
-            ok: GREEN_500,
-            warn: AMBER_600,
+            code_bg: BLUISH_60,
+            ok: BLUISH_750,
+            warn: BLUISH_600,
             err: RED_600,
             chip_bg: BLUISH_100,
         }
@@ -188,27 +190,21 @@ impl Theme {
         }
     }
 
-    /// Success accent used for finished tool glyphs (softer in dark mode).
+    /// Success accent used for finished tool glyphs (monochrome: same as `ok`).
     pub fn ok_soft(&self) -> Color {
-        match self.mode {
-            Mode::Dark => GREEN_400,
-            Mode::Light => self.ok,
-        }
+        self.ok
     }
 
-    /// Warn accent for chips.
+    /// Warn accent for chips (monochrome: same as `warn`).
     pub fn warn_soft(&self) -> Color {
-        match self.mode {
-            Mode::Dark => AMBER_400,
-            Mode::Light => AMBER_600,
-        }
+        self.warn
     }
 
-    /// Whale banner vertical gradient stops (top → bottom).
+    /// Whale banner vertical gradient stops (top → bottom), grayscale.
     pub fn whale_gradient(&self) -> (Color, Color) {
         match self.mode {
-            Mode::Dark => (DEEPSEEK_300, DEEPSEEK_500),
-            Mode::Light => (DEEPSEEK_400, DEEPSEEK_600),
+            Mode::Dark => (BLUISH_50, BLUISH_700),
+            Mode::Light => (BLUISH_800, BLUISH_400),
         }
     }
 }
@@ -229,4 +225,41 @@ pub fn lerp(a: Color, b: Color, t: f32) -> Color {
         (ag + (bg - ag) * t).round() as u8,
         (ab + (bb - ab) * t).round() as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Monochrome invariant: the brand accent is plain white (dark) /
+    /// black (light), i.e. identical to the primary label color.
+    #[test]
+    fn brand_is_monochrome() {
+        assert_eq!(Theme::dark().brand, Theme::dark().fg);
+        assert_eq!(Theme::light().brand, Theme::light().fg);
+    }
+
+    /// The only colored accent left is red for errors.
+    #[test]
+    fn err_is_the_only_colored_accent() {
+        fn is_gray(c: Color) -> bool {
+            match c {
+                Color::Rgb(r, g, b) => {
+                    let (lo, hi) = (r.min(g).min(b), r.max(g).max(b));
+                    hi - lo <= 20 // the neutral-bluish scale has a slight cool tint
+                }
+                _ => false,
+            }
+        }
+        for t in [Theme::dark(), Theme::light()] {
+            for c in [
+                t.bg, t.surface, t.panel, t.fg, t.fg_secondary, t.fg_tertiary,
+                t.caption, t.brand, t.brand_soft, t.bubble_bg, t.bubble_fg,
+                t.border, t.code_bg, t.ok, t.warn, t.chip_bg,
+            ] {
+                assert!(is_gray(c), "expected grayscale, got {c:?}");
+            }
+            assert!(!is_gray(t.err), "err must stay red");
+        }
+    }
 }
