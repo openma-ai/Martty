@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -26,33 +26,191 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let hints_h = 1u16;
-    let input_h = 1u16;
-    let status_h = 1u16;
+    let composer_h = 3u16; // rounded frame: status title / input / hints edge
     let tips_h = if area.height >= 16 { 1 } else { 0 };
-    let chat_h = area
-        .height
-        .saturating_sub(hints_h + input_h + status_h + tips_h);
+    let chat_h = area.height.saturating_sub(composer_h + tips_h);
 
     let chat = Rect::new(area.x, area.y, area.width, chat_h);
-    let mut y = area.y + chat_h;
-    let tips = Rect::new(area.x, y, area.width, tips_h);
-    y += tips_h;
-    let status = Rect::new(area.x, y, area.width, status_h);
-    y += status_h;
-    let input = Rect::new(area.x, y, area.width, input_h);
-    y += input_h;
-    let hints = Rect::new(area.x, y, area.width, hints_h);
+    let tips = Rect::new(area.x, area.y + chat_h, area.width, tips_h);
+    let composer = Rect::new(area.x, area.y + chat_h + tips_h, area.width, composer_h);
 
     draw_chat(f, app, chat);
     if tips_h > 0 {
         draw_tips(f, app, tips);
     }
-    draw_status(f, app, status);
-    draw_input(f, app, input);
-    draw_hints(f, app, hints);
-    draw_slash_menu(f, app, input, chat);
+    draw_composer(f, app, composer);
+    draw_slash_menu(f, app, composer, chat);
     draw_model_picker(f, app, area);
+}
+
+/// The composer card: a rounded frame that owns status (top edge), the input
+/// line (inside), and key hints (bottom edge) — mirroring the Web UI's
+/// distinct composer surface. The frame glows brand-blue while working.
+fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let running = !matches!(app.state, RunState::Idle);
+    let border_color = if running { theme.brand } else { theme.border };
+
+    // Manual title collision avoidance: ratatui overlaps titles when narrow.
+    let left = status_title(app);
+    let mut right_spans = status_right(app);
+    let lw = left.width() as u16;
+    let rw: u16 = right_spans.iter().map(|s| s.content.width() as u16).sum();
+    if lw + rw + 4 > area.width {
+        // fall back to just the model chip, then drop entirely
+        let shown_model = app
+            .transcript
+            .last_model
+            .clone()
+            .unwrap_or_else(|| app.cfg.model.clone());
+        let compact = format!(" {shown_model} ");
+        if lw + compact.width() as u16 + 4 <= area.width {
+            right_spans = vec![Span::styled(compact, Style::default().fg(theme.caption))];
+        } else {
+            right_spans = Vec::new();
+        }
+    }
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(left)
+        .title_bottom(hints_title(app));
+    if !right_spans.is_empty() {
+        block = block.title(Line::from(right_spans).right_aligned());
+    }
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    draw_input(f, app, inner);
+}
+
+/// Left top-edge title: run state.
+fn status_title(app: &App) -> Line<'static> {
+    let theme = app.theme;
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    match app.state {
+        RunState::Idle => {
+            spans.push(Span::styled("● ", Style::default().fg(theme.ok_soft())));
+            spans.push(Span::styled("idle", Style::default().fg(theme.fg_tertiary)));
+            if let Some(kind) = &app.transcript.last_finish {
+                spans.push(Span::styled(
+                    format!(" · last turn {kind}"),
+                    Style::default().fg(theme.caption),
+                ));
+            }
+        }
+        RunState::Starting | RunState::Running => {
+            spans.push(Span::styled(
+                format!("{} ", app.spinner()),
+                Style::default().fg(theme.brand),
+            ));
+            let label = if app.state == RunState::Starting {
+                if app.state_note.is_empty() {
+                    "starting".to_string()
+                } else {
+                    app.state_note.clone()
+                }
+            } else if app.transcript.streaming() {
+                "streaming".to_string()
+            } else if !app.state_note.is_empty() {
+                app.state_note.clone()
+            } else {
+                "working".to_string()
+            };
+            spans.push(Span::styled(label, Style::default().fg(theme.brand_soft)));
+            if let Some(t0) = app.run_started {
+                spans.push(Span::styled(
+                    format!(" {}s", t0.elapsed().as_secs()),
+                    Style::default().fg(theme.caption),
+                ));
+            }
+            if app.queued > 0 {
+                spans.push(Span::styled(
+                    format!(" · {} queued", app.queued),
+                    Style::default().fg(theme.warn_soft()),
+                ));
+            }
+        }
+    }
+    spans.push(Span::raw(" "));
+    // Mode chips: folded from the durable event stream (same facts as the
+    // Web UI chips). Only facts the host actually reported are shown.
+    if let Some(preset) = &app.modes.agent_preset {
+        spans.push(Span::styled(
+            format!("⚙ {preset} "),
+            Style::default().fg(theme.fg_tertiary),
+        ));
+    }
+    if let Some(perm) = &app.modes.permission {
+        let short = perm.replace("danger-full-access", "full-access");
+        spans.push(Span::styled(
+            format!("⛨ {short} "),
+            Style::default().fg(if short == "full-access" {
+                theme.warn_soft()
+            } else {
+                theme.fg_tertiary
+            }),
+        ));
+    } else if let Some(sandbox) = &app.modes.sandbox {
+        spans.push(Span::styled(
+            format!("⛨ {sandbox} "),
+            Style::default().fg(theme.fg_tertiary),
+        ));
+    }
+    if let Some(approval) = &app.modes.approval {
+        spans.push(Span::styled(
+            format!("⚖ {approval} "),
+            Style::default().fg(theme.fg_tertiary),
+        ));
+    }
+    if app.modes.plan {
+        spans.push(Span::styled(
+            "⌁ plan ".to_string(),
+            Style::default().fg(theme.brand_soft),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Right top-edge title: model · session · tokens.
+fn status_right(app: &App) -> Vec<Span<'static>> {
+    let theme = app.theme;
+    let u = app.transcript.usage;
+    let mut right = String::from(" ");
+    if app.scroll_up > 0 {
+        right.push_str(&format!("▲{} · ", app.scroll_up));
+    }
+    let shown_model = app
+        .transcript
+        .last_model
+        .clone()
+        .unwrap_or_else(|| app.cfg.model.clone());
+    right.push_str(&format!("{} · {}", shown_model, app.session_id));
+    if u.input + u.output > 0 {
+        right.push_str(&format!(" · ↑{} ↓{}", fmt_tokens(u.input), fmt_tokens(u.output)));
+        if u.cached > 0 {
+            right.push_str(&format!(" (cache {})", fmt_tokens(u.cached)));
+        }
+    }
+    if app.demo {
+        right.push_str(" · DEMO");
+    }
+    right.push(' ');
+    vec![Span::styled(right, Style::default().fg(theme.caption))]
+}
+
+/// Bottom-edge title: key hints.
+fn hints_title(app: &App) -> Line<'static> {
+    let theme = app.theme;
+    let hints = match app.state {
+        RunState::Idle => " enter send · /help · ↑ history · ctrl+e expand · ctrl+t theme · ctrl+c ×2 quit ",
+        _ => " enter queue · alt+enter send now · esc interrupt · pgup/pgdn scroll ",
+    };
+    Line::from(Span::styled(
+        hints.to_string(),
+        Style::default().fg(theme.caption),
+    ))
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
@@ -99,97 +257,6 @@ fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let theme = app.theme;
-    let mut left: Vec<Span> = vec![Span::raw(" ")];
-    match app.state {
-        RunState::Idle => {
-            left.push(Span::styled("● ", Style::default().fg(theme.ok_soft())));
-            left.push(Span::styled("idle", Style::default().fg(theme.fg_tertiary)));
-            if let Some(kind) = &app.transcript.last_finish {
-                left.push(Span::styled(
-                    format!(" · last turn {kind}"),
-                    Style::default().fg(theme.caption),
-                ));
-            }
-        }
-        RunState::Starting | RunState::Running => {
-            left.push(Span::styled(
-                format!("{} ", app.spinner()),
-                Style::default().fg(theme.brand),
-            ));
-            let label = if app.state == RunState::Starting {
-                if app.state_note.is_empty() {
-                    "starting".to_string()
-                } else {
-                    app.state_note.clone()
-                }
-            } else if app.transcript.streaming() {
-                "streaming".to_string()
-            } else if !app.state_note.is_empty() {
-                app.state_note.clone()
-            } else {
-                "working".to_string()
-            };
-            left.push(Span::styled(label, Style::default().fg(theme.brand_soft)));
-            if let Some(t0) = app.run_started {
-                left.push(Span::styled(
-                    format!(" {}s", t0.elapsed().as_secs()),
-                    Style::default().fg(theme.caption),
-                ));
-            }
-            left.push(Span::styled(
-                " · esc to interrupt",
-                Style::default().fg(theme.caption),
-            ));
-            if app.queued > 0 {
-                left.push(Span::styled(
-                    format!(" · {} queued", app.queued),
-                    Style::default().fg(theme.warn_soft()),
-                ));
-            }
-        }
-    }
-
-    let u = app.transcript.usage;
-    let mut right = String::new();
-    if app.scroll_up > 0 {
-        right.push_str(&format!("▲{} · ", app.scroll_up));
-    }
-    // Prefer the provenance-reported model (what actually answered).
-    let shown_model = app
-        .transcript
-        .last_model
-        .clone()
-        .unwrap_or_else(|| app.cfg.model.clone());
-    right.push_str(&format!("{} · {}", shown_model, app.session_id));
-    if u.input + u.output > 0 {
-        right.push_str(&format!(" · ↑{} ↓{}", fmt_tokens(u.input), fmt_tokens(u.output)));
-        if u.cached > 0 {
-            right.push_str(&format!(" (cache {})", fmt_tokens(u.cached)));
-        }
-    }
-    if app.demo {
-        right.push_str(" · DEMO");
-    }
-    right.push(' ');
-
-    let left_line = Line::from(left);
-    let lw = left_line.width() as u16;
-    let rw = right.width() as u16;
-    f.render_widget(
-        Paragraph::new(left_line).style(Style::default().bg(theme.surface)),
-        area,
-    );
-    if lw + rw < area.width {
-        let right_area = Rect::new(area.x + area.width - rw, area.y, rw, 1);
-        f.render_widget(
-            Paragraph::new(Span::styled(right, Style::default().fg(theme.caption)))
-                .style(Style::default().bg(theme.surface)),
-            right_area,
-        );
-    }
-}
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
@@ -225,20 +292,6 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     f.set_cursor_position((x.min(area.x + area.width.saturating_sub(1)), area.y));
 }
 
-fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
-    let theme = app.theme;
-    let hints = match app.state {
-        RunState::Idle => "enter send · /help · ↑ history · ctrl+e expand · ctrl+t theme · ctrl+c ×2 quit",
-        _ => "enter queue · alt+enter send now · esc interrupt · pgup/pgdn scroll",
-    };
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("  {hints}"),
-            Style::default().fg(theme.caption),
-        )),
-        area,
-    );
-}
 
 fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
     let matches = app.slash_matches();
@@ -275,19 +328,19 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
 }
 
 fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
-    let Some((sel, items)) = &app.model_picker else {
+    let Some(picker) = &app.picker else {
         return;
     };
     let theme = app.theme;
-    let h = (items.len() as u16 + 2).min(screen.height.saturating_sub(2));
-    let w = 44.min(screen.width.saturating_sub(4));
+    let h = (picker.items.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let w = 58.min(screen.width.saturating_sub(4));
     let x = screen.x + (screen.width - w) / 2;
     let y = screen.y + (screen.height - h) / 3;
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
     let mut lines = Vec::new();
-    for (i, m) in items.iter().enumerate() {
-        let selected = i == *sel;
+    for (i, item) in picker.items.iter().enumerate() {
+        let selected = i == picker.sel;
         let marker = if selected { "▸ " } else { "  " };
         let style = if selected {
             Style::default().fg(theme.brand).add_modifier(Modifier::BOLD)
@@ -296,9 +349,15 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         };
         let mut spans = vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(m.clone(), style),
+            Span::styled(format!("{:<24}", item.label), style),
         ];
-        if *m == app.cfg.model {
+        if !item.meta.is_empty() {
+            spans.push(Span::styled(
+                item.meta.clone(),
+                Style::default().fg(theme.caption),
+            ));
+        }
+        if item.id == app.cfg.model && matches!(picker.kind, crate::app::PickerKind::Model) {
             spans.push(Span::styled(
                 "  (current)".to_string(),
                 Style::default().fg(theme.caption),
@@ -308,9 +367,10 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
     }
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(
-            " model · enter select · esc close ",
+            picker.title.clone(),
             Style::default().fg(theme.caption),
         ))
         .style(Style::default().bg(theme.panel));
@@ -333,13 +393,6 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         vec![Span::styled(
             "Into the Unknown".to_string(),
             Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-        )],
-    ));
-    out.push(centered(
-        width,
-        vec![Span::styled(
-            "深度求索 · everything is a plugin".to_string(),
-            Style::default().fg(theme.caption),
         )],
     ));
     out.push(Line::default());

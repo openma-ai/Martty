@@ -36,6 +36,22 @@ pub enum CtlEvent {
     Error(String),
     /// Runtime was killed on purpose.
     Interrupted,
+    /// Host model catalog arrived (plugin mode `tui/catalog`).
+    Catalog { models: Vec<CatalogModel> },
+    /// Selectable reasoning efforts for the current model.
+    Efforts { efforts: Vec<String>, default: Option<String> },
+    /// A tui/* control call succeeded.
+    TuiOpDone(String),
+    /// A tui/* control call failed (or is unsupported on this transport).
+    TuiOpFailed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogModel {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+    pub vision: bool,
 }
 
 /// UI → controller commands.
@@ -43,6 +59,15 @@ pub enum CtlEvent {
 pub enum Cmd {
     Prompt { session_id: String, text: String },
     Interrupt,
-    SetModel(String),
+    /// Plugin-mode hot switch (falls back to SetModel semantics standalone).
+    SelectModel {
+        session_id: String,
+        provider: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+    },
+    FetchCatalog,
+    FetchEfforts { provider: String, model: String },
+    SetPermission { session_id: String, preset: String },
     Shutdown,
 }

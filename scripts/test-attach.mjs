@@ -27,6 +27,8 @@ const fromTui = child.stdio[4]
 const seen = []
 const notify = (method, params) =>
   toTui.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n')
+const reply = (id, result) =>
+  toTui.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n')
 
 const S = 'attach-test-session'
 const rl = createInterface({ input: fromTui })
@@ -48,6 +50,42 @@ rl.on('line', (line) => {
         result: { serverInfo: { name: 'attach-test-host', version: '0.0.0' } },
       }) + '\n',
     )
+  } else if (msg.method === 'tui/catalog') {
+    reply(msg.id, {
+      providers: [{ id: 'deepseek-official', name: 'DeepSeek' }],
+      models: [
+        { provider: 'deepseek-official', id: 'attach-test', name: 'Attach Test', vision: false },
+        { provider: 'deepseek-official', id: 'attach-test-vision', name: 'Attach Test Vision', vision: true },
+      ],
+      presets: [{ id: 'default', name: 'Default' }],
+      current: { provider: 'deepseek-official', model: 'attach-test' },
+    })
+  } else if (msg.method === 'tui/model-info') {
+    reply(msg.id, {
+      reasoning: {
+        efforts: [
+          { id: 'off', name: 'Off' },
+          { id: 'high', name: 'High' },
+          { id: 'max', name: 'Max' },
+        ],
+        defaultEffort: 'high',
+      },
+      context: { contextWindow: 128000 },
+      defaultMaxTokens: 32000,
+    })
+  } else if (msg.method === 'tui/select-model') {
+    reply(msg.id, {
+      ok: true,
+      current: {
+        provider: msg.params?.provider ?? 'deepseek-official',
+        model: msg.params?.model ?? 'attach-test',
+        ...(msg.params?.reasoningEffort == null ? {} : { reasoningEffort: msg.params.reasoningEffort }),
+      },
+    })
+  } else if (msg.method === 'tui/permission') {
+    reply(msg.id, { ok: true })
+  } else if (msg.method === 'tui/preset') {
+    reply(msg.id, { ok: true, applied: 'on-first-prompt' })
   } else if (msg.method === 'session/prompt') {
     const sid = msg.params.sessionId
     toTui.write(
@@ -55,6 +93,19 @@ rl.on('line', (line) => {
     )
     notify('session.status', { sessionId: sid, status: 'running' })
     notify('session.event', { sessionId: sid, event: { type: 'turn/start', data: { turn: 1 } } })
+    // Durable permission facts, as the permission-presets service records them.
+    notify('session.event', {
+      sessionId: sid,
+      event: { type: 'permission/preset', data: { preset: 'workspace-write' } },
+    })
+    notify('session.event', {
+      sessionId: sid,
+      event: { type: 'sandbox/mode', data: { mode: 'workspace-write' } },
+    })
+    notify('session.event', {
+      sessionId: sid,
+      event: { type: 'approval/policy', data: { policy: 'ask' } },
+    })
     for (const piece of ['pong ', 'over ', 'fds 3/4 ✓']) {
       notify('session.event', {
         sessionId: sid,

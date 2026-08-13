@@ -39,6 +39,17 @@ impl Driver {
         // 1. session running.
         self.status("running");
 
+        // Session mode facts — what permission-presets pins on session
+        // creation in a real composition (folded into the composer chips).
+        let want_plan = lower.contains("plan");
+        let want_approve = lower.contains("approve");
+        self.event(json!({"type": "permission/preset", "data": {"preset": "workspace-write"}}));
+        self.event(json!({"type": "sandbox/mode", "data": {"mode": "workspace-write"}}));
+        self.event(json!({"type": "approval/policy", "data": {"policy": "ask"}}));
+        if want_plan {
+            self.event(json!({"type": "plan/mode", "data": {"active": true}}));
+        }
+
         // 2. turn start.
         self.event(json!({"type": "turn/start", "data": {"turn": 1}}));
 
@@ -106,6 +117,16 @@ impl Driver {
         }));
 
         // 6. first tool result (error variation flips it to a failure).
+        if want_approve {
+            self.event(json!({
+                "type": "approval/asked",
+                "data": {"id": "demo-approval-1", "toolName": "bash", "reason": "writes outside the workspace"}
+            }));
+            self.event(json!({
+                "type": "approval/decided",
+                "data": {"id": "demo-approval-1", "outcome": "allowed-once"}
+            }));
+        }
         if want_error {
             self.event(json!({
                 "type": "tool/result",

@@ -447,6 +447,39 @@ impl Transcript {
                     .unwrap_or_else(|| "subagent".into());
                 self.push_notice(NoticeLevel::Info, format!("⛭ {label} finished"));
             }
+            UiEvent::PlanMode { active, .. } => {
+                self.push_notice(
+                    NoticeLevel::Info,
+                    format!("⌁ plan mode {}", if active { "on" } else { "off" }),
+                );
+            }
+            UiEvent::SandboxMode { mode, .. } => {
+                self.push_notice(NoticeLevel::Info, format!("⛨ file policy · {mode}"));
+            }
+            UiEvent::ApprovalPolicy { policy, .. } => {
+                self.push_notice(NoticeLevel::Info, format!("⚖ approval policy · {policy}"));
+            }
+            UiEvent::PermissionPreset { preset, .. } => {
+                self.push_notice(NoticeLevel::Info, format!("⛨ permission · {preset}"));
+            }
+            UiEvent::AgentPreset { preset, .. } => {
+                self.push_notice(NoticeLevel::Info, format!("⚙ agent preset · {preset}"));
+            }
+            UiEvent::ApprovalAsked { tool, reason, .. } => {
+                let why = reason.map(|r| format!(" · {r}")).unwrap_or_default();
+                self.push_notice(
+                    NoticeLevel::Warn,
+                    format!("⚖ approval requested · {tool}{why}"),
+                );
+            }
+            UiEvent::ApprovalDecided { outcome, .. } => {
+                let level = if outcome.contains("reject") || outcome.contains("denied") {
+                    NoticeLevel::Warn
+                } else {
+                    NoticeLevel::Info
+                };
+                self.push_notice(level, format!("⚖ approval · {outcome}"));
+            }
         }
     }
 

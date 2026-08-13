@@ -102,6 +102,7 @@ pub struct Theme {
     /// `--dsw-alias-bg-base`
     pub bg: Color,
     /// `--dsw-alias-bg-layer-1`
+    #[allow(dead_code)]
     pub surface: Color,
     /// `--dsw-alias-bg-layer-2` (panels, tool cards)
     pub panel: Color,

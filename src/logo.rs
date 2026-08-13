@@ -84,23 +84,5 @@ pub fn wordmark_lines(theme: &Theme, width: u16) -> Vec<Line<'static>> {
             Span::styled((*row).to_string(), Style::default().fg(theme.fg)),
         ]));
     }
-    // tag line, mirroring the Web UI lockup: wordmark + preview chip
-    let tag = " B U I L D ";
-    let sub = "· deepseek-harness ·";
-    let total = tag.chars().count() + 1 + sub.chars().count();
-    let pad = (width as usize).saturating_sub(total) / 2;
-    out.push(Line::default());
-    out.push(Line::from(vec![
-        Span::raw(" ".repeat(pad)),
-        Span::styled(
-            tag.to_string(),
-            Style::default()
-                .fg(theme.bg)
-                .bg(theme.brand)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(sub.to_string(), Style::default().fg(theme.caption)),
-    ]));
     out
 }

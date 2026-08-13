@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::bus::{AppEvent, Cmd, CtlEvent};
+use crate::bus::{AppEvent, CatalogModel, Cmd, CtlEvent};
 use crate::proto::RuntimeProcess;
 use crate::runtime::RuntimeConfig;
 
@@ -134,18 +134,187 @@ fn controller_loop(
                 }
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
             }
-            Cmd::SetModel(model) => {
-                cfg.model = model;
-                if attached {
-                    // Re-initialize on the live connection at the next prompt.
-                    attached_initialized = false;
+            Cmd::SelectModel {
+                session_id,
+                provider,
+                model,
+                effort,
+            } => {
+                if let Some(m) = &model {
+                    cfg.model = m.clone();
+                }
+                if let Some(p) = &provider {
+                    cfg.provider = p.clone();
+                }
+                if demo {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
+                        "model → {} (demo)",
+                        cfg.model
+                    ))));
                     continue;
                 }
-                // initialize() is per-process: retire the current runtime so
-                // the next prompt re-initializes with the new model.
-                let mut guard = runtime.lock().unwrap();
-                if let Some(rt) = guard.take() {
-                    rt.kill();
+                if attached {
+                    let rt = runtime.lock().unwrap().clone();
+                    if let Some(rt) = rt {
+                        let mut params = json!({ "sessionId": session_id });
+                        if let Some(p) = provider {
+                            params["provider"] = json!(p);
+                        }
+                        if let Some(m) = model {
+                            params["model"] = json!(m);
+                        }
+                        if let Some(e) = effort {
+                            params["reasoningEffort"] = json!(e);
+                        }
+                        match rt.request("tui/select-model", Some(params), Duration::from_secs(20)) {
+                            Ok(_) => {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
+                                    "model → {} · live for this session",
+                                    cfg.model
+                                ))));
+                            }
+                            Err(err) => {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                    "hot switch failed: {err:#}"
+                                ))));
+                            }
+                        }
+                    }
+                } else {
+                    // Standalone: restart semantics, same durable session.
+                    let mut guard = runtime.lock().unwrap();
+                    if let Some(rt) = guard.take() {
+                        rt.kill();
+                    }
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
+                        "model → {} (runtime restarts on next prompt)",
+                        cfg.model
+                    ))));
+                }
+            }
+            Cmd::FetchCatalog => {
+                if demo {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+                        models: vec![
+                            CatalogModel { provider: "deepseek-official".into(), id: "deepseek-v4-flash".into(), name: "DeepSeek V4 Flash".into(), vision: false },
+                            CatalogModel { provider: "deepseek-official".into(), id: "deepseek-v4-pro".into(), name: "DeepSeek V4 Pro".into(), vision: true },
+                        ],
+                    }));
+                    continue;
+                }
+                let rt = runtime.lock().unwrap().clone();
+                let result = rt
+                    .filter(|rt| attached && rt.is_alive())
+                    .map(|rt| rt.request("tui/catalog", Some(json!({})), Duration::from_secs(20)));
+                match result {
+                    Some(Ok(value)) => {
+                        let models = parse_catalog(&value);
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models }));
+                    }
+                    Some(Err(err)) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                            "catalog unavailable: {err:#}"
+                        ))));
+                    }
+                    None => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                            "catalog needs plugin mode (dsh --profile tui)".into(),
+                        )));
+                    }
+                }
+            }
+            Cmd::FetchEfforts { provider, model } => {
+                if demo {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                        efforts: vec!["off".into(), "high".into(), "max".into()],
+                        default: Some("high".into()),
+                    }));
+                    continue;
+                }
+                let rt = runtime.lock().unwrap().clone();
+                let result = rt
+                    .filter(|rt| attached && rt.is_alive())
+                    .map(|rt| {
+                        rt.request(
+                            "tui/model-info",
+                            Some(json!({ "provider": provider, "model": model })),
+                            Duration::from_secs(20),
+                        )
+                    });
+                match result {
+                    Some(Ok(value)) => {
+                        let efforts: Vec<String> = value
+                            .pointer("/reasoning/efforts")
+                            .and_then(Value::as_array)
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|e| {
+                                        e.get("id").and_then(Value::as_str).map(str::to_string)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let default = value
+                            .pointer("/reasoning/defaultEffort")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts { efforts, default }));
+                    }
+                    Some(Err(err)) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                            "model info unavailable: {err:#}"
+                        ))));
+                    }
+                    None => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                            efforts: vec!["off".into(), "high".into(), "max".into()],
+                            default: None,
+                        }));
+                    }
+                }
+            }
+            Cmd::SetPermission { session_id, preset } => {
+                if demo {
+                    // Synthesize the event triplet the host would append.
+                    let approval = if preset == "danger-full-access" { "never" } else { "ask" };
+                    for (t, data) in [
+                        ("permission/preset", json!({"preset": preset})),
+                        ("sandbox/mode", json!({"mode": preset})),
+                        ("approval/policy", json!({"policy": approval})),
+                    ] {
+                        let _ = bus.send(AppEvent::Rpc {
+                            method: "session.event".into(),
+                            params: json!({"sessionId": session_id, "event": {"type": t, "data": data}}),
+                        });
+                    }
+                    continue;
+                }
+                let rt = runtime.lock().unwrap().clone();
+                let result = rt
+                    .filter(|rt| attached && rt.is_alive())
+                    .map(|rt| {
+                        rt.request(
+                            "tui/permission",
+                            Some(json!({ "sessionId": session_id, "preset": preset })),
+                            Duration::from_secs(20),
+                        )
+                    });
+                match result {
+                    Some(Ok(_)) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
+                            "permission → {preset}"
+                        ))));
+                    }
+                    Some(Err(err)) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                            "permission switch failed: {err:#}"
+                        ))));
+                    }
+                    None => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                            "permission presets need plugin mode".into(),
+                        )));
+                    }
                 }
             }
             Cmd::Shutdown => {
@@ -322,4 +491,34 @@ fn describe_server(result: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("?");
     format!("{name} v{version}")
+}
+
+/// Parse the `tui/catalog` response into displayable models.
+fn parse_catalog(value: &Value) -> Vec<CatalogModel> {
+    let mut out = Vec::new();
+    if let Some(arr) = value.get("models").and_then(Value::as_array) {
+        for m in arr {
+            let provider = m
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let Some(id) = m.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let name = m
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(id)
+                .to_string();
+            let vision = m.get("vision").and_then(Value::as_bool).unwrap_or(false);
+            out.push(CatalogModel {
+                provider,
+                id: id.to_string(),
+                name,
+                vision,
+            });
+        }
+    }
+    out
 }

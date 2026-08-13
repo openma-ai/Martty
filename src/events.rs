@@ -16,6 +16,20 @@ pub enum UiEvent {
     UserInjected { session: String, source: String, preview: String },
     SubagentStarted { parent: String, child: String },
     SubagentFinished { child: String },
+    /// `plan/mode` — dsh-plan-mode collaboration state (last one wins).
+    PlanMode { session: String, active: bool },
+    /// `sandbox/mode` — file policy: read-only | workspace-write | danger-full-access.
+    SandboxMode { session: String, mode: String },
+    /// `approval/policy` — ask | never.
+    ApprovalPolicy { session: String, policy: String },
+    /// `permission/preset` — bundled permission preset name.
+    PermissionPreset { session: String, preset: String },
+    /// `agent-preset/selected` — agent composition preset (standard/code/…).
+    AgentPreset { session: String, preset: String },
+    /// `approval/asked` — one pending approval request.
+    ApprovalAsked { session: String, tool: String, reason: Option<String> },
+    /// `approval/decided` — its outcome.
+    ApprovalDecided { session: String, outcome: String },
 }
 
 /// Parse a JSON-RPC notification into zero or more UI events.
@@ -71,6 +85,66 @@ fn parse_session_event(params: &Value) -> Vec<UiEvent> {
             vec![UiEvent::TurnEnd { session, kind }]
         }
         "assistant/chunk" => parse_assistant_chunk(session, data),
+        "plan/mode" => match data.get("active").and_then(Value::as_bool) {
+            Some(active) => vec![UiEvent::PlanMode { session, active }],
+            None => Vec::new(),
+        },
+        "sandbox/mode" => match data.get("mode").and_then(Value::as_str) {
+            Some(mode) => vec![UiEvent::SandboxMode {
+                session,
+                mode: mode.to_string(),
+            }],
+            None => Vec::new(),
+        },
+        "approval/policy" => match data.get("policy").and_then(Value::as_str) {
+            Some(policy) => vec![UiEvent::ApprovalPolicy {
+                session,
+                policy: policy.to_string(),
+            }],
+            None => Vec::new(),
+        },
+        "permission/preset" => match data.get("preset").and_then(Value::as_str) {
+            Some(preset) => vec![UiEvent::PermissionPreset {
+                session,
+                preset: preset.to_string(),
+            }],
+            None => Vec::new(),
+        },
+        "agent-preset/selected" => match data.get("agentPreset").and_then(Value::as_str) {
+            Some(preset) => vec![UiEvent::AgentPreset {
+                session,
+                preset: preset.to_string(),
+            }],
+            None => Vec::new(),
+        },
+        "approval/asked" => {
+            let tool = data
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            let reason = data
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            vec![UiEvent::ApprovalAsked {
+                session,
+                tool,
+                reason,
+            }]
+        }
+        "approval/decided" => {
+            let outcome = match data.get("outcome") {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Object(o)) => o
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("decided")
+                    .to_string(),
+                _ => "decided".to_string(),
+            };
+            vec![UiEvent::ApprovalDecided { session, outcome }]
+        }
         "assistant/message" => {
             let msg = data.get("message").unwrap_or(data);
             let text = concat_text_blocks(msg.get("content").unwrap_or(&Value::Null));
@@ -568,5 +642,60 @@ mod tests {
             &json!({"sessionId": "s", "event": {"type": "assistant/chunk", "data": {}}})
         )
         .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod mode_event_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ev(t: &str, data: serde_json::Value) -> serde_json::Value {
+        json!({"sessionId": "s", "event": {"type": t, "data": data}})
+    }
+
+    #[test]
+    fn plan_sandbox_approval_permission_preset() {
+        assert_eq!(
+            parse_notification("session.event", &ev("plan/mode", json!({"active": true}))),
+            vec![UiEvent::PlanMode { session: "s".into(), active: true }]
+        );
+        assert_eq!(
+            parse_notification("session.event", &ev("sandbox/mode", json!({"mode": "workspace-write"}))),
+            vec![UiEvent::SandboxMode { session: "s".into(), mode: "workspace-write".into() }]
+        );
+        assert_eq!(
+            parse_notification("session.event", &ev("approval/policy", json!({"policy": "ask"}))),
+            vec![UiEvent::ApprovalPolicy { session: "s".into(), policy: "ask".into() }]
+        );
+        assert_eq!(
+            parse_notification("session.event", &ev("permission/preset", json!({"preset": "danger-full-access"}))),
+            vec![UiEvent::PermissionPreset { session: "s".into(), preset: "danger-full-access".into() }]
+        );
+        assert_eq!(
+            parse_notification("session.event", &ev("agent-preset/selected", json!({"agentPreset": "standard"}))),
+            vec![UiEvent::AgentPreset { session: "s".into(), preset: "standard".into() }]
+        );
+    }
+
+    #[test]
+    fn approval_asked_and_decided_shapes() {
+        assert_eq!(
+            parse_notification(
+                "session.event",
+                &ev("approval/asked", json!({"id": "a1", "toolName": "bash", "reason": "rm -rf"}))
+            ),
+            vec![UiEvent::ApprovalAsked { session: "s".into(), tool: "bash".into(), reason: Some("rm -rf".into()) }]
+        );
+        assert_eq!(
+            parse_notification("session.event", &ev("approval/decided", json!({"id": "a1", "outcome": "allowed-once"}))),
+            vec![UiEvent::ApprovalDecided { session: "s".into(), outcome: "allowed-once".into() }]
+        );
+        assert_eq!(
+            parse_notification("session.event", &ev("approval/decided", json!({"id": "a1", "outcome": {"kind": "rejected"}}))),
+            vec![UiEvent::ApprovalDecided { session: "s".into(), outcome: "rejected".into() }]
+        );
+        // malformed plan/mode stays silent
+        assert!(parse_notification("session.event", &ev("plan/mode", json!({}))).is_empty());
     }
 }

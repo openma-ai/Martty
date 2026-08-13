@@ -37,7 +37,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "keys", usage: "/keys", desc: "keyboard shortcuts" },
     SlashCommand { name: "new", usage: "/new [id]", desc: "start a fresh session" },
     SlashCommand { name: "clear", usage: "/clear", desc: "clear the scrollback" },
-    SlashCommand { name: "model", usage: "/model [id]", desc: "switch model (restarts runtime)" },
+    SlashCommand { name: "model", usage: "/model [id]", desc: "switch model · live in plugin mode" },
+    SlashCommand { name: "effort", usage: "/effort [off|high|max]", desc: "reasoning effort for this session" },
+    SlashCommand { name: "permission", usage: "/permission [preset]", desc: "cycle workspace-write / danger-full-access" },
+    SlashCommand { name: "plan", usage: "/plan [off]", desc: "host plan mode (command passthrough)" },
     SlashCommand { name: "theme", usage: "/theme [dark|light]", desc: "toggle the DeepSeek palette" },
     SlashCommand { name: "session", usage: "/session", desc: "show session + runtime info" },
     SlashCommand { name: "logo", usage: "/logo", desc: "bring the whale back" },
@@ -146,6 +149,38 @@ impl Input {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    Model,
+    Effort,
+}
+
+#[derive(Clone)]
+pub struct PickerItem {
+    pub id: String,
+    pub label: String,
+    pub meta: String,
+    pub provider: Option<String>,
+}
+
+pub struct Picker {
+    pub kind: PickerKind,
+    pub title: String,
+    pub sel: usize,
+    pub items: Vec<PickerItem>,
+}
+
+/// Folded per-session mode state (from the durable event stream — the same
+/// facts the Web UI chips read).
+#[derive(Default, Clone)]
+pub struct Modes {
+    pub plan: bool,
+    pub sandbox: Option<String>,
+    pub approval: Option<String>,
+    pub permission: Option<String>,
+    pub agent_preset: Option<String>,
+}
+
 pub struct App {
     pub theme: Theme,
     pub transcript: Transcript,
@@ -158,7 +193,8 @@ pub struct App {
     pub spinner_idx: usize,
     pub scroll_up: usize, // lines above the bottom; 0 = follow
     pub slash_sel: usize,
-    pub model_picker: Option<(usize, Vec<String>)>,
+    pub picker: Option<Picker>,
+    pub modes: Modes,
     pub tip: Option<(String, Instant)>,
     pub ambient_tip_idx: usize,
     pub ambient_tip_at: Instant,
@@ -208,7 +244,8 @@ impl App {
             spinner_idx: 0,
             scroll_up: 0,
             slash_sel: 0,
-            model_picker: None,
+            picker: None,
+            modes: Modes::default(),
             tip: None,
             ambient_tip_idx: 0,
             ambient_tip_at: Instant::now(),
@@ -284,6 +321,34 @@ impl App {
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Rpc { method, params } => {
                 for ui in parse_notification(&method, &params) {
+                    // Fold per-session mode facts for the composer chips.
+                    {
+                        use crate::events::UiEvent as E;
+                        match &ui {
+                            E::PlanMode { session, active } if *session == self.session_id => {
+                                self.modes.plan = *active;
+                            }
+                            E::SandboxMode { session, mode } if *session == self.session_id => {
+                                self.modes.sandbox = Some(mode.clone());
+                            }
+                            E::ApprovalPolicy { session, policy }
+                                if *session == self.session_id =>
+                            {
+                                self.modes.approval = Some(policy.clone());
+                            }
+                            E::PermissionPreset { session, preset }
+                                if *session == self.session_id =>
+                            {
+                                self.modes.permission = Some(preset.clone());
+                            }
+                            E::AgentPreset { session, preset }
+                                if *session == self.session_id =>
+                            {
+                                self.modes.agent_preset = Some(preset.clone());
+                            }
+                            _ => {}
+                        }
+                    }
                     if let crate::events::UiEvent::SessionStatus { session, running } = &ui {
                         if *session == self.session_id {
                             self.state = if *running {
@@ -365,6 +430,40 @@ impl App {
                             "interrupted — runtime stopped; the session log is preserved and the next prompt restarts it".into(),
                         );
                     }
+                    CtlEvent::Catalog { models } => {
+                        if let Some(picker) = &mut self.picker {
+                            if picker.kind == PickerKind::Model && !models.is_empty() {
+                                let current = self.cfg.model.clone();
+                                picker.items = models
+                                    .into_iter()
+                                    .map(|m| PickerItem {
+                                        id: m.id.clone(),
+                                        label: m.id,
+                                        meta: format!(
+                                            "{}{}",
+                                            m.name,
+                                            if m.vision { " · vision" } else { "" }
+                                        ),
+                                        provider: Some(m.provider),
+                                    })
+                                    .collect();
+                                picker.sel = picker
+                                    .items
+                                    .iter()
+                                    .position(|i| i.id == current)
+                                    .unwrap_or(0);
+                            }
+                        }
+                    }
+                    CtlEvent::Efforts { efforts, default } => {
+                        self.open_effort_picker(efforts, default);
+                    }
+                    CtlEvent::TuiOpDone(desc) => {
+                        self.transcript.push_notice(NoticeLevel::Info, desc);
+                    }
+                    CtlEvent::TuiOpFailed(desc) => {
+                        self.transcript.push_notice(NoticeLevel::Warn, desc);
+                    }
                 }
                 self.needs_redraw = true;
             }
@@ -411,7 +510,7 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         // --- model picker overlay steals input first (grok modal semantics)
-        if self.model_picker.is_some() {
+        if self.picker.is_some() {
             self.handle_picker_key(key, ctl);
             return;
         }
@@ -450,7 +549,8 @@ impl App {
                     "collapsed all thoughts and tool results"
                 });
             }
-            KeyCode::Char('m') if ctrl => self.open_model_picker(),
+            KeyCode::Char('m') if ctrl => self.open_model_picker(ctl),
+            KeyCode::BackTab => self.cycle_permission(ctl),
             KeyCode::Char('u') if ctrl => self.scroll_by(10),
             KeyCode::Char('d') if ctrl => self.scroll_by(-10),
             KeyCode::Char('k') if ctrl => self.input.kill_to_end(),
@@ -502,32 +602,128 @@ impl App {
     }
 
     fn handle_picker_key(&mut self, key: KeyEvent, ctl: &Controller) {
-        let Some((sel, items)) = &mut self.model_picker else {
+        let Some(picker) = &mut self.picker else {
             return;
         };
+        let n = picker.items.len().max(1);
         match key.code {
-            KeyCode::Esc => self.model_picker = None,
-            KeyCode::Up => *sel = sel.checked_sub(1).unwrap_or(items.len() - 1),
-            KeyCode::Down => *sel = (*sel + 1) % items.len(),
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Up => picker.sel = picker.sel.checked_sub(1).unwrap_or(n - 1),
+            KeyCode::Down => picker.sel = (picker.sel + 1) % n,
             KeyCode::Enter => {
-                let model = items[*sel].clone();
-                self.model_picker = None;
-                self.set_model(model, ctl);
+                let Some(item) = picker.items.get(picker.sel).cloned() else {
+                    self.picker = None;
+                    return;
+                };
+                let kind = picker.kind;
+                self.picker = None;
+                match kind {
+                    PickerKind::Model => self.select_model(item, ctl),
+                    PickerKind::Effort => {
+                        let effort = item.id;
+                        ctl.send(Cmd::SelectModel {
+                            session_id: self.session_id.clone(),
+                            provider: None,
+                            model: None,
+                            effort: Some(effort.clone()),
+                        });
+                        self.transcript.push_notice(
+                            NoticeLevel::Info,
+                            format!("reasoning effort → {effort}"),
+                        );
+                    }
+                }
             }
             _ => {}
         }
     }
 
-    fn open_model_picker(&mut self) {
-        // Host catalog snapshot (plugin mode: the shim exports the REAL model
-        // list); fall back to stock presets otherwise.
-        let mut items: Vec<String> = host_catalog_models()
-            .unwrap_or_else(|| MODEL_PRESETS.iter().map(|s| s.to_string()).collect());
-        if !items.contains(&self.cfg.model) {
-            items.insert(0, self.cfg.model.clone());
+    fn open_model_picker(&mut self, ctl: &Controller) {
+        // Ask the host for its real catalog (plugin mode); seed the picker
+        // with fallback presets / env snapshot meanwhile.
+        ctl.send(Cmd::FetchCatalog);
+        let mut items: Vec<PickerItem> = host_catalog_models()
+            .unwrap_or_else(|| MODEL_PRESETS.iter().map(|s| s.to_string()).collect())
+            .into_iter()
+            .map(|id| PickerItem {
+                id: id.clone(),
+                label: id,
+                meta: String::new(),
+                provider: None,
+            })
+            .collect();
+        if !items.iter().any(|i| i.id == self.cfg.model) {
+            items.insert(
+                0,
+                PickerItem {
+                    id: self.cfg.model.clone(),
+                    label: self.cfg.model.clone(),
+                    meta: String::new(),
+                    provider: None,
+                },
+            );
         }
-        let sel = items.iter().position(|m| *m == self.cfg.model).unwrap_or(0);
-        self.model_picker = Some((sel, items));
+        let sel = items.iter().position(|i| i.id == self.cfg.model).unwrap_or(0);
+        self.picker = Some(Picker {
+            kind: PickerKind::Model,
+            title: " model · enter select · esc close ".into(),
+            sel,
+            items,
+        });
+    }
+
+    fn open_effort_picker(&mut self, efforts: Vec<String>, default: Option<String>) {
+        let mut items: Vec<PickerItem> = efforts
+            .into_iter()
+            .map(|e| {
+                let is_default = default.as_deref() == Some(e.as_str());
+                PickerItem {
+                    id: e.clone(),
+                    label: e,
+                    meta: if is_default { "default".into() } else { String::new() },
+                    provider: None,
+                }
+            })
+            .collect();
+        if items.is_empty() {
+            items = ["off", "high", "max"]
+                .iter()
+                .map(|e| PickerItem {
+                    id: e.to_string(),
+                    label: e.to_string(),
+                    meta: String::new(),
+                    provider: None,
+                })
+                .collect();
+        }
+        self.picker = Some(Picker {
+            kind: PickerKind::Effort,
+            title: " reasoning effort · enter select · esc close ".into(),
+            sel: 0,
+            items,
+        });
+    }
+
+    fn select_model(&mut self, item: PickerItem, ctl: &Controller) {
+        let model = item.id;
+        let provider = item.provider;
+        if model != self.cfg.model {
+            self.cfg.model = model.clone();
+            if let Some(p) = &provider {
+                self.cfg.provider = p.clone();
+            }
+            ctl.send(Cmd::SelectModel {
+                session_id: self.session_id.clone(),
+                provider,
+                model: Some(model.clone()),
+                effort: None,
+            });
+        }
+        // Stage 2: offer efforts for the chosen model.
+        ctl.send(Cmd::FetchEfforts {
+            provider: self.cfg.provider.clone(),
+            model: self.cfg.model.clone(),
+        });
     }
 
     fn set_model(&mut self, model: String, ctl: &Controller) {
@@ -535,16 +731,30 @@ impl App {
             return;
         }
         self.cfg.model = model.clone();
-        ctl.send(Cmd::SetModel(model.clone()));
-        self.transcript.push_notice(
-            NoticeLevel::Info,
-            format!("model → {model} (runtime restarts on next prompt)"),
-        );
+        ctl.send(Cmd::SelectModel {
+            session_id: self.session_id.clone(),
+            provider: None,
+            model: Some(model),
+            effort: None,
+        });
+    }
+
+    /// grok: Shift+Tab cycles the permission preset.
+    fn cycle_permission(&mut self, ctl: &Controller) {
+        let presets = ["workspace-write", "danger-full-access"];
+        let current = self.modes.permission.as_deref().unwrap_or(presets[0]);
+        let idx = presets.iter().position(|p| *p == current).unwrap_or(0);
+        let next = presets[(idx + 1) % presets.len()].to_string();
+        ctl.send(Cmd::SetPermission {
+            session_id: self.session_id.clone(),
+            preset: next.clone(),
+        });
+        self.show_tip(format!("permission → {next} …"));
     }
 
     fn handle_esc(&mut self, ctl: &Controller) {
-        if self.model_picker.is_some() {
-            self.model_picker = None;
+        if self.picker.is_some() {
+            self.picker = None;
             return;
         }
         if self.input.buf.starts_with('/') && !self.slash_matches().is_empty() {
@@ -676,7 +886,7 @@ impl App {
             }
             "model" => {
                 if arg.is_empty() {
-                    self.open_model_picker();
+                    self.open_model_picker(ctl);
                 } else {
                     self.set_model(arg.to_string(), ctl);
                 }
@@ -693,6 +903,41 @@ impl App {
                     .push_notice(NoticeLevel::Info, format!("new session · {id}"));
             }
             "session" => self.push_session_info(),
+            "effort" => {
+                if arg.is_empty() {
+                    ctl.send(Cmd::FetchEfforts {
+                        provider: self.cfg.provider.clone(),
+                        model: self.cfg.model.clone(),
+                    });
+                } else {
+                    ctl.send(Cmd::SelectModel {
+                        session_id: self.session_id.clone(),
+                        provider: None,
+                        model: None,
+                        effort: Some(arg.to_string()),
+                    });
+                }
+            }
+            "permission" => {
+                if arg.is_empty() {
+                    self.cycle_permission(ctl);
+                } else {
+                    ctl.send(Cmd::SetPermission {
+                        session_id: self.session_id.clone(),
+                        preset: arg.to_string(),
+                    });
+                }
+            }
+            "plan" => {
+                // Host-command passthrough: dsh-commands parses it when the
+                // profile mounts plan mode; the plan/mode event echoes back.
+                let text = if arg.is_empty() {
+                    "/plan".to_string()
+                } else {
+                    format!("/plan {arg}")
+                };
+                self.send_agent_text(text, ctl);
+            }
             other => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
@@ -710,8 +955,10 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
   alt+enter    interrupt the turn and send now
   esc          interrupt (draft survives) · 2× clears the draft
   ctrl+c       clear draft · interrupt · 2× quits
+  shift+tab    cycle permission preset (workspace-write ⇄ full access)
+  ctrl+m       model picker (host catalog) → effort picker
+  /effort      reasoning effort · /permission preset · /plan host plan mode
   !cmd         run a local shell command (not the agent)
-  /model       switch model   /new fresh session   /theme dark|light
   ctrl+e       expand thoughts + tool output   ctrl+l clear
   pgup/pgdn    scroll · mouse wheel works · end follows the tail
 
@@ -787,6 +1034,12 @@ keys — grok-build homage set
 
         self.input.history.push(text.clone());
         self.input.clear();
+        self.send_agent_text(text, ctl);
+    }
+
+    /// Send raw text as an agent prompt (shared by submit and command
+    /// passthroughs like /plan).
+    fn send_agent_text(&mut self, text: String, ctl: &Controller) {
         self.show_banner = false;
         let running = matches!(self.state, RunState::Running | RunState::Starting);
         self.transcript.push_user(text.clone(), running);
