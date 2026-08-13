@@ -88,51 +88,20 @@ below 60 columns.
 
 ## Install & run
 
-Needs the harness runtime binary (`dsh-jsonrpc-agent`) — easiest source is
-the Python wheel:
+### As a dsh plugin (profile bundle) — the intended way
+
+The npm package is a Cordis bundle for the official `dsh` CLI — `dsh plugin`
+forwards to pnpm inside the profile directory (a workspace root, hence `-w`):
 
 ```sh
-uv venv .venv && uv pip install --python .venv/bin/python deepseek-harness-runtime-bin
-export DEEPSEEK_API_KEY=sk-...
-cargo run --release            # or: target/release/dsh-tui
-```
-
-Runtime discovery order: `--runtime-bin` → `$DSH_RUNTIME_BIN` → a
-`.venv`/`venv` wheel near the workspace/exe → `$DSB_HOME` →
-`~/.deepseek-harness-tui` → `PATH`. No key? Try the full UI with scripted
-turns: `dsh-tui --demo`.
-
-```sh
-dsh-tui --check-runtime        # raw protocol handshake, no TUI
-dsh-tui --dump-frame 100x40    # render one demo frame as plain text
-```
-
-### npm
-
-```sh
-npm i -g @openma/deepseek-harness-tui@beta       # installs dsh-tui + dsb
-```
-
-Or build the package from source:
-
-```sh
-bash scripts/build-npm.sh
-npm i -g ./dist/openma-deepseek-harness-tui-0.0.1-beta.tgz
-```
-
-### As a dsh plugin (profile bundle)
-
-The same npm package doubles as a Cordis bundle for the official `dsh` CLI —
-`dsh plugin` forwards to pnpm inside the profile directory (a workspace
-root, hence `-w`):
-
-```sh
-dsh plugin --profile tui add -w @openma/deepseek-harness-tui   # or the local .tgz
+dsh plugin --profile tui add -w @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
 `dsh --profile tui --dump-config` should now show the bundle mounted under
-the stable plugin id `tui-runner`.
+the stable plugin id `tui-runner`. Building from source instead:
+`bash scripts/build-npm.sh` writes `dist/openma-deepseek-harness-tui-*.tgz`,
+which the same `add -w` command accepts as a local path.
 
 ![a real plugin-mode turn — injected context, read calls, a queued follow-up](assets/screenshots/plugin-turn.jpg)
 
@@ -144,6 +113,31 @@ from the dsh profile — the status line says `connected · dsh-tui-shim`, and
 credentials truthfully read `host dsh (credential seam)`. Wire-tested by
 `scripts/test-attach.mjs`. In plugin mode, mid-turn interrupt is not
 available (the host owns the turn).
+
+### Standalone (no dsh host)
+
+The TUI is only the client; standalone it spawns the harness runtime binary
+(`dsh-jsonrpc-agent`) itself — easiest source is the Python wheel:
+
+```sh
+uv venv .venv && uv pip install --python .venv/bin/python deepseek-harness-runtime-bin
+export DEEPSEEK_API_KEY=sk-...
+cargo run --release            # or: target/release/dsh-tui
+```
+
+No Rust toolchain? `npm i -g @openma/deepseek-harness-tui@beta` installs the
+prebuilt `dsh-tui` (+ `dsb` alias) — the runtime wheel above is still
+required.
+
+Runtime discovery order: `--runtime-bin` → `$DSH_RUNTIME_BIN` → a
+`.venv`/`venv` wheel near the workspace/exe → `$DSB_HOME` →
+`~/.deepseek-harness-tui` → `PATH`. No key? Try the full UI with scripted
+turns: `dsh-tui --demo`.
+
+```sh
+dsh-tui --check-runtime        # raw protocol handshake, no TUI
+dsh-tui --dump-frame 100x40    # render one demo frame as plain text
+```
 
 ## Protocol
 
