@@ -88,8 +88,6 @@ below 60 columns.
 
 ## Install & run
 
-### As a dsh plugin (profile bundle) — the intended way
-
 The npm package is a Cordis bundle for the official `dsh` CLI — `dsh plugin`
 forwards to pnpm inside the profile directory (a workspace root, hence `-w`):
 
@@ -113,31 +111,6 @@ from the dsh profile — the status line says `connected · dsh-tui-shim`, and
 credentials truthfully read `host dsh (credential seam)`. Wire-tested by
 `scripts/test-attach.mjs`. In plugin mode, mid-turn interrupt is not
 available (the host owns the turn).
-
-### Standalone (no dsh host)
-
-The TUI is only the client; standalone it spawns the harness runtime binary
-(`dsh-jsonrpc-agent`) itself — easiest source is the Python wheel:
-
-```sh
-uv venv .venv && uv pip install --python .venv/bin/python deepseek-harness-runtime-bin
-export DEEPSEEK_API_KEY=sk-...
-cargo run --release            # or: target/release/dsh-tui
-```
-
-No Rust toolchain? `npm i -g @openma/deepseek-harness-tui@beta` installs the
-prebuilt `dsh-tui` (+ `dsb` alias) — the runtime wheel above is still
-required.
-
-Runtime discovery order: `--runtime-bin` → `$DSH_RUNTIME_BIN` → a
-`.venv`/`venv` wheel near the workspace/exe → `$DSB_HOME` →
-`~/.deepseek-harness-tui` → `PATH`. No key? Try the full UI with scripted
-turns: `dsh-tui --demo`.
-
-```sh
-dsh-tui --check-runtime        # raw protocol handshake, no TUI
-dsh-tui --dump-frame 100x40    # render one demo frame as plain text
-```
 
 ## Protocol
 
