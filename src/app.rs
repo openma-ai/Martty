@@ -10,8 +10,9 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::bus::{AppEvent, Cmd, CtlEvent};
 use crate::controller::Controller;
@@ -23,6 +24,7 @@ use crate::transcript::{NoticeLevel, Transcript};
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const ESC_ARM_WINDOW: Duration = Duration::from_millis(800);
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_millis(1500);
 const TIP_TTL: Duration = Duration::from_secs(4);
 
@@ -38,12 +40,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "new", usage: "/new [id]", desc: "start a fresh session" },
     SlashCommand { name: "clear", usage: "/clear", desc: "clear the scrollback" },
     SlashCommand { name: "model", usage: "/model [id]", desc: "switch model · live in plugin mode" },
+    SlashCommand { name: "mode", usage: "/mode [id]", desc: "agent mode · standard / code / minimal / creator" },
     SlashCommand { name: "effort", usage: "/effort [off|high|max]", desc: "reasoning effort for this session" },
-    SlashCommand { name: "permission", usage: "/permission [preset]", desc: "cycle workspace-write / danger-full-access" },
+    SlashCommand { name: "permission", usage: "/permission [preset]", desc: "permission preset picker · shift+tab cycles" },
     SlashCommand { name: "plan", usage: "/plan [off]", desc: "host plan mode (command passthrough)" },
     SlashCommand { name: "theme", usage: "/theme [dark|light]", desc: "toggle the DeepSeek palette" },
     SlashCommand { name: "session", usage: "/session", desc: "show session + runtime info" },
     SlashCommand { name: "logo", usage: "/logo", desc: "bring the whale back" },
+    SlashCommand { name: "liang", usage: "/liang [on|off]", desc: "toggle Liang at the composer — 🤫 idle · ⌨︎ working" },
     SlashCommand { name: "quit", usage: "/quit", desc: "exit dsh-tui" },
 ];
 
@@ -54,6 +58,39 @@ pub const MODEL_PRESETS: &[&str] = &[
     "deepseek-chat",
     "deepseek-reasoner",
 ];
+
+/// The four stock agent modes the Web UI ships (id, display name, one-line
+/// description). They seed the mode picker; plugin mode replaces them with
+/// the host's real `agentPresets` roster, which may add custom presets.
+pub const AGENT_MODES: &[(&str, &str, &str)] = &[
+    ("standard", "Standard mode", "full coding agent · files, shell, search, skills, subagents"),
+    ("code", "Code mode", "standard tools driven from one TypeScript program"),
+    ("minimal", "Minimal mode", "two tools · persistent bash + str_replace_editor"),
+    ("creator", "Creator mode", "standard + runtime inspection and preset authoring"),
+];
+
+/// The stock permission presets (id, one-line meaning) — the default table
+/// `@deepseek-ai/dsh-permission-presets` ships. Shift+Tab cycles them;
+/// `/permission <name>` passes any other id through for profiles with a
+/// custom preset table (the host validates and lists what it knows).
+pub const PERMISSION_PRESETS: &[(&str, &str)] = &[
+    ("workspace-write", "write inside the workspace · wider actions ask for approval"),
+    ("danger-full-access", "full file access · approval prompts off — trusted dirs only"),
+];
+
+/// Map common spellings onto the stock preset ids (`full` →
+/// `danger-full-access`, `ws` → `workspace-write`, …).
+pub fn normalize_permission(arg: &str) -> Option<&'static str> {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "workspace-write" | "workspace" | "write" | "ws" | "safe" | "sandbox" => {
+            Some("workspace-write")
+        }
+        "danger-full-access" | "full-access" | "full" | "danger" | "yolo" => {
+            Some("danger-full-access")
+        }
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
@@ -149,10 +186,57 @@ impl Input {
     }
 }
 
+/// One endpoint of a mouse selection in chat-layout coordinates: `line`
+/// indexes the full wrapped layout (`ChatView::lines`), `col` is a display
+/// cell column within the chat pane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SelPoint {
+    pub line: usize,
+    pub col: usize,
+}
+
+/// In-app mouse selection — the grok-build gesture: drag highlights,
+/// releasing the button copies (选中完即 copy). `anchor` is where the drag
+/// started; `head` follows the pointer and may precede the anchor.
+#[derive(Clone, Copy, Debug)]
+pub struct Selection {
+    pub anchor: SelPoint,
+    pub head: SelPoint,
+}
+
+impl Selection {
+    /// (start, end) in document order; `end` is inclusive (the cell under
+    /// the pointer is part of the selection).
+    pub fn ordered(&self) -> (SelPoint, SelPoint) {
+        if (self.head.line, self.head.col) < (self.anchor.line, self.anchor.col) {
+            (self.head, self.anchor)
+        } else {
+            (self.anchor, self.head)
+        }
+    }
+
+    fn is_caret(&self) -> bool {
+        self.anchor == self.head
+    }
+}
+
+/// Snapshot of the chat pane layout from the last draw — the seam that
+/// mouse hit-testing and copy extraction read (grok-build's resolved
+/// selection model, scaled way down): pane rect, index of the first
+/// visible layout line, and the plain text of every layout line.
+#[derive(Default)]
+pub struct ChatView {
+    pub area: ratatui::layout::Rect,
+    pub top: usize,
+    pub lines: Vec<String>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
     Model,
     Effort,
+    Mode,
+    Permission,
 }
 
 #[derive(Clone)]
@@ -189,9 +273,21 @@ pub struct App {
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
     pub show_banner: bool,
+    /// Pixel-art Liang at the composer's right edge (`/liang` toggles him).
+    pub pet_visible: bool,
+    /// True when the terminal renders the pet as real pixels (kitty graphics
+    /// protocol, emitted by `main`); false draws the half-block fallback.
+    pub pet_pixels: bool,
     pub run_started: Option<Instant>,
     pub spinner_idx: usize,
     pub scroll_up: usize, // lines above the bottom; 0 = follow
+    /// Mouse selection over the chat pane (drag-to-select, copy on release).
+    pub sel: Option<Selection>,
+    /// A left-button drag is in progress.
+    selecting: bool,
+    last_click: Option<(Instant, u16, u16)>,
+    /// Filled by `ui::draw_chat` every frame.
+    pub chat_view: ChatView,
     pub slash_sel: usize,
     pub picker: Option<Picker>,
     pub modes: Modes,
@@ -219,6 +315,7 @@ pub const AMBIENT_TIPS: &[&str] = &[
     "Tip · type ! to run a local shell command without the agent",
     "Tip · enter queues a follow-up while DeepSeek works; alt+enter sends it now",
     "Tip · ctrl+e expands every thought and tool result",
+    "Tip · /mode picks the agent preset — standard · code · minimal · creator",
     "Tip · /theme light mirrors the Web UI light palette",
     "Tip · ask DeepSeek about the harness docs — e.g. \"how do I add a tool?\"",
     "Tip · /new starts a fresh durable session; the old JSONL log stays on disk",
@@ -240,9 +337,15 @@ impl App {
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
+            pet_visible: true,
+            pet_pixels: false,
             run_started: None,
             spinner_idx: 0,
             scroll_up: 0,
+            sel: None,
+            selecting: false,
+            last_click: None,
+            chat_view: ChatView::default(),
             slash_sel: 0,
             picker: None,
             modes: Modes::default(),
@@ -430,33 +533,68 @@ impl App {
                             "interrupted — runtime stopped; the session log is preserved and the next prompt restarts it".into(),
                         );
                     }
-                    CtlEvent::Catalog { models } => {
+                    CtlEvent::Catalog { models, presets } => {
                         if let Some(picker) = &mut self.picker {
-                            if picker.kind == PickerKind::Model && !models.is_empty() {
-                                let current = self.cfg.model.clone();
-                                picker.items = models
-                                    .into_iter()
-                                    .map(|m| PickerItem {
-                                        id: m.id.clone(),
-                                        label: m.id,
-                                        meta: format!(
-                                            "{}{}",
-                                            m.name,
-                                            if m.vision { " · vision" } else { "" }
-                                        ),
-                                        provider: Some(m.provider),
-                                    })
-                                    .collect();
-                                picker.sel = picker
-                                    .items
-                                    .iter()
-                                    .position(|i| i.id == current)
-                                    .unwrap_or(0);
+                            match picker.kind {
+                                PickerKind::Model if !models.is_empty() => {
+                                    let current = self.cfg.model.clone();
+                                    picker.items = models
+                                        .into_iter()
+                                        .map(|m| PickerItem {
+                                            id: m.id.clone(),
+                                            label: m.id,
+                                            meta: format!(
+                                                "{}{}",
+                                                m.name,
+                                                if m.vision { " · vision" } else { "" }
+                                            ),
+                                            provider: Some(m.provider),
+                                        })
+                                        .collect();
+                                    picker.sel = picker
+                                        .items
+                                        .iter()
+                                        .position(|i| i.id == current)
+                                        .unwrap_or(0);
+                                }
+                                PickerKind::Mode if !presets.is_empty() => {
+                                    let current = self
+                                        .modes
+                                        .agent_preset
+                                        .clone()
+                                        .unwrap_or_else(|| "standard".into());
+                                    picker.items = presets
+                                        .into_iter()
+                                        .map(|p| PickerItem {
+                                            id: p.id.clone(),
+                                            label: p.name,
+                                            meta: if p.broken {
+                                                format!("⚠ broken · {}", p.description)
+                                            } else {
+                                                p.description
+                                            },
+                                            provider: None,
+                                        })
+                                        .collect();
+                                    picker.sel = picker
+                                        .items
+                                        .iter()
+                                        .position(|i| i.id == current)
+                                        .unwrap_or(0);
+                                }
+                                _ => {}
                             }
                         }
                     }
                     CtlEvent::Efforts { efforts, default } => {
                         self.open_effort_picker(efforts, default);
+                    }
+                    CtlEvent::PresetSet { preset } => {
+                        self.modes.agent_preset = Some(preset.clone());
+                        self.transcript.push_notice(
+                            NoticeLevel::Info,
+                            format!("⚙ mode → {preset} · composes on this session's first prompt"),
+                        );
                     }
                     CtlEvent::TuiOpDone(desc) => {
                         self.transcript.push_notice(NoticeLevel::Info, desc);
@@ -490,12 +628,148 @@ impl App {
         }
     }
 
+    /// grok-build mouse semantics, scaled down: wheel scrolls; left-drag
+    /// selects with a live highlight (auto-scrolling at the pane edges) and
+    /// copies on release; double-click selects & copies a word. Shift+drag
+    /// bypasses capture in most terminals → native selection still works.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.scroll_by(3),
             MouseEventKind::ScrollDown => self.scroll_by(-3),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.needs_redraw = true;
+                let Some(p) = self.chat_hit(mouse.column, mouse.row) else {
+                    // Click outside the chat pane dismisses the highlight.
+                    self.sel = None;
+                    self.selecting = false;
+                    return;
+                };
+                let double = self.last_click.take().is_some_and(|(at, x, y)| {
+                    at.elapsed() < DOUBLE_CLICK_WINDOW
+                        && x.abs_diff(mouse.column) <= 1
+                        && y == mouse.row
+                });
+                self.last_click = Some((Instant::now(), mouse.column, mouse.row));
+                if double {
+                    self.select_word_at(p);
+                } else {
+                    self.sel = Some(Selection { anchor: p, head: p });
+                    self.selecting = true;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.selecting => {
+                // Edge auto-scroll (grok: compute_autoscroll): dragging
+                // past the pane keeps scrolling while events arrive.
+                let a = self.chat_view.area;
+                if mouse.row < a.y {
+                    self.scroll_by(2);
+                } else if mouse.row >= a.y.saturating_add(a.height) {
+                    self.scroll_by(-2);
+                }
+                let head = self.chat_clamp(mouse.column, mouse.row);
+                if let Some(sel) = &mut self.sel {
+                    sel.head = head;
+                }
+                self.needs_redraw = true;
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.selecting => {
+                self.selecting = false;
+                self.finish_selection();
+            }
             _ => {}
         }
+    }
+
+    /// Hit-test a screen cell against the chat pane; `None` outside it.
+    fn chat_hit(&self, col: u16, row: u16) -> Option<SelPoint> {
+        let a = self.chat_view.area;
+        if self.chat_view.lines.is_empty()
+            || col < a.x
+            || col >= a.x.saturating_add(a.width)
+            || row < a.y
+            || row >= a.y.saturating_add(a.height)
+        {
+            return None;
+        }
+        Some(SelPoint {
+            line: (self.chat_view.top + (row - a.y) as usize)
+                .min(self.chat_view.lines.len() - 1),
+            col: (col - a.x) as usize,
+        })
+    }
+
+    /// Like `chat_hit`, but clamps to the pane so drags outside it still
+    /// extend the selection to the nearest edge.
+    fn chat_clamp(&self, col: u16, row: u16) -> SelPoint {
+        let a = self.chat_view.area;
+        let col = col.clamp(a.x, a.x.saturating_add(a.width.saturating_sub(1)));
+        let row = row.clamp(a.y, a.y.saturating_add(a.height.saturating_sub(1)));
+        self.chat_hit(col, row).unwrap_or(SelPoint { line: 0, col: 0 })
+    }
+
+    /// grok `finish_text_drag`: reconstruct the dragged text and copy it —
+    /// the highlight persists only when something actually reached the
+    /// clipboard path. A plain click (caret) just clears the highlight.
+    fn finish_selection(&mut self) {
+        self.needs_redraw = true;
+        let Some(sel) = self.sel else { return };
+        if sel.is_caret() {
+            self.sel = None;
+            return;
+        }
+        let text = self.selection_text(sel);
+        if text.trim().is_empty() {
+            self.sel = None;
+            return;
+        }
+        self.copy_text(&text);
+    }
+
+    fn copy_text(&mut self, text: &str) {
+        let chars = text.chars().count();
+        if crate::clipboard::copy(text) {
+            self.show_tip(format!("✓ copied {chars} chars — esc clears the highlight"));
+        } else {
+            self.show_tip("copy failed — hold shift and drag for the terminal's native selection");
+        }
+    }
+
+    /// Extract the selected text from the layout snapshot: cell-range slices
+    /// per line, trailing whitespace trimmed, joined with newlines.
+    pub fn selection_text(&self, sel: Selection) -> String {
+        let lines = &self.chat_view.lines;
+        if lines.is_empty() {
+            return String::new();
+        }
+        let (s, e) = sel.ordered();
+        let last = lines.len() - 1;
+        let (sl, el) = (s.line.min(last), e.line.min(last));
+        let mut out = Vec::with_capacity(el - sl + 1);
+        for (li, text) in lines.iter().enumerate().take(el + 1).skip(sl) {
+            let c0 = if li == sl { s.col } else { 0 };
+            let c1 = if li == el { e.col + 1 } else { usize::MAX };
+            out.push(slice_by_cells(text, c0, c1).trim_end().to_string());
+        }
+        out.join("\n")
+    }
+
+    /// Double-click: select the whitespace-delimited word under the pointer
+    /// and copy it right away (grok's word select & copy).
+    fn select_word_at(&mut self, p: SelPoint) {
+        let Some(line) = self.chat_view.lines.get(p.line) else {
+            return;
+        };
+        let Some((col, width, word)) = word_span(line, p.col) else {
+            self.sel = None;
+            return;
+        };
+        self.sel = Some(Selection {
+            anchor: SelPoint { line: p.line, col },
+            head: SelPoint { line: p.line, col: col + width - 1 },
+        });
+        self.selecting = false;
+        let word = word.clone();
+        self.copy_text(&word);
     }
 
     pub fn scroll_by(&mut self, delta: i64) {
@@ -531,6 +805,7 @@ impl App {
             KeyCode::Char('q') if ctrl => self.quit = true,
             KeyCode::Char('l') if ctrl => {
                 self.transcript.clear();
+                self.sel = None;
                 self.transcript
                     .push_notice(NoticeLevel::Info, "scrollback cleared".into());
             }
@@ -619,6 +894,8 @@ impl App {
                 self.picker = None;
                 match kind {
                     PickerKind::Model => self.select_model(item, ctl),
+                    PickerKind::Mode => self.set_mode(item.id, ctl),
+                    PickerKind::Permission => self.set_permission(item.id, ctl),
                     PickerKind::Effort => {
                         let effort = item.id;
                         ctl.send(Cmd::SelectModel {
@@ -704,6 +981,52 @@ impl App {
         });
     }
 
+    fn open_mode_picker(&mut self, ctl: &Controller) {
+        // Ask the host for its real preset roster (plugin mode); seed the
+        // picker with the four stock Web UI modes meanwhile.
+        ctl.send(Cmd::FetchCatalog);
+        let items: Vec<PickerItem> = AGENT_MODES
+            .iter()
+            .map(|(id, name, desc)| PickerItem {
+                id: id.to_string(),
+                label: name.to_string(),
+                meta: desc.to_string(),
+                provider: None,
+            })
+            .collect();
+        let current = self.current_mode();
+        let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
+        self.picker = Some(Picker {
+            kind: PickerKind::Mode,
+            title: " agent mode · enter select · esc close ".into(),
+            sel,
+            items,
+        });
+    }
+
+    /// The effective agent mode: the folded `agent-preset/selected` fact, or
+    /// the stock default composition (standard).
+    pub fn current_mode(&self) -> String {
+        self.modes
+            .agent_preset
+            .clone()
+            .unwrap_or_else(|| "standard".into())
+    }
+
+    /// Pick the agent preset composed on this session's first prompt. The
+    /// host locks it once the session agent exists (`/new` for a fresh one).
+    fn set_mode(&mut self, preset: String, ctl: &Controller) {
+        if self.modes.agent_preset.as_deref() == Some(preset.as_str()) {
+            self.show_tip(format!("mode already {preset}"));
+            return;
+        }
+        ctl.send(Cmd::SetPreset {
+            session_id: self.session_id.clone(),
+            preset: preset.clone(),
+        });
+        self.show_tip(format!("mode → {preset} …"));
+    }
+
     fn select_model(&mut self, item: PickerItem, ctl: &Controller) {
         let model = item.id;
         let provider = item.provider;
@@ -741,20 +1064,81 @@ impl App {
 
     /// grok: Shift+Tab cycles the permission preset.
     fn cycle_permission(&mut self, ctl: &Controller) {
-        let presets = ["workspace-write", "danger-full-access"];
-        let current = self.modes.permission.as_deref().unwrap_or(presets[0]);
-        let idx = presets.iter().position(|p| *p == current).unwrap_or(0);
-        let next = presets[(idx + 1) % presets.len()].to_string();
+        let current = self.current_permission().to_string();
+        let idx = PERMISSION_PRESETS
+            .iter()
+            .position(|(p, _)| *p == current)
+            .unwrap_or(0);
+        let next = PERMISSION_PRESETS[(idx + 1) % PERMISSION_PRESETS.len()].0.to_string();
+        self.set_permission(next, ctl);
+    }
+
+    /// The effective permission preset: the folded `permission/preset` fact,
+    /// or the harness default (workspace-write) before the session reports.
+    pub fn current_permission(&self) -> &str {
+        self.modes
+            .permission
+            .as_deref()
+            .unwrap_or(PERMISSION_PRESETS[0].0)
+    }
+
+    /// Ask the host to switch this session's permission preset; the durable
+    /// `permission/preset` event echoes back and folds the ⛨ chip. Before
+    /// the first prompt the host stages the switch and applies it when the
+    /// session is created.
+    fn set_permission(&mut self, preset: String, ctl: &Controller) {
+        if self.modes.permission.as_deref() == Some(preset.as_str()) {
+            self.show_tip(format!("permission already {preset}"));
+            return;
+        }
         ctl.send(Cmd::SetPermission {
             session_id: self.session_id.clone(),
-            preset: next.clone(),
+            preset: preset.clone(),
         });
-        self.show_tip(format!("permission → {next} …"));
+        self.show_tip(format!("permission → {preset} …"));
+    }
+
+    /// `/permission` — the two stock presets with their meaning, the current
+    /// one preselected (picker twin of the blind shift+tab cycle).
+    fn open_permission_picker(&mut self) {
+        let reported = self.modes.permission.clone();
+        let current = self.current_permission().to_string();
+        let items: Vec<PickerItem> = PERMISSION_PRESETS
+            .iter()
+            .map(|(id, desc)| {
+                let mark = if reported.as_deref() == Some(*id) {
+                    " · current"
+                } else if reported.is_none() && *id == current {
+                    " · default"
+                } else {
+                    ""
+                };
+                PickerItem {
+                    id: id.to_string(),
+                    label: id.to_string(),
+                    meta: format!("{desc}{mark}"),
+                    provider: None,
+                }
+            })
+            .collect();
+        let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
+        self.picker = Some(Picker {
+            kind: PickerKind::Permission,
+            title: " permission preset · enter apply · esc close ".into(),
+            sel,
+            items,
+        });
     }
 
     fn handle_esc(&mut self, ctl: &Controller) {
         if self.picker.is_some() {
             self.picker = None;
+            return;
+        }
+        // A lingering copy highlight is dismissed first (idle only — while
+        // running, esc keeps its interrupt meaning and clears it in passing).
+        if self.sel.take().is_some() && matches!(self.state, RunState::Idle) {
+            self.needs_redraw = true;
             return;
         }
         if self.input.buf.starts_with('/') && !self.slash_matches().is_empty() {
@@ -865,6 +1249,7 @@ impl App {
             "keys" => self.push_keys(),
             "clear" => {
                 self.transcript.clear();
+                self.sel = None;
                 self.transcript
                     .push_notice(NoticeLevel::Info, "scrollback cleared".into());
             }
@@ -875,6 +1260,19 @@ impl App {
                     NoticeLevel::Info,
                     "🐳 the whale is back — it dives on your next prompt".into(),
                 );
+            }
+            "liang" => {
+                self.pet_visible = match arg {
+                    "on" | "show" => true,
+                    "off" | "hide" => false,
+                    _ => !self.pet_visible,
+                };
+                let msg = if self.pet_visible {
+                    "🤫 Liang is back at the composer — quiet, he's thinking · /liang hides him"
+                } else {
+                    "Liang stepped out for GPUs — /liang brings him back"
+                };
+                self.transcript.push_notice(NoticeLevel::Info, msg.into());
             }
             "theme" => {
                 let next = match arg {
@@ -891,6 +1289,13 @@ impl App {
                     self.set_model(arg.to_string(), ctl);
                 }
             }
+            "mode" => {
+                if arg.is_empty() {
+                    self.open_mode_picker(ctl);
+                } else {
+                    self.set_mode(arg.to_string(), ctl);
+                }
+            }
             "new" => {
                 let id = if arg.is_empty() {
                     format!("dsh-{}", timestamp())
@@ -899,8 +1304,11 @@ impl App {
                 };
                 self.session_id = id.clone();
                 self.transcript.set_root_session(id.clone());
+                // Folded per-session facts (mode, permission, plan …) belong
+                // to the old session; the new one reports its own on compose.
+                self.modes = Modes::default();
                 self.transcript
-                    .push_notice(NoticeLevel::Info, format!("new session · {id}"));
+                    .push_notice(NoticeLevel::Info, format!("new session · {id} — /mode picks its agent preset"));
             }
             "session" => self.push_session_info(),
             "effort" => {
@@ -920,12 +1328,13 @@ impl App {
             }
             "permission" => {
                 if arg.is_empty() {
-                    self.cycle_permission(ctl);
+                    self.open_permission_picker();
+                } else if let Some(preset) = normalize_permission(arg) {
+                    self.set_permission(preset.to_string(), ctl);
                 } else {
-                    ctl.send(Cmd::SetPermission {
-                        session_id: self.session_id.clone(),
-                        preset: arg.to_string(),
-                    });
+                    // Not a stock spelling — pass through for custom preset
+                    // tables; the host lists what it knows on a miss.
+                    self.set_permission(arg.to_string(), ctl);
                 }
             }
             "plan" => {
@@ -955,12 +1364,17 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
   alt+enter    interrupt the turn and send now
   esc          interrupt (draft survives) · 2× clears the draft
   ctrl+c       clear draft · interrupt · 2× quits
-  shift+tab    cycle permission preset (workspace-write ⇄ full access)
+  shift+tab    cycle permission (workspace-write ⇄ full access)
+               · /permission opens the preset picker
   ctrl+m       model picker (host catalog) → effort picker
+  /mode        agent mode · standard / code / minimal / creator
+               (picked before a session's first prompt · /new to change)
   /effort      reasoning effort · /permission preset · /plan host plan mode
   !cmd         run a local shell command (not the agent)
   ctrl+e       expand thoughts + tool output   ctrl+l clear
   pgup/pgdn    scroll · mouse wheel works · end follows the tail
+  mouse drag   select text — copied on release · 2×click copies a word
+               (hold shift to use the terminal's native selection)
 
 Info shown per turn: streamed reasoning, streamed answer, every tool
 call with its result, injected context, subagent lifecycles, token
@@ -975,7 +1389,8 @@ keys — grok-build homage set
   ↑ history (empty prompt) · tab completes /commands
   ctrl+m model picker · ctrl+t theme · ctrl+e expand · ctrl+l clear
   ctrl+u/ctrl+d half-page · pgup/pgdn page · home/end top/tail
-  ctrl+a/ctrl+k/ctrl+w readline editing · alt+backspace word";
+  ctrl+a/ctrl+k/ctrl+w readline editing · alt+backspace word
+  drag select-copies · 2×click word-copies · shift+drag native select";
         self.transcript.push_notice(NoticeLevel::Info, text.into());
     }
 
@@ -991,10 +1406,12 @@ keys — grok-build homage set
             "DEEPSEEK_API_KEY not set".to_string()
         };
         let text = format!(
-            "session · {}\nprovider · {} / {}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {})",
+            "session · {}\nprovider · {} / {}\nmode · {}{}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {})",
             self.session_id,
             self.cfg.provider,
             self.cfg.model,
+            self.current_mode(),
+            if self.modes.agent_preset.is_none() { " (default)" } else { "" },
             self.cfg.workspace,
             self.cfg.session_root,
             self.cfg.bin,
@@ -1177,4 +1594,297 @@ pub fn host_catalog_models() -> Option<Vec<String>> {
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// Slice `s` by display-cell range `[c0, c1)`: a char is included when its
+/// cell span overlaps the range (so a double-width char straddling the
+/// boundary is kept — matching what the highlight visually covers).
+pub(crate) fn slice_by_cells(s: &str, c0: usize, c1: usize) -> String {
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0).max(1);
+        if w + cw > c0 && w < c1 {
+            out.push(ch);
+        }
+        w += cw;
+        if w >= c1 {
+            break;
+        }
+    }
+    out
+}
+
+/// The whitespace-delimited word covering display column `col` of `line`:
+/// `(start_col, cell_width, word)`. `None` on whitespace or past the end.
+pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize, String)> {
+    let cw = |ch: char| ch.width().unwrap_or(0).max(1);
+    let chars: Vec<char> = line.chars().collect();
+    let mut w = 0usize;
+    let mut hit = None;
+    for (i, ch) in chars.iter().enumerate() {
+        if col < w + cw(*ch) {
+            hit = Some(i);
+            break;
+        }
+        w += cw(*ch);
+    }
+    let i = hit?;
+    if chars[i].is_whitespace() {
+        return None;
+    }
+    let (mut a, mut b) = (i, i);
+    while a > 0 && !chars[a - 1].is_whitespace() {
+        a -= 1;
+    }
+    while b + 1 < chars.len() && !chars[b + 1].is_whitespace() {
+        b += 1;
+    }
+    let start_col: usize = chars[..a].iter().copied().map(cw).sum();
+    let width: usize = chars[a..=b].iter().copied().map(cw).sum();
+    Some((start_col, width, chars[a..=b].iter().collect()))
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn view(lines: &[&str]) -> ChatView {
+        ChatView {
+            area: ratatui::layout::Rect::new(1, 0, 60, 10),
+            top: 0,
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn sel(a: (usize, usize), h: (usize, usize)) -> Selection {
+        Selection {
+            anchor: SelPoint { line: a.0, col: a.1 },
+            head: SelPoint { line: h.0, col: h.1 },
+        }
+    }
+
+    fn test_app() -> App {
+        let cfg = RuntimeConfig {
+            bin: "dsh-runtime".into(),
+            cordis: "cordis".into(),
+            workspace: "/tmp".into(),
+            session_root: "/tmp".into(),
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        App::new(
+            crate::theme::Theme::dark(),
+            cfg,
+            "dsh-test".into(),
+            true,
+            false,
+            tx,
+        )
+    }
+
+    #[test]
+    fn slice_by_cells_handles_wide_chars() {
+        assert_eq!(slice_by_cells("hello world", 6, 11), "world");
+        // 选=2 cells: [0,2) 中=[2,4) 即=[4,6)
+        assert_eq!(slice_by_cells("选中即copy", 2, 6), "中即");
+        // a boundary-straddling wide char is kept
+        assert_eq!(slice_by_cells("选中", 1, 3), "选中");
+        assert_eq!(slice_by_cells("abc", 0, usize::MAX), "abc");
+    }
+
+    #[test]
+    fn selection_text_joins_lines_and_orders_reverse_drags() {
+        let mut app = test_app();
+        app.chat_view = view(&["first line  ", "second", "third"]);
+        // forward drag: line0 col6 → line2 col2 (inclusive)
+        let fwd = app.selection_text(sel((0, 6), (2, 2)));
+        assert_eq!(fwd, "line\nsecond\nthi");
+        // dragging upward yields the same text
+        let rev = app.selection_text(sel((2, 2), (0, 6)));
+        assert_eq!(fwd, rev);
+    }
+
+    #[test]
+    fn chat_hit_maps_screen_cells_to_layout_lines() {
+        let mut app = test_app();
+        app.chat_view = view(&["a", "b", "c", "d"]);
+        app.chat_view.top = 2;
+        let p = app.chat_hit(3, 1).expect("inside pane");
+        assert_eq!((p.line, p.col), (3, 2)); // top=2 + row 1, col 3-x(1)
+        assert!(app.chat_hit(0, 0).is_none(), "left of pane");
+        assert!(app.chat_hit(3, 10).is_none(), "below pane");
+    }
+
+    #[test]
+    fn word_span_finds_word_under_column() {
+        let (col, width, word) = word_span("run cargo test now", 6).expect("word");
+        assert_eq!((col, width, word.as_str()), (4, 5, "cargo"));
+        assert!(word_span("run cargo", 3).is_none(), "whitespace");
+        assert!(word_span("run", 99).is_none(), "past end");
+        let (col, width, word) = word_span("选中即复制 ok", 4).expect("cjk word");
+        assert_eq!((col, width, word.as_str()), (0, 10, "选中即复制"));
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    use crate::bus::CatalogPreset;
+    use std::sync::mpsc::Receiver;
+
+    fn test_app() -> (App, Controller, Receiver<AppEvent>) {
+        let cfg = RuntimeConfig {
+            bin: "demo".into(),
+            cordis: "demo".into(),
+            workspace: "/tmp".into(),
+            session_root: "/tmp".into(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
+        let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+        (app, ctl, rx)
+    }
+
+    #[test]
+    fn slash_mode_opens_picker_with_the_four_stock_modes() {
+        let (mut app, ctl, _rx) = test_app();
+        app.run_slash("mode", "", &ctl);
+        let picker = app.picker.as_ref().expect("mode picker opens");
+        assert!(matches!(picker.kind, PickerKind::Mode));
+        let ids: Vec<&str> = picker.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["standard", "code", "minimal", "creator"]);
+        assert_eq!(picker.sel, 0, "defaults to standard");
+        assert_eq!(picker.items[0].label, "Standard mode");
+    }
+
+    #[test]
+    fn host_catalog_replaces_mode_picker_items() {
+        let (mut app, ctl, _rx) = test_app();
+        app.modes.agent_preset = Some("code".into());
+        app.run_slash("mode", "", &ctl);
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Catalog {
+                models: Vec::new(),
+                presets: vec![
+                    CatalogPreset { id: "standard".into(), name: "Standard mode".into(), description: "full".into(), broken: false },
+                    CatalogPreset { id: "code".into(), name: "Code mode".into(), description: "ts".into(), broken: false },
+                    CatalogPreset { id: "custom".into(), name: "Custom".into(), description: "mine".into(), broken: true },
+                ],
+            }),
+            &ctl,
+        );
+        let picker = app.picker.as_ref().expect("picker still open");
+        assert_eq!(picker.items.len(), 3);
+        assert_eq!(picker.sel, 1, "selection lands on the current mode");
+        assert!(picker.items[2].meta.contains("broken"));
+    }
+
+    #[test]
+    fn demo_mode_selection_round_trips_the_durable_event() {
+        let (mut app, ctl, rx) = test_app();
+        app.run_slash("mode", "minimal", &ctl);
+        // The demo controller synthesizes the agent-preset/selected fact.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.modes.agent_preset.is_none() {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("demo preset event before timeout");
+            let ev = rx.recv_timeout(remaining).expect("bus event");
+            app.handle(ev, &ctl);
+        }
+        assert_eq!(app.modes.agent_preset.as_deref(), Some("minimal"));
+        assert_eq!(app.current_mode(), "minimal");
+    }
+
+    #[test]
+    fn preset_ack_folds_the_chip_and_new_session_resets_it() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Ctl(CtlEvent::PresetSet { preset: "creator".into() }),
+            &ctl,
+        );
+        assert_eq!(app.modes.agent_preset.as_deref(), Some("creator"));
+        app.run_slash("new", "fresh", &ctl);
+        assert_eq!(app.session_id, "fresh");
+        assert_eq!(app.modes.agent_preset, None, "/new starts modeless");
+        assert_eq!(app.current_mode(), "standard");
+    }
+
+    #[test]
+    fn slash_permission_opens_picker_marking_current() {
+        let (mut app, ctl, _rx) = test_app();
+        app.run_slash("permission", "", &ctl);
+        let picker = app.picker.as_ref().expect("permission picker opens");
+        assert!(matches!(picker.kind, PickerKind::Permission));
+        let ids: Vec<&str> = picker.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["workspace-write", "danger-full-access"]);
+        assert_eq!(picker.sel, 0, "harness default preselected");
+        assert!(picker.items[0].meta.contains("default"), "unreported → marked default");
+
+        app.modes.permission = Some("danger-full-access".into());
+        app.run_slash("permission", "", &ctl);
+        let picker = app.picker.as_ref().expect("picker reopens");
+        assert_eq!(picker.sel, 1, "selection lands on the reported preset");
+        assert!(picker.items[1].meta.contains("current"));
+    }
+
+    #[test]
+    fn permission_aliases_normalize() {
+        assert_eq!(normalize_permission("full"), Some("danger-full-access"));
+        assert_eq!(normalize_permission("YOLO"), Some("danger-full-access"));
+        assert_eq!(normalize_permission(" ws "), Some("workspace-write"));
+        assert_eq!(normalize_permission("read-only"), None, "custom ids pass through");
+    }
+
+    #[test]
+    fn slash_permission_alias_round_trips_the_durable_event() {
+        let (mut app, ctl, rx) = test_app();
+        app.run_slash("permission", "full", &ctl);
+        // The demo controller synthesizes the permission/sandbox/approval triplet.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.modes.permission.is_none() || app.modes.approval.is_none() {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("demo permission event before timeout");
+            let ev = rx.recv_timeout(remaining).expect("bus event");
+            app.handle(ev, &ctl);
+        }
+        assert_eq!(app.modes.permission.as_deref(), Some("danger-full-access"));
+        assert_eq!(app.modes.approval.as_deref(), Some("never"));
+    }
+
+    #[test]
+    fn shift_tab_cycles_between_the_stock_presets() {
+        let (mut app, ctl, rx) = test_app();
+        assert_eq!(app.current_permission(), "workspace-write", "assumed default");
+        app.cycle_permission(&ctl);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.modes.permission.as_deref() != Some("danger-full-access") {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("cycle lands on full access");
+            let ev = rx.recv_timeout(remaining).expect("bus event");
+            app.handle(ev, &ctl);
+        }
+        app.cycle_permission(&ctl);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.modes.permission.as_deref() != Some("workspace-write") {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("cycle returns to workspace-write");
+            let ev = rx.recv_timeout(remaining).expect("bus event");
+            app.handle(ev, &ctl);
+        }
+        assert_eq!(app.current_permission(), "workspace-write");
+    }
 }

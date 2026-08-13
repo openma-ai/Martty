@@ -37,7 +37,10 @@ pub enum CtlEvent {
     /// Runtime was killed on purpose.
     Interrupted,
     /// Host model catalog arrived (plugin mode `tui/catalog`).
-    Catalog { models: Vec<CatalogModel> },
+    Catalog { models: Vec<CatalogModel>, presets: Vec<CatalogPreset> },
+    /// The host accepted an agent preset for this session (plugin mode
+    /// `tui/preset`); it composes on the session's first prompt.
+    PresetSet { preset: String },
     /// Selectable reasoning efforts for the current model.
     Efforts { efforts: Vec<String>, default: Option<String> },
     /// A tui/* control call succeeded.
@@ -52,6 +55,16 @@ pub struct CatalogModel {
     pub id: String,
     pub name: String,
     pub vision: bool,
+}
+
+/// One agent preset (mode) from the host roster: standard / code / minimal /
+/// creator in the stock Web UI, plus any custom presets the profile ships.
+#[derive(Debug, Clone)]
+pub struct CatalogPreset {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub broken: bool,
 }
 
 /// UI → controller commands.
@@ -69,5 +82,7 @@ pub enum Cmd {
     FetchCatalog,
     FetchEfforts { provider: String, model: String },
     SetPermission { session_id: String, preset: String },
+    /// Pick the agent preset (mode) composed on the session's first prompt.
+    SetPreset { session_id: String, preset: String },
     Shutdown,
 }

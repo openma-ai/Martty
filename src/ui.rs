@@ -5,11 +5,46 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, RunState, AMBIENT_TIPS};
 use crate::logo;
-use crate::theme::Theme;
+use crate::logo_data::WHALE_XS;
+use crate::pet::{FRAME_H, FRAME_W};
+use crate::theme::{lerp, Theme};
+
+/// Columns the composer text keeps clear of the pet at its right edge
+/// (widest pet form is 8 cols, plus a one-column gap).
+const PET_PAD: u16 = 9;
+
+/// Composer card height for a terminal `height` rows tall.
+fn composer_height(height: u16) -> u16 {
+    if height >= 15 {
+        5
+    } else if height >= 10 {
+        4
+    } else {
+        3
+    }
+}
+
+/// The pet's cell rectangle — the kitty-graphics placement target —
+/// perched on the composer's bottom-right, matching the sprite's 192:208
+/// aspect in 1:2 cells. None hides it (`/liang` off, or the terminal is too
+/// cramped to give up columns).
+pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
+    if !app.pet_visible || area.width < 60 || area.height < 10 {
+        return None;
+    }
+    let rows = (composer_height(area.height) - 1).min(4);
+    let cols = ((rows as u32 * 2 * FRAME_W + FRAME_H / 2) / FRAME_H) as u16;
+    Some(Rect::new(
+        area.right() - cols,
+        area.bottom() - rows,
+        cols,
+        rows,
+    ))
+}
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -26,7 +61,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let composer_h = 3u16; // rounded frame: status title / input / hints edge
+    // Composer card: status row / input well / hints row. The well gets
+    // extra breathing room (and wraps long prompts) on taller terminals.
+    let composer_h = composer_height(area.height);
     let tips_h = if area.height >= 16 { 1 } else { 0 };
     let chat_h = area.height.saturating_sub(composer_h + tips_h);
 
@@ -38,54 +75,117 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if tips_h > 0 {
         draw_tips(f, app, tips);
     }
-    draw_composer(f, app, composer);
+    // The pet floats on the composer surface's right end; composer text
+    // keeps clear of it.
+    let pet = pet_rect(area, app);
+    draw_composer(f, app, composer, if pet.is_some() { PET_PAD } else { 0 });
+    if let Some(cells) = pet {
+        if !app.pet_pixels {
+            // No pixel protocol: the half-block whale stands in.
+            draw_pet_chars(f, theme, cells);
+        }
+        // Otherwise main() places the favicon PNG over `cells` after draw.
+    }
     draw_slash_menu(f, app, composer, chat);
     draw_model_picker(f, app, area);
 }
 
-/// The composer card: a rounded frame that owns status (top edge), the input
-/// line (inside), and key hints (bottom edge) — mirroring the Web UI's
-/// distinct composer surface. The frame glows brand-blue while working.
-fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
+/// Fallback pet for terminals without a pixel protocol: the XS half-block
+/// whale, brand gradient, anchored bottom-right like the real image.
+fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
+    let w = WHALE_XS.iter().map(|r| r.chars().count()).max().unwrap_or(0) as u16;
+    let h = WHALE_XS.len() as u16;
+    let rect = Rect::new(
+        cells.right().saturating_sub(w),
+        cells.bottom().saturating_sub(h),
+        w,
+        h,
+    );
+    let (top, bottom) = theme.whale_gradient();
+    let last = WHALE_XS.len().max(2) - 1;
+    let lines: Vec<Line> = WHALE_XS
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let color = lerp(top, bottom, i as f32 / last as f32);
+            Line::from(Span::styled(*row, Style::default().fg(color)))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), rect);
+}
+
+/// The composer card: a borderless tinted surface (panel bg) that owns the
+/// status row, the input well, and the key-hint row — mirroring the Web UI's
+/// distinct composer surface. A brand-blue edge bar glows while working.
+/// `pet_pad` columns at the right stay text-free for the whale pet.
+fn draw_composer(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
     let running = !matches!(app.state, RunState::Idle);
-    let border_color = if running { theme.brand } else { theme.border };
 
-    // Manual title collision avoidance: ratatui overlaps titles when narrow.
+    // Surface fill: contrast against the chat bg does the framing.
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.panel)),
+        area,
+    );
+    // Left edge bar: the working "glow" (the old border used to do this).
+    if running {
+        let bar: Vec<Line> = (0..area.height).map(|_| Line::from("▎")).collect();
+        f.render_widget(
+            Paragraph::new(bar).style(Style::default().fg(theme.brand)),
+            Rect::new(area.x, area.y, 1, area.height),
+        );
+    }
+
+    let inner = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(2 + pet_pad),
+        area.height,
+    );
+    if inner.width == 0 || inner.height < 3 {
+        return;
+    }
+
+    // Status row: left state + right model/tokens, collision-aware.
     let left = status_title(app);
     let mut right_spans = status_right(app);
-    let lw = left.width() as u16;
-    let rw: u16 = right_spans.iter().map(|s| s.content.width() as u16).sum();
-    if lw + rw + 4 > area.width {
+    let w = inner.width as usize;
+    let lw = left.width();
+    let rw: usize = right_spans.iter().map(|s| s.content.width()).sum();
+    if lw + rw + 2 > w {
         // fall back to just the model chip, then drop entirely
         let shown_model = app
             .transcript
             .last_model
             .clone()
             .unwrap_or_else(|| app.cfg.model.clone());
-        let compact = format!(" {shown_model} ");
-        if lw + compact.width() as u16 + 4 <= area.width {
-            right_spans = vec![Span::styled(compact, Style::default().fg(theme.caption))];
+        let compact = format!("{shown_model} ");
+        if lw + compact.width() + 2 <= w {
+            right_spans = vec![Span::styled(compact, Style::default().fg(theme.brand_soft))];
         } else {
             right_spans = Vec::new();
         }
     }
+    let rw: usize = right_spans.iter().map(|s| s.content.width()).sum();
+    let mut spans = left.spans;
+    spans.push(Span::raw(" ".repeat(w.saturating_sub(lw + rw))));
+    spans.extend(right_spans);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
 
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title(left)
-        .title_bottom(hints_title(app));
-    if !right_spans.is_empty() {
-        block = block.title(Line::from(right_spans).right_aligned());
-    }
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    draw_input(f, app, inner);
+    // Input well between the status and hint rows.
+    let well = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 2);
+    draw_input(f, app, well);
+
+    f.render_widget(
+        Paragraph::new(hints_title(app)),
+        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    );
 }
 
-/// Left top-edge title: run state.
+/// Status row, left side: run state.
 fn status_title(app: &App) -> Line<'static> {
     let theme = app.theme;
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
@@ -93,11 +193,17 @@ fn status_title(app: &App) -> Line<'static> {
         RunState::Idle => {
             spans.push(Span::styled("● ", Style::default().fg(theme.ok_soft())));
             spans.push(Span::styled("idle", Style::default().fg(theme.fg_tertiary)));
-            if let Some(kind) = &app.transcript.last_finish {
-                spans.push(Span::styled(
-                    format!(" · last turn {kind}"),
-                    Style::default().fg(theme.caption),
-                ));
+            // A clean finish is implied by "idle" — only surface the
+            // exceptional endings, in their own accent color.
+            match app.transcript.last_finish.as_deref() {
+                None | Some("completed") | Some("stop") => {}
+                Some(kind) => {
+                    let color = if kind == "error" { theme.err } else { theme.warn_soft() };
+                    spans.push(Span::styled(
+                        format!(" · {kind}"),
+                        Style::default().fg(color),
+                    ));
+                }
             }
         }
         RunState::Starting | RunState::Running => {
@@ -173,44 +279,72 @@ fn status_title(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Right top-edge title: model · session · tokens.
+/// Status row, right side: model chip (brand accent) · token flow. The session
+/// id lives in the banner and `/status` — it was pure noise here.
 fn status_right(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
     let u = app.transcript.usage;
-    let mut right = String::from(" ");
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
     if app.scroll_up > 0 {
-        right.push_str(&format!("▲{} · ", app.scroll_up));
+        spans.push(Span::styled(
+            format!("▲{} · ", app.scroll_up),
+            Style::default().fg(theme.caption),
+        ));
     }
     let shown_model = app
         .transcript
         .last_model
         .clone()
         .unwrap_or_else(|| app.cfg.model.clone());
-    right.push_str(&format!("{} · {}", shown_model, app.session_id));
+    spans.push(Span::styled(
+        shown_model,
+        Style::default().fg(theme.brand_soft),
+    ));
     if u.input + u.output > 0 {
-        right.push_str(&format!(" · ↑{} ↓{}", fmt_tokens(u.input), fmt_tokens(u.output)));
+        let mut t = format!(" · ↑{} ↓{}", fmt_tokens(u.input), fmt_tokens(u.output));
         if u.cached > 0 {
-            right.push_str(&format!(" (cache {})", fmt_tokens(u.cached)));
+            t.push_str(&format!(" (cache {})", fmt_tokens(u.cached)));
         }
+        spans.push(Span::styled(t, Style::default().fg(theme.caption)));
     }
     if app.demo {
-        right.push_str(" · DEMO");
+        spans.push(Span::styled(
+            " · demo".to_string(),
+            Style::default().fg(theme.warn_soft()),
+        ));
     }
-    right.push(' ');
-    vec![Span::styled(right, Style::default().fg(theme.caption))]
+    spans.push(Span::raw(" "));
+    spans
 }
 
-/// Bottom-edge title: key hints.
+/// Hint row: a handful of key hints — bold key, dim label, faint
+/// separators. Everything else lives in `/help` and `/keys`.
 fn hints_title(app: &App) -> Line<'static> {
     let theme = app.theme;
-    let hints = match app.state {
-        RunState::Idle => " enter send · /help · ↑ history · ctrl+e expand · ctrl+t theme · ctrl+c ×2 quit ",
-        _ => " enter queue · alt+enter send now · esc interrupt · pgup/pgdn scroll ",
+    let key = Style::default()
+        .fg(theme.fg_tertiary)
+        .add_modifier(Modifier::BOLD);
+    let lbl = Style::default().fg(theme.caption);
+    let pairs: &[(&str, &str)] = match app.state {
+        RunState::Idle => &[
+            ("⏎", "send"),
+            ("/", "commands"),
+            ("!", "shell"),
+            ("↑", "history"),
+            ("^t", "theme"),
+        ],
+        _ => &[("⏎", "queue"), ("alt+⏎", "send now"), ("esc", "interrupt")],
     };
-    Line::from(Span::styled(
-        hints.to_string(),
-        Style::default().fg(theme.caption),
-    ))
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for (i, (k, l)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ".to_string(), Style::default().fg(theme.border)));
+        }
+        spans.push(Span::styled(k.to_string(), key));
+        spans.push(Span::styled(format!(" {l}"), lbl));
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
@@ -237,7 +371,52 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let end = total - app.scroll_up.min(total);
     let start = end.saturating_sub(h);
     let visible: Vec<Line> = lines[start..end].to_vec();
+
+    // Layout snapshot for mouse selection: hit-testing and copy extraction
+    // read exactly what this frame showed (grok-build's resolved selection
+    // model, scaled down to plain text per wrapped line).
+    app.chat_view.area = inner;
+    app.chat_view.top = start;
+    app.chat_view.lines = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+
     f.render_widget(Paragraph::new(visible), inner);
+    draw_selection_overlay(f, app, inner, start);
+}
+
+/// Paint the in-app mouse selection as reversed cells — the live highlight
+/// for grok-style drag-select-copy. Reversal is theme-agnostic and reads
+/// like a native terminal selection.
+fn draw_selection_overlay(f: &mut Frame, app: &App, inner: Rect, start: usize) {
+    let Some(sel) = app.sel else { return };
+    let (s, e) = sel.ordered();
+    let buf = f.buffer_mut();
+    for r in 0..inner.height {
+        let li = start + r as usize;
+        if li < s.line || li > e.line {
+            continue;
+        }
+        let Some(text) = app.chat_view.lines.get(li) else {
+            continue;
+        };
+        let lw = text.trim_end().width();
+        let c0 = if li == s.line { s.col } else { 0 };
+        let mut c1 = (if li == e.line { e.col + 1 } else { lw }).min(lw);
+        if c1 <= c0 {
+            if c0 == 0 {
+                c1 = 1; // 1-cell sliver keeps empty rows visually continuous
+            } else {
+                continue;
+            }
+        }
+        for c in c0..c1.min(inner.width as usize) {
+            if let Some(cell) = buf.cell_mut((inner.x + c as u16, inner.y + r)) {
+                cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+            }
+        }
+    }
 }
 
 fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
@@ -258,38 +437,95 @@ fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
 }
 
 
+/// The input well. Long prompts wrap across the (now taller) well, and the
+/// cursor follows the wrap; `/` and `!` prefixes recolor the whole line.
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
+    if area.width < 4 || area.height == 0 {
+        return;
+    }
     let prompt = "❯ ";
-    let mut spans = vec![Span::styled(
+    let pw = prompt.width();
+    let prompt_span = Span::styled(
         prompt.to_string(),
         Style::default().fg(theme.brand).add_modifier(Modifier::BOLD),
-    )];
+    );
+
     if app.input.is_empty() {
         let placeholder = match app.state {
-            RunState::Idle => "describe what you want to build — / commands · ! shell",
-            _ => "queue a follow-up… (alt+enter interrupts and sends now)",
+            RunState::Idle => "describe what you want to build…",
+            _ => "queue a follow-up — alt+⏎ sends it now",
         };
-        spans.push(Span::styled(
-            placeholder.to_string(),
-            Style::default().fg(theme.caption),
-        ));
-    } else {
-        let style = if app.input.buf.starts_with('!') {
-            Style::default().fg(theme.warn_soft())
-        } else if app.input.buf.starts_with('/') {
-            Style::default().fg(theme.brand_soft)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-        spans.push(Span::styled(app.input.buf.clone(), style));
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                prompt_span,
+                Span::styled(
+                    placeholder.to_string(),
+                    Style::default()
+                        .fg(theme.caption)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ])),
+            area,
+        );
+        f.set_cursor_position((area.x + pw as u16, area.y));
+        return;
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
 
-    // cursor: display-width based
-    let before: String = app.input.buf.chars().take(app.input.cursor).collect();
-    let x = area.x + prompt.width() as u16 + before.width() as u16;
-    f.set_cursor_position((x.min(area.x + area.width.saturating_sub(1)), area.y));
+    let style = if app.input.buf.starts_with('!') {
+        Style::default().fg(theme.warn_soft())
+    } else if app.input.buf.starts_with('/') {
+        Style::default().fg(theme.brand_soft)
+    } else {
+        Style::default().fg(theme.fg)
+    };
+
+    // Manual display-width wrap so the cursor tracks across rows.
+    let avail = (area.width as usize).saturating_sub(pw).max(1);
+    let mut rows: Vec<String> = vec![String::new()];
+    let mut col = 0usize;
+    let mut cursor = (0usize, 0usize); // (row, display col)
+    for (i, ch) in app.input.buf.chars().enumerate() {
+        let cw = ch.width().unwrap_or(1).max(1);
+        if col + cw > avail {
+            rows.push(String::new());
+            col = 0;
+        }
+        if i == app.input.cursor {
+            cursor = (rows.len() - 1, col);
+        }
+        rows.last_mut().expect("wrap row").push(ch);
+        col += cw;
+    }
+    if app.input.cursor >= app.input.buf.chars().count() {
+        if col >= avail {
+            rows.push(String::new());
+            col = 0;
+        }
+        cursor = (rows.len() - 1, col);
+    }
+
+    // Keep the cursor row inside the well; otherwise show the tail.
+    let h = area.height as usize;
+    let mut start = rows.len().saturating_sub(h);
+    if cursor.0 < start {
+        start = cursor.0;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (r, row) in rows.iter().enumerate().skip(start).take(h) {
+        let lead = if r == 0 {
+            prompt_span.clone()
+        } else {
+            Span::raw(" ".repeat(pw))
+        };
+        lines.push(Line::from(vec![lead, Span::styled(row.clone(), style)]));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+
+    let cy = area.y + (cursor.0 - start).min(h - 1) as u16;
+    let cx = area.x + pw as u16 + cursor.1 as u16;
+    f.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), cy));
 }
 
 
@@ -332,8 +568,28 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     let theme = app.theme;
+    // The id marked "(current)": the active model, or the effective agent mode.
+    let current_mode = app.current_mode();
+    let current_id: Option<&str> = match picker.kind {
+        crate::app::PickerKind::Model => Some(app.cfg.model.as_str()),
+        crate::app::PickerKind::Mode => Some(current_mode.as_str()),
+        crate::app::PickerKind::Permission => Some(app.current_permission()),
+        crate::app::PickerKind::Effort => None,
+    };
     let h = (picker.items.len() as u16 + 2).min(screen.height.saturating_sub(2));
-    let w = 58.min(screen.width.saturating_sub(4));
+    // Fit the widest row (marker + padded label + ✓ + meta); cap to the screen.
+    let needed = picker
+        .items
+        .iter()
+        .map(|item| {
+            let label_w = item.label.width()
+                + if Some(item.id.as_str()) == current_id { 2 } else { 0 };
+            2 + label_w.max(24) + item.meta.width()
+        })
+        .max()
+        .unwrap_or(0) as u16;
+    let cap = screen.width.saturating_sub(4).max(24);
+    let w = (needed + 2).max(58).min(cap);
     let x = screen.x + (screen.width - w) / 2;
     let y = screen.y + (screen.height - h) / 3;
     let area = Rect::new(x, y, w, h);
@@ -347,19 +603,20 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         } else {
             Style::default().fg(theme.fg_secondary)
         };
+        // The current model/mode gets a ✓ pinned to its label — it survives
+        // narrow terminals, unlike a right-edge tag.
+        let label = if Some(item.id.as_str()) == current_id {
+            format!("{} ✓", item.label)
+        } else {
+            item.label.clone()
+        };
         let mut spans = vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(format!("{:<24}", item.label), style),
+            Span::styled(format!("{label:<24}"), style),
         ];
         if !item.meta.is_empty() {
             spans.push(Span::styled(
                 item.meta.clone(),
-                Style::default().fg(theme.caption),
-            ));
-        }
-        if item.id == app.cfg.model && matches!(picker.kind, crate::app::PickerKind::Model) {
-            spans.push(Span::styled(
-                "  (current)".to_string(),
                 Style::default().fg(theme.caption),
             ));
         }
@@ -392,7 +649,9 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         width,
         vec![Span::styled(
             "Into the Unknown".to_string(),
-            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg_tertiary)
+                .add_modifier(Modifier::BOLD),
         )],
     ));
     out.push(Line::default());
@@ -520,6 +779,36 @@ mod tests {
     }
 
     #[test]
+    fn composer_is_a_tinted_surface() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = test_app();
+        app.show_banner = false;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+        let buf = terminal.backend().buffer().clone();
+        let theme = app.theme;
+        // height 20 → composer rows 15..20 (status / 3-row well / hints).
+        assert_eq!(buf[(4, 15)].bg, theme.panel, "status row on panel surface");
+        assert_eq!(buf[(40, 17)].bg, theme.panel, "input well on panel surface");
+        assert_eq!(buf[(4, 19)].bg, theme.panel, "hint row on panel surface");
+        assert_eq!(buf[(4, 10)].bg, theme.bg, "chat keeps the base background");
+    }
+
+    #[test]
+    fn long_input_wraps_in_the_well() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.input.buf = "a".repeat(50);
+        app.input.cursor = 50;
+        // 40x12 → composer height 4 → a 2-row input well, 36 text cols wide.
+        let frame = dump_frame(&mut app, 40, 12);
+        let wrapped = frame.lines().filter(|l| l.contains("aaaa")).count();
+        assert!(wrapped >= 2, "input should wrap across well rows:\n{frame}");
+    }
+
+    #[test]
     fn banner_shows_until_first_prompt() {
         let mut app = test_app();
         assert!(app.show_banner, "banner defaults to on");
@@ -531,6 +820,145 @@ mod tests {
         assert!(
             !dump_frame(&mut app, 84, 40).contains("██████"),
             "whale dives once the banner is dismissed"
+        );
+    }
+
+    #[test]
+    fn pet_rect_geometry() {
+        let mut app = test_app();
+        let area = Rect::new(0, 0, 100, 34);
+        // 34 rows → 5-row composer → 4-row pet (192:208 sprite → 7 cols).
+        assert_eq!(pet_rect(area, &app), Some(Rect::new(93, 30, 7, 4)));
+        app.pet_visible = false;
+        assert_eq!(pet_rect(area, &app), None, "/liang off hides him");
+        app.pet_visible = true;
+        let narrow = Rect::new(0, 0, 50, 34);
+        assert_eq!(pet_rect(narrow, &app), None, "narrow terminals keep their columns");
+    }
+
+    #[test]
+    fn pet_falls_back_to_half_blocks_and_toggles() {
+        let mut app = test_app();
+        app.show_banner = false;
+        // pet_pixels=false (no kitty graphics): XS art at the right edge.
+        let frame = dump_frame(&mut app, 100, 34);
+        assert!(
+            frame.lines().any(|l| l.ends_with("▄███▄█▄▄")),
+            "XS whale flush right:\n{frame}"
+        );
+
+        // A pixel-protocol terminal draws nothing — the image goes on top.
+        app.pet_pixels = true;
+        let frame = dump_frame(&mut app, 100, 34);
+        assert!(!frame.contains("▄███"), "cells stay clear for the PNG:\n{frame}");
+
+        // /pet off → gone entirely.
+        app.pet_pixels = false;
+        app.pet_visible = false;
+        let frame = dump_frame(&mut app, 100, 34);
+        assert!(!frame.contains("▄███"), "hidden by /pet:\n{frame}");
+    }
+
+    #[test]
+    fn mode_picker_renders_modes_and_marks_the_current_one() {
+        use crate::app::{Picker, PickerItem, PickerKind, AGENT_MODES};
+        let mut app = test_app();
+        app.show_banner = false;
+        app.modes.agent_preset = Some("minimal".into());
+        app.picker = Some(Picker {
+            kind: PickerKind::Mode,
+            title: " agent mode · enter select · esc close ".into(),
+            sel: 2,
+            items: AGENT_MODES
+                .iter()
+                .map(|(id, name, desc)| PickerItem {
+                    id: id.to_string(),
+                    label: name.to_string(),
+                    meta: desc.to_string(),
+                    provider: None,
+                })
+                .collect(),
+        });
+        let frame = dump_frame(&mut app, 100, 30);
+        for name in ["Standard mode", "Code mode", "Minimal mode", "Creator mode"] {
+            assert!(frame.contains(name), "{name} listed in the picker\n{frame}");
+        }
+        let minimal_row = frame
+            .lines()
+            .find(|l| l.contains("Minimal mode"))
+            .expect("minimal row");
+        assert!(minimal_row.contains("Minimal mode ✓"), "current mode marked: {minimal_row}");
+        assert!(minimal_row.contains("▸"), "selection marker on the current row");
+        assert!(frame.contains("bash + str_replace_editor"), "descriptions visible\n{frame}");
+    }
+
+    #[test]
+    fn scroll_up_survives_draw_and_shows_indicator() {
+        let mut app = test_app();
+        app.show_banner = false;
+        for i in 0..40 {
+            app.transcript.push_user(format!("line {i}"), false);
+        }
+        app.scroll_by(20);
+        let frame = dump_frame(&mut app, 100, 14);
+        assert!(app.scroll_up > 0, "scroll_up clamped to zero");
+        assert!(frame.contains("▲"), "scroll indicator missing:\n{frame}");
+    }
+
+    #[test]
+    fn draw_fills_the_chat_view_snapshot() {
+        let mut app = test_app();
+        let _ = dump_frame(&mut app, 84, 40);
+        assert!(app.chat_view.area.width > 0, "chat pane rect captured");
+        assert!(
+            !app.chat_view.lines.is_empty(),
+            "plain-text layout captured for mouse selection"
+        );
+        assert!(
+            app.chat_view.lines.iter().any(|l| l.contains("Into the Unknown")),
+            "snapshot mirrors rendered content"
+        );
+    }
+
+    #[test]
+    fn selection_overlay_reverses_cells() {
+        use crate::app::{SelPoint, Selection};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = test_app();
+        app.show_banner = false;
+        app.transcript.push_user("hello selection world".into(), false);
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        // First draw fills chat_view; then select and draw again.
+        terminal.draw(|f| draw(f, &mut app)).expect("warmup");
+        let line = app
+            .chat_view
+            .lines
+            .iter()
+            .position(|l| l.contains("hello"))
+            .expect("user line in layout");
+        app.sel = Some(Selection {
+            anchor: SelPoint { line, col: 0 },
+            head: SelPoint { line, col: 8 },
+        });
+        terminal.draw(|f| draw(f, &mut app)).expect("redraw");
+        let buf = terminal.backend().buffer();
+        let row = app.chat_view.area.y + (line - app.chat_view.top) as u16;
+        let x = app.chat_view.area.x;
+        let reversed = (0..9u16)
+            .filter(|c| {
+                buf[(x + c, row)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+            .count();
+        assert_eq!(reversed, 9, "anchor..=head cells are highlighted");
+        assert_eq!(
+            app.selection_text(app.sel.unwrap()),
+            crate::app::slice_by_cells(&app.chat_view.lines[line], 0, 9)
+                .trim_end(),
+            "copied text matches the highlighted cells"
         );
     }
 }

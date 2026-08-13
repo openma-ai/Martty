@@ -132,6 +132,71 @@ def halfblock_art(mask: np.ndarray, cols: int, thresh: float = 0.5) -> list[str]
     return lines
 
 
+def bbox_crop(mask: np.ndarray, eps: float = 0.02) -> np.ndarray:
+    """Crop the mask to the whale's bounding box (for tiny variants)."""
+    ys, xs = np.where(mask > eps)
+    return mask[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+
+
+def _cov(mask: np.ndarray, ph: int, pw: int) -> np.ndarray:
+    """Area-average the mask down to a (ph, pw) coverage grid."""
+    h, w = mask.shape
+    out = np.zeros((ph, pw))
+    for r in range(ph):
+        y0, y1 = int(r * h / ph), max(int(r * h / ph) + 1, int((r + 1) * h / ph))
+        for c in range(pw):
+            x0, x1 = int(c * w / pw), max(int(c * w / pw) + 1, int((c + 1) * w / pw))
+            out[r, c] = float(mask[y0:y1, x0:x1].mean())
+    return out
+
+
+def tiny_halfblock(mask: np.ndarray, rows: int, thresh: float = 0.4) -> list[str]:
+    """Half-block art exactly `rows` tall, cropped to the whale bbox.
+
+    Half-block subpixels are ~square, so width follows the bbox aspect.
+    """
+    crop = bbox_crop(mask)
+    ph = rows * 2
+    pw = max(1, round(ph * crop.shape[1] / crop.shape[0]))
+    cov = _cov(crop, ph, pw) > thresh
+    lines = []
+    for r in range(rows):
+        top, bot = cov[2 * r], cov[2 * r + 1]
+        lines.append(
+            "".join(
+                "█" if t and b else "▀" if t else "▄" if b else " "
+                for t, b in zip(top, bot)
+            ).rstrip()
+        )
+    return lines
+
+
+def tiny_braille(mask: np.ndarray, rows: int, thresh: float = 0.35) -> list[str]:
+    """Braille art exactly `rows` tall (4 dot-rows per cell), bbox-cropped.
+
+    Braille dots in a 1:2 cell are ~square, so width follows the aspect.
+    """
+    crop = bbox_crop(mask)
+    ph = rows * 4
+    pw = max(2, round(ph * crop.shape[1] / crop.shape[0]))
+    if pw % 2:
+        pw += 1
+    cov = _cov(crop, ph, pw) > thresh
+    bits = [(0, 0, 0x01), (1, 0, 0x02), (2, 0, 0x04), (0, 1, 0x08),
+            (1, 1, 0x10), (2, 1, 0x20), (3, 0, 0x40), (3, 1, 0x80)]
+    lines = []
+    for r in range(rows):
+        line = []
+        for c in range(pw // 2):
+            code = 0x2800
+            for dr, dc, bit in bits:
+                if cov[4 * r + dr, 2 * c + dc]:
+                    code |= bit
+            line.append(chr(code))
+        lines.append("".join(line).rstrip("\u2800"))
+    return lines
+
+
 def main() -> None:
     d = re.search(r'\bd="([^"]+)"', SVG.read_text()).group(1)  # type: ignore[union-attr]
     subpaths = parse_subpaths(d)
@@ -142,6 +207,9 @@ def main() -> None:
         "WHALE_LG": halfblock_art(mask, 40, thresh=0.45),
         "WHALE_MD": halfblock_art(mask, 26, thresh=0.45),
         "WHALE_SM": halfblock_art(mask, 16, thresh=0.5),
+        # Composer-pet fallback for terminals without pixel graphics
+        # (bbox-cropped for maximum detail at 3 rows).
+        "WHALE_XS": tiny_halfblock(mask, 3, thresh=0.4),
     }
 
     body = [

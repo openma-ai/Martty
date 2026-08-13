@@ -3,11 +3,13 @@
 
 mod app;
 mod bus;
+mod clipboard;
 mod controller;
 mod demo;
 mod events;
 mod logo;
 mod logo_data;
+mod pet;
 mod proto;
 mod runtime;
 mod theme;
@@ -57,6 +59,8 @@ OPTIONS:
 KEYS (grok-build homage): enter send/queue · alt+enter send-now ·
 esc interrupt / ××clear · ctrl+c clear/quit · ↑ history · ! shell ·
 / commands · ctrl+m model · ctrl+e expand · ctrl+t theme
+MOUSE: wheel scrolls · drag selects & copies on release · 2×click copies
+a word · shift+drag uses the terminal's native selection
 ";
 
 struct Args {
@@ -247,6 +251,10 @@ fn main() -> Result<()> {
     let controller = Controller::start(cfg.clone(), args.demo, attached_rt, bus_tx.clone());
     let theme = ui::theme_for(&args.theme);
     let mut app = App::new(theme, cfg, session_id, args.demo, args.attach_fds, bus_tx.clone());
+    // The composer pet: real pixels (kitty graphics) where the terminal can,
+    // half-block art (drawn by ui) where it can't.
+    app.pet_pixels = pet::kitty_supported();
+    let mut pet = pet::Pet::new(app.pet_pixels);
 
     // input pump
     {
@@ -291,6 +299,12 @@ fn main() -> Result<()> {
             if app.needs_redraw {
                 terminal.draw(|f| ui::draw(f, &mut app))?;
                 app.needs_redraw = false;
+                // Reconcile the pixel pet (frame + state) with what was drawn.
+                let size = terminal.size()?;
+                let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                let working = !matches!(app.state, RunState::Idle);
+                let want = ui::pet_rect(area, &app).map(|r| (r, working));
+                let _ = pet.sync(&mut std::io::stdout(), want);
             }
             match bus_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(ev) => {
@@ -321,6 +335,10 @@ fn main() -> Result<()> {
 
 fn restore_terminal() {
     let mut stdout = std::io::stdout();
+    if pet::kitty_supported() {
+        // Drop any pet placement (panic-safe: also runs from the hook).
+        let _ = stdout.write_all(pet::KITTY_DELETE_ALL.as_bytes());
+    }
     let _ = execute!(stdout, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
     let _ = disable_raw_mode();
     let _ = stdout.flush();

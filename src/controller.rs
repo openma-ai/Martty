@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::bus::{AppEvent, CatalogModel, Cmd, CtlEvent};
+use crate::bus::{AppEvent, CatalogModel, CatalogPreset, Cmd, CtlEvent};
 use crate::proto::RuntimeProcess;
 use crate::runtime::RuntimeConfig;
 
@@ -199,6 +199,7 @@ fn controller_loop(
                             CatalogModel { provider: "deepseek-official".into(), id: "deepseek-v4-flash".into(), name: "DeepSeek V4 Flash".into(), vision: false },
                             CatalogModel { provider: "deepseek-official".into(), id: "deepseek-v4-pro".into(), name: "DeepSeek V4 Pro".into(), vision: true },
                         ],
+                        presets: stock_presets(),
                     }));
                     continue;
                 }
@@ -208,8 +209,8 @@ fn controller_loop(
                     .map(|rt| rt.request("tui/catalog", Some(json!({})), Duration::from_secs(20)));
                 match result {
                     Some(Ok(value)) => {
-                        let models = parse_catalog(&value);
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models }));
+                        let (models, presets) = parse_catalog(&value);
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models, presets }));
                     }
                     Some(Err(err)) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -300,19 +301,78 @@ fn controller_loop(
                         )
                     });
                 match result {
-                    Some(Ok(_)) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                            "permission → {preset}"
-                        ))));
+                    Some(Ok(value)) => {
+                        // The host stages a pre-session switch and applies it
+                        // when the session is created on the first prompt.
+                        let staged = value.get("applied").and_then(Value::as_str)
+                            == Some("on-first-prompt");
+                        let desc = if staged {
+                            format!("permission → {preset} · staged, applies from the first prompt")
+                        } else {
+                            format!("permission → {preset}")
+                        };
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(desc)));
                     }
                     Some(Err(err)) => {
+                        let hint = if format!("{err}").contains("unknown permission preset")
+                            || format!("{err}").contains("unknown preset")
+                        {
+                            " — /permission opens the preset picker"
+                        } else {
+                            ""
+                        };
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                            "permission switch failed: {err:#}"
+                            "permission switch failed: {err:#}{hint}"
                         ))));
                     }
                     None => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                            "permission presets need plugin mode".into(),
+                            "permission presets need plugin mode (dsh --profile tui)".into(),
+                        )));
+                    }
+                }
+            }
+            Cmd::SetPreset { session_id, preset } => {
+                if demo {
+                    // Synthesize the durable fact the host records when the
+                    // preset composes on the session's first prompt.
+                    let _ = bus.send(AppEvent::Rpc {
+                        method: "session.event".into(),
+                        params: json!({"sessionId": session_id, "event": {
+                            "type": "agent-preset/selected",
+                            "data": {"agentPreset": preset}}}),
+                    });
+                    continue;
+                }
+                let rt = runtime.lock().unwrap().clone();
+                let result = rt
+                    .filter(|rt| attached && rt.is_alive())
+                    .map(|rt| {
+                        rt.request(
+                            "tui/preset",
+                            Some(json!({ "sessionId": session_id, "agentPreset": preset })),
+                            Duration::from_secs(20),
+                        )
+                    });
+                match result {
+                    Some(Ok(_)) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet { preset }));
+                    }
+                    Some(Err(err)) => {
+                        // The host locks the preset once the session's agent
+                        // exists; a fresh session is the way out.
+                        let hint = if format!("{err}").contains("locked") {
+                            " — /new starts a fresh session, then pick the mode"
+                        } else {
+                            ""
+                        };
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                            "mode switch failed: {err:#}{hint}"
+                        ))));
+                    }
+                    None => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                            "agent modes need plugin mode (dsh --profile tui)".into(),
                         )));
                     }
                 }
@@ -493,8 +553,8 @@ fn describe_server(result: &Value) -> String {
     format!("{name} v{version}")
 }
 
-/// Parse the `tui/catalog` response into displayable models.
-fn parse_catalog(value: &Value) -> Vec<CatalogModel> {
+/// Parse the `tui/catalog` response into displayable models and presets.
+fn parse_catalog(value: &Value) -> (Vec<CatalogModel>, Vec<CatalogPreset>) {
     let mut out = Vec::new();
     if let Some(arr) = value.get("models").and_then(Value::as_array) {
         for m in arr {
@@ -520,5 +580,86 @@ fn parse_catalog(value: &Value) -> Vec<CatalogModel> {
             });
         }
     }
-    out
+    let mut presets = Vec::new();
+    if let Some(arr) = value.get("presets").and_then(Value::as_array) {
+        for p in arr {
+            let Some(id) = p.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            presets.push(CatalogPreset {
+                id: id.to_string(),
+                name: p.get("name").and_then(Value::as_str).unwrap_or(id).to_string(),
+                description: p
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                broken: p.get("broken").and_then(Value::as_bool).unwrap_or(false),
+            });
+        }
+    }
+    (out, presets)
+}
+
+/// The four stock Web UI agent modes, used by the demo catalog.
+fn stock_presets() -> Vec<CatalogPreset> {
+    crate::app::AGENT_MODES
+        .iter()
+        .map(|(id, name, desc)| CatalogPreset {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: desc.to_string(),
+            broken: false,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_catalog_models_and_presets() {
+        let value = json!({
+            "models": [
+                {"provider": "deepseek-official", "id": "m1", "name": "M One", "vision": true},
+                {"provider": "deepseek-official", "name": "no id → skipped"},
+            ],
+            "presets": [
+                {"id": "standard", "name": "Standard mode", "description": "full agent"},
+                {"id": "minimal"},
+                {"id": "custom", "broken": true},
+                {"name": "no id → skipped"},
+            ],
+        });
+        let (models, presets) = parse_catalog(&value);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "m1");
+        assert!(models[0].vision);
+
+        assert_eq!(presets.len(), 3);
+        assert_eq!(presets[0].id, "standard");
+        assert_eq!(presets[0].name, "Standard mode");
+        assert_eq!(presets[0].description, "full agent");
+        assert!(!presets[0].broken);
+        // name falls back to the id; missing description is empty.
+        assert_eq!(presets[1].name, "minimal");
+        assert_eq!(presets[1].description, "");
+        assert!(presets[2].broken);
+    }
+
+    #[test]
+    fn parse_catalog_without_presets_key() {
+        let (models, presets) = parse_catalog(&json!({"models": []}));
+        assert!(models.is_empty());
+        assert!(presets.is_empty());
+    }
+
+    #[test]
+    fn stock_presets_cover_the_four_web_ui_modes() {
+        let presets = stock_presets();
+        let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["standard", "code", "minimal", "creator"]);
+    }
 }

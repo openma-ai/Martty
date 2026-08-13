@@ -88,6 +88,8 @@ function apply(ctx) {
   const sessionCreations = new Map()
   /** sessionId → agent preset id to compose on first prompt. */
   const pendingPresets = new Map()
+  /** sessionId → permission preset staged before the session exists. */
+  const pendingPermissions = new Map()
   /** sessionId → live Session object (every session in the runtime). */
   const sessionObjects = new Map()
   const disposers = []
@@ -168,7 +170,31 @@ function apply(ctx) {
     pendingPresets.delete(sessionId)
     const rec = { handle, selection }
     sessions.set(sessionId, rec)
+    applyPendingPermission(sessionId, handle)
     return rec
+  }
+
+  /** Apply a permission preset staged before the session existed (shift+tab
+   * / \/permission ahead of the first prompt). Never fails the prompt: the
+   * preset name was validated when it was staged; on a late failure re-echo
+   * the session's real preset so the TUI chip stays truthful. */
+  function applyPendingPermission(sessionId, handle) {
+    const preset = pendingPermissions.get(sessionId)
+    if (preset === undefined) return
+    pendingPermissions.delete(sessionId)
+    const svc = ctx.get('permissionPresets')
+    const session = sessionObjects.get(sessionId) ?? handle.agent.session
+    if (svc === undefined || session === undefined) return
+    try {
+      svc.set(session, preset)
+    } catch {
+      try {
+        transport.notify('session.event', {
+          sessionId,
+          event: { type: 'permission/preset', data: { preset: svc.current(session.events) } },
+        })
+      } catch {}
+    }
   }
 
   async function getOrCreateSession(sessionId) {
@@ -204,7 +230,7 @@ function apply(ctx) {
       }
       llmFiber = await ctx.plugin(require('@deepseek-ai/dsh-llm-deepseek'), {})
     }
-    return { serverInfo: { name: 'dsh-tui-shim', version: '0.2.0' } }
+    return { serverInfo: { name: 'dsh-tui-shim', version: '0.2.1' } }
   }
 
   async function prompt(params) {
@@ -290,10 +316,32 @@ function apply(ctx) {
 
   async function tuiPermission(params) {
     const svc = ctx.get('permissionPresets')
-    const session = sessionObjects.get(String(params.sessionId))
-    if (svc === undefined || session === undefined) throw new Error('permission presets unavailable')
-    await svc.set(session, String(params.preset))
-    return { ok: true }
+    if (svc === undefined) {
+      throw new Error('no permission-presets service in this profile — compose @deepseek-ai/dsh-permission-presets')
+    }
+    const sessionId = String(params.sessionId)
+    const preset = String(params.preset)
+    const session = sessionObjects.get(sessionId)
+    if (session !== undefined) {
+      svc.set(session, preset) // unknown presets throw with the known list
+      return { ok: true, applied: 'live' }
+    }
+    // The session is created on the first prompt (getOrCreateSession); before
+    // that, stage the switch instead of failing. Validate the name now so the
+    // user hears about a typo immediately, and echo the staged fact as a
+    // session event so the client folds its permission chip right away.
+    const names = Array.isArray(svc.names) ? svc.names : undefined
+    if (names !== undefined && !names.includes(preset)) {
+      throw new Error(`unknown permission preset "${preset}" (known: ${names.join(', ')})`)
+    }
+    if (pendingPermissions.get(sessionId) !== preset) {
+      pendingPermissions.set(sessionId, preset)
+      transport.notify('session.event', {
+        sessionId,
+        event: { type: 'permission/preset', data: { preset } },
+      })
+    }
+    return { ok: true, applied: 'on-first-prompt' }
   }
 
   function tuiPreset(params) {

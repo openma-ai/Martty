@@ -42,7 +42,8 @@ token usage incl. cache hits, turn end reasons, and runtime state.
 | `ctrl+c` | clear draft first · interrupt · `ctrl+c ctrl+c` quits |
 | `↑` | prompt history (on an empty prompt) |
 | `!cmd` | run a local shell command (client-side, not the agent) |
-| `/` | slash menu with prefix filtering (`/help /new /model /theme /session …`) |
+| `/` | slash menu with prefix filtering (`/help /new /model /mode /theme …`) |
+| `/mode` | agent mode picker — standard · code · minimal · creator (the host `agentPresets` roster in plugin mode; composed on a session's first prompt) |
 | `ctrl+m` | model picker · `ctrl+e` expand all thoughts/tools · `ctrl+t` theme |
 | `pgup/pgdn` `ctrl+u/d` | scroll · mouse wheel works · `end` follows the tail |
 
