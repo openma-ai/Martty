@@ -56,7 +56,9 @@ test('the bundle does not npm-depend on @deepseek-ai packages', () => {
   }
 })
 
-test('extra-fd EPIPE after the TUI exits is not an unhandled error', async () => {
+test('extra-fd EPIPE after the TUI exits is not an unhandled error', {
+  skip: process.platform === 'win32' ? 'Windows uses the TCP plugin transport' : false,
+}, async () => {
   const restore = ensureTestNative()
   try {
     await runner.apply(makeCtx())
