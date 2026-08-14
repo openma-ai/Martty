@@ -84,7 +84,11 @@ impl Driver {
 
         // 4. text deltas streaming a short intro sentence.
         let intro = "I looked at the entrypoint and traced how the program starts. ";
-        for piece in ["I looked at the entrypoint ", "and traced how the ", "program starts. "] {
+        for piece in [
+            "I looked at the entrypoint ",
+            "and traced how the ",
+            "program starts. ",
+        ] {
             self.chunk(json!({"type": "text-delta", "index": 1, "text": piece}));
         }
 
@@ -311,10 +315,7 @@ impl Driver {
 fn split_pieces(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let step = (chars.len() / 6).max(24);
-    chars
-        .chunks(step)
-        .map(|c| c.iter().collect())
-        .collect()
+    chars.chunks(step).map(|c| c.iter().collect()).collect()
 }
 
 /// ~30-line answer with a rust fenced code block, for wrapping/collapsing tests.

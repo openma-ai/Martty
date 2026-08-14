@@ -199,7 +199,10 @@ impl RuntimeProcess {
                 if tail.is_empty() {
                     bail!("{method} timed out waiting for harness runtime")
                 }
-                bail!("{method} timed out waiting for harness runtime\n{}", tail.join("\n"))
+                bail!(
+                    "{method} timed out waiting for harness runtime\n{}",
+                    tail.join("\n")
+                )
             }
         }
     }

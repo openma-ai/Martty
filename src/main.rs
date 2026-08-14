@@ -2,13 +2,16 @@
 //! stdio runtime.
 
 mod app;
+mod attachments;
 mod bus;
 mod clipboard;
 mod controller;
 mod demo;
 mod events;
+mod input;
 mod logo;
 mod logo_data;
+mod markdown;
 mod pet;
 mod proto;
 mod runtime;
@@ -22,9 +25,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 
 use crate::app::{App, RunState};
 use crate::bus::{AppEvent, Cmd};
@@ -57,11 +65,12 @@ OPTIONS:
   -V, --version             print version
   -h, --help                this help
 
-KEYS (grok-build homage): enter send/queue · alt+enter send-now ·
-esc interrupt / ××clear · ctrl+c clear/quit · ↑ history · ! shell ·
-/ commands · ctrl+m model · ctrl+e expand · ctrl+t theme
-MOUSE: wheel scrolls · drag selects & copies on release · 2×click copies
-a word · shift+drag uses the terminal's native selection
+KEYS (grok-build homage): enter send/queue · ctrl+x send-now ·
+esc interrupt / clear draft · ctrl+c clear/quit · ↑ history · ! shell ·
+/ commands · ctrl+p model · ctrl+e expand · ctrl+t theme
+MOUSE: wheel scrolls · click a tool expands/collapses it · wheel over a
+tool scrolls its output · drag selects & copies on release · 2×click
+copies a word · shift+drag uses the terminal's native selection
 ";
 
 struct Args {
@@ -251,11 +260,20 @@ fn main() -> Result<()> {
 
     let controller = Controller::start(cfg.clone(), args.demo, attached_rt, bus_tx.clone());
     let theme = ui::theme_for(&args.theme);
-    let mut app = App::new(theme, cfg, session_id, args.demo, args.attach_fds, bus_tx.clone());
+    let mut app = App::new(
+        theme,
+        cfg,
+        session_id,
+        args.demo,
+        args.attach_fds,
+        bus_tx.clone(),
+    );
     // The composer pet: real pixels (kitty graphics) where the terminal can,
     // half-block art (drawn by ui) where it can't.
     app.pet_pixels = pet::kitty_supported();
     let mut pet = pet::Pet::new(app.pet_pixels);
+    // User-image thumbnails in the chat scrollback (kitty graphics, PNG only).
+    let mut thumbnails = pet::Thumbnails::new();
 
     // input pump
     {
@@ -278,7 +296,21 @@ fn main() -> Result<()> {
     // terminal guard
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    // Kitty keyboard protocol, pushed blind: terminals that support it
+    // (ghostty · kitty · wezterm · iterm2 3.5+) start reporting ⌘/⌥ chords
+    // as real SUPER/ALT modifiers and make shift+enter distinguishable;
+    // everything else ignores the sequence. (No capability query — the
+    // input thread already owns the event stream, a query reply would race.)
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -293,6 +325,9 @@ fn main() -> Result<()> {
             app.auto_prompt(&auto, &controller);
         }
     }
+    // Host skills for the slash menu (plugin mode; demo serves samples,
+    // standalone answers empty and the menu keeps its builtins).
+    controller.send(bus::Cmd::FetchSkills);
 
     let run = (|| -> Result<()> {
         let mut last_tick = std::time::Instant::now();
@@ -306,6 +341,20 @@ fn main() -> Result<()> {
                 let working = !matches!(app.state, RunState::Idle);
                 let want = ui::pet_rect(area, &app).map(|r| (r, working));
                 let _ = pet.sync(&mut std::io::stdout(), want);
+                // Sync image thumbnails (chat + composer attachment strip)
+                // against the freshly drawn viewport.
+                let shots: Vec<pet::ThumbShot> = app
+                    .chat_view
+                    .images
+                    .iter()
+                    .chain(app.att_thumbs.iter())
+                    .map(|t| pet::ThumbShot {
+                        id: t.id,
+                        rect: t.rect,
+                        data: t.data.as_ref(),
+                    })
+                    .collect();
+                let _ = thumbnails.sync(&mut std::io::stdout(), &shots);
             }
             match bus_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(ev) => {
@@ -340,7 +389,13 @@ fn restore_terminal() {
         // Drop any pet placement (panic-safe: also runs from the hook).
         let _ = stdout.write_all(pet::KITTY_DELETE_ALL.as_bytes());
     }
-    let _ = execute!(stdout, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+    let _ = execute!(
+        stdout,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
     let _ = disable_raw_mode();
     let _ = stdout.flush();
 }
@@ -376,7 +431,10 @@ fn check_runtime(args: &Args) -> Result<()> {
 
 /// `--dump-frame WxH`: render a canned demo conversation to plain text.
 fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
-    let mut args_demo = Args { demo: true, ..parse_args()? };
+    let mut args_demo = Args {
+        demo: true,
+        ..parse_args()?
+    };
     args_demo.demo = true;
     let cfg = build_config(&args_demo)?;
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
@@ -384,7 +442,8 @@ fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
     let mut app = App::new(theme, cfg, "dsh-demo".into(), true, false, bus_tx.clone());
 
     // Run one scripted demo turn synchronously through the real pipeline.
-    app.transcript.push_user("查看这个仓库并修复失败的测试".into(), false);
+    app.transcript
+        .push_user("查看这个仓库并修复失败的测试".into(), false);
     app.show_banner = false; // dump simulates the post-submit look: no whale
     app.state = RunState::Starting;
     demo::run_demo_turn(bus_tx, "dsh-demo".into(), "inspect the repo".into());

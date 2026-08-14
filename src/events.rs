@@ -4,32 +4,99 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
-    SessionStatus { session: String, running: bool },
-    TurnStart { session: String, turn: u64 },
-    TurnEnd { session: String, kind: String },
-    TextDelta { session: String, text: String },
-    ReasoningDelta { session: String, text: String },
-    AssistantFinal { session: String, text: String, model: Option<String> },
-    ToolCall { session: String, call_id: String, name: String, arguments: String },
-    ToolResult { session: String, call_id: String, is_error: bool, text: String, error: Option<String> },
-    Usage { session: String, input: u64, output: u64, cached: u64, reasoning: u64 },
-    UserInjected { session: String, source: String, preview: String },
-    SubagentStarted { parent: String, child: String },
-    SubagentFinished { child: String },
+    SessionStatus {
+        session: String,
+        running: bool,
+    },
+    TurnStart {
+        session: String,
+        turn: u64,
+    },
+    TurnEnd {
+        session: String,
+        kind: String,
+    },
+    TextDelta {
+        session: String,
+        text: String,
+    },
+    ReasoningDelta {
+        session: String,
+        text: String,
+    },
+    AssistantFinal {
+        session: String,
+        text: String,
+        model: Option<String>,
+    },
+    ToolCall {
+        session: String,
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolResult {
+        session: String,
+        call_id: String,
+        is_error: bool,
+        text: String,
+        error: Option<String>,
+    },
+    Usage {
+        session: String,
+        input: u64,
+        output: u64,
+        cached: u64,
+        reasoning: u64,
+    },
+    UserInjected {
+        session: String,
+        source: String,
+        preview: String,
+    },
+    SubagentStarted {
+        parent: String,
+        child: String,
+    },
+    SubagentFinished {
+        child: String,
+    },
     /// `plan/mode` — dsh-plan-mode collaboration state (last one wins).
-    PlanMode { session: String, active: bool },
+    PlanMode {
+        session: String,
+        active: bool,
+    },
     /// `sandbox/mode` — file policy: read-only | workspace-write | danger-full-access.
-    SandboxMode { session: String, mode: String },
+    SandboxMode {
+        session: String,
+        mode: String,
+    },
     /// `approval/policy` — ask | never.
-    ApprovalPolicy { session: String, policy: String },
+    ApprovalPolicy {
+        session: String,
+        policy: String,
+    },
     /// `permission/preset` — bundled permission preset name.
-    PermissionPreset { session: String, preset: String },
+    PermissionPreset {
+        session: String,
+        preset: String,
+    },
     /// `agent-preset/selected` — agent composition preset (standard/code/…).
-    AgentPreset { session: String, preset: String },
+    AgentPreset {
+        session: String,
+        preset: String,
+    },
     /// `approval/asked` — one pending approval request.
-    ApprovalAsked { session: String, tool: String, reason: Option<String> },
+    ApprovalAsked {
+        session: String,
+        tool: String,
+        reason: Option<String>,
+    },
     /// `approval/decided` — its outcome.
-    ApprovalDecided { session: String, outcome: String },
+    ApprovalDecided {
+        session: String,
+        outcome: String,
+    },
 }
 
 /// Parse a JSON-RPC notification into zero or more UI events.
@@ -153,7 +220,11 @@ fn parse_session_event(params: &Value) -> Vec<UiEvent> {
                 .and_then(|s| s.get("model"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            vec![UiEvent::AssistantFinal { session, text, model }]
+            vec![UiEvent::AssistantFinal {
+                session,
+                text,
+                model,
+            }]
         }
         "tool/call" => vec![UiEvent::ToolCall {
             session,
@@ -223,7 +294,9 @@ fn parse_tool_result(session: String, data: &Value) -> Vec<UiEvent> {
             call_id = str_field(block, "toolCallId");
             have_call_id = true;
         }
-        texts.push(concat_text_blocks(block.get("content").unwrap_or(&Value::Null)));
+        texts.push(concat_text_blocks(
+            block.get("content").unwrap_or(&Value::Null),
+        ));
     }
 
     let mut error = None;
@@ -309,7 +382,10 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::SessionStatus { session: "s1".into(), running: true }]
+            vec![UiEvent::SessionStatus {
+                session: "s1".into(),
+                running: true
+            }]
         );
 
         let ev = parse_notification(
@@ -318,7 +394,10 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::SessionStatus { session: "s1".into(), running: false }]
+            vec![UiEvent::SessionStatus {
+                session: "s1".into(),
+                running: false
+            }]
         );
     }
 
@@ -330,7 +409,10 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::SubagentStarted { parent: "p".into(), child: "c".into() }]
+            vec![UiEvent::SubagentStarted {
+                parent: "p".into(),
+                child: "c".into()
+            }]
         );
 
         let ev = parse_notification("subagent.finished", &json!({"childSessionId": "c"}));
@@ -343,7 +425,13 @@ mod tests {
             "session.event",
             &json!({"sessionId": "s", "event": {"type": "turn/start", "data": {"turn": 3}}}),
         );
-        assert_eq!(ev, vec![UiEvent::TurnStart { session: "s".into(), turn: 3 }]);
+        assert_eq!(
+            ev,
+            vec![UiEvent::TurnStart {
+                session: "s".into(),
+                turn: 3
+            }]
+        );
 
         let ev = parse_notification(
             "session.event",
@@ -351,7 +439,10 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::TurnEnd { session: "s".into(), kind: "completed".into() }]
+            vec![UiEvent::TurnEnd {
+                session: "s".into(),
+                kind: "completed".into()
+            }]
         );
 
         // Missing reason -> default kind "unknown"; missing turn -> 0.
@@ -361,13 +452,22 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::TurnEnd { session: "s".into(), kind: "unknown".into() }]
+            vec![UiEvent::TurnEnd {
+                session: "s".into(),
+                kind: "unknown".into()
+            }]
         );
         let ev = parse_notification(
             "session.event",
             &json!({"sessionId": "s", "event": {"type": "turn/start", "data": {}}}),
         );
-        assert_eq!(ev, vec![UiEvent::TurnStart { session: "s".into(), turn: 0 }]);
+        assert_eq!(
+            ev,
+            vec![UiEvent::TurnStart {
+                session: "s".into(),
+                turn: 0
+            }]
+        );
     }
 
     #[test]
@@ -377,7 +477,13 @@ mod tests {
             &json!({"sessionId": "s", "event": {"type": "assistant/chunk",
                 "data": {"chunk": {"type": "text-delta", "text": "hi"}}}}),
         );
-        assert_eq!(ev, vec![UiEvent::TextDelta { session: "s".into(), text: "hi".into() }]);
+        assert_eq!(
+            ev,
+            vec![UiEvent::TextDelta {
+                session: "s".into(),
+                text: "hi".into()
+            }]
+        );
 
         let ev = parse_notification(
             "session.event",
@@ -386,7 +492,10 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::ReasoningDelta { session: "s".into(), text: "hmm".into() }]
+            vec![UiEvent::ReasoningDelta {
+                session: "s".into(),
+                text: "hmm".into()
+            }]
         );
     }
 
@@ -413,7 +522,13 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::Usage { session: "s".into(), input: 10, output: 20, cached: 5, reasoning: 7 }]
+            vec![UiEvent::Usage {
+                session: "s".into(),
+                input: 10,
+                output: 20,
+                cached: 5,
+                reasoning: 7
+            }]
         );
     }
 
@@ -427,7 +542,13 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::Usage { session: "s".into(), input: 1, output: 0, cached: 9, reasoning: 0 }]
+            vec![UiEvent::Usage {
+                session: "s".into(),
+                input: 1,
+                output: 0,
+                cached: 9,
+                reasoning: 0
+            }]
         );
     }
 
@@ -442,7 +563,13 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::Usage { session: "s".into(), input: 1, output: 2, cached: 9, reasoning: 3 }]
+            vec![UiEvent::Usage {
+                session: "s".into(),
+                input: 1,
+                output: 2,
+                cached: 9,
+                reasoning: 3
+            }]
         );
     }
 
@@ -479,7 +606,11 @@ mod tests {
         );
         assert_eq!(
             ev,
-            vec![UiEvent::AssistantFinal { session: "s".into(), text: String::new(), model: None }]
+            vec![UiEvent::AssistantFinal {
+                session: "s".into(),
+                text: String::new(),
+                model: None
+            }]
         );
     }
 
@@ -520,12 +651,12 @@ mod tests {
         let ev = parse_notification(
             "session.event",
             &json!({"sessionId": "s", "event": {"type": "tool/result",
-                "data": {"message": {"content": [
-                    {"type": "tool-result", "toolCallId": "c1", "content": [
-                        {"type": "text", "text": "line1"}]},
-                    {"type": "tool-result", "toolCallId": "c2", "isError": false, "content": [
-                        {"type": "text", "text": "line2"}]}
-                ]}}}}),
+            "data": {"message": {"content": [
+                {"type": "tool-result", "toolCallId": "c1", "content": [
+                    {"type": "text", "text": "line1"}]},
+                {"type": "tool-result", "toolCallId": "c2", "isError": false, "content": [
+                    {"type": "text", "text": "line2"}]}
+            ]}}}}),
         );
         assert_eq!(
             ev,
@@ -544,10 +675,10 @@ mod tests {
         let ev = parse_notification(
             "session.event",
             &json!({"sessionId": "s", "event": {"type": "tool/result",
-                "data": {"message": {"content": [
-                    {"type": "tool-result", "toolCallId": "c1", "isError": true, "content": [
-                        {"type": "text", "text": "boom"}]}
-                ]}}}}),
+            "data": {"message": {"content": [
+                {"type": "tool-result", "toolCallId": "c1", "isError": true, "content": [
+                    {"type": "text", "text": "boom"}]}
+            ]}}}}),
         );
         assert_eq!(
             ev,
@@ -651,7 +782,10 @@ mod tests {
         )
         .is_empty());
         // session.status with non-string status.
-        assert!(parse_notification("session.status", &json!({"sessionId": "s", "status": 1})).is_empty());
+        assert!(
+            parse_notification("session.status", &json!({"sessionId": "s", "status": 1}))
+                .is_empty()
+        );
         // assistant/chunk with missing chunk.
         assert!(parse_notification(
             "session.event",
@@ -674,23 +808,50 @@ mod mode_event_tests {
     fn plan_sandbox_approval_permission_preset() {
         assert_eq!(
             parse_notification("session.event", &ev("plan/mode", json!({"active": true}))),
-            vec![UiEvent::PlanMode { session: "s".into(), active: true }]
+            vec![UiEvent::PlanMode {
+                session: "s".into(),
+                active: true
+            }]
         );
         assert_eq!(
-            parse_notification("session.event", &ev("sandbox/mode", json!({"mode": "workspace-write"}))),
-            vec![UiEvent::SandboxMode { session: "s".into(), mode: "workspace-write".into() }]
+            parse_notification(
+                "session.event",
+                &ev("sandbox/mode", json!({"mode": "workspace-write"}))
+            ),
+            vec![UiEvent::SandboxMode {
+                session: "s".into(),
+                mode: "workspace-write".into()
+            }]
         );
         assert_eq!(
-            parse_notification("session.event", &ev("approval/policy", json!({"policy": "ask"}))),
-            vec![UiEvent::ApprovalPolicy { session: "s".into(), policy: "ask".into() }]
+            parse_notification(
+                "session.event",
+                &ev("approval/policy", json!({"policy": "ask"}))
+            ),
+            vec![UiEvent::ApprovalPolicy {
+                session: "s".into(),
+                policy: "ask".into()
+            }]
         );
         assert_eq!(
-            parse_notification("session.event", &ev("permission/preset", json!({"preset": "danger-full-access"}))),
-            vec![UiEvent::PermissionPreset { session: "s".into(), preset: "danger-full-access".into() }]
+            parse_notification(
+                "session.event",
+                &ev("permission/preset", json!({"preset": "danger-full-access"}))
+            ),
+            vec![UiEvent::PermissionPreset {
+                session: "s".into(),
+                preset: "danger-full-access".into()
+            }]
         );
         assert_eq!(
-            parse_notification("session.event", &ev("agent-preset/selected", json!({"agentPreset": "standard"}))),
-            vec![UiEvent::AgentPreset { session: "s".into(), preset: "standard".into() }]
+            parse_notification(
+                "session.event",
+                &ev("agent-preset/selected", json!({"agentPreset": "standard"}))
+            ),
+            vec![UiEvent::AgentPreset {
+                session: "s".into(),
+                preset: "standard".into()
+            }]
         );
     }
 
@@ -699,17 +860,42 @@ mod mode_event_tests {
         assert_eq!(
             parse_notification(
                 "session.event",
-                &ev("approval/asked", json!({"id": "a1", "toolName": "bash", "reason": "rm -rf"}))
+                &ev(
+                    "approval/asked",
+                    json!({"id": "a1", "toolName": "bash", "reason": "rm -rf"})
+                )
             ),
-            vec![UiEvent::ApprovalAsked { session: "s".into(), tool: "bash".into(), reason: Some("rm -rf".into()) }]
+            vec![UiEvent::ApprovalAsked {
+                session: "s".into(),
+                tool: "bash".into(),
+                reason: Some("rm -rf".into())
+            }]
         );
         assert_eq!(
-            parse_notification("session.event", &ev("approval/decided", json!({"id": "a1", "outcome": "allowed-once"}))),
-            vec![UiEvent::ApprovalDecided { session: "s".into(), outcome: "allowed-once".into() }]
+            parse_notification(
+                "session.event",
+                &ev(
+                    "approval/decided",
+                    json!({"id": "a1", "outcome": "allowed-once"})
+                )
+            ),
+            vec![UiEvent::ApprovalDecided {
+                session: "s".into(),
+                outcome: "allowed-once".into()
+            }]
         );
         assert_eq!(
-            parse_notification("session.event", &ev("approval/decided", json!({"id": "a1", "outcome": {"kind": "rejected"}}))),
-            vec![UiEvent::ApprovalDecided { session: "s".into(), outcome: "rejected".into() }]
+            parse_notification(
+                "session.event",
+                &ev(
+                    "approval/decided",
+                    json!({"id": "a1", "outcome": {"kind": "rejected"}})
+                )
+            ),
+            vec![UiEvent::ApprovalDecided {
+                session: "s".into(),
+                outcome: "rejected".into()
+            }]
         );
         // malformed plan/mode stays silent
         assert!(parse_notification("session.event", &ev("plan/mode", json!({}))).is_empty());

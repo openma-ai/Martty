@@ -1,11 +1,13 @@
 //! DeepSeek Harness Web UI design tokens, mapped 1:1 from
 //! `packages/client/ui-theme/src/styles/design-platform.css`.
 //!
-//! Static palette (`--dsw-static-*`) plus semantic themes that are a
-//! cold monochrome remap of the Web UI neutral-bluish scale: strictly
-//! black/gray/white, with red as the only colored accent (errors).
+//! Static palette (`--dsw-static-*`) plus semantic themes: a cold
+//! neutral-bluish base kept deliberately quiet, with a small reserved
+//! accent vocabulary — DeepSeek blue for brand/actions, gray-blue for
+//! hints, green for success/liveness, amber for attention, red for
+//! errors. Minimal, not monotone.
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 
 // --- static palette -------------------------------------------------------
 
@@ -86,6 +88,11 @@ pub const AMBER_500: Color = Color::Rgb(245, 158, 11);
 #[allow(dead_code)]
 pub const AMBER_600: Color = Color::Rgb(221, 134, 41);
 
+/// Blue-gray (slate) hint tones — gray first, a cool blue undertone;
+/// clearly quieter than the DeepSeek blues.
+pub const SLATE_400: Color = Color::Rgb(108, 122, 150);
+pub const SLATE_600: Color = Color::Rgb(84, 96, 120);
+
 // --- semantic theme -------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,6 +139,9 @@ pub struct Theme {
     pub warn: Color,
     /// `--dsw-alias-state-error-primary`
     pub err: Color,
+    /// Gray-blue hint text (tip banner, informational chips) — quieter
+    /// than `brand_soft`, warmer than the neutral grays.
+    pub hint: Color,
     /// selection/status chip background
     #[allow(dead_code)]
     pub chip_bg: Color,
@@ -154,9 +164,10 @@ impl Theme {
             bubble_fg: BLUISH_75,
             border: BLUISH_850,
             code_bg: BLUISH_950,
-            ok: BLUISH_200,
-            warn: BLUISH_500,
+            ok: GREEN_400,
+            warn: AMBER_400,
             err: RED_400,
+            hint: SLATE_400,
             chip_bg: BLUISH_850,
         }
     }
@@ -177,9 +188,10 @@ impl Theme {
             bubble_fg: BLUISH_1000,
             border: BLUISH_200,
             code_bg: BLUISH_60,
-            ok: BLUISH_750,
-            warn: BLUISH_600,
+            ok: GREEN_500,
+            warn: AMBER_600,
             err: RED_600,
+            hint: SLATE_600,
             chip_bg: BLUISH_100,
         }
     }
@@ -191,12 +203,12 @@ impl Theme {
         }
     }
 
-    /// Success accent used for finished tool glyphs (monochrome: same as `ok`).
+    /// Success accent used for finished tool glyphs and the idle dot.
     pub fn ok_soft(&self) -> Color {
         self.ok
     }
 
-    /// Warn accent for chips (monochrome: same as `warn`).
+    /// Warn accent for chips, queue markers, and cautionary notices.
     pub fn warn_soft(&self) -> Color {
         self.warn
     }
@@ -207,6 +219,58 @@ impl Theme {
             Mode::Dark => (BLUISH_50, BLUISH_700),
             Mode::Light => (BLUISH_800, BLUISH_400),
         }
+    }
+
+    // ── style tokens ──────────────────────────────────────────────
+    // Named semantic styles — surfaces compose these instead of ad-hoc
+    // fg/bg picks, so the same concept renders identically everywhere
+    // (transcript cards, composer, menus).
+
+    /// Chip: a short labeled capsule on the bubble surface — the user
+    /// message label, the shell card's `$ cmd`, inline `[image n]` chips.
+    pub fn t_chip(&self) -> Style {
+        Style::default()
+            .fg(self.bubble_fg)
+            .bg(self.bubble_bg)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Informational hint text — the tip body, skill menu entries.
+    pub fn t_hint(&self) -> Style {
+        Style::default().fg(self.hint)
+    }
+
+    /// The idle state marker — calm neutral, not a celebration.
+    pub fn t_state_idle(&self) -> Style {
+        Style::default().fg(self.fg_tertiary)
+    }
+
+    /// Success/liveness accent — finished tools, clean shell exits.
+    pub fn t_state_ok(&self) -> Style {
+        Style::default().fg(self.ok)
+    }
+
+    /// Attention accent — queued work, warnings, shells in flight.
+    pub fn t_state_warn(&self) -> Style {
+        Style::default().fg(self.warn)
+    }
+
+    /// Local-shell prompt accent (`!` in the draft, the card's status
+    /// glyph) — one amber family top to bottom.
+    pub fn t_shell(&self) -> Style {
+        Style::default().fg(self.warn).add_modifier(Modifier::BOLD)
+    }
+
+    /// Key cap in contextual hints (`⏎`, `^x`, `esc`).
+    pub fn t_key(&self) -> Style {
+        Style::default()
+            .fg(self.fg_tertiary)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// The label after a key cap (“send”, “interrupt”).
+    pub fn t_key_label(&self) -> Style {
+        Style::default().fg(self.caption)
     }
 }
 
@@ -240,9 +304,11 @@ mod tests {
         assert_eq!(Theme::light().brand, DEEPSEEK_500);
     }
 
-    /// The only colored accent left is red for errors.
+    /// Neutral surfaces stay grayscale; the reserved accent vocabulary
+    /// (brand blue · gray-blue hint · green ok · amber warn · red err) is
+    /// deliberately colored — minimal, not monotone.
     #[test]
-    fn err_is_the_only_colored_accent() {
+    fn neutrals_stay_gray_and_accents_stay_colored() {
         fn is_gray(c: Color) -> bool {
             match c {
                 Color::Rgb(r, g, b) => {
@@ -254,13 +320,24 @@ mod tests {
         }
         for t in [Theme::dark(), Theme::light()] {
             for c in [
-                t.bg, t.surface, t.panel, t.fg, t.fg_secondary, t.fg_tertiary,
-                t.caption, t.bubble_bg, t.bubble_fg,
-                t.border, t.code_bg, t.ok, t.warn, t.chip_bg,
+                t.bg,
+                t.surface,
+                t.panel,
+                t.fg,
+                t.fg_secondary,
+                t.fg_tertiary,
+                t.caption,
+                t.bubble_bg,
+                t.bubble_fg,
+                t.border,
+                t.code_bg,
+                t.chip_bg,
             ] {
                 assert!(is_gray(c), "expected grayscale, got {c:?}");
             }
-            assert!(!is_gray(t.err), "err must stay red");
+            for c in [t.brand, t.brand_soft, t.hint, t.ok, t.warn, t.err] {
+                assert!(!is_gray(c), "accents must be colored, got {c:?}");
+            }
         }
     }
 }

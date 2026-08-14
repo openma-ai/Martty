@@ -3,6 +3,80 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.0] - 2026-08-14
+
+### Added
+
+- Host skills in the slash menu (plugin mode): the runner's new `tui/skills`
+  lists user-invocable skills through the same lens as the Web gateway's
+  `skill.list` (preset-scoped registry, `isUserInvocable` filter); entries
+  merge after the builtins (builtins shadow a colliding name), picking one
+  lands the literal `/name ` and enter ships the line as an ordinary prompt
+  — dsh-tool-skill's pre-step boundary injects the body host-side. The
+  catalog refreshes on `/new` and `/mode`.
+- Multi-image staging (grok-style): paste/`/image`/`/clip` stage up to 8
+  images as literal `[image n]` tokens living *inline in the draft text* —
+  rendered as chips (no icon), edited like text: backspace/delete on a chip
+  cuts the whole token and un-stages that image, kills/history-recall
+  reconcile the tray to surviving tokens. Hovering a chip (or parking the
+  cursor on one) pops a grok-style preview: kitty thumbnail plus
+  name/dimensions/size/type. Send order = token order; tokens strip out of
+  the caption. The slash-command popup is capped at 12 rows with a
+  selection-following scroll window and a position indicator.
+- macOS physical-modifier rescue (grok-build's CoreGraphics side channel):
+  bare arrows/backspace arriving while ⌘/⌥ is held get their modifier
+  restored, so `⌘←`-style chords work in every terminal, kitty protocol or
+  not.
+- `DSH_TUI_KEYDEBUG=1` echoes each delivered key event in the tip row.
+
+### Changed
+
+- Input handling decoupled into `src/input/` (CG probe · normalizer · pure
+  `keymap` table · line editor) and `src/attachments.rs` (tray model + strip
+  geometry), all unit-tested; `App::handle_key` is now a thin dispatcher.
+- OS-aware bindings: `⌘←/⌘→/⌘↑/⌘↓/⌘⌫`, `⌥←/⌥→/⌥⌫` (macOS),
+  `ctrl+←/→/⌫` (linux/windows), full readline set (`^a/^e/^b/^f/^k/^u/^w`),
+  expand-all moved `^e`→`^o`, `^u/^d` scroll only on an empty draft, unbound
+  chords no longer type their base letter.
+- Run state (`● idle` / spinner + phase + elapsed + queue depth) moved out
+  of the composer to the transcript's always-last line, hugging the newest
+  message (hidden on the landing banner); the composer meta row keeps only
+  the mode chips, which now render cached workspace facts immediately.
+- Measured accent vocabulary over the neutral base (“minimal, not
+  monotone”): green for success/liveness (idle dot, finished tools, clean
+  shell exits), amber for attention (queued, warnings, danger permission),
+  gray-blue `hint` for informational text — the tip banner body and skill
+  entries in the slash menu. Red stays errors-only; DeepSeek blue stays
+  brand/actions.
+- `!` local-shell blocks render as terminal cards: status glyph + a
+  `$ cmd` chip header, output on full-width `code_bg` rows behind a
+  gray-blue gutter, `exit N` in the error accent. Stale “ctrl+e” expand
+  hints now say ctrl+o.
+- The model chip now shows a fresh `/model` pick immediately: precedence is
+  explicit pick → last streamed model → configured default (the pick defers
+  back to the stream once a turn realizes it; `/resume` trusts the replayed
+  stream).
+- Mode facts (agent preset · permission · approval · effort) cache per
+  workspace in `<session_root>/dsh-tui-modes.json`: chips and pickers show
+  the last-known values on launch, `/new` inherits them, live host events
+  overwrite and re-save. `plan` never carries over.
+- Composer reorganized: the draft sits on top and a single bottom meta row
+  carries run state · agent preset · permission (with its `⇧⇥` cycle hint)
+  · approval/plan · contextual shortcuts · model · reasoning effort. The
+  static shortcut-hints row is gone; the contextual hints are a state
+  machine over (run state × draft): `⏎ send`/`⏎ command`/`⏎ shell` when
+  typing idle, `esc interrupt` while running, `⏎ queue · ^x send now · esc
+  interrupt` while running with a draft, and `^. keys` (new ctrl+.
+  binding → `/keys`) when idle and empty.
+- The tip banner fuses its rounded cap with the text row (`╭ Tip · … ─╮`,
+  title-in-border): rounded corners kept, one row total.
+- Image prompts now send every staged image as content blocks of one
+  prompt (`tui/attach-image` per image, then a single `session/prompt`).
+
+[0.2.0]: https://github.com/openma-ai/deepseek-harness-tui/releases/tag/v0.2.0
+
 ## [0.1.3] - 2026-08-14
 
 ### Fixed

@@ -18,13 +18,15 @@ use crate::theme::{lerp, Theme};
 const PET_PAD: u16 = 9;
 
 /// Composer card height for a terminal `height` rows tall.
+/// Composer height: the input well plus one bottom meta row (state ·
+/// mode/permission chips · model). Taller terminals get a taller well.
 fn composer_height(height: u16) -> u16 {
     if height >= 15 {
-        5
-    } else if height >= 10 {
         4
-    } else {
+    } else if height >= 10 {
         3
+    } else {
+        2
     }
 }
 
@@ -36,7 +38,7 @@ pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
     if !app.pet_visible || area.width < 60 || area.height < 10 {
         return None;
     }
-    let rows = (composer_height(area.height) - 1).min(4);
+    let rows = composer_height(area.height).min(4);
     let cols = ((rows as u32 * 2 * SPRITE_W + SPRITE_H / 2) / SPRITE_H) as u16;
     Some(Rect::new(
         area.right() - cols,
@@ -55,21 +57,33 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
     if area.height < 6 || area.width < 24 {
         f.render_widget(
-            Paragraph::new("terminal too small — need ≥ 24x6").style(Style::default().fg(theme.warn)),
+            Paragraph::new("terminal too small — need ≥ 24x6")
+                .style(Style::default().fg(theme.warn)),
             area,
         );
         return;
     }
 
-    // Composer card: status row / input well / hints row. The well gets
-    // extra breathing room (and wraps long prompts) on taller terminals.
+    // Composer card: input well on top, one meta row (run state + mode /
+    // permission chips + model) at the bottom — the old shortcut-hints row
+    // is gone (the tip banner and /keys carry that). A one-row usage footer
+    // (token flow + cache hit rate) sits below on tall enough screens.
     let composer_h = composer_height(area.height);
+    let usage_h = if area.height >= 20 { 1 } else { 0 };
+    // One-row rounded cap fused with the text (`╭ Tip · … ─╮`): the
+    // 盖子 at its shortest — the tip floats inside the border line.
     let tips_h = if area.height >= 16 { 1 } else { 0 };
-    let chat_h = area.height.saturating_sub(composer_h + tips_h);
+    let chat_h = area.height.saturating_sub(composer_h + tips_h + usage_h);
 
     let chat = Rect::new(area.x, area.y, area.width, chat_h);
     let tips = Rect::new(area.x, area.y + chat_h, area.width, tips_h);
     let composer = Rect::new(area.x, area.y + chat_h + tips_h, area.width, composer_h);
+    let usage = Rect::new(
+        area.x,
+        area.y + chat_h + tips_h + composer_h,
+        area.width,
+        usage_h,
+    );
 
     draw_chat(f, app, chat);
     if tips_h > 0 {
@@ -78,7 +92,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The pet floats on the composer surface's right end; composer text
     // keeps clear of it.
     let pet = pet_rect(area, app);
-    draw_composer(f, app, composer, if pet.is_some() { PET_PAD } else { 0 });
+    let pet_pad = if pet.is_some() { PET_PAD } else { 0 };
+    draw_composer(f, app, composer, pet_pad);
+    if usage_h > 0 {
+        draw_usage_bar(f, app, usage, pet_pad);
+    }
     if let Some(cells) = pet {
         if !app.pet_pixels {
             // No pixel protocol: the half-block whale stands in.
@@ -87,13 +105,20 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         // Otherwise main() places the favicon PNG over `cells` after draw.
     }
     draw_slash_menu(f, app, composer, chat);
+    // Hover/cursor preview for inline [image n] chips sits above the
+    // composer (drawn last so it tops the menu-free chat area).
+    draw_attachment_preview(f, app, composer, area);
     draw_model_picker(f, app, area);
 }
 
 /// Fallback pet for terminals without a pixel protocol: the XS half-block
 /// whale, brand gradient, anchored bottom-right like the real image.
 fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
-    let w = WHALE_XS.iter().map(|r| r.chars().count()).max().unwrap_or(0) as u16;
+    let w = WHALE_XS
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
     let h = WHALE_XS.len() as u16;
     let rect = Rect::new(
         cells.right().saturating_sub(w),
@@ -118,7 +143,7 @@ fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
 /// status row, the input well, and the key-hint row — mirroring the Web UI's
 /// distinct composer surface. A brand-blue edge bar glows while working.
 /// `pet_pad` columns at the right stay text-free for the whale pet.
-fn draw_composer(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
+fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
     let running = !matches!(app.state, RunState::Idle);
 
@@ -142,11 +167,20 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
         area.width.saturating_sub(2 + pet_pad),
         area.height,
     );
-    if inner.width == 0 || inner.height < 3 {
+    if inner.width == 0 || inner.height < 2 {
         return;
     }
 
-    // Status row: left state + right model/tokens, collision-aware.
+    // Draft first: the input well fills everything above the meta row.
+    // Inline [image n] chips live in the draft text; draw_input restyles
+    // them and records their rects for hover/preview hit-tests.
+    app.att_chips.clear();
+    app.att_thumbs.clear();
+    let well = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
+    draw_input(f, app, well);
+
+    // Bottom meta row: run state + mode/permission chips left, model
+    // right, collision-aware.
     let left = status_title(app);
     let mut right_spans = status_right(app);
     let w = inner.width as usize;
@@ -172,23 +206,17 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     spans.extend(right_spans);
     f.render_widget(
         Paragraph::new(Line::from(spans)),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-
-    // Input well between the status and hint rows.
-    let well = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 2);
-    draw_input(f, app, well);
-
-    f.render_widget(
-        Paragraph::new(hints_title(app)),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
 }
 
-/// Status row, left side: run state.
-fn status_title(app: &App) -> Line<'static> {
+/// The run-state line — rendered as the transcript's always-last line
+/// (hugging the newest message), not in the composer: `● idle` when quiet,
+/// spinner + phase + elapsed + queue depth while a turn runs, and
+/// exceptional finishes in their accent color.
+fn state_line(app: &App) -> Line<'static> {
     let theme = app.theme;
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    let mut spans: Vec<Span> = Vec::new();
     match app.state {
         RunState::Idle => {
             spans.push(Span::styled("● ", Style::default().fg(theme.ok_soft())));
@@ -198,7 +226,11 @@ fn status_title(app: &App) -> Line<'static> {
             match app.transcript.last_finish.as_deref() {
                 None | Some("completed") | Some("stop") => {}
                 Some(kind) => {
-                    let color = if kind == "error" { theme.err } else { theme.warn_soft() };
+                    let color = if kind == "error" {
+                        theme.err
+                    } else {
+                        theme.warn_soft()
+                    };
                     spans.push(Span::styled(
                         format!(" · {kind}"),
                         Style::default().fg(color),
@@ -239,31 +271,43 @@ fn status_title(app: &App) -> Line<'static> {
             }
         }
     }
-    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+/// Meta row, left side: the session's mode chips only (run state lives at
+/// the transcript tail).
+fn status_title(app: &App) -> Line<'static> {
+    let theme = app.theme;
+    let mut spans: Vec<Span> = Vec::new();
     // Mode chips: folded from the durable event stream (same facts as the
-    // Web UI chips). Only facts the host actually reported are shown.
-    if let Some(preset) = &app.modes.agent_preset {
-        spans.push(Span::styled(
-            format!("⚙ {preset} "),
-            Style::default().fg(theme.fg_tertiary),
-        ));
-    }
-    if let Some(perm) = &app.modes.permission {
-        let short = perm.replace("danger-full-access", "full-access");
-        spans.push(Span::styled(
-            format!("⛨ {short} "),
-            Style::default().fg(if short == "full-access" {
-                theme.warn_soft()
-            } else {
-                theme.fg_tertiary
-            }),
-        ));
-    } else if let Some(sandbox) = &app.modes.sandbox {
-        spans.push(Span::styled(
-            format!("⛨ {sandbox} "),
-            Style::default().fg(theme.fg_tertiary),
-        ));
-    }
+    // Web UI chips). Stock defaults render until the host reports its own
+    // facts, so the landing screen still advertises preset + permission.
+    let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
+    spans.push(Span::styled(
+        format!("⚙ {preset} "),
+        Style::default().fg(theme.fg_tertiary),
+    ));
+    let perm = app
+        .modes
+        .permission
+        .clone()
+        .or_else(|| app.modes.sandbox.clone())
+        .unwrap_or_else(|| app.current_permission().to_string());
+    let label = crate::app::permission_label(&perm);
+    spans.push(Span::styled(
+        format!("⛨ {label}"),
+        Style::default().fg(if perm == "danger-full-access" {
+            theme.warn_soft()
+        } else {
+            theme.fg_tertiary
+        }),
+    ));
+    // ⇧⇥ cycles the permission preset — keep the affordance visible
+    // now that the shortcut-hints row is gone.
+    spans.push(Span::styled(
+        "·⇧⇥ ".to_string(),
+        Style::default().fg(theme.caption),
+    ));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
             format!("⚖ {approval} "),
@@ -279,11 +323,51 @@ fn status_title(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Status row, right side: model chip (brand accent) · token flow. The session
-/// id lives in the banner and `/status` — it was pure noise here.
+/// Contextual shortcut hints — a tiny state machine over (run state ×
+/// draft): what Enter does *right now*, how to interrupt, how to send
+/// immediately. Idle+empty falls back to the `^. keys` discovery hint.
+fn context_hints(app: &App) -> Vec<Span<'static>> {
+    let theme = app.theme;
+    let key = Style::default()
+        .fg(theme.fg_tertiary)
+        .add_modifier(Modifier::BOLD);
+    let lbl = Style::default().fg(theme.caption);
+    let running = !matches!(app.state, RunState::Idle);
+    let pairs: Vec<(&str, &str)> = match (running, app.input.is_empty()) {
+        // Working, nothing typed: the only move is stopping it.
+        (true, true) => vec![("esc", "interrupt")],
+        // Working with a draft: enter queues; ^x interrupts and sends now.
+        (true, false) => vec![("⏎", "queue"), ("^x", "send now"), ("esc", "interrupt")],
+        // Idle, empty: point at the full shortcut list.
+        (false, true) => vec![("^.", "keys")],
+        // Idle with a draft: enter's meaning follows the prefix.
+        (false, false) if app.input.buf.starts_with('/') => vec![("⏎", "command")],
+        (false, false) if app.input.buf.starts_with('!') => vec![("⏎", "shell")],
+        (false, false) => vec![("⏎", "send")],
+    };
+    let mut spans = Vec::new();
+    for (i, (k, l)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                " · ".to_string(),
+                Style::default().fg(theme.border),
+            ));
+        }
+        spans.push(Span::styled(k.to_string(), key));
+        spans.push(Span::styled(format!(" {l}"), lbl));
+    }
+    spans.push(Span::styled(
+        " · ".to_string(),
+        Style::default().fg(theme.border),
+    ));
+    spans
+}
+
+/// Meta row, right side: contextual shortcut hints, model chip (brand
+/// accent), and the requested reasoning effort. Token flow lives in the
+/// usage footer; the session id lives in the banner and `/session`.
 fn status_right(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
-    let u = app.transcript.usage;
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     if app.scroll_up > 0 {
         spans.push(Span::styled(
@@ -291,21 +375,23 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
             Style::default().fg(theme.caption),
         ));
     }
+    spans.extend(context_hints(app));
+    // Chip precedence: an explicit /model pick (until a turn realizes it)
+    // → the model that actually streamed last → the configured default.
     let shown_model = app
-        .transcript
-        .last_model
+        .selected_model
         .clone()
+        .or_else(|| app.transcript.last_model.clone())
         .unwrap_or_else(|| app.cfg.model.clone());
     spans.push(Span::styled(
         shown_model,
         Style::default().fg(theme.brand_soft),
     ));
-    if u.input + u.output > 0 {
-        let mut t = format!(" · ↑{} ↓{}", fmt_tokens(u.input), fmt_tokens(u.output));
-        if u.cached > 0 {
-            t.push_str(&format!(" (cache {})", fmt_tokens(u.cached)));
-        }
-        spans.push(Span::styled(t, Style::default().fg(theme.caption)));
+    if let Some(effort) = &app.modes.effort {
+        spans.push(Span::styled(
+            format!(" · {effort}"),
+            Style::default().fg(theme.caption),
+        ));
     }
     if app.demo {
         spans.push(Span::styled(
@@ -317,34 +403,125 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
-/// Hint row: a handful of key hints — bold key, dim label, faint
-/// separators. Everything else lives in `/help` and `/keys`.
-fn hints_title(app: &App) -> Line<'static> {
+/// Usage footer below the composer: input/output token flow, cache hit rate,
+/// and reasoning tokens. Rendered on the base background so it reads as a
+/// status strip distinct from the composer panel above it.
+fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
-    let key = Style::default()
-        .fg(theme.fg_tertiary)
-        .add_modifier(Modifier::BOLD);
+    f.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
+    let inner = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(2 + pet_pad),
+        area.height,
+    );
+    if inner.width < 12 {
+        return;
+    }
+    let u = app.transcript.usage;
+    let s = app.transcript.stats;
+
     let lbl = Style::default().fg(theme.caption);
-    let pairs: &[(&str, &str)] = match app.state {
-        RunState::Idle => &[
-            ("⏎", "send"),
-            ("/", "commands"),
-            ("!", "shell"),
-            ("↑", "history"),
-            ("^t", "theme"),
-        ],
-        _ => &[("⏎", "queue"), ("alt+⏎", "send now"), ("esc", "interrupt")],
-    };
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
-    for (i, (k, l)) in pairs.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled("  ·  ".to_string(), Style::default().fg(theme.border)));
+    let val = Style::default().fg(theme.fg_secondary);
+    let sep = Style::default().fg(theme.border);
+
+    // Sections are built in display order with a priority; at narrow widths
+    // the lowest-priority sections are dropped so the bar never clips.
+    let mut sections: Vec<(u32, Vec<Span>)> = Vec::new();
+
+    if u.input > 0 || u.output > 0 {
+        let mut sp = Vec::new();
+        sp.push(Span::styled("Input ".to_string(), lbl));
+        sp.push(Span::styled(format!("{} tok", fmt_tokens(u.input)), val));
+        sp.push(Span::styled(" • Output ".to_string(), lbl));
+        sp.push(Span::styled(format!("{} tok", fmt_tokens(u.output)), val));
+        sections.push((0, sp));
+    }
+
+    if s.turns > 0 || s.steps > 0 {
+        let mut sp = Vec::new();
+        sp.push(Span::styled(
+            format!("{} turn{}", s.turns, if s.turns == 1 { "" } else { "s" }),
+            val,
+        ));
+        sp.push(Span::styled(
+            format!(" • {} step{}", s.steps, if s.steps == 1 { "" } else { "s" }),
+            val,
+        ));
+        sections.push((1, sp));
+    }
+
+    if u.input > 0 {
+        let rate = (u.cached as f64 / u.input as f64).min(1.0);
+        let mut sp = Vec::new();
+        sp.push(Span::styled("Cache hit ".to_string(), lbl));
+        sp.push(Span::styled(
+            format!("{:.0}%", rate * 100.0),
+            Style::default()
+                .fg(theme.brand_soft)
+                .add_modifier(Modifier::BOLD),
+        ));
+        sections.push((2, sp));
+    }
+
+    if s.turn_millis > 0 {
+        let mut sp = Vec::new();
+        sp.push(Span::styled("LLM ".to_string(), lbl));
+        sp.push(Span::styled(fmt_duration_ms(s.llm_millis()), val));
+        sp.push(Span::styled(" • Tool call ".to_string(), lbl));
+        sp.push(Span::styled(fmt_duration_ms(s.tool_millis), val));
+        sections.push((3, sp));
+    }
+
+    if s.ttft_count > 0 || u.output > 0 {
+        let tps = tok_per_sec(u.output, s.llm_millis());
+        let mut sp = Vec::new();
+        sp.push(Span::styled("TTFT avg ".to_string(), lbl));
+        sp.push(Span::styled(fmt_ttft(s.ttft_avg_millis()), val));
+        if tps > 0 {
+            sp.push(Span::styled(" • ".to_string(), lbl));
+            sp.push(Span::styled(format!("{tps} tok/s"), val));
         }
-        spans.push(Span::styled(k.to_string(), key));
-        spans.push(Span::styled(format!(" {l}"), lbl));
+        sections.push((4, sp));
+    }
+
+    // Drop the least-important sections until everything fits the pane.
+    const SEP_W: usize = 3; // " | "
+    while sections.len() > 1 {
+        let total: usize = sections
+            .iter()
+            .map(|(_, sp)| span_widths(sp))
+            .sum::<usize>()
+            + (sections.len() - 1) * SEP_W;
+        if total <= inner.width as usize {
+            break;
+        }
+        let max_pri = sections.iter().map(|(p, _)| *p).max().unwrap_or(0);
+        if let Some(idx) = sections.iter().position(|(p, _)| *p == max_pri) {
+            sections.remove(idx);
+        }
+    }
+
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    if sections.is_empty() {
+        spans.push(Span::styled(
+            "no stats yet — send a prompt".to_string(),
+            lbl,
+        ));
+    } else {
+        for (i, (_, mut sp)) in sections.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" | ".to_string(), sep));
+            }
+            spans.append(&mut sp);
+        }
     }
     spans.push(Span::raw(" "));
-    Line::from(spans)
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+fn span_widths(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
@@ -355,12 +532,30 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         area.width.saturating_sub(2),
         area.height,
     );
+    let mut owners: Vec<Option<usize>> = Vec::new();
+    let banner_count;
     let mut lines = if app.show_banner {
-        banner_lines(app, inner.width)
+        let banner = banner_lines(app, inner.width);
+        banner_count = banner.len();
+        owners.resize(banner_count, None);
+        banner
     } else {
+        banner_count = 0;
         Vec::new()
     };
-    lines.extend(app.transcript.lines(&theme, inner.width, app.spinner()));
+    let thumbs = crate::pet::kitty_supported();
+    let layout = app
+        .transcript
+        .layout(&theme, inner.width, app.spinner(), thumbs);
+    lines.extend(layout.lines);
+    owners.extend(layout.owners);
+    // The run state rides as the transcript's last line — hugging the
+    // newest message (no separator; it scrolls with the list). The landing
+    // banner skips it: an "idle" badge on a welcome screen is noise.
+    if !app.show_banner {
+        lines.push(state_line(app));
+        owners.push(None);
+    }
 
     let total = lines.len();
     let h = inner.height as usize;
@@ -380,6 +575,31 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     app.chat_view.lines = lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    app.chat_view.owners = owners;
+
+    // Visible image thumbnails → screen rects (banner lines shift transcript
+    // line indices; partially visible thumbnails clip to the pane).
+    app.chat_view.images = layout
+        .images
+        .iter()
+        .filter_map(|shot| {
+            let abs = banner_count + shot.line;
+            let rel = abs as isize - start as isize;
+            if rel < 0 || rel as usize >= h {
+                return None;
+            }
+            let top = inner.y + rel as u16;
+            let rows = (shot.rows as u16).min(inner.height.saturating_sub(rel as u16));
+            if rows == 0 {
+                return None;
+            }
+            Some(crate::app::ThumbPlacement {
+                id: shot.id,
+                rect: ratatui::layout::Rect::new(inner.x, top, shot.cols as u16, rows),
+                data: shot.data.clone(),
+            })
+        })
         .collect();
 
     f.render_widget(Paragraph::new(visible), inner);
@@ -421,25 +641,132 @@ fn draw_selection_overlay(f: &mut Frame, app: &App, inner: Rect, start: usize) {
 
 fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
+    let transient = app.tip.is_some();
     let text = match &app.tip {
         Some((t, _)) => t.clone(),
         None => AMBIENT_TIPS[app.ambient_tip_idx % AMBIENT_TIPS.len()].to_string(),
     };
-    let style = if app.tip.is_some() {
-        Style::default().fg(theme.warn_soft())
+
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    if transient {
+        // Action feedback reads brighter than the rotating hints.
+        spans.push(Span::styled(text, Style::default().fg(theme.fg)));
     } else {
-        Style::default().fg(theme.caption)
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(format!("  {text}"), style))),
-        area,
-    );
+        spans.push(Span::styled(
+            "Tip".to_string(),
+            Style::default()
+                .fg(theme.brand_soft)
+                .add_modifier(Modifier::BOLD),
+        ));
+        // Rotating hints read a tier below the chat body text above — the
+        // banner is furniture, not content. Gray-blue keeps it on-brand.
+        spans.push(Span::styled(
+            format!(" · {text}"),
+            Style::default().fg(theme.hint),
+        ));
+    }
+    spans.push(Span::raw(" "));
+
+    // The cap and the text share one row: the styled tip line rides as a
+    // title inside the rounded top border, corners at both ends, and the
+    // side borders of the composer shape start right below.
+    let block = Block::default()
+        .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(Line::from(spans))
+        .style(Style::default().bg(theme.bg));
+    f.render_widget(block, area);
 }
 
+/// grok-style hover preview: when the pointer rests on an inline chip (or
+/// the text cursor sits in one), pop a card above the composer with a
+/// kitty thumbnail (PNG + pixel terminals) and basic metadata.
+fn draw_attachment_preview(f: &mut Frame, app: &mut App, composer: Rect, screen: Rect) {
+    let Some(idx) = app.preview_att() else {
+        return;
+    };
+    let Some(att) = app.pending_images.get(idx) else {
+        return;
+    };
+    let theme = app.theme;
+    let dims = crate::pet::image_dims(&att.data);
+    let pixels = app.pet_pixels && att.is_png();
+    let thumb_h: u16 = if pixels { 5 } else { 0 };
+    let w: u16 = 36.min(screen.width.saturating_sub(2));
+    let h: u16 = thumb_h + 3 + 2; // meta lines + borders
+    if screen.height <= h || w < 12 {
+        return;
+    }
+    // Anchor near the chip, clamped on-screen, sitting above the composer.
+    let anchor_x = app
+        .att_chips
+        .iter()
+        .find(|(_, i)| *i == idx)
+        .map(|(r, _)| r.x)
+        .unwrap_or(composer.x + 2);
+    let x = anchor_x.min(screen.x + screen.width - w);
+    let y = composer.y.saturating_sub(h);
+    let area = Rect::new(x, y, w, h);
+    f.render_widget(Clear, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for _ in 0..thumb_h {
+        lines.push(Line::default()); // reserved rows the kitty image covers
+    }
+    lines.push(Line::from(Span::styled(
+        att.name.clone(),
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+    )));
+    let dims_txt = dims
+        .map(|(iw, ih)| format!("{iw}×{ih} px"))
+        .unwrap_or_else(|| "unknown size".into());
+    let kb = att.data.len() as f64 / 1024.0;
+    let size_txt = if kb >= 1024.0 {
+        format!("{:.1} MB", kb / 1024.0)
+    } else {
+        format!("{kb:.0} KB")
+    };
+    lines.push(Line::from(Span::styled(
+        format!("{dims_txt} · {size_txt} · {}", att.media_type),
+        Style::default().fg(theme.caption),
+    )));
+    lines.push(Line::from(Span::styled(
+        "⌫ on the chip removes · enter sends".to_string(),
+        Style::default().fg(theme.caption),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            format!(" {} ", att.token),
+            Style::default().fg(theme.brand_soft),
+        ))
+        .style(Style::default().bg(theme.panel));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines), inner);
+    if pixels && thumb_h > 0 {
+        // Aspect-fit the thumbnail into the reserved rows (cells ≈ 1:2).
+        let cols = dims
+            .filter(|&(_, ih)| ih > 0)
+            .map(|(iw, ih)| ((thumb_h as u64 * 2 * iw as u64 + ih as u64 / 2) / ih as u64) as u16)
+            .unwrap_or(10)
+            .clamp(4, inner.width.max(4));
+        app.att_thumbs.push(crate::app::ThumbPlacement {
+            id: att.id,
+            rect: Rect::new(inner.x, inner.y, cols.min(inner.width), thumb_h),
+            data: att.data.clone(),
+        });
+    }
+}
 
 /// The input well. Long prompts wrap across the (now taller) well, and the
 /// cursor follows the wrap; `/` and `!` prefixes recolor the whole line.
-fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+/// Inline `[image n]` tokens render as chips (no icon — the token itself is
+/// the chip) and their screen rects land in `app.att_chips` for hover.
+fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     if area.width < 4 || area.height == 0 {
         return;
@@ -448,13 +775,15 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let pw = prompt.width();
     let prompt_span = Span::styled(
         prompt.to_string(),
-        Style::default().fg(theme.brand).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.brand)
+            .add_modifier(Modifier::BOLD),
     );
 
     if app.input.is_empty() {
         let placeholder = match app.state {
-            RunState::Idle => "describe what you want to build…",
-            _ => "queue a follow-up — alt+⏎ sends it now",
+            RunState::Idle => "describe what you want to build…".to_string(),
+            _ => "queue a follow-up — ctrl+x sends it now".to_string(),
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -479,31 +808,54 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default().fg(theme.fg)
     };
+    // Inline chips: which char indices belong to which [image n] token.
+    let spans = app.token_spans();
+    let chip_of = |i: usize| -> Option<usize> {
+        spans
+            .iter()
+            .find(|(s, e, _)| i >= *s && i < *e)
+            .map(|&(_, _, idx)| idx)
+    };
+    let chip_style = Style::default()
+        .fg(theme.bubble_fg)
+        .bg(theme.bubble_bg)
+        .add_modifier(Modifier::BOLD);
 
-    // Manual display-width wrap so the cursor tracks across rows.
+    // Manual wrap: hard-break on `\n`, soft-wrap on display width, and track
+    // the cursor's (row, col) across both. Rows keep char indices so chips
+    // can be restyled and hit-tested after wrapping.
     let avail = (area.width as usize).saturating_sub(pw).max(1);
-    let mut rows: Vec<String> = vec![String::new()];
+    let mut rows: Vec<Vec<(usize, char)>> = vec![Vec::new()];
     let mut col = 0usize;
-    let mut cursor = (0usize, 0usize); // (row, display col)
+    let mut cursor: Option<(usize, usize)> = None; // (row, display col)
     for (i, ch) in app.input.buf.chars().enumerate() {
-        let cw = ch.width().unwrap_or(1).max(1);
+        if ch == '\n' {
+            if i == app.input.cursor {
+                cursor = Some((rows.len() - 1, col));
+            }
+            rows.push(Vec::new());
+            col = 0;
+            continue;
+        }
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
         if col + cw > avail {
-            rows.push(String::new());
+            rows.push(Vec::new());
             col = 0;
         }
         if i == app.input.cursor {
-            cursor = (rows.len() - 1, col);
+            cursor = Some((rows.len() - 1, col));
         }
-        rows.last_mut().expect("wrap row").push(ch);
+        rows.last_mut().expect("input row").push((i, ch));
         col += cw;
     }
-    if app.input.cursor >= app.input.buf.chars().count() {
+    let cursor = cursor.unwrap_or_else(|| {
         if col >= avail {
-            rows.push(String::new());
-            col = 0;
+            rows.push(Vec::new());
+            (rows.len() - 1, 0)
+        } else {
+            (rows.len() - 1, col)
         }
-        cursor = (rows.len() - 1, col);
-    }
+    });
 
     // Keep the cursor row inside the well; otherwise show the tail.
     let h = area.height as usize;
@@ -512,6 +864,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         start = cursor.0;
     }
 
+    let mut chip_rects: Vec<(Rect, usize)> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
     for (r, row) in rows.iter().enumerate().skip(start).take(h) {
         let lead = if r == 0 {
@@ -519,15 +872,75 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Span::raw(" ".repeat(pw))
         };
-        lines.push(Line::from(vec![lead, Span::styled(row.clone(), style)]));
+        let mut segs: Vec<Span> = vec![lead];
+        let y = area.y + (r - start) as u16;
+        let mut seg = String::new();
+        let mut seg_chip: Option<usize> = None;
+        let mut seg_col = 0usize; // display col where the current segment starts
+        let mut colw = 0usize;
+        let flush = |segs: &mut Vec<Span>,
+                     chip_rects: &mut Vec<(Rect, usize)>,
+                     seg: &mut String,
+                     seg_chip: Option<usize>,
+                     seg_col: usize,
+                     colw: usize| {
+            if seg.is_empty() {
+                return;
+            }
+            match seg_chip {
+                Some(idx) => {
+                    segs.push(Span::styled(std::mem::take(seg), chip_style));
+                    chip_rects.push((
+                        Rect::new(
+                            area.x + (pw + seg_col) as u16,
+                            y,
+                            (colw - seg_col) as u16,
+                            1,
+                        ),
+                        idx,
+                    ));
+                }
+                None => segs.push(Span::styled(std::mem::take(seg), style)),
+            }
+        };
+        for &(i, ch) in row {
+            let chip = chip_of(i);
+            if chip != seg_chip {
+                flush(
+                    &mut segs,
+                    &mut chip_rects,
+                    &mut seg,
+                    seg_chip,
+                    seg_col,
+                    colw,
+                );
+                seg_chip = chip;
+                seg_col = colw;
+            }
+            seg.push(ch);
+            colw += UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+        }
+        flush(
+            &mut segs,
+            &mut chip_rects,
+            &mut seg,
+            seg_chip,
+            seg_col,
+            colw,
+        );
+        lines.push(Line::from(segs));
     }
     f.render_widget(Paragraph::new(lines), area);
+    app.att_chips = chip_rects;
 
     let cy = area.y + (cursor.0 - start).min(h - 1) as u16;
     let cx = area.x + pw as u16 + cursor.1 as u16;
     f.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), cy));
 }
 
+/// Rows of menu items shown at once; the window follows the selection
+/// (↑/↓ wrap) and the bottom title shows the position when clipped.
+const SLASH_MENU_ROWS: usize = 12;
 
 fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
     let matches = app.slash_matches();
@@ -535,32 +948,105 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
         return;
     }
     let theme = app.theme;
-    let h = (matches.len() as u16 + 2).min(chat.height);
-    let w = 56.min(input.width.saturating_sub(2));
+    let n = matches.len();
+    let sel = app.slash_sel.min(n - 1);
+    // Cap the popup: tall skill catalogs scroll instead of swallowing the
+    // chat pane.
+    let vis = SLASH_MENU_ROWS
+        .min(n)
+        .min(chat.height.saturating_sub(2) as usize);
+    if vis == 0 {
+        return;
+    }
+    // Follow-window: selection stays visible, window pinned to the ends.
+    let start = if sel < vis { 0 } else { sel + 1 - vis }.min(n - vis);
+
+    // Name column sized to what's listed (padded, never glued to the desc).
+    let name_w = matches
+        .iter()
+        .map(|m| m.usage.width())
+        .max()
+        .unwrap_or(14)
+        .clamp(14, 26);
+
+    let h = vis as u16 + 2;
+    let w = 64.min(input.width.saturating_sub(2));
     let y = input.y.saturating_sub(h);
     let area = Rect::new(input.x + 2, y, w, h);
     f.render_widget(Clear, area);
     let mut lines = Vec::new();
-    for (i, cmd) in matches.iter().enumerate() {
-        let selected = i == app.slash_sel.min(matches.len() - 1);
+    for (i, cmd) in matches.iter().enumerate().skip(start).take(vis) {
+        let selected = i == sel;
         let marker = if selected { "▸ " } else { "  " };
         let name_style = if selected {
-            Style::default().fg(theme.brand).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.brand)
+                .add_modifier(Modifier::BOLD)
+        } else if cmd.skill {
+            // Host skills read one shade apart from the builtins — the
+            // gray-blue hint tone, not a loud accent.
+            Style::default().fg(theme.hint)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
+        let desc = if cmd.skill {
+            format!("{} · skill", cmd.desc)
+        } else {
+            cmd.desc.to_string()
+        };
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(format!("{:<20}", cmd.usage), name_style),
-            Span::styled(cmd.desc.to_string(), Style::default().fg(theme.caption)),
+            Span::styled(pad_or_ellipsize(&cmd.usage, name_w), name_style),
+            Span::styled(format!(" {desc}"), Style::default().fg(theme.caption)),
         ]));
     }
-    let block = Block::default()
+    let title = if matches.iter().any(|m| m.skill) {
+        " commands · skills "
+    } else {
+        " commands "
+    };
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
-        .title(Span::styled(" commands ", Style::default().fg(theme.caption)))
+        .title(Span::styled(title, Style::default().fg(theme.caption)))
         .style(Style::default().bg(theme.panel));
+    if n > vis {
+        // Clipped: show position + scroll affordance in the bottom border.
+        let above = start > 0;
+        let below = start + vis < n;
+        let arrows = match (above, below) {
+            (true, true) => "↑↓",
+            (true, false) => "↑",
+            _ => "↓",
+        };
+        block = block.title_bottom(Span::styled(
+            format!(" {}/{n} {arrows} ", sel + 1),
+            Style::default().fg(theme.caption),
+        ));
+    }
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Pad `s` to exactly `w` display cells, ellipsizing when longer — keeps
+/// the desc column aligned even for long skill names.
+fn pad_or_ellipsize(s: &str, w: usize) -> String {
+    let sw = s.width();
+    if sw <= w {
+        return format!("{s}{}", " ".repeat(w - sw));
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > w.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    let ow = out.width();
+    format!("{out}{}", " ".repeat(w.saturating_sub(ow)))
 }
 
 fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
@@ -583,7 +1069,11 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         .iter()
         .map(|item| {
             let label_w = item.label.width()
-                + if Some(item.id.as_str()) == current_id { 2 } else { 0 };
+                + if Some(item.id.as_str()) == current_id {
+                    2
+                } else {
+                    0
+                };
             2 + label_w.max(24) + item.meta.width()
         })
         .max()
@@ -599,7 +1089,9 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         let selected = i == picker.sel;
         let marker = if selected { "▸ " } else { "  " };
         let style = if selected {
-            Style::default().fg(theme.brand).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.brand)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
@@ -662,8 +1154,14 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             Span::styled(v, Style::default().fg(theme.fg_secondary)),
         ])
     };
-    out.push(kv("version", format!("dsh-tui {}", env!("CARGO_PKG_VERSION"))));
-    out.push(kv("model", format!("{} · {}", app.cfg.provider, app.cfg.model)));
+    out.push(kv(
+        "version",
+        format!("dsh-tui {}", env!("CARGO_PKG_VERSION")),
+    ));
+    out.push(kv(
+        "model",
+        format!("{} · {}", app.cfg.provider, app.cfg.model),
+    ));
     out.push(kv("workspace", shorten_home(&app.cfg.workspace)));
     out.push(kv("session", app.session_id.clone()));
     let runtime_short = app
@@ -717,15 +1215,43 @@ fn shorten_home(path: &str) -> String {
 }
 
 fn fmt_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}m", n as f64 / 1e6)
-    } else if n >= 10_000 {
-        format!("{:.0}k", n as f64 / 1e3)
+    let (v, suffix) = if n >= 1_000_000 {
+        (n as f64 / 1_000_000.0, "M")
     } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1e3)
+        (n as f64 / 1_000.0, "K")
     } else {
-        n.to_string()
+        return n.to_string();
+    };
+    if v >= 100.0 || v.fract() < 0.05 {
+        format!("{v:.0}{suffix}")
+    } else {
+        format!("{v:.1}{suffix}")
     }
+}
+
+fn fmt_duration_ms(ms: u64) -> String {
+    let secs = ms / 1000;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}h{m}m{s}s")
+    } else if m > 0 {
+        format!("{m}m{s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+fn fmt_ttft(ms: u64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
+}
+
+fn tok_per_sec(output: u64, llm_ms: u64) -> u64 {
+    if llm_ms == 0 {
+        return 0;
+    }
+    (output as f64 / (llm_ms as f64 / 1000.0)).round() as u64
 }
 
 /// Render one frame into a plain string (used by `--dump-frame` and tests).
@@ -762,12 +1288,26 @@ mod tests {
     use crate::runtime::RuntimeConfig;
     use std::sync::mpsc;
 
+    /// Unique session root per call — keeps the modes cache from leaking
+    /// between tests and runs.
+    fn fresh_root() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-tui-ui-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.to_string_lossy().into_owned()
+    }
+
     fn test_app() -> App {
         let cfg = RuntimeConfig {
             bin: "dsh-runtime".into(),
             cordis: "cordis".into(),
             workspace: "/tmp".into(),
-            session_root: "/tmp".into(),
+            session_root: fresh_root(),
             provider: "deepseek".into(),
             model: "deepseek-chat".into(),
             max_tokens: None,
@@ -789,11 +1329,111 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
         let buf = terminal.backend().buffer().clone();
         let theme = app.theme;
-        // height 20 → composer rows 15..20 (status / 3-row well / hints).
-        assert_eq!(buf[(4, 15)].bg, theme.panel, "status row on panel surface");
-        assert_eq!(buf[(40, 17)].bg, theme.panel, "input well on panel surface");
-        assert_eq!(buf[(4, 19)].bg, theme.panel, "hint row on panel surface");
+        // height 20 → usage footer (1 row) + composer rows 15..18
+        // (3-row well on top / bottom meta row), tip cap at 14, chat above.
+        assert_eq!(
+            buf[(40, 15)].bg,
+            theme.panel,
+            "input well top on panel surface"
+        );
+        assert_eq!(buf[(40, 16)].bg, theme.panel, "input well on panel surface");
+        assert_eq!(buf[(4, 18)].bg, theme.panel, "meta row on panel surface");
+        assert_eq!(buf[(4, 19)].bg, theme.bg, "usage footer on base background");
         assert_eq!(buf[(4, 10)].bg, theme.bg, "chat keeps the base background");
+    }
+
+    #[test]
+    fn model_chip_prefers_fresh_pick_until_a_turn_realizes_it() {
+        let flat = |spans: Vec<Span>| -> String {
+            spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+        };
+        let mut app = test_app();
+        // A previous turn streamed on pro; the user just picked flash.
+        app.transcript.last_model = Some("deepseek-v4-pro".into());
+        app.selected_model = Some("deepseek-v4-flash".into());
+        let s = flat(status_right(&app));
+        assert!(s.contains("deepseek-v4-flash"), "{s}");
+        assert!(!s.contains("deepseek-v4-pro"), "{s}");
+        // Without a pick, the streamed model rules.
+        app.selected_model = None;
+        let s = flat(status_right(&app));
+        assert!(s.contains("deepseek-v4-pro"), "{s}");
+    }
+
+    #[test]
+    fn meta_row_hints_follow_the_state_machine() {
+        let flat = |spans: Vec<Span>| -> String {
+            spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+        };
+        let mut app = test_app();
+        // idle · empty → discovery hint
+        assert!(flat(context_hints(&app)).contains("^. keys"));
+        // idle · draft → enter sends
+        app.input.set("hello".into());
+        let s = flat(context_hints(&app));
+        assert!(s.contains("⏎ send"), "{s}");
+        assert!(!s.contains("keys"), "{s}");
+        // idle · slash / shell drafts relabel enter
+        app.input.set("/mo".into());
+        assert!(flat(context_hints(&app)).contains("⏎ command"));
+        app.input.set("!ls".into());
+        assert!(flat(context_hints(&app)).contains("⏎ shell"));
+        // running · empty → interrupt only
+        app.state = RunState::Running;
+        app.input.clear();
+        let s = flat(context_hints(&app));
+        assert!(s.contains("esc interrupt"), "{s}");
+        assert!(!s.contains("⏎"), "{s}");
+        // running · draft → queue + send-now + interrupt
+        app.input.set("follow-up".into());
+        let s = flat(context_hints(&app));
+        assert!(
+            s.contains("⏎ queue") && s.contains("^x send now") && s.contains("esc interrupt"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn usage_footer_shows_turn_stats_and_cache() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.transcript.usage.input = 1834;
+        app.transcript.usage.output = 412;
+        app.transcript.usage.cached = 1200;
+        app.transcript.stats.turns = 1;
+        app.transcript.stats.steps = 67;
+        let frame = dump_frame(&mut app, 100, 20);
+        let footer = frame.lines().last().expect("footer row");
+        assert!(footer.contains("1 turn"), "{footer}");
+        assert!(footer.contains("67 steps"), "{footer}");
+        assert!(footer.contains("Cache hit 65%"), "{footer}");
+        assert!(footer.contains("Input 1.8K tok"), "{footer}");
+        assert!(footer.contains("Output 412 tok"), "{footer}");
+    }
+
+    #[test]
+    fn usage_footer_drops_sections_on_narrow_screens() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.transcript.usage.input = 1834;
+        app.transcript.usage.output = 412;
+        app.transcript.usage.cached = 1200;
+        app.transcript.stats.turns = 1;
+        app.transcript.stats.steps = 67;
+        app.transcript.stats.turn_millis = 909_000;
+        app.transcript.stats.ttft_count = 1;
+        app.transcript.stats.ttft_total_millis = 1500;
+
+        // Narrow: low-priority timing sections are dropped, tokens survive.
+        let footer = dump_frame(&mut app, 40, 20);
+        let footer = footer.lines().last().expect("footer row");
+        assert!(footer.contains("Input"), "tokens survive: {footer}");
+        assert!(footer.contains("Output"), "tokens survive: {footer}");
+        assert!(
+            !footer.contains("TTFT"),
+            "TTFT dropped when narrow: {footer}"
+        );
+        assert!(!footer.contains("LLM"), "LLM dropped when narrow: {footer}");
     }
 
     #[test]
@@ -806,6 +1446,27 @@ mod tests {
         let frame = dump_frame(&mut app, 40, 12);
         let wrapped = frame.lines().filter(|l| l.contains("aaaa")).count();
         assert!(wrapped >= 2, "input should wrap across well rows:\n{frame}");
+    }
+
+    #[test]
+    fn multiline_input_breaks_on_newlines() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.input.buf = "hello\nworld".into();
+        app.input.cursor = "hello\nworld".chars().count();
+        let frame = dump_frame(&mut app, 40, 12);
+        let hello = frame
+            .lines()
+            .position(|l| l.contains("hello"))
+            .expect("first line");
+        let world = frame
+            .lines()
+            .position(|l| l.contains("world"))
+            .expect("second line");
+        assert!(
+            world > hello,
+            "hard newline pushes the second line down:\n{frame}"
+        );
     }
 
     #[test]
@@ -833,7 +1494,11 @@ mod tests {
         assert_eq!(pet_rect(area, &app), None, "/liang off hides him");
         app.pet_visible = true;
         let narrow = Rect::new(0, 0, 50, 34);
-        assert_eq!(pet_rect(narrow, &app), None, "narrow terminals keep their columns");
+        assert_eq!(
+            pet_rect(narrow, &app),
+            None,
+            "narrow terminals keep their columns"
+        );
     }
 
     #[test]
@@ -850,7 +1515,10 @@ mod tests {
         // A pixel-protocol terminal draws nothing — the image goes on top.
         app.pet_pixels = true;
         let frame = dump_frame(&mut app, 100, 34);
-        assert!(!frame.contains("▄███"), "cells stay clear for the PNG:\n{frame}");
+        assert!(
+            !frame.contains("▄███"),
+            "cells stay clear for the PNG:\n{frame}"
+        );
 
         // /pet off → gone entirely.
         app.pet_pixels = false;
@@ -887,9 +1555,18 @@ mod tests {
             .lines()
             .find(|l| l.contains("Minimal mode"))
             .expect("minimal row");
-        assert!(minimal_row.contains("Minimal mode ✓"), "current mode marked: {minimal_row}");
-        assert!(minimal_row.contains("▸"), "selection marker on the current row");
-        assert!(frame.contains("bash + str_replace_editor"), "descriptions visible\n{frame}");
+        assert!(
+            minimal_row.contains("Minimal mode ✓"),
+            "current mode marked: {minimal_row}"
+        );
+        assert!(
+            minimal_row.contains("▸"),
+            "selection marker on the current row"
+        );
+        assert!(
+            frame.contains("bash + str_replace_editor"),
+            "descriptions visible\n{frame}"
+        );
     }
 
     #[test]
@@ -915,7 +1592,10 @@ mod tests {
             "plain-text layout captured for mouse selection"
         );
         assert!(
-            app.chat_view.lines.iter().any(|l| l.contains("Into the Unknown")),
+            app.chat_view
+                .lines
+                .iter()
+                .any(|l| l.contains("Into the Unknown")),
             "snapshot mirrors rendered content"
         );
     }
@@ -927,7 +1607,8 @@ mod tests {
         use ratatui::Terminal;
         let mut app = test_app();
         app.show_banner = false;
-        app.transcript.push_user("hello selection world".into(), false);
+        app.transcript
+            .push_user("hello selection world".into(), false);
         let backend = TestBackend::new(60, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         // First draw fills chat_view; then select and draw again.
@@ -956,8 +1637,7 @@ mod tests {
         assert_eq!(reversed, 9, "anchor..=head cells are highlighted");
         assert_eq!(
             app.selection_text(app.sel.unwrap()),
-            crate::app::slice_by_cells(&app.chat_view.lines[line], 0, 9)
-                .trim_end(),
+            crate::app::slice_by_cells(&app.chat_view.lines[line], 0, 9).trim_end(),
             "copied text matches the highlighted cells"
         );
     }

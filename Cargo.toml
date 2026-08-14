@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-tui"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 description = "Terminal-native agent UI for DeepSeek Harness over the SDK JSON-RPC stdio protocol"
 license = "MIT"

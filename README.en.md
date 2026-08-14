@@ -98,15 +98,22 @@ in that order.
 | Key / command | Behavior |
 |---|---|
 | `enter` | Send; queue a follow-up while a turn is running |
-| `alt+enter` | Standalone: interrupt and send next; plugin: queue |
-| `esc` | Standalone: interrupt and preserve the draft; press twice while idle to clear |
+| `ctrl+x` | Interrupt the current turn and send next (plugin forwards to host; standalone kills runtime) |
+| `esc` | Interrupt the current turn (draft survives); clears the draft when idle |
 | `ctrl+c` | Clear the draft, then interrupt; press twice to quit |
-| `/` | Open the command menu and filter by prefix |
+| `/` | Open the command menu and filter by prefix; host skills join it in plugin mode (picking one lands `/name `, enter ships it as a prompt the host expands) |
 | `/model` · `/mode` | Pick a model or agent preset; the full host catalog needs plugin mode |
 | `/permission` · `shift+tab` | Pick or cycle permission presets; plugin mode only |
 | `/effort` · `/plan` | Set reasoning effort or pass plan mode to the host |
-| `ctrl+e` · `ctrl+t` | Expand output · toggle the theme |
-| `pgup/pgdn` · `ctrl+u/d` | Scroll; `end` follows the live tail |
+| `/image <path> [text]` | Send a local image (png/jpeg/webp/gif); plugin mode only |
+| `/clip [text]` · `ctrl+v` | Stage the clipboard image (repeatable; up to 8 ride one prompt); macOS/Linux |
+| Image chips | Live inline in the draft as `[image n]` tokens (no icon); backspace cuts the whole chip, hover (or park the cursor on) one for a preview popup — kitty thumbnail + dimensions/size/type |
+| `ctrl+o` · `ctrl+t` | Expand output · toggle the theme |
+| `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
+| Readline editing | `ctrl+a/e` line ends · `ctrl+k/u` kill to end/start · `ctrl+w` word back |
+| macOS | `⌘←/→` line ends · `⌥←/→` word hops · `⌘⌫` kill to start · `⌥⌫` word back (physical key state read natively — works in every terminal) |
+| Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
+| Click tool · wheel over it | Click a tool to expand/collapse it; wheel scrolls its inner window |
 | Mouse drag | Copy on release; double-click a word; `shift+drag` uses native selection |
 | `!cmd` | Run a local shell command on the client, outside the agent |
 

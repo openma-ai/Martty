@@ -1,6 +1,6 @@
 //! App state and input handling — the grok-build interaction homage.
 //!
-//! Enter sends (or queues mid-turn, protocol-natively); Alt+Enter interrupts
+//! Enter sends (or queues mid-turn, protocol-natively); Ctrl+X interrupts
 //! and sends now; Esc cancels a running turn with the draft preserved, and
 //! double-Esc clears an idle draft; Ctrl+C clears first, then arms quit;
 //! `!` runs a local shell command; `/` opens the slash menu; Up recalls
@@ -10,20 +10,20 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
 use unicode_width::UnicodeWidthChar;
 
 use crate::bus::{AppEvent, Cmd, CtlEvent};
 use crate::controller::Controller;
 use crate::events::parse_notification;
+use crate::input::Action;
 use crate::runtime::RuntimeConfig;
 use crate::theme::Theme;
 use crate::transcript::{NoticeLevel, Transcript};
 
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-const ESC_ARM_WINDOW: Duration = Duration::from_millis(800);
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_millis(1500);
 const TIP_TTL: Duration = Duration::from_secs(4);
@@ -35,21 +35,91 @@ pub struct SlashCommand {
 }
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand { name: "help", usage: "/help", desc: "show help and tips" },
-    SlashCommand { name: "keys", usage: "/keys", desc: "keyboard shortcuts" },
-    SlashCommand { name: "new", usage: "/new [id]", desc: "start a fresh session" },
-    SlashCommand { name: "resume", usage: "/resume [id]", desc: "resume a durable session from this workspace" },
-    SlashCommand { name: "clear", usage: "/clear", desc: "clear the scrollback" },
-    SlashCommand { name: "model", usage: "/model [id]", desc: "switch model · live in plugin mode" },
-    SlashCommand { name: "mode", usage: "/mode [id]", desc: "agent mode · standard / code / minimal / creator" },
-    SlashCommand { name: "effort", usage: "/effort [off|high|max]", desc: "reasoning effort for this session" },
-    SlashCommand { name: "permission", usage: "/permission [preset]", desc: "permission preset picker · shift+tab cycles" },
-    SlashCommand { name: "plan", usage: "/plan [off]", desc: "host plan mode (command passthrough)" },
-    SlashCommand { name: "theme", usage: "/theme [dark|light]", desc: "toggle the DeepSeek palette" },
-    SlashCommand { name: "session", usage: "/session", desc: "show session + runtime info" },
-    SlashCommand { name: "logo", usage: "/logo", desc: "bring the whale back" },
-    SlashCommand { name: "liang", usage: "/liang [on|off]", desc: "召唤小难梁 — 🤫 idle · ⌨︎ working" },
-    SlashCommand { name: "quit", usage: "/quit", desc: "exit dsh-tui" },
+    SlashCommand {
+        name: "help",
+        usage: "/help",
+        desc: "show help and tips",
+    },
+    SlashCommand {
+        name: "keys",
+        usage: "/keys",
+        desc: "keyboard shortcuts",
+    },
+    SlashCommand {
+        name: "new",
+        usage: "/new [id]",
+        desc: "start a fresh session",
+    },
+    SlashCommand {
+        name: "resume",
+        usage: "/resume [id]",
+        desc: "resume a durable session from this workspace",
+    },
+    SlashCommand {
+        name: "clear",
+        usage: "/clear",
+        desc: "clear the scrollback",
+    },
+    SlashCommand {
+        name: "model",
+        usage: "/model [id]",
+        desc: "switch model · live in plugin mode",
+    },
+    SlashCommand {
+        name: "mode",
+        usage: "/mode [id]",
+        desc: "agent mode · standard / code / minimal / creator",
+    },
+    SlashCommand {
+        name: "effort",
+        usage: "/effort [off|high|max]",
+        desc: "reasoning effort for this session",
+    },
+    SlashCommand {
+        name: "permission",
+        usage: "/permission [preset]",
+        desc: "permission preset picker · shift+tab cycles",
+    },
+    SlashCommand {
+        name: "plan",
+        usage: "/plan [off]",
+        desc: "host plan mode (command passthrough)",
+    },
+    SlashCommand {
+        name: "image",
+        usage: "/image <path> [text]",
+        desc: "send a local image (png/jpeg/webp/gif)",
+    },
+    SlashCommand {
+        name: "clip",
+        usage: "/clip [text]",
+        desc: "attach the clipboard image (macOS/Linux)",
+    },
+    SlashCommand {
+        name: "theme",
+        usage: "/theme [dark|light]",
+        desc: "toggle the DeepSeek palette",
+    },
+    SlashCommand {
+        name: "session",
+        usage: "/session",
+        desc: "show session + runtime info",
+    },
+    SlashCommand {
+        name: "logo",
+        usage: "/logo",
+        desc: "bring the whale back",
+    },
+    SlashCommand {
+        name: "liang",
+        usage: "/liang [on|off]",
+        desc: "召唤小难梁 — 🤫 idle · ⌨︎ working",
+    },
+    SlashCommand {
+        name: "quit",
+        usage: "/quit",
+        desc: "exit dsh-tui",
+    },
 ];
 
 pub const MODEL_PRESETS: &[&str] = &[
@@ -64,10 +134,26 @@ pub const MODEL_PRESETS: &[&str] = &[
 /// description). They seed the mode picker; plugin mode replaces them with
 /// the host's real `agentPresets` roster, which may add custom presets.
 pub const AGENT_MODES: &[(&str, &str, &str)] = &[
-    ("standard", "Standard mode", "full coding agent · files, shell, search, skills, subagents"),
-    ("code", "Code mode", "standard tools driven from one TypeScript program"),
-    ("minimal", "Minimal mode", "two tools · persistent bash + str_replace_editor"),
-    ("creator", "Creator mode", "standard + runtime inspection and preset authoring"),
+    (
+        "standard",
+        "Standard mode",
+        "full coding agent · files, shell, search, skills, subagents",
+    ),
+    (
+        "code",
+        "Code mode",
+        "standard tools driven from one TypeScript program",
+    ),
+    (
+        "minimal",
+        "Minimal mode",
+        "two tools · persistent bash + str_replace_editor",
+    ),
+    (
+        "creator",
+        "Creator mode",
+        "standard + runtime inspection and preset authoring",
+    ),
 ];
 
 /// The stock permission presets (id, one-line meaning) — the default table
@@ -75,14 +161,22 @@ pub const AGENT_MODES: &[(&str, &str, &str)] = &[
 /// `/permission <name>` passes any other id through for profiles with a
 /// custom preset table (the host validates and lists what it knows).
 pub const PERMISSION_PRESETS: &[(&str, &str)] = &[
-    ("workspace-write", "write inside the workspace · wider actions ask for approval"),
-    ("danger-full-access", "full file access · approval prompts off — trusted dirs only"),
+    ("read-only", "read only — no file writes"),
+    (
+        "workspace-write",
+        "write inside the workspace · wider actions ask for approval",
+    ),
+    (
+        "danger-full-access",
+        "full file access · approval prompts off — trusted dirs only",
+    ),
 ];
 
 /// Map common spellings onto the stock preset ids (`full` →
-/// `danger-full-access`, `ws` → `workspace-write`, …).
+/// `danger-full-access`, `ws` → `workspace-write`, `ro` → `read-only`, …).
 pub fn normalize_permission(arg: &str) -> Option<&'static str> {
     match arg.trim().to_ascii_lowercase().as_str() {
+        "read-only" | "readonly" | "read" | "ro" => Some("read-only"),
         "workspace-write" | "workspace" | "write" | "ws" | "safe" | "sandbox" => {
             Some("workspace-write")
         }
@@ -93,6 +187,99 @@ pub fn normalize_permission(arg: &str) -> Option<&'static str> {
     }
 }
 
+/// User-facing permission label, mirroring the Web's `displayPermissionPreset`:
+/// `danger-full-access` → "Full access"; kebab-case keys are title-cased.
+pub fn permission_label(id: &str) -> String {
+    if id == "danger-full-access" {
+        return "Full access".to_string();
+    }
+    let kebab = !id.is_empty()
+        && id.split('-').all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if !kebab {
+        return id.to_string();
+    }
+    id.split('-')
+        .map(|seg| {
+            let mut chars = seg.chars();
+            match chars.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Map a file extension to the attachment media type the host accepts.
+fn media_type_for(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+/// Read the raster image currently on the system clipboard as (bytes, media
+/// type). Terminals don't deliver image paste over stdin, so this shells out
+/// to the platform clipboard tool instead.
+#[cfg(target_os = "macos")]
+fn read_clipboard_image() -> Option<(Vec<u8>, &'static str)> {
+    let tmp = std::env::temp_dir().join(format!("dsh-clip-{}.png", std::process::id()));
+    let tmp_s = tmp.to_str()?.to_string();
+    let script = format!(
+        "set out to \"{tmp_s}\"\n\
+         set d to (the clipboard as «class PNGf»)\n\
+         set h to open for access (POSIX file out) with write permission\n\
+         write d to h as «class PNGf»\n\
+         close access h\n\
+         return out"
+    );
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    let bytes = std::fs::read(&tmp).ok()?;
+    let _ = std::fs::remove_file(&tmp);
+    Some((bytes, "image/png"))
+}
+
+#[cfg(target_os = "linux")]
+fn read_clipboard_image() -> Option<(Vec<u8>, &'static str)> {
+    let attempts: &[(&str, &[&str])] = &[
+        ("wl-paste", &["--type", "image/png"]),
+        (
+            "xclip",
+            &["-selection", "clipboard", "-t", "image/png", "-o"],
+        ),
+    ];
+    for (cmd, args) in attempts {
+        if let Ok(out) = std::process::Command::new(cmd).args(*args).output() {
+            if out.status.success() && !out.stdout.is_empty() {
+                return Some((out.stdout, "image/png"));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_clipboard_image() -> Option<(Vec<u8>, &'static str)> {
+    None
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
     Idle,
@@ -100,92 +287,7 @@ pub enum RunState {
     Running,
 }
 
-pub struct Input {
-    pub buf: String,
-    pub cursor: usize, // char index
-    pub history: Vec<String>,
-    pub hist_pos: Option<usize>,
-    pub stash: String,
-}
-
-impl Input {
-    fn new() -> Self {
-        Input {
-            buf: String::new(),
-            cursor: 0,
-            history: Vec::new(),
-            hist_pos: None,
-            stash: String::new(),
-        }
-    }
-
-    fn byte_at(&self, char_idx: usize) -> usize {
-        self.buf
-            .char_indices()
-            .nth(char_idx)
-            .map(|(b, _)| b)
-            .unwrap_or(self.buf.len())
-    }
-
-    pub fn insert(&mut self, ch: char) {
-        let at = self.byte_at(self.cursor);
-        self.buf.insert(at, ch);
-        self.cursor += 1;
-        self.hist_pos = None;
-    }
-
-    pub fn insert_str(&mut self, s: &str) {
-        let at = self.byte_at(self.cursor);
-        self.buf.insert_str(at, s);
-        self.cursor += s.chars().count();
-        self.hist_pos = None;
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let start = self.byte_at(self.cursor - 1);
-        let end = self.byte_at(self.cursor);
-        self.buf.replace_range(start..end, "");
-        self.cursor -= 1;
-    }
-
-    fn delete_word_back(&mut self) {
-        let chars: Vec<char> = self.buf.chars().collect();
-        let mut i = self.cursor;
-        while i > 0 && chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        while i > 0 && !chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        let start = self.byte_at(i);
-        let end = self.byte_at(self.cursor);
-        self.buf.replace_range(start..end, "");
-        self.cursor = i;
-    }
-
-    fn kill_to_end(&mut self) {
-        let at = self.byte_at(self.cursor);
-        self.buf.truncate(at);
-    }
-
-    fn clear(&mut self) {
-        self.buf.clear();
-        self.cursor = 0;
-        self.hist_pos = None;
-    }
-
-    fn set(&mut self, s: String) {
-        self.cursor = s.chars().count();
-        self.buf = s;
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
-    }
-}
+pub use crate::input::Input;
 
 /// One endpoint of a mouse selection in chat-layout coordinates: `line`
 /// indexes the full wrapped layout (`ChatView::lines`), `col` is a display
@@ -225,11 +327,23 @@ impl Selection {
 /// mouse hit-testing and copy extraction read (grok-build's resolved
 /// selection model, scaled way down): pane rect, index of the first
 /// visible layout line, and the plain text of every layout line.
+/// A thumbnail the terminal should draw over the chat pane (kitty graphics).
+pub struct ThumbPlacement {
+    pub id: u32,
+    pub rect: ratatui::layout::Rect,
+    pub data: std::sync::Arc<[u8]>,
+}
+
 #[derive(Default)]
 pub struct ChatView {
     pub area: ratatui::layout::Rect,
     pub top: usize,
     pub lines: Vec<String>,
+    /// Per layout line, the transcript cell that owns it (only tool cells
+    /// claim ownership) — the seam for click-to-expand and wheel-to-scroll.
+    pub owners: Vec<Option<usize>>,
+    /// Visible image thumbnails, filled by `ui::draw_chat` every frame.
+    pub images: Vec<ThumbPlacement>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -249,6 +363,18 @@ pub struct PickerItem {
     pub provider: Option<String>,
 }
 
+/// One `/` menu entry: a builtin [`SlashCommand`] or a host skill (plugin
+/// mode). Builtins win a name collision — the command namespace is closed
+/// and resolved client-side before a line ever becomes a prompt; skill
+/// lines ship as prompts the host expands.
+#[derive(Clone)]
+pub struct SlashEntry {
+    pub name: String,
+    pub usage: String,
+    pub desc: String,
+    pub skill: bool,
+}
+
 pub struct Picker {
     pub kind: PickerKind,
     pub title: String,
@@ -257,14 +383,19 @@ pub struct Picker {
 }
 
 /// Folded per-session mode state (from the durable event stream — the same
-/// facts the Web UI chips read).
-#[derive(Default, Clone)]
+/// facts the Web UI chips read). Cached per workspace so chips and pickers
+/// show the last-known values immediately on launch.
+#[derive(Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Modes {
     pub plan: bool,
     pub sandbox: Option<String>,
     pub approval: Option<String>,
     pub permission: Option<String>,
     pub agent_preset: Option<String>,
+    /// Reasoning effort as last requested from this client (`/effort`,
+    /// the post-model-pick effort picker); the host doesn't echo one.
+    pub effort: Option<String>,
 }
 
 pub struct App {
@@ -294,14 +425,31 @@ pub struct App {
     resume_candidates: Vec<crate::sessions::SessionSummary>,
     pub slash_sel: usize,
     pub picker: Option<Picker>,
+    /// Images staged in the composer as inline `[image N]` chips living in
+    /// the draft text; editing a token away un-stages its image.
+    pub pending_images: crate::attachments::Staged,
+    /// Screen rects of the inline chips this frame (hover/cursor preview
+    /// hit-testing; recorded by `ui::draw_input`).
+    pub att_chips: Vec<(ratatui::layout::Rect, usize)>,
+    /// Kitty-graphics placement for the hover-preview popup this frame.
+    pub att_thumbs: Vec<ThumbPlacement>,
+    /// Chip index under the mouse pointer (grok-style hover preview).
+    pub hover_att: Option<usize>,
     pub modes: Modes,
+    /// User-invocable host skills (plugin mode `tui/skills`); merged into
+    /// the slash menu after the builtins.
+    pub skills: Vec<crate::bus::SkillInfo>,
     pub tip: Option<(String, Instant)>,
+    /// DSH_TUI_KEYDEBUG=1: echo every delivered key event in the tip row.
+    key_debug: bool,
     pub ambient_tip_idx: usize,
     pub ambient_tip_at: Instant,
-    esc_armed: Option<Instant>,
     ctrl_c_armed: Option<Instant>,
     pub session_id: String,
     pub cfg: RuntimeConfig,
+    /// Model explicitly picked this session (`/model`); wins over
+    /// `transcript.last_model` in the chip until a turn realizes it.
+    pub selected_model: Option<String>,
     pub demo: bool,
     /// dsh plugin mode: the host owns runtime, credentials, and catalog.
     pub attached: bool,
@@ -314,15 +462,20 @@ pub struct App {
     pub needs_redraw: bool,
 }
 
+/// Byte offset of char index `i` in `s` (end-of-string when past it).
+fn byte_of(s: &str, i: usize) -> usize {
+    s.char_indices().nth(i).map(|(b, _)| b).unwrap_or(s.len())
+}
+
 pub const AMBIENT_TIPS: &[&str] = &[
-    "Tip · esc interrupts a running turn — your draft survives",
-    "Tip · type ! to run a local shell command without the agent",
-    "Tip · enter queues a follow-up while DeepSeek works; alt+enter sends it now",
-    "Tip · ctrl+e expands every thought and tool result",
-    "Tip · /mode picks the agent preset — standard · code · minimal · creator",
-    "Tip · /theme light mirrors the Web UI light palette",
-    "Tip · ask DeepSeek about the harness docs — e.g. \"how do I add a tool?\"",
-    "Tip · /new starts a fresh durable session; the old JSONL log stays on disk",
+    "esc interrupts a running turn — your draft survives",
+    "type ! to run a local shell command without the agent",
+    "enter queues a follow-up; ctrl+x interrupts and sends it now",
+    "click a tool to expand it · wheel over a tool scrolls its output",
+    "the footer under the composer shows token usage + cache hit rate",
+    "answers render markdown: headings, code, links, and images",
+    "/mode picks the agent preset — standard · code · minimal · creator",
+    "/new starts a fresh session · /theme toggles the DeepSeek palette",
 ];
 
 impl App {
@@ -353,14 +506,20 @@ impl App {
             resume_candidates: Vec::new(),
             slash_sel: 0,
             picker: None,
-            modes: Modes::default(),
+            pending_images: crate::attachments::Staged::default(),
+            att_chips: Vec::new(),
+            att_thumbs: Vec::new(),
+            hover_att: None,
+            modes: Self::load_modes_cache(&cfg).unwrap_or_default(),
+            skills: Vec::new(),
             tip: None,
+            key_debug: std::env::var("DSH_TUI_KEYDEBUG").is_ok_and(|v| v == "1"),
             ambient_tip_idx: 0,
             ambient_tip_at: Instant::now(),
-            esc_armed: None,
             ctrl_c_armed: None,
             session_id,
             cfg,
+            selected_model: None,
             demo,
             attached,
             quit: false,
@@ -396,11 +555,6 @@ impl App {
             }
         }
         // disarm expired chords
-        if let Some(t) = self.esc_armed {
-            if t.elapsed() > ESC_ARM_WINDOW {
-                self.esc_armed = None;
-            }
-        }
         if let Some(t) = self.ctrl_c_armed {
             if t.elapsed() > CTRL_C_QUIT_WINDOW {
                 self.ctrl_c_armed = None;
@@ -413,18 +567,52 @@ impl App {
         self.needs_redraw = true;
     }
 
-    pub fn slash_matches(&self) -> Vec<&'static SlashCommand> {
+    pub fn slash_matches(&self) -> Vec<SlashEntry> {
         if !self.input.buf.starts_with('/') || self.input.buf.contains(' ') {
             return Vec::new();
         }
         let prefix = &self.input.buf[1..];
-        SLASH_COMMANDS
+        let mut out: Vec<SlashEntry> = SLASH_COMMANDS
             .iter()
             .filter(|c| c.name.starts_with(prefix))
-            .collect()
+            .map(|c| SlashEntry {
+                name: c.name.to_string(),
+                usage: c.usage.to_string(),
+                desc: c.desc.to_string(),
+                skill: false,
+            })
+            .collect();
+        // Host skills share the '/' namespace; a builtin shadows its name.
+        for s in &self.skills {
+            if s.name.starts_with(prefix) && !SLASH_COMMANDS.iter().any(|c| c.name == s.name) {
+                out.push(SlashEntry {
+                    name: s.name.clone(),
+                    usage: format!("/{}", s.name),
+                    desc: s.description.clone(),
+                    skill: true,
+                });
+            }
+        }
+        out
     }
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
+        let modes_before = self.modes.clone();
+        self.handle_inner(ev, ctl);
+        // Persist mode-fact changes (chips survive restarts — the cache is
+        // the landing state's source of truth until the host reports).
+        if self.modes != modes_before {
+            self.save_modes_cache();
+        }
+        // A turn ran on the picked model → the stream is the truth again.
+        if self.selected_model.is_some()
+            && self.selected_model.as_deref() == self.transcript.last_model.as_deref()
+        {
+            self.selected_model = None;
+        }
+    }
+
+    fn handle_inner(&mut self, ev: AppEvent, ctl: &Controller) {
         match ev {
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Rpc { method, params } => {
@@ -449,9 +637,7 @@ impl App {
                             {
                                 self.modes.permission = Some(preset.clone());
                             }
-                            E::AgentPreset { session, preset }
-                                if *session == self.session_id =>
-                            {
+                            E::AgentPreset { session, preset } if *session == self.session_id => {
                                 self.modes.agent_preset = Some(preset.clone());
                             }
                             _ => {}
@@ -538,6 +724,9 @@ impl App {
                             "interrupted — runtime stopped; the session log is preserved and the next prompt restarts it".into(),
                         );
                     }
+                    CtlEvent::Skills { skills } => {
+                        self.skills = skills;
+                    }
                     CtlEvent::Catalog { models, presets } => {
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
@@ -622,11 +811,16 @@ impl App {
 
     fn handle_term(&mut self, ev: Event, ctl: &Controller) {
         match ev {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key, ctl),
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                // CG rescue first: a bare arrow/⌫ with ⌘/⌥ physically held
+                // gets its modifier restored (macOS terminals drop them).
+                self.handle_key(crate::input::rescue_key(key), ctl)
+            }
             Event::Mouse(mouse) => self.handle_mouse(mouse),
             Event::Resize(..) => self.needs_redraw = true,
             Event::Paste(text) => {
                 self.input.insert_str(&text.replace('\n', " "));
+                self.reconcile_attachments();
                 self.needs_redraw = true;
             }
             _ => {}
@@ -639,10 +833,19 @@ impl App {
     /// bypasses capture in most terminals → native selection still works.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_by(3),
-            MouseEventKind::ScrollDown => self.scroll_by(-3),
+            MouseEventKind::ScrollUp => self.mouse_scroll(3, mouse.column, mouse.row),
+            MouseEventKind::ScrollDown => self.mouse_scroll(-3, mouse.column, mouse.row),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
+                // Clicking a tool block toggles its expand/collapse instead of
+                // starting a text selection.
+                if let Some(ci) = self.tool_at(mouse.column, mouse.row) {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.toggle_tool(ci);
+                    return;
+                }
                 let Some(p) = self.chat_hit(mouse.column, mouse.row) else {
                     // Click outside the chat pane dismisses the highlight.
                     self.sel = None;
@@ -681,8 +884,95 @@ impl App {
                 self.selecting = false;
                 self.finish_selection();
             }
+            MouseEventKind::Moved => {
+                // grok-style hover: track which inline chip the pointer is
+                // over; redraw only on changes (mouse moves are a firehose).
+                let hover = self.chip_at(mouse.column, mouse.row);
+                if hover != self.hover_att {
+                    self.hover_att = hover;
+                    self.needs_redraw = true;
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Char-index spans of live `[image n]` tokens in the draft, sorted by
+    /// position: `(start, end_exclusive, attachment idx)`.
+    pub fn token_spans(&self) -> Vec<(usize, usize, usize)> {
+        let buf = &self.input.buf;
+        let mut spans = Vec::new();
+        for (idx, att) in self.pending_images.iter().enumerate() {
+            if let Some(byte) = buf.find(&att.token) {
+                let start = buf[..byte].chars().count();
+                spans.push((start, start + att.token.chars().count(), idx));
+            }
+        }
+        spans.sort_unstable();
+        spans
+    }
+
+    /// Cut the whole token when `cursor` deletes into one (backward: the
+    /// char left of the cursor; forward: the char at it). Returns whether
+    /// a token was cut.
+    fn delete_token_at(&mut self, cursor: usize, backward: bool) -> bool {
+        let probe = if backward {
+            let Some(p) = cursor.checked_sub(1) else {
+                return false;
+            };
+            p
+        } else {
+            cursor
+        };
+        let Some(&(start, end, idx)) = self
+            .token_spans()
+            .iter()
+            .find(|(s, e, _)| probe >= *s && probe < *e)
+        else {
+            return false;
+        };
+        let b0 = byte_of(&self.input.buf, start);
+        let b1 = byte_of(&self.input.buf, end);
+        self.input.buf.replace_range(b0..b1, "");
+        self.input.cursor = start;
+        if let Some(att) = self.pending_images.remove(idx) {
+            self.show_tip(format!("removed {}", att.name));
+        }
+        true
+    }
+
+    /// Drop attachments whose token no longer survives in the draft text.
+    fn reconcile_attachments(&mut self) {
+        if self.pending_images.reconcile(&self.input.buf) > 0 {
+            self.hover_att = None;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The chip to preview: mouse hover wins, else the chip the text
+    /// cursor sits in or immediately after (“光标在附近”).
+    pub fn preview_att(&self) -> Option<usize> {
+        if let Some(idx) = self.hover_att {
+            return Some(idx);
+        }
+        let c = self.input.cursor;
+        self.token_spans()
+            .iter()
+            .find(|(s, e, _)| c >= *s && c <= *e)
+            .map(|&(_, _, idx)| idx)
+    }
+
+    /// Hit-test a screen cell against the inline chips drawn this frame.
+    fn chip_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.att_chips
+            .iter()
+            .find(|(r, _)| {
+                col >= r.x
+                    && col < r.x.saturating_add(r.width)
+                    && row >= r.y
+                    && row < r.y.saturating_add(r.height)
+            })
+            .map(|(_, idx)| *idx)
     }
 
     /// Hit-test a screen cell against the chat pane; `None` outside it.
@@ -697,8 +987,7 @@ impl App {
             return None;
         }
         Some(SelPoint {
-            line: (self.chat_view.top + (row - a.y) as usize)
-                .min(self.chat_view.lines.len() - 1),
+            line: (self.chat_view.top + (row - a.y) as usize).min(self.chat_view.lines.len() - 1),
             col: (col - a.x) as usize,
         })
     }
@@ -709,7 +998,74 @@ impl App {
         let a = self.chat_view.area;
         let col = col.clamp(a.x, a.x.saturating_add(a.width.saturating_sub(1)));
         let row = row.clamp(a.y, a.y.saturating_add(a.height.saturating_sub(1)));
-        self.chat_hit(col, row).unwrap_or(SelPoint { line: 0, col: 0 })
+        self.chat_hit(col, row)
+            .unwrap_or(SelPoint { line: 0, col: 0 })
+    }
+
+    /// The transcript cell that owns the line under a screen cell, if any.
+    fn tool_at(&self, col: u16, row: u16) -> Option<usize> {
+        let p = self.chat_hit(col, row)?;
+        self.chat_view.owners.get(p.line).copied().flatten()
+    }
+
+    /// Wheel: scroll the tool viewport under the pointer, otherwise the chat.
+    fn mouse_scroll(&mut self, delta: i64, col: u16, row: u16) {
+        if let Some(ci) = self.tool_at(col, row) {
+            if self.scroll_tool(ci, delta) {
+                return;
+            }
+        }
+        self.scroll_by(delta);
+    }
+
+    /// Scroll one collapsed tool viewport by `delta` body lines. Returns true
+    /// when the event was consumed (expanded tools fall back to chat scroll).
+    fn scroll_tool(&mut self, ci: usize, delta: i64) -> bool {
+        let expanded = self
+            .transcript
+            .cells
+            .get(ci)
+            .map(|c| c.expanded)
+            .unwrap_or(false)
+            || self.transcript.expand_all;
+        if expanded {
+            return false;
+        }
+        let width = self.chat_view.area.width.saturating_sub(2) as usize;
+        let Some(total) = self.transcript.tool_total_lines(ci, width) else {
+            return false;
+        };
+        let viewport = crate::transcript::TOOL_VIEWPORT;
+        if total <= viewport {
+            return false;
+        }
+        let max = total - viewport;
+        let cur = match self.transcript.cells[ci].scroll {
+            usize::MAX => max,
+            s => s,
+        };
+        let next = (cur as i64 + delta).clamp(0, max as i64) as usize;
+        self.transcript.cells[ci].scroll = if next >= max { usize::MAX } else { next };
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Toggle a tool between its collapsed viewport and full expansion.
+    fn toggle_tool(&mut self, ci: usize) {
+        let Some(cell) = self.transcript.cells.get_mut(ci) else {
+            return;
+        };
+        cell.expanded = !cell.expanded;
+        cell.scroll = usize::MAX; // reopen pinned to the tail
+        let label = if cell.expanded {
+            "expanded"
+        } else {
+            "collapsed"
+        };
+        self.show_tip(format!(
+            "{label} tool output · click toggles · wheel scrolls"
+        ));
+        self.needs_redraw = true;
     }
 
     /// grok `finish_text_drag`: reconstruct the dragged text and copy it —
@@ -770,11 +1126,51 @@ impl App {
         };
         self.sel = Some(Selection {
             anchor: SelPoint { line: p.line, col },
-            head: SelPoint { line: p.line, col: col + width - 1 },
+            head: SelPoint {
+                line: p.line,
+                col: col + width - 1,
+            },
         });
         self.selecting = false;
         let word = word.clone();
         self.copy_text(&word);
+    }
+
+    /// Where the per-workspace mode cache lives (beside the session logs).
+    fn modes_cache_path(cfg: &RuntimeConfig) -> std::path::PathBuf {
+        std::path::Path::new(&cfg.session_root).join("dsh-tui-modes.json")
+    }
+
+    /// Last-known mode facts for this workspace; `plan` never carries over
+    /// (it is a per-session switch).
+    fn load_modes_cache(cfg: &RuntimeConfig) -> Option<Modes> {
+        let text = std::fs::read_to_string(Self::modes_cache_path(cfg)).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let entry = root.get("workspaces")?.get(&cfg.workspace)?;
+        let mut modes: Modes = serde_json::from_value(entry.clone()).ok()?;
+        modes.plan = false;
+        Some(modes)
+    }
+
+    /// Merge this workspace's mode facts into the cache file; failures are
+    /// silent (the cache is a convenience, never a requirement).
+    fn save_modes_cache(&self) {
+        let path = Self::modes_cache_path(&self.cfg);
+        let mut root: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !root.is_object() {
+            root = serde_json::json!({});
+        }
+        let Ok(entry) = serde_json::to_value(&self.modes) else {
+            return;
+        };
+        root["workspaces"][&self.cfg.workspace] = entry;
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, root.to_string());
     }
 
     pub fn scroll_by(&mut self, delta: i64) {
@@ -785,8 +1181,11 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent, ctl: &Controller) {
         self.needs_redraw = true;
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // DSH_TUI_KEYDEBUG=1: surface exactly what the terminal delivered
+        // (after CG rescue) in the tip row — kills keybinding mysteries.
+        if self.key_debug {
+            self.show_tip(format!("key: {:?} + {:?}", key.modifiers, key.code));
+        }
 
         // --- model picker overlay steals input first (grok modal semantics)
         if self.picker.is_some() {
@@ -794,77 +1193,15 @@ impl App {
             return;
         }
 
-        match key.code {
-            KeyCode::Enter if alt => self.send_now(ctl),
-            KeyCode::Enter => {
-                let menu = self.slash_matches();
-                if !menu.is_empty() {
-                    let cmd = menu[self.slash_sel.min(menu.len() - 1)];
-                    self.accept_slash(cmd, ctl);
-                } else {
-                    self.submit(ctl);
-                }
-            }
-            KeyCode::Esc => self.handle_esc(ctl),
-            KeyCode::Char('c') if ctrl => self.handle_ctrl_c(ctl),
-            KeyCode::Char('q') if ctrl => self.quit = true,
-            KeyCode::Char('l') if ctrl => {
-                self.transcript.clear();
-                self.sel = None;
-                self.transcript
-                    .push_notice(NoticeLevel::Info, "scrollback cleared".into());
-            }
-            KeyCode::Char('t') if ctrl => {
-                self.theme = self.theme.toggled();
-                self.show_tip(match self.theme.mode {
-                    crate::theme::Mode::Dark => "theme: deepseek dark",
-                    crate::theme::Mode::Light => "theme: deepseek light",
-                });
-            }
-            KeyCode::Char('e') if ctrl => {
-                self.transcript.expand_all = !self.transcript.expand_all;
-                self.show_tip(if self.transcript.expand_all {
-                    "expanded all thoughts and tool results"
-                } else {
-                    "collapsed all thoughts and tool results"
-                });
-            }
-            KeyCode::Char('m') if ctrl => self.open_model_picker(ctl),
-            KeyCode::BackTab => self.cycle_permission(ctl),
-            KeyCode::Char('u') if ctrl => self.scroll_by(10),
-            KeyCode::Char('d') if ctrl => self.scroll_by(-10),
-            KeyCode::Char('k') if ctrl => self.input.kill_to_end(),
-            KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
-            KeyCode::Char('a') if ctrl => self.input.cursor = 0,
-            KeyCode::Char('e') if !ctrl && alt => self.input.cursor = self.input.buf.chars().count(),
-            KeyCode::PageUp => self.scroll_by(20),
-            KeyCode::PageDown => self.scroll_by(-20),
-            KeyCode::Home if self.input.is_empty() => self.scroll_up = usize::MAX,
-            KeyCode::End if self.input.is_empty() => self.scroll_up = 0,
-            KeyCode::Home => self.input.cursor = 0,
-            KeyCode::End => self.input.cursor = self.input.buf.chars().count(),
-            KeyCode::Up => self.history_prev(),
-            KeyCode::Down => self.history_next(),
-            KeyCode::Left => self.input.cursor = self.input.cursor.saturating_sub(1),
-            KeyCode::Right => {
-                let max = self.input.buf.chars().count();
-                self.input.cursor = (self.input.cursor + 1).min(max);
-            }
-            KeyCode::Backspace if alt => self.input.delete_word_back(),
-            KeyCode::Backspace => self.input.backspace(),
-            KeyCode::Tab => {
-                let menu = self.slash_matches();
-                if !menu.is_empty() {
-                    let cmd = menu[self.slash_sel.min(menu.len() - 1)];
-                    self.input.set(format!("/{} ", cmd.name));
-                }
-            }
-            KeyCode::Char(ch) if !ctrl => {
-                self.input.insert(ch);
-                self.slash_sel = 0;
-            }
-            _ => {}
+        let ctx = crate::input::KeyCtx {
+            input_empty: self.input.is_empty(),
+        };
+        if let Some(action) = crate::input::classify(&key, ctx) {
+            self.dispatch(action, ctl);
         }
+        // Any edit may have cut an [image n] token — the tray follows the
+        // text (grok's lexicon-scan model).
+        self.reconcile_attachments();
 
         // slash menu selection with arrows while menu is visible
         if self.input.buf.starts_with('/') {
@@ -878,6 +1215,94 @@ impl App {
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// Apply one classified [`Action`] — the only place key semantics touch
+    /// app state, so `input::keymap` stays a pure table.
+    fn dispatch(&mut self, action: Action, ctl: &Controller) {
+        match action {
+            Action::Insert(ch) => {
+                self.input.insert(ch);
+                self.slash_sel = 0;
+            }
+            Action::Newline => self.input.insert('\n'),
+            Action::Enter => {
+                let menu = self.slash_matches();
+                if !menu.is_empty() {
+                    let entry = menu[self.slash_sel.min(menu.len() - 1)].clone();
+                    self.accept_slash(&entry, ctl);
+                } else {
+                    self.submit(ctl);
+                }
+            }
+            Action::TabComplete => {
+                let menu = self.slash_matches();
+                if !menu.is_empty() {
+                    let entry = &menu[self.slash_sel.min(menu.len() - 1)];
+                    self.input.set(format!("/{} ", entry.name));
+                }
+            }
+            Action::Esc => self.handle_esc(ctl),
+            Action::CtrlC => self.handle_ctrl_c(ctl),
+            Action::Quit => self.quit = true,
+            Action::ClearScrollback => {
+                self.transcript.clear();
+                self.sel = None;
+                self.transcript
+                    .push_notice(NoticeLevel::Info, "scrollback cleared".into());
+            }
+            Action::ToggleTheme => {
+                self.theme = self.theme.toggled();
+                self.show_tip(match self.theme.mode {
+                    crate::theme::Mode::Dark => "theme: deepseek dark",
+                    crate::theme::Mode::Light => "theme: deepseek light",
+                });
+            }
+            Action::ToggleExpandAll => {
+                self.transcript.expand_all = !self.transcript.expand_all;
+                self.show_tip(if self.transcript.expand_all {
+                    "expanded all thoughts and tool results"
+                } else {
+                    "collapsed all thoughts and tool results"
+                });
+            }
+            Action::SendNow => self.send_now(ctl),
+            Action::AttachClipboard => self.clip_image("", ctl),
+            Action::ModelPicker => self.open_model_picker(ctl),
+            Action::ShowKeys => self.push_keys(),
+            Action::CyclePermission => self.cycle_permission(ctl),
+            Action::HistoryPrev => self.history_prev(),
+            Action::HistoryNext => self.history_next(),
+            Action::ScrollHalfUp => self.scroll_by(10),
+            Action::ScrollHalfDown => self.scroll_by(-10),
+            Action::PageUp => self.scroll_by(20),
+            Action::PageDown => self.scroll_by(-20),
+            Action::JumpTop => self.scroll_up = usize::MAX,
+            Action::JumpTail => self.scroll_up = 0,
+            Action::CursorLeft => self.input.cursor = self.input.cursor.saturating_sub(1),
+            Action::CursorRight => {
+                self.input.cursor = (self.input.cursor + 1).min(self.input.len_chars());
+            }
+            Action::WordLeft => self.input.cursor = self.input.prev_word(),
+            Action::WordRight => self.input.cursor = self.input.next_word(),
+            Action::LineStart => self.input.cursor = 0,
+            Action::LineEnd => self.input.cursor = self.input.len_chars(),
+            Action::Backspace => {
+                // Deleting into an inline chip cuts the whole [image n]
+                // token (and un-stages that image) instead of one bracket.
+                if !self.delete_token_at(self.input.cursor, true) {
+                    self.input.backspace();
+                }
+            }
+            Action::DeleteForward => {
+                if !self.delete_token_at(self.input.cursor, false) {
+                    self.input.delete_forward();
+                }
+            }
+            Action::DeleteWordBack => self.input.delete_word_back(),
+            Action::KillToEnd => self.input.kill_to_end(),
+            Action::KillToStart => self.input.kill_to_start(),
         }
     }
 
@@ -904,16 +1329,15 @@ impl App {
                     PickerKind::Session => self.resume_session(&item.id, ctl),
                     PickerKind::Effort => {
                         let effort = item.id;
+                        self.modes.effort = Some(effort.clone());
                         ctl.send(Cmd::SelectModel {
                             session_id: self.session_id.clone(),
                             provider: None,
                             model: None,
                             effort: Some(effort.clone()),
                         });
-                        self.transcript.push_notice(
-                            NoticeLevel::Info,
-                            format!("reasoning effort → {effort}"),
-                        );
+                        self.transcript
+                            .push_notice(NoticeLevel::Info, format!("reasoning effort → {effort}"));
                     }
                 }
             }
@@ -946,7 +1370,10 @@ impl App {
                 },
             );
         }
-        let sel = items.iter().position(|i| i.id == self.cfg.model).unwrap_or(0);
+        let sel = items
+            .iter()
+            .position(|i| i.id == self.cfg.model)
+            .unwrap_or(0);
         self.picker = Some(Picker {
             kind: PickerKind::Model,
             title: " model · enter select · esc close ".into(),
@@ -963,7 +1390,11 @@ impl App {
                 PickerItem {
                     id: e.clone(),
                     label: e,
-                    meta: if is_default { "default".into() } else { String::new() },
+                    meta: if is_default {
+                        "default".into()
+                    } else {
+                        String::new()
+                    },
                     provider: None,
                 }
             })
@@ -1081,7 +1512,10 @@ impl App {
         self.session_id = session.id.clone();
         self.transcript.clear();
         self.transcript.set_root_session(session.id.clone());
-        self.modes = Modes::default();
+        // Replay folds the session's real mode facts over the cached ones.
+        self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+        // The resumed stream's own model is the truth for the chip.
+        self.selected_model = None;
         self.show_banner = false;
         self.queued = 0;
         self.sel = None;
@@ -1165,6 +1599,8 @@ impl App {
             session_id: self.session_id.clone(),
             preset: preset.clone(),
         });
+        // Preset scopes can mount their own skill registries.
+        ctl.send(Cmd::FetchSkills);
         self.show_tip(format!("mode → {preset} …"));
     }
 
@@ -1173,6 +1609,7 @@ impl App {
         let provider = item.provider;
         if model != self.cfg.model {
             self.cfg.model = model.clone();
+            self.selected_model = Some(model.clone());
             if let Some(p) = &provider {
                 self.cfg.provider = p.clone();
             }
@@ -1195,6 +1632,7 @@ impl App {
             return;
         }
         self.cfg.model = model.clone();
+        self.selected_model = Some(model.clone());
         ctl.send(Cmd::SelectModel {
             session_id: self.session_id.clone(),
             provider: None,
@@ -1210,7 +1648,9 @@ impl App {
             .iter()
             .position(|(p, _)| *p == current)
             .unwrap_or(0);
-        let next = PERMISSION_PRESETS[(idx + 1) % PERMISSION_PRESETS.len()].0.to_string();
+        let next = PERMISSION_PRESETS[(idx + 1) % PERMISSION_PRESETS.len()]
+            .0
+            .to_string();
         self.set_permission(next, ctl);
     }
 
@@ -1220,7 +1660,7 @@ impl App {
         self.modes
             .permission
             .as_deref()
-            .unwrap_or(PERMISSION_PRESETS[0].0)
+            .unwrap_or("workspace-write")
     }
 
     /// Ask the host to switch this session's permission preset; the durable
@@ -1256,7 +1696,7 @@ impl App {
                 };
                 PickerItem {
                     id: id.to_string(),
-                    label: id.to_string(),
+                    label: permission_label(id),
                     meta: format!("{desc}{mark}"),
                     provider: None,
                 }
@@ -1290,25 +1730,25 @@ impl App {
             RunState::Running | RunState::Starting => {
                 // grok: Esc cancels immediately; the draft survives.
                 if ctl.interrupt_now() {
-                    ctl.send(Cmd::Interrupt);
+                    ctl.send(Cmd::Interrupt {
+                        session_id: self.session_id.clone(),
+                    });
                     self.state_note = "cancelling".into();
-                } else if ctl.is_attached() {
-                    self.show_tip("plugin mode: the host turn cannot be interrupted from here");
                 } else {
                     self.show_tip("demo turn — it finishes on its own");
                 }
             }
             RunState::Idle => {
+                // Esc clears the draft — inline [image n] chips live in it,
+                // so staged images go with it (reconcile below).
                 if !self.input.is_empty() {
-                    if self.esc_armed.take().is_some() {
-                        self.input.history.push(self.input.buf.clone());
-                        self.input.clear();
-                        self.show_tip("draft cleared — ↑ recalls it");
-                    } else {
-                        self.esc_armed = Some(Instant::now());
-                        self.show_tip("press esc again to clear the draft");
-                    }
+                    self.input.history.push(self.input.buf.clone());
+                    self.input.clear();
+                    self.reconcile_attachments();
+                    self.show_tip("draft cleared — ↑ recalls it");
+                    return;
                 }
+                self.show_tip("esc — idle · a running turn is interrupted with esc");
             }
         }
     }
@@ -1318,15 +1758,16 @@ impl App {
             // grok: Ctrl+C clears the draft first, keeps the turn.
             self.input.history.push(self.input.buf.clone());
             self.input.clear();
+            self.reconcile_attachments();
             self.show_tip("draft cleared — ↑ recalls it");
             return;
         }
         if matches!(self.state, RunState::Running | RunState::Starting) {
             if ctl.interrupt_now() {
-                ctl.send(Cmd::Interrupt);
+                ctl.send(Cmd::Interrupt {
+                    session_id: self.session_id.clone(),
+                });
                 self.state_note = "cancelling".into();
-            } else if ctl.is_attached() {
-                self.show_tip("plugin mode: the host turn cannot be interrupted from here");
             }
             return;
         }
@@ -1371,17 +1812,31 @@ impl App {
         }
     }
 
-    fn accept_slash(&mut self, cmd: &'static SlashCommand, ctl: &Controller) {
+    fn accept_slash(&mut self, entry: &SlashEntry, ctl: &Controller) {
+        if entry.skill {
+            // Web-UI semantics: picking a skill lands the literal "/name "
+            // in the composer; enter on the completed line ships it as an
+            // ordinary prompt and the host injects the skill body.
+            let full = format!("/{}", entry.name);
+            let line = self.input.buf.trim().to_string();
+            if line == full || line.starts_with(&format!("{full} ")) {
+                self.submit(ctl);
+            } else {
+                self.input.set(format!("{full} "));
+                self.slash_sel = 0;
+            }
+            return;
+        }
         let line = self.input.buf.clone();
         let rest = line
             .strip_prefix('/')
-            .and_then(|s| s.strip_prefix(cmd.name))
+            .and_then(|s| s.strip_prefix(entry.name.as_str()))
             .unwrap_or("")
             .trim()
             .to_string();
         self.input.clear();
         self.slash_sel = 0;
-        self.run_slash(cmd.name, &rest, ctl);
+        self.run_slash(&entry.name, &rest, ctl);
     }
 
     pub fn run_slash(&mut self, name: &str, arg: &str, ctl: &Controller) {
@@ -1445,11 +1900,17 @@ impl App {
                 };
                 self.session_id = id.clone();
                 self.transcript.set_root_session(id.clone());
-                // Folded per-session facts (mode, permission, plan …) belong
-                // to the old session; the new one reports its own on compose.
-                self.modes = Modes::default();
-                self.transcript
-                    .push_notice(NoticeLevel::Info, format!("new session · {id} — /mode picks its agent preset"));
+                // Folded per-session facts belong to the old session; start
+                // the new one from the workspace cache (the host echoes its
+                // real facts on compose).
+                self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+                // The new session may compose a different preset scope —
+                // refresh the skill catalog it serves.
+                ctl.send(Cmd::FetchSkills);
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    format!("new session · {id} — /mode picks its agent preset"),
+                );
             }
             "session" => self.push_session_info(),
             "resume" => {
@@ -1472,6 +1933,7 @@ impl App {
                         model: None,
                         effort: Some(arg.to_string()),
                     });
+                    self.modes.effort = Some(arg.to_string());
                 }
             }
             "permission" => {
@@ -1495,6 +1957,8 @@ impl App {
                 };
                 self.send_agent_text(text, ctl);
             }
+            "image" => self.send_image(arg, ctl),
+            "clip" => self.clip_image(arg, ctl),
             other => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
@@ -1509,18 +1973,30 @@ impl App {
 DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
 
   enter        send · queues a follow-up while a turn runs
-  alt+enter    interrupt the turn and send now
-  esc          interrupt (draft survives) · 2× clears the draft
+  ctrl+x       interrupt the turn and send now
+  esc          interrupt (draft survives) · clears the draft when idle
   ctrl+c       clear draft · interrupt · 2× quits
   shift+tab    cycle permission (workspace-write ⇄ full access)
                · /permission opens the preset picker
-  ctrl+m       model picker (host catalog) → effort picker
+  ctrl+p       model picker (host catalog) → effort picker
   /mode        agent mode · standard / code / minimal / creator
                (picked before a session's first prompt · /new to change)
   /effort      reasoning effort · /permission preset · /plan host plan mode
   /resume      pick up a durable session — transcript replays, log continues
+  /image       stage a local image — /image ./pic.png [caption] (plugin mode)
+  /clip        stage the clipboard image — /clip [caption] · ctrl+v also works
+               up to 8 ride one prompt as inline [image n] chips in the text
+               — ⌫ on a chip removes it · hover (or park the cursor on) a
+               chip for a preview with dimensions, size, and type
   !cmd         run a local shell command (not the agent)
-  ctrl+e       expand thoughts + tool output   ctrl+l clear
+  /<skill>     host skills join the / menu (plugin mode) — picking one lands
+               `/name ` in the composer; enter ships it and the host injects
+               the skill body (works for disable-model-invocation skills too)
+  ctrl+o       expand thoughts + tool output   ctrl+l clear
+  editing      readline chords + ⌘/⌥ arrows — on macOS the physical ⌘/⌥
+               state is read natively, so they work in every terminal;
+               ctrl+arrows elsewhere — the full map lives in /keys
+  click tool   expand/collapse that tool · wheel over it scrolls its window
   pgup/pgdn    scroll · mouse wheel works · end follows the tail
   mouse drag   select text — copied on release · 2×click copies a word
                (hold shift to use the terminal's native selection)
@@ -1532,15 +2008,29 @@ usage (incl. cache hits), and the turn end reason.";
     }
 
     fn push_keys(&mut self) {
-        let text = "\
+        let os = if cfg!(target_os = "macos") {
+            "\
+  macOS: ⌘←/⌘→ line ends · ⌥←/⌥→ word hops · ⌘⌫ kill to start · ⌥⌫ word back
+         ⌘↑/⌘↓ transcript top/tail — physical ⌘/⌥ are read natively (CG probe),
+         so these work in every terminal; kitty-keyboard · esc-b/f also mapped"
+        } else {
+            "\
+  linux/windows: ctrl+←/→ word hops · ctrl+⌫ or alt+⌫ deletes a word back"
+        };
+        let text = format!(
+            "\
 keys — grok-build homage set
-  enter send · alt+enter send-now · esc / ctrl+c cancel semantics
+  enter send · ctrl+x send-now · esc / ctrl+c cancel semantics
   ↑ history (empty prompt) · tab completes /commands
-  ctrl+m model picker · ctrl+t theme · ctrl+e expand · ctrl+l clear
-  ctrl+u/ctrl+d half-page · pgup/pgdn page · home/end top/tail
-  ctrl+a/ctrl+k/ctrl+w readline editing · alt+backspace word
-  drag select-copies · 2×click word-copies · shift+drag native select";
-        self.transcript.push_notice(NoticeLevel::Info, text.into());
+  ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
+  pgup/pgdn page · home/end top/tail · ctrl+u/ctrl+d half-page (empty prompt)
+  readline: ctrl+a/ctrl+e line ends · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
+            ctrl+w word back · ctrl+d delete forward (while typing)
+{os}
+  click tool expands/collapses · wheel over a tool scrolls its output
+  drag select-copies · 2×click word-copies · shift+drag native select"
+        );
+        self.transcript.push_notice(NoticeLevel::Info, text);
     }
 
     fn push_session_info(&mut self) {
@@ -1554,8 +2044,10 @@ keys — grok-build homage set
         } else {
             "DEEPSEEK_API_KEY not set".to_string()
         };
+        let u = self.transcript.usage;
+        let total = u.input + u.output + u.cached + u.reasoning;
         let text = format!(
-            "session · {}\nprovider · {} / {}\nmode · {}{}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {})",
+            "session · {}\nprovider · {} / {}\nmode · {}{}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {}) · Σ{} total",
             self.session_id,
             self.cfg.provider,
             self.cfg.model,
@@ -1566,23 +2058,39 @@ keys — grok-build homage set
             self.cfg.bin,
             self.server_info.as_deref().unwrap_or("not started"),
             creds,
-            self.transcript.usage.input,
-            self.transcript.usage.output,
-            self.transcript.usage.cached,
-            self.transcript.usage.reasoning,
+            u.input,
+            u.output,
+            u.cached,
+            u.reasoning,
+            total,
         );
         self.transcript.push_notice(NoticeLevel::Info, text);
     }
 
     fn submit(&mut self, ctl: &Controller) {
         let text = self.input.buf.trim().to_string();
-        if text.is_empty() {
+        // Client namespaces don't take images — keep the chips editable
+        // instead of silently dropping them.
+        if !self.pending_images.is_empty() && (text.starts_with('/') || text.starts_with('!')) {
+            self.show_tip(
+                "send or delete the [image] chips first — /commands and !shell don't take images",
+            );
             return;
         }
         if let Some(cmdline) = text.strip_prefix('/') {
             let mut parts = cmdline.splitn(2, ' ');
             let name = parts.next().unwrap_or("").to_string();
             let arg = parts.next().unwrap_or("").trim().to_string();
+            // Host skills share the '/' namespace (builtins win a name): a
+            // skill line ships as an ordinary prompt — the host's pre-step
+            // boundary recognizes the leading /name and injects the body.
+            let builtin = SLASH_COMMANDS.iter().any(|c| c.name == name);
+            if !builtin && self.skills.iter().any(|s| s.name == name) {
+                self.input.history.push(text.clone());
+                self.input.clear();
+                self.send_agent_text(text, ctl);
+                return;
+            }
             self.input.history.push(text.clone());
             self.input.clear();
             self.run_slash(&name, &arg, ctl);
@@ -1598,6 +2106,19 @@ keys — grok-build homage set
             return;
         }
 
+        // Inline [image n] chips ride along with the prompt text (or send
+        // alone): tokens strip out of the caption, token order = send order.
+        if !self.pending_images.is_empty() {
+            self.input.history.push(self.input.buf.clone());
+            let (caption, batch) = self.take_prompt_and_images();
+            self.input.clear();
+            self.send_images(batch, caption, ctl);
+            return;
+        }
+
+        if text.is_empty() {
+            return;
+        }
         self.input.history.push(text.clone());
         self.input.clear();
         self.send_agent_text(text, ctl);
@@ -1611,11 +2132,15 @@ keys — grok-build homage set
         self.transcript.push_user(text.clone(), running);
         if running {
             self.queued += 1;
-            self.show_tip("queued — lands after this turn · alt+enter would send now");
+            self.show_tip("queued — lands after this turn · ctrl+x would send now");
         } else {
             self.state = RunState::Starting;
             self.run_started = Some(Instant::now());
-            self.state_note = if self.demo { String::new() } else { "contacting runtime".into() };
+            self.state_note = if self.demo {
+                String::new()
+            } else {
+                "contacting runtime".into()
+            };
         }
         self.scroll_up = 0;
         ctl.send(Cmd::Prompt {
@@ -1624,35 +2149,237 @@ keys — grok-build homage set
         });
     }
 
-    /// grok send-now: cancel the current turn and run this message next.
-    fn send_now(&mut self, ctl: &Controller) {
-        let text = self.input.buf.trim().to_string();
-        if text.is_empty() {
+    /// `/image <path> [caption]` — stage a local raster in the composer; it is
+    /// sent on the next Enter (caption becomes the prompt text).
+    fn send_image(&mut self, arg: &str, _ctl: &Controller) {
+        let (path, caption) = match arg.split_once(char::is_whitespace) {
+            Some((p, rest)) => (p, rest.trim().to_string()),
+            None => (arg, String::new()),
+        };
+        if path.is_empty() {
+            self.show_tip("/image needs a path — /image ./pic.png [caption]");
             return;
         }
-        let mut interrupted = true;
-        if matches!(self.state, RunState::Running | RunState::Starting) {
-            interrupted = ctl.interrupt_now();
-            if interrupted {
-                ctl.send(Cmd::Interrupt);
+        let Some(media_type) = media_type_for(path) else {
+            self.show_tip("unsupported image — use .png .jpg .jpeg .webp .gif");
+            return;
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(err) => {
+                self.show_tip(format!("cannot read {path}: {err}"));
+                return;
             }
+        };
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        self.stage_image(
+            name,
+            path.to_string(),
+            media_type.to_string(),
+            bytes,
+            caption,
+        );
+    }
+
+    /// `/clip [caption]` — stage the clipboard image in the composer.
+    fn clip_image(&mut self, caption: &str, _ctl: &Controller) {
+        match read_clipboard_image() {
+            Some((bytes, media_type)) => self.stage_image(
+                "clipboard.png".into(),
+                "clipboard".into(),
+                media_type.to_string(),
+                bytes,
+                caption.to_string(),
+            ),
+            None => self.show_tip("clipboard has no image, or this platform isn't supported"),
         }
-        self.input.history.push(text.clone());
-        self.input.clear();
+    }
+
+    /// Stage an image as an inline `[image N]` chip at the cursor; up to
+    /// [`crate::attachments::MAX_STAGED`] ride the next Enter with the text.
+    fn stage_image(
+        &mut self,
+        name: String,
+        path: String,
+        media_type: String,
+        data: Vec<u8>,
+        caption: String,
+    ) {
+        let token = match self.pending_images.add(name, path, media_type, data) {
+            Ok(att) => att.token.clone(),
+            Err(full) => {
+                self.show_tip(full);
+                return;
+            }
+        };
+        if !caption.is_empty() {
+            self.input.set(caption);
+            self.input.insert(' ');
+        } else if self.input.cursor > 0
+            && !self
+                .input
+                .buf
+                .chars()
+                .nth(self.input.cursor - 1)
+                .is_none_or(char::is_whitespace)
+        {
+            self.input.insert(' ');
+        }
+        self.input.insert_str(&token);
+        self.show_tip("image staged — ⌫ deletes its chip · hover it to preview");
+        self.needs_redraw = true;
+    }
+
+    /// Strip the inline tokens out of the draft and hand back the caption
+    /// plus the attachments in token (reading) order.
+    fn take_prompt_and_images(&mut self) -> (String, Vec<crate::attachments::Attachment>) {
+        let spans = self.token_spans();
+        let mut caption = self.input.buf.clone();
+        for &(s, e, _) in spans.iter().rev() {
+            let b0 = byte_of(&caption, s);
+            let b1 = byte_of(&caption, e);
+            caption.replace_range(b0..b1, "");
+        }
+        // Collapse the doubled spaces token removal leaves; newlines stay.
+        while caption.contains("  ") {
+            caption = caption.replace("  ", " ");
+        }
+        let caption = caption.trim().to_string();
+
+        let mut slots: Vec<Option<crate::attachments::Attachment>> =
+            self.pending_images.drain().into_iter().map(Some).collect();
+        let batch: Vec<crate::attachments::Attachment> = spans
+            .iter()
+            .filter_map(|&(_, _, i)| slots.get_mut(i).and_then(Option::take))
+            .collect();
+        (caption, batch)
+    }
+
+    /// Echo a tray batch in the transcript (first image carries the
+    /// caption, thumbnails where possible) and send one prompt whose
+    /// content blocks hold every image.
+    fn emit_images_prompt(
+        &mut self,
+        batch: Vec<crate::attachments::Attachment>,
+        text: String,
+        queued: bool,
+        ctl: &Controller,
+    ) {
         self.show_banner = false;
-        self.transcript.push_user(text.clone(), !interrupted);
-        if !interrupted && matches!(self.state, RunState::Running | RunState::Starting) {
+        let mut images = Vec::with_capacity(batch.len());
+        for (i, att) in batch.into_iter().enumerate() {
+            let caption = if i == 0 { text.clone() } else { String::new() };
+            self.transcript.push_image(
+                att.name.clone(),
+                caption,
+                att.path,
+                att.data.clone(),
+                queued,
+            );
+            images.push(crate::bus::ImagePart {
+                data: crate::pet::base64(&att.data),
+                media_type: att.media_type,
+                name: att.name,
+            });
+        }
+        self.scroll_up = 0;
+        ctl.send(Cmd::PromptImages {
+            session_id: self.session_id.clone(),
+            text,
+            images,
+        });
+    }
+
+    /// Submit path for the staged tray: set run state / queue bookkeeping,
+    /// then emit the batch prompt.
+    fn send_images(
+        &mut self,
+        batch: Vec<crate::attachments::Attachment>,
+        caption: String,
+        ctl: &Controller,
+    ) {
+        let n = batch.len();
+        let running = matches!(self.state, RunState::Running | RunState::Starting);
+        if running {
             self.queued += 1;
-            self.show_tip("cannot interrupt here — queued for the next turn instead");
+            self.show_tip(if n == 1 {
+                "image queued — lands after this turn".to_string()
+            } else {
+                format!("{n} images queued — land after this turn")
+            });
         } else {
             self.state = RunState::Starting;
             self.run_started = Some(Instant::now());
+            self.state_note = if n == 1 {
+                "sending image".into()
+            } else {
+                format!("sending {n} images")
+            };
         }
-        self.scroll_up = 0;
-        ctl.send(Cmd::Prompt {
-            session_id: self.session_id.clone(),
-            text,
-        });
+        self.emit_images_prompt(batch, caption, running, ctl);
+    }
+
+    /// grok send-now: cancel the current turn and run this message next.
+    fn send_now(&mut self, ctl: &Controller) {
+        let raw = self.input.buf.trim().to_string();
+        if !self.pending_images.is_empty() && (raw.starts_with('/') || raw.starts_with('!')) {
+            self.show_tip(
+                "send or delete the [image] chips first — /commands and !shell don't take images",
+            );
+            return;
+        }
+        let (text, images) = if self.pending_images.is_empty() {
+            (raw, Vec::new())
+        } else {
+            self.take_prompt_and_images()
+        };
+        if text.is_empty() && images.is_empty() {
+            return;
+        }
+        let running = matches!(self.state, RunState::Running | RunState::Starting);
+        let mut interrupted = true;
+        if running {
+            interrupted = ctl.interrupt_now();
+            if interrupted {
+                ctl.send(Cmd::Interrupt {
+                    session_id: self.session_id.clone(),
+                });
+            }
+        }
+        self.input.history.push(self.input.buf.clone());
+        self.input.clear();
+        self.show_banner = false;
+        let queued = !interrupted && running;
+        if !images.is_empty() {
+            let n = images.len();
+            if queued {
+                self.queued += 1;
+                self.show_tip("cannot interrupt here — images queued for the next turn");
+            } else {
+                self.state = RunState::Starting;
+                self.run_started = Some(Instant::now());
+                self.state_note = if n == 1 {
+                    "sending image".into()
+                } else {
+                    format!("sending {n} images")
+                };
+            }
+            self.emit_images_prompt(images, text, queued, ctl);
+        } else {
+            self.transcript.push_user(text.clone(), queued);
+            if queued {
+                self.queued += 1;
+                self.show_tip("cannot interrupt here — queued for the next turn instead");
+            } else {
+                self.state = RunState::Starting;
+                self.run_started = Some(Instant::now());
+            }
+            self.scroll_up = 0;
+            ctl.send(Cmd::Prompt {
+                session_id: self.session_id.clone(),
+                text,
+            });
+        }
     }
 
     /// Submit a prompt programmatically (used by DSH_TUI_AUTOPROMPT).
@@ -1818,9 +2545,7 @@ mod resume_tests {
     }
 
     fn write_fixture_session(root: &PathBuf, id: &str) {
-        let dir = root
-            .join(crate::sessions::workspace_slug("/w"))
-            .join(id);
+        let dir = root.join(crate::sessions::workspace_slug("/w")).join(id);
         std::fs::create_dir_all(&dir).unwrap();
         let lines = [
             format!(r#"{{"type":"session","version":0,"id":"{id}","createdAt":1,"cwd":"/w"}}"#),
@@ -1860,9 +2585,18 @@ mod resume_tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect::<String>();
-        assert!(text.contains("修复失败的测试"), "user prompt replayed:\n{text}");
-        assert!(text.contains("tests are green now"), "assistant reply replayed:\n{text}");
-        assert!(text.contains("resumed dsh-past"), "resume notice shown:\n{text}");
+        assert!(
+            text.contains("修复失败的测试"),
+            "user prompt replayed:\n{text}"
+        );
+        assert!(
+            text.contains("tests are green now"),
+            "assistant reply replayed:\n{text}"
+        );
+        assert!(
+            text.contains("resumed dsh-past"),
+            "resume notice shown:\n{text}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1876,7 +2610,11 @@ mod resume_tests {
         let picker = app.picker.as_ref().expect("picker opens");
         assert!(matches!(picker.kind, PickerKind::Session));
         assert_eq!(picker.items[0].id, "dsh-alpha");
-        assert!(picker.items[0].meta.contains("1 turn"), "{}", picker.items[0].meta);
+        assert!(
+            picker.items[0].meta.contains("1 turn"),
+            "{}",
+            picker.items[0].meta
+        );
         assert!(picker.items[0].meta.contains("修复失败的测试"));
         app.picker = None;
 
@@ -1902,18 +2640,40 @@ mod resume_tests {
 mod selection_tests {
     use super::*;
 
+    /// Unique session root per call — keeps the modes cache from leaking
+    /// between tests and runs.
+    fn fresh_root() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-tui-sel-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.to_string_lossy().into_owned()
+    }
+
     fn view(lines: &[&str]) -> ChatView {
         ChatView {
             area: ratatui::layout::Rect::new(1, 0, 60, 10),
             top: 0,
             lines: lines.iter().map(|s| s.to_string()).collect(),
+            owners: vec![None; lines.len()],
+            images: Vec::new(),
         }
     }
 
     fn sel(a: (usize, usize), h: (usize, usize)) -> Selection {
         Selection {
-            anchor: SelPoint { line: a.0, col: a.1 },
-            head: SelPoint { line: h.0, col: h.1 },
+            anchor: SelPoint {
+                line: a.0,
+                col: a.1,
+            },
+            head: SelPoint {
+                line: h.0,
+                col: h.1,
+            },
         }
     }
 
@@ -1922,7 +2682,7 @@ mod selection_tests {
             bin: "dsh-runtime".into(),
             cordis: "cordis".into(),
             workspace: "/tmp".into(),
-            session_root: "/tmp".into(),
+            session_root: fresh_root(),
             provider: "deepseek".into(),
             model: "deepseek-chat".into(),
             max_tokens: None,
@@ -1982,6 +2742,52 @@ mod selection_tests {
         let (col, width, word) = word_span("选中即复制 ok", 4).expect("cjk word");
         assert_eq!((col, width, word.as_str()), (0, 10, "选中即复制"));
     }
+
+    #[test]
+    fn tool_click_toggles_and_wheel_scrolls_the_viewport() {
+        let mut app = test_app();
+        app.transcript.apply(crate::events::UiEvent::ToolCall {
+            session: "dsh-test".into(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        app.transcript.apply(crate::events::UiEvent::ToolResult {
+            session: "dsh-test".into(),
+            call_id: "c1".into(),
+            is_error: false,
+            text: "a\nb\nc\nd\ne\nf\ng\nh".into(),
+            error: None,
+        });
+        app.chat_view.area = ratatui::layout::Rect::new(1, 0, 40, 10);
+        app.chat_view.top = 0;
+        app.chat_view.lines = vec!["tool line".into()];
+        app.chat_view.owners = vec![Some(0)];
+
+        assert_eq!(app.tool_at(2, 0), Some(0), "tool line owns its cell");
+        assert!(!app.transcript.cells[0].expanded);
+        app.toggle_tool(0);
+        assert!(app.transcript.cells[0].expanded, "click expands");
+        app.toggle_tool(0);
+        assert!(!app.transcript.cells[0].expanded, "click collapses");
+
+        // Wheel over the collapsed tool scrolls the viewport, not the chat.
+        let before = app.scroll_up;
+        assert!(app.scroll_tool(0, -1), "collapsed tool consumes the wheel");
+        assert_ne!(
+            app.transcript.cells[0].scroll,
+            usize::MAX,
+            "scrolled off tail"
+        );
+        assert_eq!(app.scroll_up, before, "chat scroll untouched");
+
+        // Expanded tools defer to the chat scroll path.
+        app.transcript.cells[0].expanded = true;
+        assert!(
+            !app.scroll_tool(0, -1),
+            "expanded tool does not consume wheel"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1990,22 +2796,97 @@ mod mode_tests {
     use crate::bus::CatalogPreset;
     use std::sync::mpsc::Receiver;
 
-    fn test_app() -> (App, Controller, Receiver<AppEvent>) {
-        let cfg = RuntimeConfig {
+    /// Unique session root per call — keeps the modes cache from leaking
+    /// between tests and runs.
+    fn fresh_root() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-tui-mode-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn test_cfg() -> RuntimeConfig {
+        RuntimeConfig {
             bin: "demo".into(),
             cordis: "demo".into(),
             workspace: "/tmp".into(),
-            session_root: "/tmp".into(),
+            session_root: fresh_root(),
             provider: "deepseek-official".into(),
             model: "deepseek-v4-flash".into(),
             max_tokens: None,
             base_url: None,
             api_key: None,
-        };
+        }
+    }
+
+    fn test_app() -> (App, Controller, Receiver<AppEvent>) {
+        let cfg = test_cfg();
         let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
         let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
         let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
         (app, ctl, rx)
+    }
+
+    #[test]
+    fn mode_facts_cache_per_workspace_across_instances() {
+        let cfg = test_cfg();
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let mut app = App::new(
+            Theme::dark(),
+            cfg.clone(),
+            "s1".into(),
+            true,
+            false,
+            tx.clone(),
+        );
+        app.modes.agent_preset = Some("code".into());
+        app.modes.approval = Some("ask".into());
+        app.modes.permission = Some("workspace-write".into());
+        app.modes.effort = Some("max".into());
+        app.modes.plan = true;
+        app.save_modes_cache();
+
+        // A second instance in the same workspace boots with the cached
+        // facts — except plan, which never carries over.
+        let app2 = App::new(
+            Theme::dark(),
+            cfg.clone(),
+            "s2".into(),
+            true,
+            false,
+            tx.clone(),
+        );
+        assert_eq!(app2.modes.agent_preset.as_deref(), Some("code"));
+        assert_eq!(app2.modes.approval.as_deref(), Some("ask"));
+        assert_eq!(app2.modes.permission.as_deref(), Some("workspace-write"));
+        assert_eq!(app2.modes.effort.as_deref(), Some("max"));
+        assert!(!app2.modes.plan, "plan is per-session");
+
+        // Another workspace in the same root stays untouched.
+        let mut other = cfg;
+        other.workspace = "/elsewhere".into();
+        let app3 = App::new(Theme::dark(), other, "s3".into(), true, false, tx);
+        assert!(app3.modes.agent_preset.is_none(), "cache is per workspace");
+    }
+
+    #[test]
+    fn selected_model_clears_once_a_turn_streams_on_it() {
+        let (mut app, ctl, _rx) = test_app();
+        app.set_model("deepseek-v4-pro".into(), &ctl);
+        assert_eq!(app.selected_model.as_deref(), Some("deepseek-v4-pro"));
+        // The next turn streams on the picked model → the pick is realized
+        // and the stream fact takes over.
+        app.transcript.last_model = Some("deepseek-v4-pro".into());
+        app.handle(AppEvent::Ctl(CtlEvent::TuiOpDone("noop".into())), &ctl);
+        assert_eq!(
+            app.selected_model, None,
+            "realized pick defers to the stream"
+        );
     }
 
     #[test]
@@ -2029,9 +2910,24 @@ mod mode_tests {
             AppEvent::Ctl(CtlEvent::Catalog {
                 models: Vec::new(),
                 presets: vec![
-                    CatalogPreset { id: "standard".into(), name: "Standard mode".into(), description: "full".into(), broken: false },
-                    CatalogPreset { id: "code".into(), name: "Code mode".into(), description: "ts".into(), broken: false },
-                    CatalogPreset { id: "custom".into(), name: "Custom".into(), description: "mine".into(), broken: true },
+                    CatalogPreset {
+                        id: "standard".into(),
+                        name: "Standard mode".into(),
+                        description: "full".into(),
+                        broken: false,
+                    },
+                    CatalogPreset {
+                        id: "code".into(),
+                        name: "Code mode".into(),
+                        description: "ts".into(),
+                        broken: false,
+                    },
+                    CatalogPreset {
+                        id: "custom".into(),
+                        name: "Custom".into(),
+                        description: "mine".into(),
+                        broken: true,
+                    },
                 ],
             }),
             &ctl,
@@ -2060,17 +2956,25 @@ mod mode_tests {
     }
 
     #[test]
-    fn preset_ack_folds_the_chip_and_new_session_resets_it() {
+    fn preset_ack_folds_the_chip_and_new_session_keeps_the_cached_mode() {
         let (mut app, ctl, _rx) = test_app();
         app.handle(
-            AppEvent::Ctl(CtlEvent::PresetSet { preset: "creator".into() }),
+            AppEvent::Ctl(CtlEvent::PresetSet {
+                preset: "creator".into(),
+            }),
             &ctl,
         );
         assert_eq!(app.modes.agent_preset.as_deref(), Some("creator"));
         app.run_slash("new", "fresh", &ctl);
         assert_eq!(app.session_id, "fresh");
-        assert_eq!(app.modes.agent_preset, None, "/new starts modeless");
-        assert_eq!(app.current_mode(), "standard");
+        // The ack was cached for this workspace — /new boots from it (the
+        // host echoes the real facts when the session composes).
+        assert_eq!(
+            app.modes.agent_preset.as_deref(),
+            Some("creator"),
+            "/new keeps the cached workspace mode"
+        );
+        assert_eq!(app.current_mode(), "creator");
     }
 
     #[test]
@@ -2080,15 +2984,18 @@ mod mode_tests {
         let picker = app.picker.as_ref().expect("permission picker opens");
         assert!(matches!(picker.kind, PickerKind::Permission));
         let ids: Vec<&str> = picker.items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["workspace-write", "danger-full-access"]);
-        assert_eq!(picker.sel, 0, "harness default preselected");
-        assert!(picker.items[0].meta.contains("default"), "unreported → marked default");
+        assert_eq!(ids, ["read-only", "workspace-write", "danger-full-access"]);
+        assert_eq!(picker.sel, 1, "workspace-write is the default");
+        assert!(
+            picker.items[1].meta.contains("default"),
+            "unreported → marked default"
+        );
 
         app.modes.permission = Some("danger-full-access".into());
         app.run_slash("permission", "", &ctl);
         let picker = app.picker.as_ref().expect("picker reopens");
-        assert_eq!(picker.sel, 1, "selection lands on the reported preset");
-        assert!(picker.items[1].meta.contains("current"));
+        assert_eq!(picker.sel, 2, "selection lands on the reported preset");
+        assert!(picker.items[2].meta.contains("current"));
     }
 
     #[test]
@@ -2096,7 +3003,20 @@ mod mode_tests {
         assert_eq!(normalize_permission("full"), Some("danger-full-access"));
         assert_eq!(normalize_permission("YOLO"), Some("danger-full-access"));
         assert_eq!(normalize_permission(" ws "), Some("workspace-write"));
-        assert_eq!(normalize_permission("read-only"), None, "custom ids pass through");
+        assert_eq!(normalize_permission("read-only"), Some("read-only"));
+        assert_eq!(normalize_permission("RO"), Some("read-only"));
+        assert_eq!(permission_label("read-only"), "Read Only");
+        assert_eq!(permission_label("workspace-write"), "Workspace Write");
+        assert_eq!(permission_label("danger-full-access"), "Full access");
+    }
+
+    #[test]
+    fn image_media_type_maps_extensions() {
+        assert_eq!(media_type_for("a.png"), Some("image/png"));
+        assert_eq!(media_type_for("a.JPEG"), Some("image/jpeg"));
+        assert_eq!(media_type_for("/tmp/x.webp"), Some("image/webp"));
+        assert_eq!(media_type_for("x.gif"), Some("image/gif"));
+        assert_eq!(media_type_for("notes.txt"), None);
     }
 
     #[test]
@@ -2119,25 +3039,225 @@ mod mode_tests {
     #[test]
     fn shift_tab_cycles_between_the_stock_presets() {
         let (mut app, ctl, rx) = test_app();
-        assert_eq!(app.current_permission(), "workspace-write", "assumed default");
+        assert_eq!(
+            app.current_permission(),
+            "workspace-write",
+            "assumed default"
+        );
+
+        let mut wait_for = |app: &mut App, target: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while app.modes.permission.as_deref() != Some(target) {
+                let remaining = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect(target);
+                let ev = rx.recv_timeout(remaining).expect("bus event");
+                app.handle(ev, &ctl);
+            }
+        };
+
         app.cycle_permission(&ctl);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while app.modes.permission.as_deref() != Some("danger-full-access") {
-            let remaining = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .expect("cycle lands on full access");
-            let ev = rx.recv_timeout(remaining).expect("bus event");
-            app.handle(ev, &ctl);
-        }
+        wait_for(&mut app, "danger-full-access");
         app.cycle_permission(&ctl);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while app.modes.permission.as_deref() != Some("workspace-write") {
-            let remaining = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .expect("cycle returns to workspace-write");
-            let ev = rx.recv_timeout(remaining).expect("bus event");
-            app.handle(ev, &ctl);
-        }
+        wait_for(&mut app, "read-only");
+        app.cycle_permission(&ctl);
+        wait_for(&mut app, "workspace-write");
         assert_eq!(app.current_permission(), "workspace-write");
+    }
+
+    #[test]
+    fn staged_images_live_as_inline_tokens_and_esc_clears_them() {
+        let (mut app, ctl, _rx) = test_app();
+        assert!(app.pending_images.is_empty());
+        app.stage_image(
+            "clipboard.png".into(),
+            "clipboard".into(),
+            "image/png".into(),
+            vec![0u8; 8],
+            String::new(),
+        );
+        app.stage_image(
+            "shot-2.png".into(),
+            "clipboard".into(),
+            "image/png".into(),
+            vec![1u8; 8],
+            String::new(),
+        );
+        assert_eq!(
+            app.pending_images.len(),
+            2,
+            "images stage instead of sending"
+        );
+        assert!(app.input.buf.contains("[image 1]") && app.input.buf.contains("[image 2]"));
+        app.handle_esc(&ctl);
+        assert!(app.input.is_empty(), "esc clears the draft");
+        assert!(app.pending_images.is_empty(), "chips go with the draft");
+    }
+
+    #[test]
+    fn backspace_on_a_chip_cuts_the_whole_token() {
+        let (mut app, ctl, _rx) = test_app();
+        app.stage_image(
+            "a.png".into(),
+            "p".into(),
+            "image/png".into(),
+            vec![0u8; 4],
+            String::new(),
+        );
+        app.stage_image(
+            "b.png".into(),
+            "p".into(),
+            "image/png".into(),
+            vec![1u8; 4],
+            String::new(),
+        );
+        // Cursor sits right after "[image 2]" — one backspace eats the
+        // whole token and un-stages that image only.
+        app.handle_key(
+            crossterm::event::KeyEvent::new(
+                KeyCode::Backspace,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &ctl,
+        );
+        assert_eq!(
+            app.pending_images.len(),
+            1,
+            "backspace pops the chip under the cursor"
+        );
+        assert_eq!(app.pending_images.get(0).unwrap().name, "a.png");
+        assert!(app.input.buf.contains("[image 1]"));
+        assert!(!app.input.buf.contains("[image 2]"));
+    }
+
+    #[test]
+    fn editing_a_token_away_unstages_its_image() {
+        let (mut app, ctl, _rx) = test_app();
+        app.stage_image(
+            "a.png".into(),
+            "p".into(),
+            "image/png".into(),
+            vec![0u8; 4],
+            String::new(),
+        );
+        // Simulate a kill that leaves a broken token, then any key event.
+        app.input.set("[image 1".into());
+        app.handle_key(
+            crossterm::event::KeyEvent::new(
+                KeyCode::Char('x'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &ctl,
+        );
+        assert!(
+            app.pending_images.is_empty(),
+            "broken token reconciles the tray"
+        );
+    }
+
+    #[test]
+    fn esc_clears_draft_when_idle() {
+        let (mut app, ctl, _rx) = test_app();
+        app.input.buf = "hello".into();
+        app.input.cursor = 5;
+        app.handle_esc(&ctl);
+        assert!(app.input.is_empty(), "single esc clears the draft");
+    }
+
+    #[test]
+    fn skills_merge_into_slash_menu_and_builtins_shadow() {
+        let (mut app, _ctl, _rx) = test_app();
+        app.skills = vec![
+            crate::bus::SkillInfo {
+                name: "commit-helper".into(),
+                description: "draft a commit".into(),
+            },
+            crate::bus::SkillInfo {
+                name: "help".into(),
+                description: "shadowed by builtin".into(),
+            },
+        ];
+        app.input.set("/".into());
+        let menu = app.slash_matches();
+        let skills: Vec<&str> = menu
+            .iter()
+            .filter(|e| e.skill)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(
+            skills,
+            ["commit-helper"],
+            "builtin /help shadows the skill name"
+        );
+        app.input.set("/commit".into());
+        let menu = app.slash_matches();
+        assert_eq!(menu.len(), 1);
+        assert!(menu[0].skill);
+        assert_eq!(menu[0].usage, "/commit-helper");
+    }
+
+    #[test]
+    fn skill_line_ships_as_prompt_not_unknown_command() {
+        let (mut app, ctl, _rx) = test_app();
+        app.skills = vec![crate::bus::SkillInfo {
+            name: "commit-helper".into(),
+            description: "draft a commit".into(),
+        }];
+        app.input.set("/commit-helper for the last change".into());
+        app.submit(&ctl);
+        assert!(
+            matches!(app.state, RunState::Starting),
+            "skill line starts a turn"
+        );
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn accepting_a_skill_completes_then_sends() {
+        let (mut app, ctl, _rx) = test_app();
+        app.skills = vec![crate::bus::SkillInfo {
+            name: "commit-helper".into(),
+            description: "draft a commit".into(),
+        }];
+        app.input.set("/commit".into());
+        let entry = app.slash_matches()[0].clone();
+        app.accept_slash(&entry, &ctl);
+        assert_eq!(
+            app.input.buf, "/commit-helper ",
+            "first accept completes the name"
+        );
+        assert!(matches!(app.state, RunState::Idle));
+        app.accept_slash(&entry, &ctl);
+        assert!(
+            matches!(app.state, RunState::Starting),
+            "second accept ships the prompt"
+        );
+    }
+
+    #[test]
+    fn staged_images_send_together_with_token_free_caption() {
+        let (mut app, ctl, _rx) = test_app();
+        app.stage_image(
+            "clipboard.png".into(),
+            "clipboard".into(),
+            "image/png".into(),
+            vec![0u8; 8],
+            String::new(),
+        );
+        app.stage_image(
+            "shot-2.png".into(),
+            "clipboard".into(),
+            "image/png".into(),
+            vec![1u8; 8],
+            String::new(),
+        );
+        app.input.insert_str("look");
+        app.submit(&ctl);
+        assert!(app.pending_images.is_empty(), "tray cleared after send");
+        assert!(app.input.is_empty());
+        assert!(
+            matches!(app.state, RunState::Starting),
+            "sending starts the turn"
+        );
     }
 }

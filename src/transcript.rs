@@ -6,6 +6,7 @@
 //! outcomes.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ratatui::style::{Modifier, Style};
@@ -15,8 +16,13 @@ use unicode_width::UnicodeWidthChar;
 use crate::events::UiEvent;
 use crate::theme::Theme;
 
-const COLLAPSED_TOOL_LINES: usize = 6;
+/// Collapsed tool viewport height — every tool renders as a small scrolling
+/// window by default; click toggles full expansion, wheel scrolls inside it.
+pub const TOOL_VIEWPORT: usize = 4;
+const COLLAPSED_SHELL_LINES: usize = 12;
 const COLLAPSED_REASONING_PREVIEW: usize = 2;
+/// Thumbnail width in cells (PNG images reserve a box of this many columns).
+const THUMB_COLS: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeLevel {
@@ -29,6 +35,16 @@ pub enum NoticeLevel {
 pub enum CellKind {
     User {
         text: String,
+        queued: bool,
+    },
+    Image {
+        name: String,
+        caption: String,
+        /// Display path for the no-thumbnail fallback.
+        path: String,
+        /// Encoded raster bytes (PNG for the kitty thumbnail path).
+        data: Arc<[u8]>,
+        id: u32,
         queued: bool,
     },
     Reasoning {
@@ -71,6 +87,39 @@ pub enum CellKind {
 pub struct Cell {
     pub kind: CellKind,
     pub expanded: bool,
+    /// Tool viewport scroll offset in wrapped body lines; `usize::MAX`
+    /// means follow the tail (the live bottom of the output).
+    pub scroll: usize,
+}
+
+impl Cell {
+    fn new(kind: CellKind) -> Self {
+        Cell {
+            kind,
+            expanded: false,
+            scroll: usize::MAX,
+        }
+    }
+}
+
+/// One image the UI should render as a kitty-graphics thumbnail, positioned
+/// by its reserved line range (`line` is relative to the transcript layout;
+/// the chat pane adds its banner offset).
+pub struct ImageShot {
+    pub id: u32,
+    pub line: usize,
+    pub rows: usize,
+    pub cols: usize,
+    pub data: Arc<[u8]>,
+}
+
+/// A rendered transcript: styled lines plus, for each line, the index of the
+/// transcript cell that owns it (only tool cells report ownership, so mouse
+/// clicks and wheel events can be routed to a specific tool viewport).
+pub struct TranscriptLayout {
+    pub lines: Vec<Line<'static>>,
+    pub owners: Vec<Option<usize>>,
+    pub images: Vec<ImageShot>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -81,6 +130,36 @@ pub struct UsageTotals {
     pub reasoning: u64,
 }
 
+/// Aggregate session timing/step stats for the footer. Timings are wall-clock
+/// deltas measured by the TUI as events stream in (no timestamps on the wire).
+#[derive(Default, Clone, Copy)]
+pub struct SessionStats {
+    pub turns: u64,
+    pub steps: u64,
+    /// Total turn wall time (turn/start → turn/end).
+    pub turn_millis: u64,
+    /// Time spent inside tool calls (tool/call → tool/result).
+    pub tool_millis: u64,
+    /// Sum of per-turn time-to-first-token, plus how many turns were sampled.
+    pub ttft_total_millis: u64,
+    pub ttft_count: u64,
+}
+
+impl SessionStats {
+    /// Model time: turn time minus tool time (saturating).
+    pub fn llm_millis(&self) -> u64 {
+        self.turn_millis.saturating_sub(self.tool_millis)
+    }
+
+    pub fn ttft_avg_millis(&self) -> u64 {
+        if self.ttft_count == 0 {
+            0
+        } else {
+            self.ttft_total_millis / self.ttft_count
+        }
+    }
+}
+
 pub struct Transcript {
     pub cells: Vec<Cell>,
     root_session: String,
@@ -89,7 +168,12 @@ pub struct Transcript {
     tools: HashMap<String, usize>,
     agents: HashMap<String, String>,
     agent_seq: usize,
+    image_seq: u32,
     pub usage: UsageTotals,
+    pub stats: SessionStats,
+    turn_started: Option<Instant>,
+    tool_started: HashMap<String, Instant>,
+    ttft_pending: bool,
     pub last_finish: Option<String>,
     /// Provenance-reported model of the last assembled assistant message —
     /// the ground truth of what actually answered.
@@ -107,7 +191,12 @@ impl Transcript {
             tools: HashMap::new(),
             agents: HashMap::new(),
             agent_seq: 0,
+            image_seq: 0,
             usage: UsageTotals::default(),
+            stats: SessionStats::default(),
+            turn_started: None,
+            tool_started: HashMap::new(),
+            ttft_pending: false,
             last_finish: None,
             last_model: None,
             expand_all: false,
@@ -120,6 +209,11 @@ impl Transcript {
         self.open_reasoning.clear();
         self.tools.clear();
         self.agents.clear();
+        self.usage = UsageTotals::default();
+        self.stats = SessionStats::default();
+        self.turn_started = None;
+        self.tool_started.clear();
+        self.ttft_pending = false;
     }
 
     pub fn clear(&mut self) {
@@ -134,32 +228,47 @@ impl Transcript {
         if session == self.root_session || session.is_empty() {
             None
         } else {
-            self.agents.get(session).cloned().or_else(|| Some("agent".into()))
+            self.agents
+                .get(session)
+                .cloned()
+                .or_else(|| Some("agent".into()))
         }
     }
 
     pub fn push_user(&mut self, text: String, queued: bool) {
-        self.cells.push(Cell {
-            kind: CellKind::User { text, queued },
-            expanded: false,
-        });
+        self.cells.push(Cell::new(CellKind::User { text, queued }));
+    }
+
+    /// Record a user-sent image (bytes kept for the kitty thumbnail path).
+    pub fn push_image(
+        &mut self,
+        name: String,
+        caption: String,
+        path: String,
+        data: Arc<[u8]>,
+        queued: bool,
+    ) {
+        self.image_seq += 1;
+        let id = self.image_seq;
+        self.cells.push(Cell::new(CellKind::Image {
+            name,
+            caption,
+            path,
+            data,
+            id,
+            queued,
+        }));
     }
 
     pub fn push_notice(&mut self, level: NoticeLevel, text: String) {
-        self.cells.push(Cell {
-            kind: CellKind::Notice { level, text },
-            expanded: false,
-        });
+        self.cells.push(Cell::new(CellKind::Notice { level, text }));
     }
 
     pub fn push_shell(&mut self, command: String) -> usize {
-        self.cells.push(Cell {
-            kind: CellKind::Shell {
-                command,
-                output: None,
-            },
-            expanded: false,
-        });
+        self.cells.push(Cell::new(CellKind::Shell {
+            command,
+            output: None,
+        }));
         self.cells.len() - 1
     }
 
@@ -174,8 +283,11 @@ impl Transcript {
     /// Mark queued user cells as delivered (a turn started consuming input).
     fn clear_queued_marks(&mut self) {
         for cell in &mut self.cells {
-            if let CellKind::User { queued, .. } = &mut cell.kind {
-                *queued = false;
+            match &mut cell.kind {
+                CellKind::User { queued, .. } | CellKind::Image { queued, .. } => {
+                    *queued = false;
+                }
+                _ => {}
             }
         }
     }
@@ -219,6 +331,19 @@ impl Transcript {
         }
     }
 
+    /// Record the per-turn first-token latency when the first visible or
+    /// reasoning delta for the root session arrives.
+    fn note_first_token(&mut self, session: &str) {
+        if session != self.root_session || !self.ttft_pending {
+            return;
+        }
+        if let Some(t0) = self.turn_started {
+            self.stats.ttft_total_millis += t0.elapsed().as_millis() as u64;
+            self.stats.ttft_count += 1;
+        }
+        self.ttft_pending = false;
+    }
+
     pub fn apply(&mut self, ev: UiEvent) {
         match ev {
             UiEvent::SessionStatus { session, running } => {
@@ -229,12 +354,18 @@ impl Transcript {
             UiEvent::TurnStart { session, .. } => {
                 if session == self.root_session {
                     self.clear_queued_marks();
+                    self.stats.turns += 1;
+                    self.turn_started = Some(Instant::now());
+                    self.ttft_pending = true;
                 }
             }
             UiEvent::TurnEnd { session, kind } => {
                 self.close_open(&session);
                 if session == self.root_session {
                     self.last_finish = Some(kind.clone());
+                    if let Some(t0) = self.turn_started.take() {
+                        self.stats.turn_millis += t0.elapsed().as_millis() as u64;
+                    }
                     if kind != "completed" {
                         let level = if kind == "error" {
                             NoticeLevel::Error
@@ -246,6 +377,7 @@ impl Transcript {
                 }
             }
             UiEvent::TextDelta { session, text } => {
+                self.note_first_token(&session);
                 // Reasoning for this step is over once visible text streams.
                 if let Some(idx) = self.open_reasoning.remove(&session) {
                     if let Some(cell) = self.cells.get_mut(idx) {
@@ -265,15 +397,12 @@ impl Transcript {
                     Some(&idx) => idx,
                     None => {
                         let agent = self.agent_label(&session);
-                        self.cells.push(Cell {
-                            kind: CellKind::Assistant {
-                                text: String::new(),
-                                done: false,
-                                model: None,
-                                agent,
-                            },
-                            expanded: false,
-                        });
+                        self.cells.push(Cell::new(CellKind::Assistant {
+                            text: String::new(),
+                            done: false,
+                            model: None,
+                            agent,
+                        }));
                         let idx = self.cells.len() - 1;
                         self.open_assistant.insert(session.clone(), idx);
                         idx
@@ -286,20 +415,18 @@ impl Transcript {
                 }
             }
             UiEvent::ReasoningDelta { session, text } => {
+                self.note_first_token(&session);
                 let idx = match self.open_reasoning.get(&session) {
                     Some(&idx) => idx,
                     None => {
                         let agent = self.agent_label(&session);
-                        self.cells.push(Cell {
-                            kind: CellKind::Reasoning {
-                                text: String::new(),
-                                done: false,
-                                started: Instant::now(),
-                                seconds: None,
-                                agent,
-                            },
-                            expanded: false,
-                        });
+                        self.cells.push(Cell::new(CellKind::Reasoning {
+                            text: String::new(),
+                            done: false,
+                            started: Instant::now(),
+                            seconds: None,
+                            agent,
+                        }));
                         let idx = self.cells.len() - 1;
                         self.open_reasoning.insert(session.clone(), idx);
                         idx
@@ -316,6 +443,9 @@ impl Transcript {
                 text,
                 model,
             } => {
+                if session == self.root_session {
+                    self.stats.steps += 1;
+                }
                 if model.is_some() && session == self.root_session {
                     self.last_model = model.clone();
                 }
@@ -341,15 +471,12 @@ impl Transcript {
                     None => {
                         if !text.is_empty() {
                             let agent = self.agent_label(&session);
-                            self.cells.push(Cell {
-                                kind: CellKind::Assistant {
-                                    text,
-                                    done: true,
-                                    model,
-                                    agent,
-                                },
-                                expanded: false,
-                            });
+                            self.cells.push(Cell::new(CellKind::Assistant {
+                                text,
+                                done: true,
+                                model,
+                                agent,
+                            }));
                         }
                     }
                 }
@@ -360,20 +487,20 @@ impl Transcript {
                 name,
                 arguments,
             } => {
+                if session == self.root_session {
+                    self.tool_started.insert(call_id.clone(), Instant::now());
+                }
                 self.close_open(&session);
                 let title = tool_title(&name, &arguments);
                 let agent = self.agent_label(&session);
-                self.cells.push(Cell {
-                    kind: CellKind::Tool {
-                        name,
-                        title,
-                        result: String::new(),
-                        ok: None,
-                        error: None,
-                        agent,
-                    },
-                    expanded: false,
-                });
+                self.cells.push(Cell::new(CellKind::Tool {
+                    name,
+                    title,
+                    result: String::new(),
+                    ok: None,
+                    error: None,
+                    agent,
+                }));
                 self.tools.insert(call_id, self.cells.len() - 1);
             }
             UiEvent::ToolResult {
@@ -383,12 +510,20 @@ impl Transcript {
                 text,
                 error,
             } => {
+                if session == self.root_session {
+                    if let Some(t0) = self.tool_started.remove(&call_id) {
+                        self.stats.tool_millis += t0.elapsed().as_millis() as u64;
+                    }
+                }
                 let idx = self.tools.remove(&call_id);
                 match idx {
                     Some(idx) => {
                         if let Some(cell) = self.cells.get_mut(idx) {
                             if let CellKind::Tool {
-                                result, ok, error: e, ..
+                                result,
+                                ok,
+                                error: e,
+                                ..
                             } = &mut cell.kind
                             {
                                 *result = text;
@@ -399,17 +534,14 @@ impl Transcript {
                     }
                     None => {
                         let agent = self.agent_label(&session);
-                        self.cells.push(Cell {
-                            kind: CellKind::Tool {
-                                name: "tool".into(),
-                                title: call_id,
-                                result: text,
-                                ok: Some(!is_error),
-                                error,
-                                agent,
-                            },
-                            expanded: false,
-                        });
+                        self.cells.push(Cell::new(CellKind::Tool {
+                            name: "tool".into(),
+                            title: call_id,
+                            result: text,
+                            ok: Some(!is_error),
+                            error,
+                            agent,
+                        }));
                     }
                 }
             }
@@ -428,10 +560,8 @@ impl Transcript {
             UiEvent::UserInjected {
                 source, preview, ..
             } => {
-                self.cells.push(Cell {
-                    kind: CellKind::Injected { source, preview },
-                    expanded: false,
-                });
+                self.cells
+                    .push(Cell::new(CellKind::Injected { source, preview }));
             }
             UiEvent::SubagentStarted { child, .. } => {
                 self.agent_seq += 1;
@@ -489,20 +619,39 @@ impl Transcript {
     }
 
     /// Render every cell to wrapped, styled lines for `width` columns.
+    #[allow(dead_code)] // kept for tests; the UI uses `layout` for ownership
     pub fn lines(&self, theme: &Theme, width: u16, spinner: char) -> Vec<Line<'static>> {
+        self.layout(theme, width, spinner, false).lines
+    }
+
+    /// Render every cell to wrapped, styled lines, plus per-line ownership so
+    /// the UI can route mouse clicks and wheel events to a specific tool
+    /// viewport (and only tool lines claim ownership). `thumbs` reserves blank
+    /// lines for kitty-graphics image thumbnails and reports their placements.
+    pub fn layout(
+        &self,
+        theme: &Theme,
+        width: u16,
+        spinner: char,
+        thumbs: bool,
+    ) -> TranscriptLayout {
         let width = width.max(8) as usize;
         let mut out: Vec<Line> = Vec::new();
-        for cell in &self.cells {
+        let mut owners: Vec<Option<usize>> = Vec::new();
+        let mut images: Vec<ImageShot> = Vec::new();
+        for (ci, cell) in self.cells.iter().enumerate() {
             let expanded = cell.expanded || self.expand_all;
             match &cell.kind {
                 CellKind::User { text, queued } => {
-                    out.push(Line::default());
+                    emit(&mut out, &mut owners, Line::default(), None);
                     // Web UI fidelity: the user bubble uses --dsw-specific-bubble.
                     for (i, l) in wrap(text, width.saturating_sub(2)).into_iter().enumerate() {
                         let mut spans = vec![
                             Span::styled(
                                 if i == 0 { "❯ " } else { "  " }.to_string(),
-                                Style::default().fg(theme.brand).add_modifier(Modifier::BOLD),
+                                Style::default()
+                                    .fg(theme.brand)
+                                    .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
                                 format!(" {l} "),
@@ -518,7 +667,86 @@ impl Transcript {
                                 Style::default().fg(theme.warn_soft()),
                             ));
                         }
-                        out.push(Line::from(spans));
+                        emit(&mut out, &mut owners, Line::from(spans), None);
+                    }
+                }
+                CellKind::Image {
+                    name,
+                    caption,
+                    path,
+                    data,
+                    id,
+                    queued,
+                    ..
+                } => {
+                    emit(&mut out, &mut owners, Line::default(), None);
+                    let label = if caption.is_empty() {
+                        format!("🖼 {name}")
+                    } else {
+                        format!("🖼 {name} · {caption}")
+                    };
+                    let mut spans = vec![
+                        Span::styled(
+                            "❯ ".to_string(),
+                            Style::default()
+                                .fg(theme.brand)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {label} "),
+                            Style::default()
+                                .fg(theme.bubble_fg)
+                                .bg(theme.bubble_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    if *queued {
+                        spans.push(Span::styled(
+                            "  queued".to_string(),
+                            Style::default().fg(theme.warn_soft()),
+                        ));
+                    }
+                    emit(&mut out, &mut owners, Line::from(spans), None);
+
+                    // Thumbnail (PNG only — clipboard screenshots are PNG;
+                    // other formats fall back to the path line below).
+                    let is_png = data.starts_with(b"\x89PNG\r\n\x1a\n");
+                    if thumbs && is_png {
+                        if let Some((w, h)) = crate::pet::image_dims(data) {
+                            let cols = (width.saturating_sub(2)).min(THUMB_COLS);
+                            let rows = thumb_rows(cols, w, h) as usize;
+                            let line = out.len();
+                            for _ in 0..rows {
+                                emit(&mut out, &mut owners, Line::default(), None);
+                            }
+                            images.push(ImageShot {
+                                id: *id,
+                                line,
+                                rows,
+                                cols,
+                                data: data.clone(),
+                            });
+                        } else {
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                Line::from(Span::styled(
+                                    format!("  {path}"),
+                                    Style::default().fg(theme.caption),
+                                )),
+                                None,
+                            );
+                        }
+                    } else {
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(Span::styled(
+                                format!("  {path}"),
+                                Style::default().fg(theme.caption),
+                            )),
+                            None,
+                        );
                     }
                 }
                 CellKind::Reasoning {
@@ -528,7 +756,7 @@ impl Transcript {
                     agent,
                     ..
                 } => {
-                    out.push(Line::default());
+                    emit(&mut out, &mut owners, Line::default(), None);
                     let head_style = Style::default().fg(theme.caption);
                     let body_style = Style::default()
                         .fg(theme.fg_tertiary)
@@ -538,23 +766,35 @@ impl Transcript {
                     if *done {
                         let dur = seconds.map(|s| format!(" · {s:.1}s")).unwrap_or_default();
                         let agent = agent_prefix(agent);
-                        out.push(Line::from(Span::styled(
-                            format!("✻ {agent}thought{dur} · {n} line{}", plural(n)),
-                            head_style,
-                        )));
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(Span::styled(
+                                format!("✻ {agent}thought{dur} · {n} line{}", plural(n)),
+                                head_style,
+                            )),
+                            None,
+                        );
                         if expanded {
                             for l in lines {
-                                out.push(Line::from(vec![
-                                    Span::raw("  "),
-                                    Span::styled(l, body_style),
-                                ]));
+                                emit(
+                                    &mut out,
+                                    &mut owners,
+                                    Line::from(vec![Span::raw("  "), Span::styled(l, body_style)]),
+                                    None,
+                                );
                             }
                         }
                     } else {
-                        out.push(Line::from(Span::styled(
-                            format!("✻ {}thinking…", agent_prefix(agent)),
-                            Style::default().fg(theme.brand_soft),
-                        )));
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(Span::styled(
+                                format!("✻ {}thinking…", agent_prefix(agent)),
+                                Style::default().fg(theme.brand_soft),
+                            )),
+                            None,
+                        );
                         let tail: Vec<_> = if expanded {
                             lines
                         } else {
@@ -566,7 +806,12 @@ impl Transcript {
                                 .collect()
                         };
                         for l in tail {
-                            out.push(Line::from(vec![Span::raw("  "), Span::styled(l, body_style)]));
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                Line::from(vec![Span::raw("  "), Span::styled(l, body_style)]),
+                                None,
+                            );
                         }
                     }
                 }
@@ -576,45 +821,30 @@ impl Transcript {
                     if text.trim().is_empty() {
                         continue;
                     }
-                    out.push(Line::default());
+                    emit(&mut out, &mut owners, Line::default(), None);
                     if let Some(a) = agent {
-                        out.push(Line::from(Span::styled(
-                            format!("⛭ {a}"),
-                            Style::default().fg(theme.caption),
-                        )));
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(Span::styled(
+                                format!("⛭ {a}"),
+                                Style::default().fg(theme.caption),
+                            )),
+                            None,
+                        );
                     }
-                    let mut in_fence = false;
-                    for raw in text.lines() {
-                        let fence = raw.trim_start().starts_with("```");
-                        if fence {
-                            in_fence = !in_fence;
-                            out.push(Line::from(Span::styled(
-                                raw.to_string(),
-                                Style::default().fg(theme.caption).bg(theme.code_bg),
-                            )));
-                            continue;
-                        }
-                        let style = if in_fence {
-                            Style::default().fg(theme.fg_secondary).bg(theme.code_bg)
-                        } else {
-                            Style::default().fg(theme.fg_secondary)
-                        };
-                        if raw.is_empty() {
-                            out.push(Line::default());
-                            continue;
-                        }
-                        for l in wrap(raw, width) {
-                            out.push(Line::from(Span::styled(l, style)));
-                        }
-                    }
+                    let mut lines = crate::markdown::render(text, theme, width);
                     if !done {
                         // streaming cursor
-                        if let Some(last) = out.last_mut() {
+                        if let Some(last) = lines.last_mut() {
                             last.spans.push(Span::styled(
                                 "▍".to_string(),
                                 Style::default().fg(theme.brand),
                             ));
                         }
+                    }
+                    for l in lines {
+                        emit(&mut out, &mut owners, l, None);
                     }
                 }
                 CellKind::Tool {
@@ -625,7 +855,19 @@ impl Transcript {
                     error,
                     agent,
                 } => {
-                    out.push(Line::default());
+                    emit(&mut out, &mut owners, Line::default(), None);
+                    let body = result.trim_end();
+                    let all: Vec<String> = if body.is_empty() {
+                        Vec::new()
+                    } else {
+                        body.lines()
+                            .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
+                            .collect()
+                    };
+                    let total = all.len();
+                    let has_more = total > TOOL_VIEWPORT;
+                    let running = ok.is_none();
+
                     let (glyph, gstyle) = match ok {
                         None => (spinner, Style::default().fg(theme.brand)),
                         Some(true) => ('⏺', Style::default().fg(theme.ok_soft())),
@@ -646,116 +888,203 @@ impl Transcript {
                     }
                     if !title.is_empty() {
                         spans.push(Span::styled(
-                            format!("  {}", clamp_str(title, width.saturating_sub(name.len() + 6))),
+                            format!(
+                                "  {}",
+                                clamp_str(title, width.saturating_sub(name.len() + 6))
+                            ),
                             Style::default().fg(theme.fg_tertiary),
                         ));
                     }
-                    out.push(Line::from(spans));
-                    if let Some(err) = error {
-                        out.push(Line::from(vec![
-                            Span::styled("│ ".to_string(), Style::default().fg(theme.err)),
-                            Span::styled(err.clone(), Style::default().fg(theme.err)),
-                        ]));
+                    if has_more {
+                        spans.push(Span::styled(
+                            if expanded { " ▾" } else { " ▸" }.to_string(),
+                            Style::default().fg(theme.caption),
+                        ));
                     }
-                    let body = result.trim_end();
+                    emit(&mut out, &mut owners, Line::from(spans), Some(ci));
+
+                    if let Some(err) = error {
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(vec![
+                                Span::styled("│ ".to_string(), Style::default().fg(theme.err)),
+                                Span::styled(err.clone(), Style::default().fg(theme.err)),
+                            ]),
+                            Some(ci),
+                        );
+                    }
+
                     if !body.is_empty() {
                         let bar_color = match ok {
                             Some(false) => theme.err,
                             _ => theme.border,
                         };
-                        let all: Vec<String> = body
-                            .lines()
-                            .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
-                            .collect();
-                        let total = all.len();
-                        let shown = if expanded || total <= COLLAPSED_TOOL_LINES {
-                            all
+                        if expanded || total <= TOOL_VIEWPORT {
+                            for l in all {
+                                emit(
+                                    &mut out,
+                                    &mut owners,
+                                    Line::from(vec![
+                                        Span::styled(
+                                            "│ ".to_string(),
+                                            Style::default().fg(bar_color),
+                                        ),
+                                        Span::styled(l, Style::default().fg(theme.fg_tertiary)),
+                                    ]),
+                                    Some(ci),
+                                );
+                            }
                         } else {
-                            all.into_iter().take(COLLAPSED_TOOL_LINES).collect()
-                        };
-                        let shown_len = shown.len();
-                        for l in shown {
-                            out.push(Line::from(vec![
-                                Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
-                                Span::styled(l, Style::default().fg(theme.fg_tertiary)),
-                            ]));
-                        }
-                        if total > shown_len {
-                            out.push(Line::from(vec![
-                                Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
-                                Span::styled(
-                                    format!("… +{} lines (ctrl+e expands)", total - shown_len),
-                                    Style::default().fg(theme.caption),
-                                ),
-                            ]));
+                            let offset = if running {
+                                total - TOOL_VIEWPORT
+                            } else {
+                                resolve_scroll(cell.scroll, total, TOOL_VIEWPORT)
+                            };
+                            for l in &all[offset..offset + TOOL_VIEWPORT] {
+                                emit(
+                                    &mut out,
+                                    &mut owners,
+                                    Line::from(vec![
+                                        Span::styled(
+                                            "│ ".to_string(),
+                                            Style::default().fg(bar_color),
+                                        ),
+                                        Span::styled(
+                                            l.clone(),
+                                            Style::default().fg(theme.fg_tertiary),
+                                        ),
+                                    ]),
+                                    Some(ci),
+                                );
+                            }
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                Line::from(vec![
+                                    Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
+                                    Span::styled(
+                                        format!(
+                                            "{}-{}/{} lines · wheel scrolls · click to expand",
+                                            offset + 1,
+                                            offset + TOOL_VIEWPORT,
+                                            total
+                                        ),
+                                        Style::default().fg(theme.caption),
+                                    ),
+                                ]),
+                                Some(ci),
+                            );
                         }
                     }
                 }
                 CellKind::Shell { command, output } => {
-                    out.push(Line::default());
+                    emit(&mut out, &mut owners, Line::default(), None);
                     let (glyph, gstyle) = match output {
                         None => (spinner, Style::default().fg(theme.warn_soft())),
                         Some((Some(0), _)) => ('!', Style::default().fg(theme.ok_soft())),
                         Some(_) => ('!', Style::default().fg(theme.err)),
                     };
-                    out.push(Line::from(vec![
-                        Span::styled(format!("{glyph} "), gstyle.add_modifier(Modifier::BOLD)),
-                        Span::styled(
-                            command.clone(),
-                            Style::default().fg(theme.warn_soft()).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("  (local shell)".to_string(), Style::default().fg(theme.caption)),
-                    ]));
+                    // Terminal card: `$ cmd` chip in the header, output as
+                    // full-width code_bg rows behind a gray-blue gutter.
+                    emit(
+                        &mut out,
+                        &mut owners,
+                        Line::from(vec![
+                            Span::styled(format!("{glyph} "), gstyle.add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                format!(" $ {command} "),
+                                Style::default()
+                                    .fg(theme.bubble_fg)
+                                    .bg(theme.bubble_bg)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                "  local shell".to_string(),
+                                Style::default().fg(theme.caption),
+                            ),
+                        ]),
+                        None,
+                    );
                     if let Some((code, text)) = output {
+                        let body_w = width.saturating_sub(2);
+                        let card_row = |txt: &str, fg: ratatui::style::Color| -> Line<'static> {
+                            let pad =
+                                body_w.saturating_sub(unicode_width::UnicodeWidthStr::width(txt));
+                            Line::from(vec![
+                                Span::styled(
+                                    "▎ ".to_string(),
+                                    Style::default().fg(theme.hint).bg(theme.code_bg),
+                                ),
+                                Span::styled(
+                                    format!("{txt}{}", " ".repeat(pad)),
+                                    Style::default().fg(fg).bg(theme.code_bg),
+                                ),
+                            ])
+                        };
                         let all: Vec<String> = text
                             .trim_end()
                             .lines()
-                            .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
+                            .flat_map(|raw| wrap(raw, body_w))
                             .collect();
                         let total = all.len();
-                        let shown = if expanded || total <= COLLAPSED_TOOL_LINES * 2 {
+                        let shown = if expanded || total <= COLLAPSED_SHELL_LINES {
                             all
                         } else {
-                            all.into_iter().take(COLLAPSED_TOOL_LINES * 2).collect()
+                            all.into_iter().take(COLLAPSED_SHELL_LINES).collect()
                         };
                         let shown_len = shown.len();
                         for l in shown {
-                            out.push(Line::from(vec![
-                                Span::styled("│ ".to_string(), Style::default().fg(theme.border)),
-                                Span::styled(l, Style::default().fg(theme.fg_tertiary)),
-                            ]));
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                card_row(&l, theme.fg_secondary),
+                                None,
+                            );
                         }
                         if total > shown_len {
-                            out.push(Line::from(vec![
-                                Span::styled("│ ".to_string(), Style::default().fg(theme.border)),
-                                Span::styled(
-                                    format!("… +{} lines (ctrl+e expands)", total - shown_len),
-                                    Style::default().fg(theme.caption),
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                card_row(
+                                    &format!("… +{} lines (ctrl+o expands)", total - shown_len),
+                                    theme.caption,
                                 ),
-                            ]));
+                                None,
+                            );
                         }
                         if let Some(c) = code {
                             if *c != 0 {
-                                out.push(Line::from(Span::styled(
-                                    format!("  exit {c}"),
-                                    Style::default().fg(theme.err),
-                                )));
+                                emit(
+                                    &mut out,
+                                    &mut owners,
+                                    card_row(&format!("exit {c}"), theme.err),
+                                    None,
+                                );
                             }
                         }
                     }
                 }
                 CellKind::Injected { source, preview } => {
-                    out.push(Line::from(vec![
-                        Span::styled("◦ context".to_string(), Style::default().fg(theme.caption)),
-                        Span::styled(
-                            format!(" · {source} · "),
-                            Style::default().fg(theme.caption),
-                        ),
-                        Span::styled(
-                            clamp_str(preview, width.saturating_sub(source.len() + 14)),
-                            Style::default().fg(theme.fg_tertiary),
-                        ),
-                    ]));
+                    emit(
+                        &mut out,
+                        &mut owners,
+                        Line::from(vec![
+                            Span::styled(
+                                "◦ context".to_string(),
+                                Style::default().fg(theme.caption),
+                            ),
+                            Span::styled(
+                                format!(" · {source} · "),
+                                Style::default().fg(theme.caption),
+                            ),
+                            Span::styled(
+                                clamp_str(preview, width.saturating_sub(source.len() + 14)),
+                                Style::default().fg(theme.fg_tertiary),
+                            ),
+                        ]),
+                        None,
+                    );
                 }
                 CellKind::Notice { level, text } => {
                     let color = match level {
@@ -764,15 +1093,79 @@ impl Transcript {
                         NoticeLevel::Error => theme.err,
                     };
                     for l in wrap(text, width.saturating_sub(2)) {
-                        out.push(Line::from(vec![
-                            Span::styled("· ".to_string(), Style::default().fg(color)),
-                            Span::styled(l, Style::default().fg(color)),
-                        ]));
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(vec![
+                                Span::styled("· ".to_string(), Style::default().fg(color)),
+                                Span::styled(l, Style::default().fg(color)),
+                            ]),
+                            None,
+                        );
                     }
                 }
             }
         }
-        out
+        TranscriptLayout {
+            lines: out,
+            owners,
+            images,
+        }
+    }
+
+    /// Wrapped body-line count for a tool cell at `width` columns — the
+    /// denominator the UI clamps its viewport scroll offset against.
+    pub fn tool_total_lines(&self, ci: usize, width: usize) -> Option<usize> {
+        match self.cells.get(ci) {
+            Some(Cell {
+                kind: CellKind::Tool { result, .. },
+                ..
+            }) => {
+                let body = result.trim_end();
+                if body.is_empty() {
+                    Some(0)
+                } else {
+                    Some(
+                        body.lines()
+                            .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
+                            .count(),
+                    )
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+fn emit(
+    out: &mut Vec<Line<'static>>,
+    owners: &mut Vec<Option<usize>>,
+    line: Line<'static>,
+    owner: Option<usize>,
+) {
+    out.push(line);
+    owners.push(owner);
+}
+
+/// Thumbnail height in rows for `cols` columns, preserving the image's pixel
+/// aspect under the same 2:1 cell aspect the composer pet assumes.
+fn thumb_rows(cols: usize, w: u32, h: u32) -> usize {
+    if w == 0 || h == 0 || cols == 0 {
+        return 6;
+    }
+    let rows = (cols as f64 * h as f64 / (2.0 * w as f64)).round() as usize;
+    rows.clamp(2, 12)
+}
+
+/// Resolve a tool viewport scroll offset: `usize::MAX` follows the tail.
+fn resolve_scroll(scroll: usize, total: usize, viewport: usize) -> usize {
+    if total <= viewport {
+        return 0;
+    }
+    let max = total - viewport;
+    match scroll {
+        usize::MAX => max,
+        s => s.min(max),
     }
 }
 
@@ -990,5 +1383,163 @@ mod tests {
         let theme = Theme::dark();
         let lines = tr.lines(&theme, 40, '⠋');
         assert!(lines.len() >= 3);
+    }
+
+    #[test]
+    fn tool_viewport_collapses_by_default_and_expand_all_opens_it() {
+        let text = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8";
+        let mut tr = t("s");
+        tr.apply(UiEvent::ToolCall {
+            session: "s".into(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        tr.apply(UiEvent::ToolResult {
+            session: "s".into(),
+            call_id: "c1".into(),
+            is_error: false,
+            text: text.into(),
+            error: None,
+        });
+        let theme = Theme::dark();
+        let plain = |lines: &[Line]| -> String {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+                .collect()
+        };
+
+        // Default: a 4-line viewport pinned to the tail (l5..l8) + footer.
+        let lines = tr.lines(&theme, 40, ' ');
+        let p = plain(&lines);
+        assert!(
+            p.contains("5-8/8 lines"),
+            "footer shows the window position: {p}"
+        );
+        assert!(p.contains("wheel scrolls"), "footer hint: {p}");
+        assert!(!p.contains("l4"), "l4 above the tail window is hidden: {p}");
+        assert!(p.contains("l8"), "tail line visible: {p}");
+
+        // expand_all (ctrl+o) opens the whole body and drops the footer.
+        tr.expand_all = true;
+        let lines = tr.lines(&theme, 40, ' ');
+        let p = plain(&lines);
+        assert!(p.contains("l1"), "expand_all shows the top: {p}");
+        assert!(!p.contains("wheel scrolls"), "no footer when expanded: {p}");
+    }
+
+    #[test]
+    fn image_cell_reserves_thumbnail_or_falls_back_to_path() {
+        let mut tr = t("s");
+        let mut png = vec![0u8; 24];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[16..20].copy_from_slice(&100u32.to_be_bytes());
+        png[20..24].copy_from_slice(&100u32.to_be_bytes());
+        tr.push_image(
+            "pic.png".into(),
+            "look".into(),
+            "/tmp/pic.png".into(),
+            std::sync::Arc::from(png.clone()),
+            false,
+        );
+        let theme = Theme::dark();
+
+        // Thumbnails on: reserve blank lines and report the placement.
+        let layout = tr.layout(&theme, 40, ' ', true);
+        assert_eq!(layout.images.len(), 1, "PNG image reports one shot");
+        let shot = &layout.images[0];
+        assert_eq!(shot.cols, 24);
+        assert!(
+            (2..=12).contains(&shot.rows),
+            "aspect-true rows: {}",
+            shot.rows
+        );
+        let reserved: String = layout.lines[shot.line]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            reserved.trim().is_empty(),
+            "reserved line is blank: {reserved:?}"
+        );
+
+        // Thumbnails off: no reservation, path shown as the fallback.
+        let layout = tr.layout(&theme, 40, ' ', false);
+        assert!(layout.images.is_empty());
+        let text: String = layout
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(text.contains("/tmp/pic.png"), "fallback path shown: {text}");
+    }
+
+    #[test]
+    fn stats_accumulate_turns_steps_and_ttft() {
+        let mut tr = t("s");
+        tr.apply(UiEvent::TurnStart {
+            session: "s".into(),
+            turn: 1,
+        });
+        tr.apply(UiEvent::AssistantFinal {
+            session: "s".into(),
+            text: "hi".into(),
+            model: None,
+        });
+        tr.apply(UiEvent::ToolCall {
+            session: "s".into(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        tr.apply(UiEvent::ToolResult {
+            session: "s".into(),
+            call_id: "c1".into(),
+            is_error: false,
+            text: "ok".into(),
+            error: None,
+        });
+        tr.apply(UiEvent::TextDelta {
+            session: "s".into(),
+            text: "first".into(),
+        });
+        tr.apply(UiEvent::TextDelta {
+            session: "s".into(),
+            text: "second".into(),
+        });
+        tr.apply(UiEvent::TurnEnd {
+            session: "s".into(),
+            kind: "completed".into(),
+        });
+
+        assert_eq!(tr.stats.turns, 1);
+        assert_eq!(tr.stats.steps, 1);
+        assert_eq!(tr.stats.ttft_count, 1, "only the first delta samples TTFT");
+        assert!(tr.stats.tool_millis <= tr.stats.turn_millis);
+    }
+
+    #[test]
+    fn tool_scroll_offset_clamps_to_the_tail() {
+        let mut tr = t("s");
+        tr.apply(UiEvent::ToolCall {
+            session: "s".into(),
+            call_id: "c1".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        });
+        tr.apply(UiEvent::ToolResult {
+            session: "s".into(),
+            call_id: "c1".into(),
+            is_error: false,
+            text: "a\nb\nc\nd\ne\nf".into(),
+            error: None,
+        });
+        assert_eq!(tr.tool_total_lines(0, 40), Some(6));
+        // follow-tail sentinel resolves to the last viewport window.
+        assert_eq!(resolve_scroll(usize::MAX, 6, TOOL_VIEWPORT), 2);
+        assert_eq!(resolve_scroll(0, 6, TOOL_VIEWPORT), 0);
+        assert_eq!(resolve_scroll(99, 6, TOOL_VIEWPORT), 2, "clamped to max");
     }
 }

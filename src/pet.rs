@@ -60,7 +60,10 @@ pub struct Pet {
 
 impl Pet {
     pub fn new(enabled: bool) -> Self {
-        Pet { enabled, shown: None }
+        Pet {
+            enabled,
+            shown: None,
+        }
     }
 
     /// Make the terminal match `want` (cell box + working flag, or None to
@@ -104,16 +107,111 @@ impl Pet {
     }
 }
 
+/// Parse pixel dimensions from a PNG (the only format thumbnailed without a
+/// decoder — clipboard screenshots are PNG; other formats fall back to text).
+pub fn image_dims(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 24 || &data[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+    let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+    Some((w, h))
+}
+
+/// One visible image thumbnail the terminal should currently show.
+pub struct ThumbShot<'a> {
+    pub id: u32,
+    pub rect: Rect,
+    pub data: &'a [u8],
+}
+
+/// Keeps kitty-graphics thumbnail placements in sync with the visible chat
+/// viewport: emit when new/moved, delete when scrolled away.
+#[derive(Default)]
+pub struct Thumbnails {
+    shown: std::collections::HashMap<u32, Rect>,
+}
+
+impl Thumbnails {
+    pub fn new() -> Self {
+        Thumbnails::default()
+    }
+
+    pub fn sync(&mut self, out: &mut impl Write, visible: &[ThumbShot]) -> io::Result<()> {
+        use std::collections::HashSet;
+        let mut ids = HashSet::new();
+        for shot in visible {
+            ids.insert(shot.id);
+            if self.shown.get(&shot.id) != Some(&shot.rect) {
+                if self.shown.remove(&shot.id).is_some() {
+                    delete_kitty(out, shot.id)?;
+                }
+                emit_kitty(out, shot.id, shot.data, shot.rect)?;
+                self.shown.insert(shot.id, shot.rect);
+            }
+        }
+        let gone: Vec<u32> = self
+            .shown
+            .keys()
+            .copied()
+            .filter(|id| !ids.contains(id))
+            .collect();
+        for id in gone {
+            delete_kitty(out, id)?;
+            self.shown.remove(&id);
+        }
+        out.flush()
+    }
+}
+
+fn emit_kitty(out: &mut impl Write, id: u32, data: &[u8], cell: Rect) -> io::Result<()> {
+    write!(out, "\x1b7\x1b[{};{}H", cell.y + 1, cell.x + 1)?;
+    let b64 = base64(data);
+    let chunks: Vec<&[u8]> = b64.as_bytes().chunks(CHUNK).collect();
+    for (i, chunk) in chunks.iter().enumerate() {
+        let more = u8::from(i + 1 != chunks.len());
+        if i == 0 {
+            write!(
+                out,
+                "\x1b_Ga=T,f=100,i={id},c={},r={},C=1,z=0,q=2,m={more};",
+                cell.width, cell.height
+            )?;
+        } else {
+            write!(out, "\x1b_Gm={more};")?;
+        }
+        out.write_all(chunk)?;
+        write!(out, "\x1b\\")?;
+    }
+    write!(out, "\x1b8")
+}
+
+fn delete_kitty(out: &mut impl Write, id: u32) -> io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")
+}
+
 /// Standard base64 (RFC 4648, with padding) — small enough to not need a dep.
-fn base64(data: &[u8]) -> String {
+pub(crate) fn base64(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let n = u32::from_be_bytes([0, chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)]);
+        let n = u32::from_be_bytes([
+            0,
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ]);
         out.push(A[(n >> 18 & 63) as usize] as char);
         out.push(A[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { A[(n >> 6 & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            A[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -145,6 +243,17 @@ mod tests {
     }
 
     #[test]
+    fn image_dims_reads_png_ihdr() {
+        let mut png = vec![0u8; 24];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[16..20].copy_from_slice(&320u32.to_be_bytes());
+        png[20..24].copy_from_slice(&240u32.to_be_bytes());
+        assert_eq!(image_dims(&png), Some((320, 240)));
+        assert_eq!(image_dims(b"not a png"), None);
+        assert_eq!(image_dims(&png[..20]), None, "truncated header");
+    }
+
+    #[test]
     fn sync_shows_switches_state_and_hides() {
         let mut pet = Pet::new(true);
         let cell = Rect::new(90, 30, 7, 4);
@@ -154,7 +263,10 @@ mod tests {
         pet.sync(&mut out, Some((cell, false))).unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("\x1b[31;91H"), "cursor jumps to the cell");
-        assert!(s.contains("a=T,f=100,i=4207,c=7,r=4,C=1,z=0,q=2,m=1;"), "idle sprite: {s:.90}");
+        assert!(
+            s.contains("a=T,f=100,i=4207,c=7,r=4,C=1,z=0,q=2,m=1;"),
+            "idle sprite: {s:.90}"
+        );
 
         // Same state again: no bytes at all.
         let mut out = Vec::new();
@@ -172,14 +284,18 @@ mod tests {
         let mut out = Vec::new();
         pet.sync(&mut out, None).unwrap();
         let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("a=d,d=I,i=4208") && !s.contains("a=T"), "hidden: {s}");
+        assert!(
+            s.contains("a=d,d=I,i=4208") && !s.contains("a=T"),
+            "hidden: {s}"
+        );
     }
 
     #[test]
     fn disabled_pet_stays_silent() {
         let mut pet = Pet::new(false);
         let mut out = Vec::new();
-        pet.sync(&mut out, Some((Rect::new(0, 0, 7, 4), true))).unwrap();
+        pet.sync(&mut out, Some((Rect::new(0, 0, 7, 4), true)))
+            .unwrap();
         assert!(out.is_empty());
     }
 }

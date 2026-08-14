@@ -19,6 +19,8 @@
  *   tui/select-model  — per-session live model switch + future-session default
  *   tui/permission    — apply a permission preset to a live session
  *   tui/preset        — pick the agent preset composed on first prompt
+ *   tui/skills        — user-invocable skill catalog for the slash menu
+ *   tui/attach-image  — commit a raster into the host attachment store
  *
  * The agent, tools, persistence, and providers come from the surrounding dsh
  * profile. Stdout of the host process is the TUI's screen — keep stdout
@@ -276,6 +278,17 @@ export function apply(ctx) {
     return { messageId: message.id }
   }
 
+  async function interrupt(params) {
+    const sessionId = String(params.sessionId)
+    const rec = sessions.get(sessionId)
+    if (rec !== undefined) {
+      // Aborts the active turn; a followup sent afterward becomes the next
+      // turn's waking input (cancel-convergence wake latch).
+      rec.handle.agent.cancel({ kind: 'user' })
+    }
+    return { ok: true }
+  }
+
   async function tuiCatalog() {
     const llm = requireLlm()
     const providers = llm.listProviders()
@@ -382,6 +395,56 @@ export function apply(ctx) {
     return { ok: true, applied: 'on-first-prompt' }
   }
 
+  /**
+   * List user-invocable skills for the slash menu — the same lens as the
+   * Web gateway's `skill.list`: the live agent's preset-scoped registry
+   * when the session exists, else the host registry; filtered to
+   * user-invocable entries. Invocation needs no dedicated method: the TUI
+   * ships `/name …` as an ordinary prompt and dsh-tool-skill's pre-step
+   * boundary recognizes the gesture and injects the body host-side.
+   */
+  async function tuiSkills(params) {
+    const rec = params && params.sessionId !== undefined
+      ? sessions.get(String(params.sessionId))
+      : undefined
+    const agent = rec?.handle.agent
+    let registry
+    const presets = ctx.get('agentPresets')
+    if (agent !== undefined && typeof presets?.serviceFor === 'function') {
+      try {
+        registry = presets.serviceFor(agent, 'skills')
+      } catch {}
+    }
+    registry = registry ?? ctx.get('skills')
+    if (registry === undefined) return { skills: [] }
+    const lookup = {
+      cwd: agent?.session.header.cwd ?? defaults.cwd,
+      ...(agent === undefined ? {} : { scope: agent }),
+    }
+    try {
+      const skills = await registry.list(lookup)
+      return {
+        skills: skills
+          .filter((s) => s.invocation === undefined || s.invocation.userInvocable === true)
+          .map((s) => ({ name: s.name, description: s.description ?? '' })),
+      }
+    } catch {
+      return { skills: [] } // rosterless/broken discovery → builtins only
+    }
+  }
+
+  async function tuiAttachImage(params) {
+    const svc = ctx.get('attachments')
+    if (svc === undefined) {
+      throw new Error('no attachment service in this profile — compose @deepseek-ai/dsh-attachment-local')
+    }
+    const mediaType = String(params.mediaType)
+    const data = Buffer.from(String(params.data), 'base64')
+    const name = params.name === undefined ? undefined : String(params.name)
+    const ref = await svc.saveImage({ data, mediaType, name })
+    return { attachment: ref }
+  }
+
   // ------------------------------------------------------------ shutdown --
   async function performShutdown() {
     shuttingDown = true
@@ -435,6 +498,9 @@ export function apply(ctx) {
       case 'session/prompt':
         result = await prompt(params)
         break
+      case 'session/interrupt':
+        result = await interrupt(params)
+        break
       case 'shutdown':
         result = await shutdown()
         // Run after the handler result is written; the task then flushes,
@@ -455,6 +521,12 @@ export function apply(ctx) {
         break
       case 'tui/preset':
         result = tuiPreset(params)
+        break
+      case 'tui/skills':
+        result = await tuiSkills(params)
+        break
+      case 'tui/attach-image':
+        result = await tuiAttachImage(params)
         break
       default:
         throw new Error(`unknown method: ${method}`)

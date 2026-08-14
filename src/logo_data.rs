@@ -62,9 +62,4 @@ pub const WHALE_SM: [&str; 6] = [
     "   ▀█████▀▀▀",
 ];
 
-pub const WHALE_XS: [&str; 3] = [
-    "▄███▄█▄▄",
-    "█ ▀████",
-    "▀█▄▄██",
-];
-
+pub const WHALE_XS: [&str; 3] = ["▄███▄█▄▄", "█ ▀████", "▀█▄▄██"];

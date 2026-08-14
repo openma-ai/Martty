@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::bus::{AppEvent, CatalogModel, CatalogPreset, Cmd, CtlEvent};
+use crate::bus::{AppEvent, CatalogModel, CatalogPreset, Cmd, CtlEvent, SkillInfo};
 use crate::proto::RuntimeProcess;
 use crate::runtime::RuntimeConfig;
 
@@ -62,11 +62,15 @@ impl Controller {
         let _ = self.cmd_tx.send(cmd);
     }
 
-    /// Hard interrupt from the UI thread. Returns false when interrupting is
-    /// impossible (demo mode / attached plugin mode).
+    /// Hard interrupt from the UI thread. Returns false only for demo mode;
+    /// plugin mode reports true and the real cancel is delivered through
+    /// `Cmd::Interrupt` → the host's `session/interrupt` RPC.
     pub fn interrupt_now(&self) -> bool {
-        if self.demo || self.attached {
+        if self.demo {
             return false;
+        }
+        if self.attached {
+            return true;
         }
         self.interrupted.store(true, Ordering::SeqCst);
         let guard = self.runtime.lock().unwrap();
@@ -74,10 +78,6 @@ impl Controller {
             rt.kill();
         }
         true
-    }
-
-    pub fn is_attached(&self) -> bool {
-        self.attached
     }
 
     #[allow(dead_code)]
@@ -121,8 +121,43 @@ fn controller_loop(
                     handle_prompt(&mut cfg, &bus, &runtime, &interrupted, &session_id, &text);
                 }
             }
-            Cmd::Interrupt => {
+            Cmd::PromptImages {
+                session_id,
+                text,
+                images,
+            } => {
+                if demo {
+                    crate::demo::run_demo_turn(bus.clone(), session_id, text);
+                    continue;
+                }
                 if attached {
+                    handle_prompt_images_attached(
+                        &cfg,
+                        &bus,
+                        &runtime,
+                        &mut attached_initialized,
+                        &session_id,
+                        &text,
+                        &images,
+                    );
+                } else {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                        "image attachments need plugin mode (dsh profile)".into(),
+                    )));
+                }
+            }
+            Cmd::Interrupt { session_id } => {
+                if attached {
+                    // Forward to the host runner: agent.cancel({ kind: 'user' })
+                    // aborts the active turn; a followup sent after this lands
+                    // as the next turn.
+                    let guard = runtime.lock().unwrap();
+                    if let Some(rt) = guard.as_ref() {
+                        let params = json!({ "sessionId": session_id });
+                        let _ =
+                            rt.request("session/interrupt", Some(params), Duration::from_secs(10));
+                    }
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
                     continue;
                 }
                 // The kill itself happens in interrupt_now(); this is the
@@ -166,7 +201,8 @@ fn controller_loop(
                         if let Some(e) = effort {
                             params["reasoningEffort"] = json!(e);
                         }
-                        match rt.request("tui/select-model", Some(params), Duration::from_secs(20)) {
+                        match rt.request("tui/select-model", Some(params), Duration::from_secs(20))
+                        {
                             Ok(_) => {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
                                     "model → {} · live for this session",
@@ -196,8 +232,18 @@ fn controller_loop(
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
                         models: vec![
-                            CatalogModel { provider: "deepseek-official".into(), id: "deepseek-v4-flash".into(), name: "DeepSeek V4 Flash".into(), vision: false },
-                            CatalogModel { provider: "deepseek-official".into(), id: "deepseek-v4-pro".into(), name: "DeepSeek V4 Pro".into(), vision: true },
+                            CatalogModel {
+                                provider: "deepseek-official".into(),
+                                id: "deepseek-v4-flash".into(),
+                                name: "DeepSeek V4 Flash".into(),
+                                vision: false,
+                            },
+                            CatalogModel {
+                                provider: "deepseek-official".into(),
+                                id: "deepseek-v4-pro".into(),
+                                name: "DeepSeek V4 Pro".into(),
+                                vision: true,
+                            },
                         ],
                         presets: stock_presets(),
                     }));
@@ -224,6 +270,34 @@ fn controller_loop(
                     }
                 }
             }
+            Cmd::FetchSkills => {
+                if demo {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                        skills: vec![
+                            SkillInfo {
+                                name: "commit-helper".into(),
+                                description: "draft a conventional commit from the diff".into(),
+                            },
+                            SkillInfo {
+                                name: "code-review".into(),
+                                description: "structured review of the working tree".into(),
+                            },
+                        ],
+                    }));
+                    continue;
+                }
+                let rt = runtime.lock().unwrap().clone();
+                let result = rt
+                    .filter(|rt| attached && rt.is_alive())
+                    .map(|rt| rt.request("tui/skills", Some(json!({})), Duration::from_secs(20)));
+                // Standalone mode has no skill registry — an empty catalog
+                // simply leaves the slash menu with the builtins.
+                let skills = match result {
+                    Some(Ok(value)) => parse_skills(&value),
+                    _ => Vec::new(),
+                };
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+            }
             Cmd::FetchEfforts { provider, model } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
@@ -233,15 +307,13 @@ fn controller_loop(
                     continue;
                 }
                 let rt = runtime.lock().unwrap().clone();
-                let result = rt
-                    .filter(|rt| attached && rt.is_alive())
-                    .map(|rt| {
-                        rt.request(
-                            "tui/model-info",
-                            Some(json!({ "provider": provider, "model": model })),
-                            Duration::from_secs(20),
-                        )
-                    });
+                let result = rt.filter(|rt| attached && rt.is_alive()).map(|rt| {
+                    rt.request(
+                        "tui/model-info",
+                        Some(json!({ "provider": provider, "model": model })),
+                        Duration::from_secs(20),
+                    )
+                });
                 match result {
                     Some(Ok(value)) => {
                         let efforts: Vec<String> = value
@@ -277,7 +349,11 @@ fn controller_loop(
             Cmd::SetPermission { session_id, preset } => {
                 if demo {
                     // Synthesize the event triplet the host would append.
-                    let approval = if preset == "danger-full-access" { "never" } else { "ask" };
+                    let approval = if preset == "danger-full-access" {
+                        "never"
+                    } else {
+                        "ask"
+                    };
                     for (t, data) in [
                         ("permission/preset", json!({"preset": preset})),
                         ("sandbox/mode", json!({"mode": preset})),
@@ -291,21 +367,19 @@ fn controller_loop(
                     continue;
                 }
                 let rt = runtime.lock().unwrap().clone();
-                let result = rt
-                    .filter(|rt| attached && rt.is_alive())
-                    .map(|rt| {
-                        rt.request(
-                            "tui/permission",
-                            Some(json!({ "sessionId": session_id, "preset": preset })),
-                            Duration::from_secs(20),
-                        )
-                    });
+                let result = rt.filter(|rt| attached && rt.is_alive()).map(|rt| {
+                    rt.request(
+                        "tui/permission",
+                        Some(json!({ "sessionId": session_id, "preset": preset })),
+                        Duration::from_secs(20),
+                    )
+                });
                 match result {
                     Some(Ok(value)) => {
                         // The host stages a pre-session switch and applies it
                         // when the session is created on the first prompt.
-                        let staged = value.get("applied").and_then(Value::as_str)
-                            == Some("on-first-prompt");
+                        let staged =
+                            value.get("applied").and_then(Value::as_str) == Some("on-first-prompt");
                         let desc = if staged {
                             format!("permission → {preset} · staged, applies from the first prompt")
                         } else {
@@ -345,15 +419,13 @@ fn controller_loop(
                     continue;
                 }
                 let rt = runtime.lock().unwrap().clone();
-                let result = rt
-                    .filter(|rt| attached && rt.is_alive())
-                    .map(|rt| {
-                        rt.request(
-                            "tui/preset",
-                            Some(json!({ "sessionId": session_id, "agentPreset": preset })),
-                            Duration::from_secs(20),
-                        )
-                    });
+                let result = rt.filter(|rt| attached && rt.is_alive()).map(|rt| {
+                    rt.request(
+                        "tui/preset",
+                        Some(json!({ "sessionId": session_id, "agentPreset": preset })),
+                        Duration::from_secs(20),
+                    )
+                });
                 match result {
                     Some(Ok(_)) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet { preset }));
@@ -398,12 +470,79 @@ fn handle_prompt_attached(
     session_id: &str,
     text: &str,
 ) {
-    let Some(rt) = runtime.lock().unwrap().clone() else {
-        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
-            "harness connection is gone".into(),
-        )));
+    let Some(rt) = ensure_attached_ready(cfg, bus, runtime, initialized) else {
         return;
     };
+    let params = json!({
+        "sessionId": session_id,
+        "contentBlocks": [{ "type": "text", "text": text }],
+    });
+    send_attached_prompt(&rt, bus, params);
+}
+
+/// Plugin mode image prompt: commit each staged raster through the host
+/// attachment store, then send one prompt whose content blocks carry the
+/// text (when present) followed by every image.
+fn handle_prompt_images_attached(
+    cfg: &RuntimeConfig,
+    bus: &Sender<AppEvent>,
+    runtime: &Arc<Mutex<Option<Arc<RuntimeProcess>>>>,
+    initialized: &mut bool,
+    session_id: &str,
+    text: &str,
+    images: &[crate::bus::ImagePart],
+) {
+    let Some(rt) = ensure_attached_ready(cfg, bus, runtime, initialized) else {
+        return;
+    };
+    let mut attachments = Vec::with_capacity(images.len());
+    for img in images {
+        let attach = json!({
+            "data": img.data,
+            "mediaType": img.media_type,
+            "name": img.name,
+        });
+        match rt.request("tui/attach-image", Some(attach), Duration::from_secs(120)) {
+            Ok(result) => match result.get("attachment").cloned() {
+                Some(a) => attachments.push(a),
+                None => {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                        "tui/attach-image returned no attachment for {}",
+                        img.name
+                    ))));
+                    return;
+                }
+            },
+            Err(err) => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                    "tui/attach-image failed for {}: {err:#}",
+                    img.name
+                ))));
+                return;
+            }
+        }
+    }
+
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(json!({ "type": "text", "text": text }));
+    }
+    for attachment in attachments {
+        blocks.push(json!({ "type": "image", "attachment": attachment }));
+    }
+    let params = json!({ "sessionId": session_id, "contentBlocks": blocks });
+    send_attached_prompt(&rt, bus, params);
+}
+
+/// Ensure the plugin-mode runtime is spawned and initialized; returns the
+/// live process, or None after reporting the failure.
+fn ensure_attached_ready(
+    cfg: &RuntimeConfig,
+    bus: &Sender<AppEvent>,
+    runtime: &Arc<Mutex<Option<Arc<RuntimeProcess>>>>,
+    initialized: &mut bool,
+) -> Option<Arc<RuntimeProcess>> {
+    let rt = runtime.lock().unwrap().clone()?;
     if !*initialized {
         let mut params = json!({
             "cwd": cfg.workspace,
@@ -424,14 +563,14 @@ fn handle_prompt_attached(
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
                     "initialize failed: {err:#}"
                 ))));
-                return;
+                return None;
             }
         }
     }
-    let params = json!({
-        "sessionId": session_id,
-        "contentBlocks": [{ "type": "text", "text": text }],
-    });
+    Some(rt)
+}
+
+fn send_attached_prompt(rt: &Arc<RuntimeProcess>, bus: &Sender<AppEvent>, params: Value) {
     match rt.request("session/prompt", Some(params), Duration::from_secs(120)) {
         Ok(result) => {
             let message_id = result
@@ -473,7 +612,8 @@ fn handle_prompt(
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: cfg.bin.clone(),
                 }));
-                let spawned = RuntimeProcess::spawn(&cfg.bin, &cfg.child_env(), &cfg.workspace, bus.clone());
+                let spawned =
+                    RuntimeProcess::spawn(&cfg.bin, &cfg.child_env(), &cfg.workspace, bus.clone());
                 let rt = match spawned {
                     Ok(rt) => Arc::new(rt),
                     Err(err) => {
@@ -554,6 +694,28 @@ fn describe_server(result: &Value) -> String {
 }
 
 /// Parse the `tui/catalog` response into displayable models and presets.
+/// `tui/skills` → the user-invocable skill catalog for the slash menu.
+fn parse_skills(value: &Value) -> Vec<SkillInfo> {
+    let mut out = Vec::new();
+    if let Some(arr) = value.get("skills").and_then(Value::as_array) {
+        for s in arr {
+            let Some(name) = s.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let description = s
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            out.push(SkillInfo {
+                name: name.to_string(),
+                description,
+            });
+        }
+    }
+    out
+}
+
 fn parse_catalog(value: &Value) -> (Vec<CatalogModel>, Vec<CatalogPreset>) {
     let mut out = Vec::new();
     if let Some(arr) = value.get("models").and_then(Value::as_array) {
@@ -588,7 +750,11 @@ fn parse_catalog(value: &Value) -> (Vec<CatalogModel>, Vec<CatalogPreset>) {
             };
             presets.push(CatalogPreset {
                 id: id.to_string(),
-                name: p.get("name").and_then(Value::as_str).unwrap_or(id).to_string(),
+                name: p
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id)
+                    .to_string(),
                 description: p
                     .get("description")
                     .and_then(Value::as_str)
@@ -654,6 +820,23 @@ mod tests {
         let (models, presets) = parse_catalog(&json!({"models": []}));
         assert!(models.is_empty());
         assert!(presets.is_empty());
+    }
+
+    #[test]
+    fn parse_skills_reads_names_and_skips_nameless() {
+        let skills = parse_skills(&json!({
+            "skills": [
+                {"name": "commit-helper", "description": "draft a commit"},
+                {"name": "bare"},
+                {"description": "no name → skipped"},
+            ]
+        }));
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "commit-helper");
+        assert_eq!(skills[0].description, "draft a commit");
+        assert_eq!(skills[1].name, "bare");
+        assert_eq!(skills[1].description, "");
+        assert!(parse_skills(&json!({})).is_empty());
     }
 
     #[test]

@@ -286,7 +286,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let frames: Vec<u8> = [
             format!("{}\n", header("dsh-z")),
-            format!("{}\n{}\n", r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#, user_msg("from frame two")),
+            format!(
+                "{}\n{}\n",
+                r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#,
+                user_msg("from frame two")
+            ),
             format!("{}\n", r#"{"type":"turn/start","seq":9,"data":{"turn":2}}"#),
         ]
         .iter()

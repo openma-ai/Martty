@@ -103,8 +103,14 @@ pub fn local_dsh() -> LocalDsh {
 
 fn unquote(v: &str) -> String {
     let v = v.trim();
-    let v = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(v);
-    let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
+    let v = v
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(v);
+    let v = v
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(v);
     v.to_string()
 }
 

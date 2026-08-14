@@ -231,8 +231,7 @@ mod tests {
             assert_eq!(line.spans[1].style.fg, Some(belly));
             // …while HARNESS strokes are bright (白边) and the fill muted.
             assert!(line.spans.iter().any(|s| {
-                s.style.fg == Some(theme.fg)
-                    && s.content.chars().all(|c| "╔╗╚╝═║".contains(c))
+                s.style.fg == Some(theme.fg) && s.content.chars().all(|c| "╔╗╚╝═║".contains(c))
             }));
             assert!(line
                 .spans
@@ -242,7 +241,10 @@ mod tests {
         }
 
         let medium = wordmark_lines(&theme, 80);
-        assert_eq!(text(medium.last().unwrap()).trim(), "H   A   R   N   E   S   S");
+        assert_eq!(
+            text(medium.last().unwrap()).trim(),
+            "H   A   R   N   E   S   S"
+        );
 
         let small = wordmark_lines(&theme, 40);
         assert_eq!(text(small.last().unwrap()).trim(), "H A R N E S S");

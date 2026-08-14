@@ -88,15 +88,22 @@ dsh-tui --workspace .
 | 按键 / 命令 | 行为 |
 |---|---|
 | `enter` | 发送；回合运行时排队 follow-up |
-| `alt+enter` | Standalone：打断当前回合并优先发送；plugin：排队 |
-| `esc` | Standalone：打断且保留草稿；空闲时连按两次清草稿 |
+| `ctrl+x` | 打断当前回合并立即发送下一条（plugin 转发 host 中断；standalone 硬中断） |
+| `esc` | 打断当前回合（保留草稿）；空闲时清空草稿 |
 | `ctrl+c` | 先清草稿，再中断；连按两次退出 |
-| `/` | 打开命令菜单并按前缀过滤 |
+| `/` | 打开命令菜单并按前缀过滤；host 的 skills 也在其中（plugin 模式，选中落入 `/name `，回车作为 prompt 发送由 host 注入 skill） |
 | `/model` · `/mode` | 选择模型和 agent preset；完整目录需要 plugin 模式 |
 | `/permission` · `shift+tab` | 选择或轮换权限 preset；需要 plugin 模式 |
 | `/effort` · `/plan` | 设置推理力度或把 plan 模式传给宿主 |
-| `ctrl+e` · `ctrl+t` | 展开输出 · 切换主题 |
-| `pgup/pgdn` · `ctrl+u/d` | 滚动；`end` 回到实时尾部 |
+| `/image <path> [text]` | 发送本地图片（png/jpeg/webp/gif）；需要 plugin 模式 |
+| `/clip [text]` · `ctrl+v` | 暂存剪切板图片（可多次，最多 8 张同行）；macOS/Linux |
+| 图片 chip | 以 `[image n]` 内联在草稿文字里（无 icon）；退格整个删除，hover 或光标停在上面弹出预览（kitty 缩略图 + 尺寸/大小/类型） |
+| `ctrl+o` · `ctrl+t` | 展开输出 · 切换主题 |
+| `pgup/pgdn` · `ctrl+u/d`（空输入） | 滚动；`end` 回到实时尾部 |
+| readline 编辑 | `ctrl+a/e` 行首尾 · `ctrl+k/u` 删至尾/首 · `ctrl+w` 删词 |
+| macOS | `⌘←/→` 行首尾 · `⌥←/→` 跳词 · `⌘⌫` 删至行首 · `⌥⌫` 删词（直接读物理键状态，任意终端可用） |
+| Linux/Windows | `ctrl+←/→` 跳词 · `ctrl+⌫` 删词 |
+| 点击工具 · 滚轮悬停 | 点击工具展开/折叠输出；滚轮在工具上滚动其内部视窗 |
 | 鼠标拖选 | 松手复制；双击复制单词；`shift+拖选` 使用终端原生选择 |
 | `!cmd` | 在客户端本地执行 shell 命令，不经过 agent |
 
