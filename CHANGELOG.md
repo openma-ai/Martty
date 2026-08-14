@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-08-14
+
+### Fixed
+
+- `dsh plugin add` no longer warns about missing `@deepseek-ai/*` peers. The
+  runner imports host packages from the running `dsh` (`$DSH_HOME/profiles/node_modules`)
+  instead of reinstalling them into the profile, and ships its own JSON-RPC
+  transport because `dsh-sdk-protocol` is not on that fallback graph.
+
+[0.1.3]: https://github.com/openma-ai/deepseek-harness-tui/releases/tag/v0.1.3
+
 ## [0.1.2] - 2026-08-14
 
 ### Fixed

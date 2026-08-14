@@ -27,13 +27,21 @@
  * This file is ESM. Cordis loads profile plugins with parallel import(); a
  * CommonJS runner that synchronously loads the same ESM graph races Node's
  * ERR_REQUIRE_ESM_RACE_CONDITION.
+ *
+ * Host packages (`dsh-llm`, `dsh-session`, `dsh-agent`, `dsh-scope`,
+ * `dsh-llm-deepseek`) are imported but not npm dependencies: `dsh --profile`
+ * heals `$DSH_HOME/profiles/node_modules` before loading this plugin, so
+ * Node's parent-walk resolves the running dsh's copies. Listing them as
+ * dependencies reinstalls them into the profile and pnpm warns about their
+ * unmet peers (`autoInstallPeers: false`). The JSON-RPC transport is local
+ * because `dsh-sdk-protocol` is not on that fallback graph.
  */
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
+import { JsonRpcLineTransport } from './jsonrpc-line-transport.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'

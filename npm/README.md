@@ -16,7 +16,8 @@ dsh --profile tui
 
 The install command does not need `-w`. The profile supplies agents, tools,
 providers, credentials, and durable sessions; the package supplies the native
-TUI and its dsh-compatible JSON-RPC bridge.
+TUI and its JSON-RPC bridge. Harness packages are resolved from the running
+`dsh`, not reinstalled into the profile.
 
 ## Demo and standalone CLI
 

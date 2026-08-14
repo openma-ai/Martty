@@ -12,7 +12,7 @@ const runnerPath = path.join(repoRoot, 'npm', 'lib', 'index.js')
 const harnessUrl = pathToFileURL(path.join(repoRoot, 'scripts', 'plugin-runner-harness.mjs')).href
 
 const stubSources = {
-  '@deepseek-ai/dsh-sdk-protocol': `import { FakeTransport } from ${JSON.stringify(harnessUrl)}; export { FakeTransport as JsonRpcLineTransport }`,
+  './jsonrpc-line-transport.js': `import { FakeTransport } from ${JSON.stringify(harnessUrl)}; export { FakeTransport as JsonRpcLineTransport }`,
   '@deepseek-ai/dsh-llm': `export function createUserMessage(m) { return { id: 'msg-1', ...m } }`,
   '@deepseek-ai/dsh-session': `export function SessionId(s) { return s }`,
   '@deepseek-ai/dsh-agent': `export function installModelSelection() {}`,
@@ -44,6 +44,16 @@ test('the published plugin is ESM so Cordis can import() it in parallel', () => 
   assert.match(source, /export function apply/)
   assert.doesNotMatch(source, /module\.exports/)
   assert.doesNotMatch(source, /require\(['"]@deepseek-ai\//)
+  assert.match(source, /from '\.\/jsonrpc-line-transport\.js'/)
+  assert.doesNotMatch(source, /from '@deepseek-ai\/dsh-sdk-protocol'/)
+})
+
+test('the bundle does not npm-depend on @deepseek-ai packages', () => {
+  const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+    const names = Object.keys(pkg[field] ?? {}).filter((name) => name.startsWith('@deepseek-ai/'))
+    assert.deepEqual(names, [], field)
+  }
 })
 
 test('extra-fd EPIPE after the TUI exits is not an unhandled error', () => {
