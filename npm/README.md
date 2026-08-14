@@ -1,7 +1,14 @@
-# @openma/deepseek-harness-tui
+<p align="center">
+  <img src="https://raw.githubusercontent.com/openma-ai/deepseek-harness-tui/main/assets/deepseek_favicon.png" width="72" alt="DeepSeek Harness" />
+</p>
 
-Terminal-native UI for DeepSeek Harness, distributed as both a `dsh` profile
-bundle and a standalone `dsh-tui` command.
+<h1 align="center">DeepSeek Harness TUI</h1>
+
+<p align="center">
+  Terminal-native DeepSeek Harness UI, distributed as a dsh profile bundle and the standalone <code>dsh-tui</code> command.
+</p>
+
+---
 
 Native binaries are packaged for macOS arm64, macOS x64, Linux x64, and Windows
 x64. Requires Node.js 18+; plugin installation requires pnpm 10+ and is tested

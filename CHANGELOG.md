@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Documentation
+
+- Reworked the repository and npm README mastheads around the centered
+  DeepSeek logo, product name, concise positioning, and a consistent badge row.
+
 ## [0.2.1] - 2026-08-14
 
 ### Fixed

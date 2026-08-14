@@ -1,17 +1,30 @@
-# dsh-tui
+<p align="center">
+  <img src="assets/deepseek_favicon.png" width="88" alt="DeepSeek Harness" />
+</p>
 
-[中文](README.md) | [English](README.en.md)
+<h1 align="center">DeepSeek Harness TUI</h1>
 
-[![npm](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
-[![Package and publish npm](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg)](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  在终端里运行 DeepSeek Harness：流式推理、工具调用、Skills、多图 prompt 与持久会话。
+</p>
 
-DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查看流式推理、
-工具调用、subagent、token 用量和持久化会话。既可以作为官方 `dsh` profile
-插件运行，也可以直接连接 SDK JSON-RPC runtime。
+<p align="center">
+  <a href="README.md">中文</a> · <a href="README.en.md">English</a>
+</p>
 
-> **v0.2.x** · 官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和
-> Windows x64。当前集成以 `dsh 0.1.0-rc.6` 为基线。
+<p align="center">
+  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?logo=npm&color=cb3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/dm/%40openma%2Fdeepseek-harness-tui" alt="npm downloads" /></a>
+  <a href="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/node/v/%40openma%2Fdeepseek-harness-tui" alt="Node.js 18+" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" /></a>
+</p>
+
+---
+
+`dsh-tui` 是 DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui
+界面里查看流式推理、工具调用、subagent、token 用量和持久化会话。它既可以
+作为官方 `dsh` profile 插件运行，也可以直接连接 SDK JSON-RPC runtime。
 
 ![dsh-tui 0.2 的 DeepSeek Harness 首页](assets/screenshots/banner-v020.png)
 
@@ -19,7 +32,8 @@ DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查�
 
 ### 推荐：作为 dsh profile 插件运行
 
-需要已安装并配置好的 `dsh`、Node.js 18+ 和 pnpm 10+。
+需要已安装并配置好的 `dsh`（当前集成基线为 `0.1.0-rc.6`）、Node.js 18+ 和
+pnpm 10+。官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和 Windows x64。
 
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui

@@ -1,19 +1,31 @@
-# dsh-tui
+<p align="center">
+  <img src="assets/deepseek_favicon.png" width="88" alt="DeepSeek Harness" />
+</p>
 
-[中文](README.md) | [English](README.en.md)
+<h1 align="center">DeepSeek Harness TUI</h1>
 
-[![npm](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
-[![Package and publish npm](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg)](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  DeepSeek Harness in your terminal: streamed reasoning, tools, skills, multi-image prompts, and durable sessions.
+</p>
 
-A terminal-native agent UI for DeepSeek Harness. Follow streamed reasoning,
-tool calls, subagents, token usage, and durable sessions in one Rust/ratatui
-interface. Run it as an official `dsh` profile plugin or connect it directly to
-the SDK JSON-RPC runtime.
+<p align="center">
+  <a href="README.md">中文</a> · <a href="README.en.md">English</a>
+</p>
 
-> **v0.2.x** · The official package supports macOS on Apple Silicon and Intel,
-> Linux x64, and Windows x64. The current integration baseline is
-> `dsh 0.1.0-rc.6`.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?logo=npm&color=cb3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/dm/%40openma%2Fdeepseek-harness-tui" alt="npm downloads" /></a>
+  <a href="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/node/v/%40openma%2Fdeepseek-harness-tui" alt="Node.js 18+" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" /></a>
+</p>
+
+---
+
+`dsh-tui` is a terminal-native agent UI for DeepSeek Harness. Follow streamed
+reasoning, tool calls, subagents, token usage, and durable sessions in one
+Rust/ratatui interface. Run it as an official `dsh` profile plugin or connect
+it directly to the SDK JSON-RPC runtime.
 
 ![The DeepSeek Harness home screen in dsh-tui 0.2](assets/screenshots/banner-v020.png)
 
@@ -21,7 +33,9 @@ the SDK JSON-RPC runtime.
 
 ### Recommended: run as a dsh profile plugin
 
-Requires a configured `dsh` installation, Node.js 18+, and pnpm 10+.
+Requires a configured `dsh` installation (current integration baseline:
+`0.1.0-rc.6`), Node.js 18+, and pnpm 10+. Official packages cover macOS on
+Apple Silicon and Intel, Linux x64, and Windows x64.
 
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui
