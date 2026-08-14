@@ -38,6 +38,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "help", usage: "/help", desc: "show help and tips" },
     SlashCommand { name: "keys", usage: "/keys", desc: "keyboard shortcuts" },
     SlashCommand { name: "new", usage: "/new [id]", desc: "start a fresh session" },
+    SlashCommand { name: "resume", usage: "/resume [id]", desc: "resume a durable session from this workspace" },
     SlashCommand { name: "clear", usage: "/clear", desc: "clear the scrollback" },
     SlashCommand { name: "model", usage: "/model [id]", desc: "switch model · live in plugin mode" },
     SlashCommand { name: "mode", usage: "/mode [id]", desc: "agent mode · standard / code / minimal / creator" },
@@ -47,7 +48,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "theme", usage: "/theme [dark|light]", desc: "toggle the DeepSeek palette" },
     SlashCommand { name: "session", usage: "/session", desc: "show session + runtime info" },
     SlashCommand { name: "logo", usage: "/logo", desc: "bring the whale back" },
-    SlashCommand { name: "liang", usage: "/liang [on|off]", desc: "toggle Liang at the composer — 🤫 idle · ⌨︎ working" },
+    SlashCommand { name: "liang", usage: "/liang [on|off]", desc: "召唤小难梁 — 🤫 idle · ⌨︎ working" },
     SlashCommand { name: "quit", usage: "/quit", desc: "exit dsh-tui" },
 ];
 
@@ -237,6 +238,7 @@ pub enum PickerKind {
     Effort,
     Mode,
     Permission,
+    Session,
 }
 
 #[derive(Clone)]
@@ -288,6 +290,8 @@ pub struct App {
     last_click: Option<(Instant, u16, u16)>,
     /// Filled by `ui::draw_chat` every frame.
     pub chat_view: ChatView,
+    /// Sessions offered by the open `/resume` picker (id → file lookup).
+    resume_candidates: Vec<crate::sessions::SessionSummary>,
     pub slash_sel: usize,
     pub picker: Option<Picker>,
     pub modes: Modes,
@@ -346,6 +350,7 @@ impl App {
             selecting: false,
             last_click: None,
             chat_view: ChatView::default(),
+            resume_candidates: Vec::new(),
             slash_sel: 0,
             picker: None,
             modes: Modes::default(),
@@ -896,6 +901,7 @@ impl App {
                     PickerKind::Model => self.select_model(item, ctl),
                     PickerKind::Mode => self.set_mode(item.id, ctl),
                     PickerKind::Permission => self.set_permission(item.id, ctl),
+                    PickerKind::Session => self.resume_session(&item.id, ctl),
                     PickerKind::Effort => {
                         let effort = item.id;
                         ctl.send(Cmd::SelectModel {
@@ -979,6 +985,141 @@ impl App {
             sel: 0,
             items,
         });
+    }
+
+    /// `/resume`: list this workspace's durable sessions in a picker
+    /// (grok-build's session picker, JSONL-backed).
+    fn open_resume_picker(&mut self) {
+        let sessions = crate::sessions::list_sessions(
+            &self.cfg.session_root,
+            &self.cfg.workspace,
+            &self.session_id,
+        );
+        if sessions.is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                "no durable sessions for this workspace yet — finish a turn and /resume finds it"
+                    .into(),
+            );
+            return;
+        }
+        let items = sessions
+            .iter()
+            .map(|s| PickerItem {
+                id: s.id.clone(),
+                label: s.id.clone(),
+                meta: format!(
+                    "{} · {} turn{} · {}",
+                    crate::sessions::age_label(s.modified),
+                    s.turns,
+                    if s.turns == 1 { "" } else { "s" },
+                    s.preview
+                ),
+                provider: None,
+            })
+            .collect();
+        self.resume_candidates = sessions;
+        self.picker = Some(Picker {
+            kind: PickerKind::Session,
+            title: " resume session · enter select · esc close ".into(),
+            sel: 0,
+            items,
+        });
+    }
+
+    /// Resume a durable session: replay its JSONL into the scrollback and
+    /// point the next prompt at the same id — the runtime (or host dsh)
+    /// keeps appending to the same log.
+    fn resume_session(&mut self, id_or_prefix: &str, ctl: &Controller) {
+        if self.resume_candidates.is_empty() {
+            self.resume_candidates = crate::sessions::list_sessions(
+                &self.cfg.session_root,
+                &self.cfg.workspace,
+                &self.session_id,
+            );
+        }
+        let matches: Vec<crate::sessions::SessionSummary> = self
+            .resume_candidates
+            .iter()
+            .filter(|s| s.id.starts_with(id_or_prefix))
+            .cloned()
+            .collect();
+        let session = match matches.as_slice() {
+            [one] => one.clone(),
+            [] => {
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    format!("no session matches “{id_or_prefix}” — /resume lists them"),
+                );
+                return;
+            }
+            many => match many.iter().find(|s| s.id == id_or_prefix) {
+                Some(one) => one.clone(),
+                None => {
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        format!(
+                            "“{id_or_prefix}” is ambiguous ({} matches) — /resume lists them",
+                            many.len()
+                        ),
+                    );
+                    return;
+                }
+            },
+        };
+        let events = match crate::sessions::read_session_events(&session.file) {
+            Ok(events) => events,
+            Err(err) => {
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    format!("cannot read {}: {err:#}", session.file.display()),
+                );
+                return;
+            }
+        };
+
+        self.session_id = session.id.clone();
+        self.transcript.clear();
+        self.transcript.set_root_session(session.id.clone());
+        self.modes = Modes::default();
+        self.show_banner = false;
+        self.queued = 0;
+        self.sel = None;
+        let mut replayed = 0usize;
+        for ev in &events {
+            if ev.get("type").and_then(serde_json::Value::as_str) == Some("session") {
+                continue; // header line
+            }
+            // Live, the TUI echoes user prompts locally and the event parser
+            // skips them; on replay the log is the only source, so push here.
+            if let Some(text) = crate::sessions::user_text(ev) {
+                self.transcript.push_user(text, false);
+                replayed += 1;
+                continue;
+            }
+            self.handle(
+                AppEvent::Rpc {
+                    method: "session.event".into(),
+                    params: serde_json::json!({ "sessionId": session.id, "event": ev }),
+                },
+                ctl,
+            );
+            replayed += 1;
+        }
+        self.state = RunState::Idle;
+        self.run_started = None;
+        self.scroll_up = 0;
+        self.resume_candidates = Vec::new();
+        self.transcript.push_notice(
+            NoticeLevel::Info,
+            format!(
+                "⟲ resumed {} · {} turn{} · {replayed} events replayed — the next prompt continues it",
+                session.id,
+                session.turns,
+                if session.turns == 1 { "" } else { "s" },
+            ),
+        );
+        self.needs_redraw = true;
     }
 
     fn open_mode_picker(&mut self, ctl: &Controller) {
@@ -1268,9 +1409,9 @@ impl App {
                     _ => !self.pet_visible,
                 };
                 let msg = if self.pet_visible {
-                    "🤫 Liang is back at the composer — quiet, he's thinking · /liang hides him"
+                    "🤫 小难梁已召唤 — 安静，他在想 AGI · /liang 收回"
                 } else {
-                    "Liang stepped out for GPUs — /liang brings him back"
+                    "小难梁去隆基市场买卡了 — /liang 再次召唤"
                 };
                 self.transcript.push_notice(NoticeLevel::Info, msg.into());
             }
@@ -1311,6 +1452,13 @@ impl App {
                     .push_notice(NoticeLevel::Info, format!("new session · {id} — /mode picks its agent preset"));
             }
             "session" => self.push_session_info(),
+            "resume" => {
+                if arg.is_empty() {
+                    self.open_resume_picker();
+                } else {
+                    self.resume_session(arg, ctl);
+                }
+            }
             "effort" => {
                 if arg.is_empty() {
                     ctl.send(Cmd::FetchEfforts {
@@ -1370,6 +1518,7 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
   /mode        agent mode · standard / code / minimal / creator
                (picked before a session's first prompt · /new to change)
   /effort      reasoning effort · /permission preset · /plan host plan mode
+  /resume      pick up a durable session — transcript replays, log continues
   !cmd         run a local shell command (not the agent)
   ctrl+e       expand thoughts + tool output   ctrl+l clear
   pgup/pgdn    scroll · mouse wheel works · end follows the tail
@@ -1643,6 +1792,110 @@ pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize, String)
     let start_col: usize = chars[..a].iter().copied().map(cw).sum();
     let width: usize = chars[a..=b].iter().copied().map(cw).sum();
     Some((start_col, width, chars[a..=b].iter().collect()))
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_app_with_root(root: &str, workspace: &str) -> (App, Controller) {
+        let cfg = RuntimeConfig {
+            bin: "demo".into(),
+            cordis: "demo".into(),
+            workspace: workspace.into(),
+            session_root: root.into(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
+        let app = App::new(Theme::dark(), cfg, "dsh-current".into(), true, false, tx);
+        (app, ctl)
+    }
+
+    fn write_fixture_session(root: &PathBuf, id: &str) {
+        let dir = root
+            .join(crate::sessions::workspace_slug("/w"))
+            .join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines = [
+            format!(r#"{{"type":"session","version":0,"id":"{id}","createdAt":1,"cwd":"/w"}}"#),
+            r#"{"type":"permission/preset","seq":0,"data":{"preset":"workspace-write"}}"#.into(),
+            r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#.into(),
+            r#"{"type":"user/message","seq":2,"data":{"content":[{"text":"修复失败的测试","type":"text"}],"source":{"kind":"user"},"role":"user","id":"m1"}}"#.into(),
+            r#"{"type":"assistant/chunk","seq":3,"data":{"chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":5}}}}"#.into(),
+            r#"{"type":"assistant/message","seq":4,"data":{"message":{"content":[{"type":"text","text":"tests are green now"}],"source":{"model":"deepseek-v4-flash"}}}}"#.into(),
+            r#"{"type":"turn/end","seq":5,"data":{"reason":"completed"}}"#.into(),
+        ];
+        std::fs::write(dir.join("session.jsonl"), lines.join("\n")).unwrap();
+    }
+
+    fn tmp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("dsh-resume-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn resume_replays_transcript_modes_and_usage() {
+        let root = tmp_root("replay");
+        write_fixture_session(&root, "dsh-past");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+
+        app.run_slash("resume", "dsh-past", &ctl);
+
+        assert_eq!(app.session_id, "dsh-past", "active session switched");
+        assert!(!app.show_banner, "banner dismissed on resume");
+        assert_eq!(app.modes.permission.as_deref(), Some("workspace-write"));
+        assert_eq!(app.transcript.usage.input, 10);
+        assert_eq!(app.transcript.usage.output, 5);
+        let text = app
+            .transcript
+            .lines(&Theme::dark(), 80, ' ')
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<String>();
+        assert!(text.contains("修复失败的测试"), "user prompt replayed:\n{text}");
+        assert!(text.contains("tests are green now"), "assistant reply replayed:\n{text}");
+        assert!(text.contains("resumed dsh-past"), "resume notice shown:\n{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resume_picker_lists_sessions_and_prefix_resolves() {
+        let root = tmp_root("picker");
+        write_fixture_session(&root, "dsh-alpha");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+
+        app.run_slash("resume", "", &ctl);
+        let picker = app.picker.as_ref().expect("picker opens");
+        assert!(matches!(picker.kind, PickerKind::Session));
+        assert_eq!(picker.items[0].id, "dsh-alpha");
+        assert!(picker.items[0].meta.contains("1 turn"), "{}", picker.items[0].meta);
+        assert!(picker.items[0].meta.contains("修复失败的测试"));
+        app.picker = None;
+
+        // unique prefix resolves; unknown id warns and keeps the session
+        app.run_slash("resume", "dsh-al", &ctl);
+        assert_eq!(app.session_id, "dsh-alpha");
+        app.run_slash("resume", "nope", &ctl);
+        assert_eq!(app.session_id, "dsh-alpha", "unknown prefix leaves session");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resume_with_no_sessions_notices_instead_of_picker() {
+        let root = tmp_root("empty");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+        app.run_slash("resume", "", &ctl);
+        assert!(app.picker.is_none(), "no picker without sessions");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

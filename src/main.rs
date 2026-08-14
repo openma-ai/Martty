@@ -12,6 +12,7 @@ mod logo_data;
 mod pet;
 mod proto;
 mod runtime;
+mod sessions;
 mod theme;
 mod transcript;
 mod ui;
@@ -50,7 +51,7 @@ OPTIONS:
       --theme <dark|light>  DeepSeek Web UI palette (default: dark)
       --demo                scripted turns, no runtime / API key needed
       --attach-fds          plugin mode: speak JSON-RPC over inherited fds 3/4
-                            (used by `dsh plugin --profile tui add @deepseek-ai-harness/tui`)
+                            (used by `dsh plugin --profile tui add -w @openma/deepseek-harness-tui`)
       --check-runtime       spawn + initialize the runtime, print info, exit
       --dump-frame [WxH]    render one demo frame as text (default 100x34)
   -V, --version             print version

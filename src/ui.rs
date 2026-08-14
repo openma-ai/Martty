@@ -10,7 +10,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, RunState, AMBIENT_TIPS};
 use crate::logo;
 use crate::logo_data::WHALE_XS;
-use crate::pet::{FRAME_H, FRAME_W};
+use crate::pet::{SPRITE_H, SPRITE_W};
 use crate::theme::{lerp, Theme};
 
 /// Columns the composer text keeps clear of the pet at its right edge
@@ -37,7 +37,7 @@ pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
         return None;
     }
     let rows = (composer_height(area.height) - 1).min(4);
-    let cols = ((rows as u32 * 2 * FRAME_W + FRAME_H / 2) / FRAME_H) as u16;
+    let cols = ((rows as u32 * 2 * SPRITE_W + SPRITE_H / 2) / SPRITE_H) as u16;
     Some(Rect::new(
         area.right() - cols,
         area.bottom() - rows,
@@ -574,7 +574,7 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         crate::app::PickerKind::Model => Some(app.cfg.model.as_str()),
         crate::app::PickerKind::Mode => Some(current_mode.as_str()),
         crate::app::PickerKind::Permission => Some(app.current_permission()),
-        crate::app::PickerKind::Effort => None,
+        crate::app::PickerKind::Effort | crate::app::PickerKind::Session => None,
     };
     let h = (picker.items.len() as u16 + 2).min(screen.height.saturating_sub(2));
     // Fit the widest row (marker + padded label + ✓ + meta); cap to the screen.
