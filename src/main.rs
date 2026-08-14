@@ -67,7 +67,7 @@ OPTIONS:
 
 KEYS (grok-build homage): enter send/queue · ctrl+x send-now ·
 esc interrupt / clear draft · ctrl+c clear/quit · ↑ history · ! shell ·
-/ commands · ctrl+p model · ctrl+e expand · ctrl+t theme
+/ commands · ctrl+p model · ctrl+o expand · ctrl+t theme
 MOUSE: wheel scrolls · click a tool expands/collapses it · wheel over a
 tool scrolls its output · drag selects & copies on release · 2×click
 copies a word · shift+drag uses the terminal's native selection

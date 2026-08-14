@@ -10,10 +10,10 @@ DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查�
 工具调用、subagent、token 用量和持久化会话。既可以作为官方 `dsh` profile
 插件运行，也可以直接连接 SDK JSON-RPC runtime。
 
-> **v0.1.1** · 官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和
+> **v0.2.x** · 官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和
 > Windows x64。当前集成以 `dsh 0.1.0-rc.6` 为基线。
 
-![dsh-tui 的 DeepSeek Harness 会话界面](assets/screenshots/banner.jpg)
+![dsh-tui 0.2 的 DeepSeek Harness 首页](assets/screenshots/banner-v020.png)
 
 ## 快速开始
 
@@ -45,14 +45,27 @@ dsh-tui --demo
 
 ## 核心能力
 
-- 实时呈现推理、回复、工具参数与结果、plugin 上下文和 subagent 生命周期。
-- 回合进行中排队 follow-up；standalone 模式还支持立即打断并发送下一条。
-- 持久化 JSONL 会话，可通过 `/new`、`/resume` 和 `--session-id` 管理。
-- 从 dsh 宿主读取模型、agent preset、权限 preset、provider 和凭据。
-- 深浅两套 DeepSeek Web UI 风格主题，支持窄终端与鼠标交互。
-- 本机、tmux 和 SSH 下通过原生剪贴板、tmux buffer 或 OSC 52 复制文本。
+- **完整的 agent 时间线**：实时呈现推理、回复、工具参数与结果、plugin 上下文、
+  subagent 生命周期和 token/cache 指标；最新消息下方持续显示阶段、耗时与队列深度。
+- **宿主能力原生接入**：在 plugin 模式读取 dsh 的模型、agent preset、权限、
+  provider、凭据和可调用 skills；skills 与内置命令共享可搜索、可滚动的斜杠菜单。
+- **多图 prompt**：从文件、剪贴板或粘贴操作暂存最多 8 张图片，图片以可编辑的
+  `[image n]` chip 内联在草稿中，并支持名称、尺寸、大小和类型预览。
+- **终端友好的 Markdown**：渲染标题、列表、引用、代码块、行内代码、强调、
+  删除线、链接和图片标记，同时保留 CJK/Latin 混排与软换行样式。
+- **高密度工具视图**：工具调用清晰呈现进行中、成功和失败状态，结果可折叠，
+  长输出拥有独立滚动视窗，不会挤占整段对话。
+- **适合长对话的控制**：回合中可排队 follow-up、打断并立即发送；持久化 JSONL
+  会话通过 `/new`、`/resume` 和 `--session-id` 管理，workspace 模式信息也会缓存。
+- **跨平台输入体验**：readline 编辑、上下文快捷键，以及 macOS 的物理 ⌘/⌥
+  修复和 Linux/Windows 的 ctrl 组合键，让常用移动与删除在不同终端保持一致。
+- **终端原生界面**：深浅主题、窄屏布局、鼠标选择/工具交互、原生/tmux/OSC 52
+  剪贴板，以及支持 kitty graphics protocol 的图片预览和可选 `/liang` 像素宠物。
 
-![plugin 模式中的上下文、工具调用和排队 follow-up](assets/screenshots/plugin-turn.jpg)
+<p align="center">
+  <img src="assets/screenshots/agent-turn.png" width="720"
+       alt="plugin 模式中的 Markdown 回复、工具视图和运行状态" />
+</p>
 
 ## 两种运行模式
 
@@ -110,8 +123,13 @@ dsh-tui --workspace .
 界面内使用 `/help` 查看命令，使用 `/keys` 查看完整快捷键。
 
 <p align="center">
-  <img src="assets/screenshots/commands.jpg" width="536"
-       alt="dsh-tui 的斜杠菜单" />
+  <img src="assets/screenshots/skills-menu.png" width="720"
+       alt="内置命令与 host skills 共享的斜杠菜单" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/image-preview.png" width="720"
+       alt="草稿中的图片 chip 与图片元数据预览" />
 </p>
 
 <details>
@@ -122,6 +140,11 @@ Ghostty、Kitty 和 WezTerm 等支持 kitty graphics protocol 的终端会显示
 像素精灵；其他终端退回半块字符鲸鱼。宽度低于 60 列时自动隐藏。
 
 可用 `/liang on`、`/liang off` 显式控制。
+
+<p align="center">
+  <img src="assets/screenshots/liang.png" width="640"
+       alt="输入框旁的可选小难梁像素宠物" />
+</p>
 
 </details>
 

@@ -11,11 +11,11 @@ tool calls, subagents, token usage, and durable sessions in one Rust/ratatui
 interface. Run it as an official `dsh` profile plugin or connect it directly to
 the SDK JSON-RPC runtime.
 
-> **v0.1.1** · The official package supports macOS on Apple Silicon and Intel,
+> **v0.2.x** · The official package supports macOS on Apple Silicon and Intel,
 > Linux x64, and Windows x64. The current integration baseline is
 > `dsh 0.1.0-rc.6`.
 
-![A DeepSeek Harness session in dsh-tui](assets/screenshots/banner.jpg)
+![The DeepSeek Harness home screen in dsh-tui 0.2](assets/screenshots/banner-v020.png)
 
 ## Quick start
 
@@ -48,20 +48,35 @@ dsh-tui --demo
 
 ## Highlights
 
-- Streams reasoning, assistant text, tool arguments and results, plugin context,
-  and subagent lifecycles.
-- Queues follow-ups during a turn; standalone mode can also interrupt and send
-  the next message immediately.
-- Keeps durable JSONL sessions managed through `/new`, `/resume`, and
-  `--session-id`.
-- Uses the host dsh model catalog, agent presets, permission presets, providers,
-  and credentials.
-- Includes dark and light DeepSeek Web UI-inspired themes, narrow-terminal
-  layouts, and mouse interaction.
-- Copies through native clipboard tools, the tmux buffer, or OSC 52 for local,
-  tmux, and SSH sessions.
+- **A complete agent timeline:** stream reasoning, replies, tool arguments and
+  results, plugin context, subagent lifecycles, and token/cache metrics. A live
+  status line keeps the current phase, elapsed time, and queue depth visible.
+- **Native host capabilities:** plugin mode reads dsh models, agent presets,
+  permissions, providers, credentials, and invocable skills. Host skills join
+  built-in commands in one searchable, scrolling slash menu.
+- **Multi-image prompts:** stage up to eight images from files, the clipboard,
+  or paste. Editable `[image n]` chips live inline with the draft and expose a
+  preview with name, dimensions, size, and media type.
+- **Terminal-aware Markdown:** render headings, lists, quotes, fenced and inline
+  code, emphasis, strikethrough, links, and image markers while preserving
+  styling across CJK/Latin text and soft wraps.
+- **Dense tool views:** tool calls expose running, success, and failure states;
+  results collapse cleanly and long output gets its own scrollable viewport
+  instead of taking over the conversation.
+- **Long-turn control:** queue follow-ups or interrupt and send immediately;
+  manage durable JSONL sessions with `/new`, `/resume`, and `--session-id`, with
+  workspace mode facts cached across launches.
+- **Cross-platform editing:** readline commands, contextual shortcuts, physical
+  ⌘/⌥ modifier rescue on macOS, and ctrl conventions on Linux and Windows keep
+  movement and deletion consistent across terminals.
+- **A terminal-native surface:** dark/light themes, narrow layouts, mouse
+  selection and tool interaction, native/tmux/OSC 52 clipboard routing, kitty
+  image previews, and the optional `/liang` pixel companion.
 
-![Plugin context, tool calls, and a queued follow-up](assets/screenshots/plugin-turn.jpg)
+<p align="center">
+  <img src="assets/screenshots/agent-turn.png" width="720"
+       alt="Markdown output, tool views, and live run state in plugin mode" />
+</p>
 
 ## Two runtime modes
 
@@ -120,8 +135,13 @@ in that order.
 Use `/help` for commands and `/keys` for the complete shortcut list.
 
 <p align="center">
-  <img src="assets/screenshots/commands.jpg" width="536"
-       alt="The dsh-tui slash command menu" />
+  <img src="assets/screenshots/skills-menu.png" width="720"
+       alt="Built-in commands and host skills in one slash menu" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/image-preview.png" width="720"
+       alt="An inline image chip with its metadata preview" />
 </p>
 
 <details>
@@ -133,6 +153,11 @@ protocol support, including Ghostty, Kitty, and WezTerm, get RGBA sprites;
 others fall back to a half-block whale. The pet hides below 60 columns.
 
 Use `/liang on` or `/liang off` to control it explicitly.
+
+<p align="center">
+  <img src="assets/screenshots/liang.png" width="640"
+       alt="The optional Liang pixel companion beside the composer" />
+</p>
 
 </details>
 

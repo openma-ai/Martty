@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-14
+
+### Fixed
+
+- `dsh-tui --help` now names `ctrl+o` as the expand-output shortcut instead of
+  the retired `ctrl+e` binding.
+
+### Documentation
+
+- Expanded the repository and npm READMEs to cover the current host-skill,
+  multi-image, Markdown, input, run-state, and tool-view features.
+
+[0.2.1]: https://github.com/openma-ai/deepseek-harness-tui/releases/tag/v0.2.1
+
 ## [0.2.0] - 2026-08-14
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Terminal-native agent UI for DeepSeek Harness; standalone CLI or dsh profile bundle",
   "license": "MIT",
   "repository": {
