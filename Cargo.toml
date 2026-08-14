@@ -2,7 +2,7 @@
 name = "deepseek-harness-tui"
 version = "0.1.0"
 edition = "2021"
-description = "DeepSeek Build (dsh-tui) — a grok-build style TUI speaking the deepseek-harness JSON-RPC stdio protocol"
+description = "Terminal-native agent UI for DeepSeek Harness over the SDK JSON-RPC stdio protocol"
 license = "MIT"
 
 [[bin]]

@@ -1,0 +1,134 @@
+name: Package and publish npm
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish npm/package.json version to npm with the beta tag
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: rustup update stable
+      - run: rustup default stable
+      - run: cargo test --locked
+      - run: node --test scripts/package-native.test.mjs
+
+  native:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: darwin-arm64
+            runner: macos-15
+            rust-target: aarch64-apple-darwin
+            platform: darwin
+            arch: arm64
+            binary: target/aarch64-apple-darwin/release/dsh-tui
+          - name: darwin-x64
+            runner: macos-15-intel
+            rust-target: x86_64-apple-darwin
+            platform: darwin
+            arch: x64
+            binary: target/x86_64-apple-darwin/release/dsh-tui
+          - name: linux-x64
+            runner: ubuntu-24.04
+            rust-target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x64
+            binary: target/x86_64-unknown-linux-gnu/release/dsh-tui
+          - name: win32-x64
+            runner: windows-2025
+            rust-target: x86_64-pc-windows-msvc
+            platform: win32
+            arch: x64
+            binary: target/x86_64-pc-windows-msvc/release/dsh-tui.exe
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: rustup update stable
+      - run: rustup default stable
+      - run: rustup target add ${{ matrix.rust-target }}
+      - run: cargo build --release --locked --target ${{ matrix.rust-target }}
+      - name: Stage native binary
+        run: >-
+          node scripts/package-native.mjs stage
+          --source "${{ matrix.binary }}"
+          --platform "${{ matrix.platform }}"
+          --arch "${{ matrix.arch }}"
+          --vendor-root staged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.name }}
+          path: staged
+          if-no-files-found: error
+
+  package:
+    name: Assemble npm package
+    needs: [test, native]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: native-*
+          path: npm/vendor
+          merge-multiple: true
+      - name: Restore executable permissions
+        run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui
+      - run: node scripts/package-native.mjs verify --vendor-root npm/vendor
+      - run: mkdir -p dist && npm pack ./npm --pack-destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openma-deepseek-harness-tui-npm
+          path: dist/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish npm
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: package
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@^11.15.0
+      - uses: actions/download-artifact@v5
+        with:
+          name: openma-deepseek-harness-tui-npm
+          path: dist
+      - run: npm publish dist/*.tgz

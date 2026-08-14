@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Attach-mode wire test: emulates the dsh plugin host (the role of
- * npm/lib/index.js + @deepseek-ai/dsh-sdk-jsonrpc-server) and drives the
- * native `dsh-tui --attach-fds` binary end to end over fds 3/4.
+ * Attach-mode wire test: emulates the dsh plugin host role implemented by
+ * npm/lib/index.js and drives the native `dsh-tui --attach-fds` binary end to
+ * end over fds 3/4.
  *
  * Needs a TTY on stdio (run under `script -q /dev/null …` in CI-ish shells).
  * DSH_TUI_AUTOPROMPT makes the TUI submit one prompt on startup, so the full

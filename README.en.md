@@ -1,149 +1,184 @@
-# dsh-tui — DEEPSEEK HARNESS, in the terminal
+# dsh-tui
 
-[中文](README.md) | English
+[中文](README.md) | [English](README.en.md)
 
-A [grok-build](https://github.com/xai-org/grok-build)-style terminal agent UI
-for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
-written in Rust (ratatui). It speaks the harness **SDK JSON-RPC stdio
-protocol directly** — no Python SDK in the loop — and skins the whole thing
-in the exact DeepSeek Web UI palette, whale included.
+[![npm beta](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?tag=beta&label=npm%20beta)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
+[![Package and publish npm](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg)](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-深度求索 · 探索未至之境 — *everything is a plugin.*
+A terminal-native agent UI for DeepSeek Harness. Follow streamed reasoning,
+tool calls, subagents, token usage, and durable sessions in one Rust/ratatui
+interface. Run it as an official `dsh` profile plugin or connect it directly to
+the SDK JSON-RPC runtime.
 
-![dsh-tui — the whale banner, DEEPSEEK HARNESS wordmark, Into the Unknown](assets/screenshots/banner.jpg)
+> **Beta** · The `0.0.4-beta` CI package targets macOS on Apple Silicon and
+> Intel, Linux x64, and Windows x64. The current integration baseline is
+> `dsh 0.1.0-rc.6`.
 
-The whale is rasterized by `scripts/gen_logo.py` from the actual favicon SVG
-shipped by the harness Web UI; the wordmark is figlet `ansi_shadow` tinted
-like the whale's belly, with a white-edged hollow `HARNESS` when the terminal
-is wide enough. Theme tokens in `src/theme.rs` are a 1:1 mapping of `--dsw-*`
-variables from the Web UI's `design-platform.css` (dark and light, `/theme`
-toggles).
+![A DeepSeek Harness session in dsh-tui](assets/screenshots/banner.jpg)
 
-## What it shows
+## Quick start
 
-Everything the Web UI surfaces for a session, live from the event stream:
-streamed reasoning (collapsible `✻ thought · 3.2s · 14 lines`), streamed
-assistant text, every tool call with arguments and results (`bash`,
-`str_replace_editor`, `read`, …), injected plugin context, subagent
-lifecycles, token usage incl. cache hits, turn end reasons, and runtime
-state.
+### Recommended: run as a dsh profile plugin
 
-## Interactions (grok-build homage)
-
-| Key | Behavior |
-|---|---|
-| `enter` | send · **queues a follow-up while a turn runs** (protocol-native inbox) |
-| `alt+enter` | send-now: interrupt the turn, run this next |
-| `esc` | interrupt (draft survives) · idle: `esc esc` clears the draft |
-| `ctrl+c` | clear draft first · interrupt · `ctrl+c ctrl+c` quits |
-| `↑` | prompt history (on an empty prompt) |
-| `!cmd` | run a local shell command (client-side, not the agent) |
-| `/` | slash menu with prefix filtering (`/help /new /model /mode /effort /permission /plan /theme /liang …`) |
-| `ctrl+m` | model picker (host catalog) → reasoning-effort picker |
-| `shift+tab` | cycle permission presets · `/permission` opens the picker |
-| `ctrl+e` | expand all thoughts/tool output · `ctrl+t` theme · `ctrl+l` clear |
-| `pgup/pgdn` `ctrl+u/d` | scroll · mouse wheel works · `end` follows the tail |
-| mouse drag | select in the chat pane — **release copies** (选中即复制) · double-click copies a word |
-
-Agent seams are real, not cosmetic: `/mode` picks the agent preset —
-standard · code · minimal · creator (the host `agentPresets` roster in
-plugin mode; composed on a session's first prompt), `/model` switches live
-in plugin mode, `/effort off|high|max` sets reasoning effort for the
-session, and `/plan` passes plan mode through to the host.
-
-<p align="center">
-  <img src="assets/screenshots/commands.jpg" width="536"
-       alt="slash menu on a narrow terminal — /liang highlighted, the pet listening" />
-</p>
-
-Clipboard delivery is grok-pager-style routed legs that never hard-fail the
-UI (`src/clipboard.rs`): native tool (`pbcopy` / `wl-copy` / `xclip` /
-`xsel`) → tmux paste buffer → OSC 52 to the controlling terminal, wrapped in
-a tmux passthrough envelope when needed — so copy works locally, in tmux,
-and over SSH.
-
-## The composer pet · `/liang` 🤫
-
-A pixel-art **梁文锋** — affectionately, **小难梁** — perches on the
-composer's right edge; `/liang` summons him. Two states, driven by the run
-state:
-
-| State | Sprite | Vibe |
-|---|---|---|
-| idle | 🤫 finger on lips | *quiet — he's thinking about AGI* |
-| working | ⌨︎ hammering a tiny terminal | *a turn is streaming — 亲自上手* |
-
-The meme, for the record: DeepSeek's famously low-profile founder — the
-legend goes he still reads every paper and writes code between GPU runs —
-so naturally he moonlights in your status corner, shushing the room while
-the model thinks and typing furiously the moment a turn starts. 小难梁:
-because 难 (hard problems) is the family business — AGI 很难，但他在加班.
-
-Mechanics: the frames are real pixels (`assets/pet/liang-*.png`, RGBA,
-transparent), placed with the **kitty graphics protocol** where the terminal
-speaks it (ghostty · kitty · WezTerm, sniffed from `$TERM` /
-`$TERM_PROGRAM`; one-shot transmit-and-display, re-sent on layout/state
-changes — `src/pet.rs`). Terminals without pixel graphics get the XS
-half-block whale from `logo_data.rs` instead, so the corner never goes
-empty. `/liang` toggles him (also `/liang on|off`); he steps out on his own
-below 60 columns.
-
-## Install & run
-
-The npm package is a Cordis bundle for the official `dsh` CLI — `dsh plugin`
-forwards to pnpm inside the profile directory. The profile is a
-single-package pnpm workspace (its root is the only member), so root-mutating
-commands take `-w`:
+Requires a configured `dsh` installation, Node.js 18+, and pnpm 10+.
 
 ```sh
-dsh plugin --profile tui add -w @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
 dsh --profile tui
 ```
 
-`dsh --profile tui --dump-config` should now show the bundle mounted under
-the stable plugin id `tui-runner`. Building from source instead:
-`bash scripts/build-npm.sh` writes `dist/openma-deepseek-harness-tui-*.tgz`,
-which the same `add -w` command accepts as a local path.
+The install command does not need `-w`. Confirm that the bundle is mounted as
+`tui-runner` with:
 
-![a real plugin-mode turn — injected context, read calls, a queued follow-up](assets/screenshots/plugin-turn.jpg)
-
-`npm/lib/index.js` spawns the native binary on the host TTY and mounts the
-official `@deepseek-ai/dsh-sdk-jsonrpc-server` with its transport redirected
-over pipe fds 3/4 (`dsh-tui --attach-fds`), so the TUI speaks the identical
-protocol in both modes while agent, tools, providers, and persistence come
-from the dsh profile — the status line says `connected · dsh-tui-shim`, and
-credentials truthfully read `host dsh (credential seam)`. Wire-tested by
-`scripts/test-attach.mjs`. In plugin mode, mid-turn interrupt is not
-available (the host owns the turn).
-
-## Protocol
-
-NDJSON JSON-RPC 2.0 over stdio (`src/proto.rs`):
-requests `initialize` / `session/prompt` / `shutdown`; notifications
-`session.event` (persistence-catalog events: `assistant/chunk`, `tool/call`,
-`tool/result`, `turn/*`, `user/message`, …), `session.status`,
-`subagent.started/finished`. Esc-interrupt in standalone mode kills the
-runtime process — the durable JSONL session survives and the next prompt
-respawns it with the same session id.
-
-## Layout
-
-```
-src/proto.rs       NDJSON JSON-RPC client (spawn + attach transports)
-src/runtime.rs     runtime binary / cordis config discovery
-src/controller.rs  lifecycle thread: spawn, initialize, prompt, interrupt
-src/events.rs      notifications → UiEvents (unit-tested)
-src/transcript.rs  scrollback cells + wrapping + styling
-src/app.rs         state machine & keys        src/ui.rs  drawing
-src/theme.rs       Web UI design tokens        src/logo.rs + logo_data.rs
-src/pet.rs         /liang — kitty-graphics pet (idle/working sprites)
-src/clipboard.rs   routed copy: native tool → tmux buffer → OSC 52
-src/demo.rs        scripted wire-identical turns for --demo
-assets/pet/        Liang sprite frames         assets/screenshots/
-assets/promo/      social card + build.py (composed from real pixels)
-npm/               dual-mode package (CLI shim + dsh bundle plugin)
-scripts/           gen_logo.py · build-npm.sh · test-attach.mjs
+```sh
+dsh --profile tui --dump-config
 ```
 
-MIT. Not affiliated with DeepSeek or xAI; grok-build is the interaction
-reference, deepseek-harness is the substrate.
+### Try the demo first
+
+The demo needs neither a runtime nor an API key:
+
+```sh
+npm install --global @openma/deepseek-harness-tui@beta
+dsh-tui --demo
+```
+
+`dsh-tui` is the primary command; `dsb` remains as a compatibility alias.
+
+## Highlights
+
+- Streams reasoning, assistant text, tool arguments and results, plugin context,
+  and subagent lifecycles.
+- Queues follow-ups during a turn; standalone mode can also interrupt and send
+  the next message immediately.
+- Keeps durable JSONL sessions managed through `/new`, `/resume`, and
+  `--session-id`.
+- Uses the host dsh model catalog, agent presets, permission presets, providers,
+  and credentials.
+- Includes dark and light DeepSeek Web UI-inspired themes, narrow-terminal
+  layouts, and mouse interaction.
+- Copies through native clipboard tools, the tmux buffer, or OSC 52 for local,
+  tmux, and SSH sessions.
+
+![Plugin context, tool calls, and a queued follow-up](assets/screenshots/plugin-turn.jpg)
+
+## Two runtime modes
+
+| | dsh plugin (recommended) | Standalone |
+|---|---|---|
+| Agent, tools, providers | Supplied by the dsh profile | Supplied by a separate SDK runtime |
+| Models and agent presets | Uses the live host catalog and switches from the TUI | Uses launch flags or runtime configuration |
+| Session storage | `~/.dsh/sessions` | `~/.dsh-tui/sessions`, configurable with `--session-root` |
+| Mid-turn interrupt | The host owns the turn; no hard interrupt | `esc` stops the runtime while preserving the session log |
+| Runtime installation | The bundle includes its compatibility layer | Requires `dsh-jsonrpc-agent` |
+
+The plugin runner launches the native binary on the host TTY and serves an SDK
+server-compatible JSON-RPC interface over fds 3/4. It does not mount
+`@deepseek-ai/dsh-sdk-jsonrpc-server` directly; the surrounding dsh profile
+still supplies agents, tools, providers, and persistence.
+
+### Standalone runtime
+
+The global npm install provides the TUI binary. Standalone mode also needs the
+DeepSeek Harness SDK in a nearby `.venv`, or an explicitly configured runtime:
+
+```sh
+python -m venv .venv
+.venv/bin/pip install deepseek-harness-sdk
+dsh-tui --workspace .
+```
+
+Alternatively, set `DSH_RUNTIME_BIN` or pass `--runtime-bin <path>`. Credentials
+come from `--api-key`, `DEEPSEEK_API_KEY`, or the local `~/.dsh` configuration,
+in that order.
+
+## Essential interactions
+
+| Key / command | Behavior |
+|---|---|
+| `enter` | Send; queue a follow-up while a turn is running |
+| `alt+enter` | Standalone: interrupt and send next; plugin: queue |
+| `esc` | Standalone: interrupt and preserve the draft; press twice while idle to clear |
+| `ctrl+c` | Clear the draft, then interrupt; press twice to quit |
+| `/` | Open the command menu and filter by prefix |
+| `/model` · `/mode` | Pick a model or agent preset; the full host catalog needs plugin mode |
+| `/permission` · `shift+tab` | Pick or cycle permission presets; plugin mode only |
+| `/effort` · `/plan` | Set reasoning effort or pass plan mode to the host |
+| `ctrl+e` · `ctrl+t` | Expand output · toggle the theme |
+| `pgup/pgdn` · `ctrl+u/d` | Scroll; `end` follows the live tail |
+| Mouse drag | Copy on release; double-click a word; `shift+drag` uses native selection |
+| `!cmd` | Run a local shell command on the client, outside the agent |
+
+Use `/help` for commands and `/keys` for the complete shortcut list.
+
+<p align="center">
+  <img src="assets/screenshots/commands.jpg" width="536"
+       alt="The dsh-tui slash command menu" />
+</p>
+
+<details>
+<summary><strong>Composer pet: /liang 🤫</strong></summary>
+
+`/liang` places a small pixel-art companion beside the composer: quiet while
+idle, typing at a tiny terminal during a turn. Terminals with kitty graphics
+protocol support, including Ghostty, Kitty, and WezTerm, get RGBA sprites;
+others fall back to a half-block whale. The pet hides below 60 columns.
+
+Use `/liang on` or `/liang off` to control it explicitly.
+
+</details>
+
+## Build from source
+
+Requires Rust stable and Node.js 18+:
+
+```sh
+cargo test --locked
+node --test scripts/package-native.test.mjs
+bash scripts/build-npm.sh
+```
+
+The local script builds only the current platform and writes a tarball to
+`dist/`. The `Package and publish npm` GitHub Actions workflow builds and then
+assembles these paths into one npm package:
+
+```text
+npm/vendor/darwin-arm64/dsh-tui
+npm/vendor/darwin-x64/dsh-tui
+npm/vendor/linux-x64/dsh-tui
+npm/vendor/win32-x64/dsh-tui.exe
+```
+
+Running the workflow manually with `publish=true` publishes the version in
+`npm/package.json` under the `beta` tag through npm Trusted Publishing (OIDC).
+
+## Troubleshooting
+
+- **`no native binary for ...`**: the installed package does not contain your
+  platform. Confirm that you installed `@beta` and check the support matrix.
+- **`cannot find ... dsh-jsonrpc-agent`**: the standalone runtime is missing.
+  Install the SDK, set `DSH_RUNTIME_BIN`, or use dsh plugin mode.
+- **pnpm workspace root error**: upgrade to pnpm 10+ and rerun the install
+  command without `-w`.
+- **No pixel pet**: the terminal may not support kitty graphics protocol; the
+  rest of the UI is unaffected.
+
+## Repository map
+
+- `src/`: TUI state, rendering, protocol, runtime lifecycle, and session catalog.
+- `npm/`: dsh bundle runner, CLI shim, manifest, and native binaries.
+- `scripts/`: local builds, cross-platform package checks, protocol integration
+  tests, and asset generation.
+- `assets/`: screenshots, visual assets, and optional pet sprites.
+
+The wire protocol is NDJSON JSON-RPC 2.0 over stdio. Start with
+[`src/proto.rs`](src/proto.rs), [`src/controller.rs`](src/controller.rs), and
+[`npm/lib/index.js`](npm/lib/index.js) for implementation details.
+
+## License
+
+[MIT](LICENSE). Not affiliated with DeepSeek or xAI;
+[grok-build](https://github.com/xai-org/grok-build) is an interaction design
+reference, and [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+is the runtime substrate.

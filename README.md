@@ -1,141 +1,170 @@
-# dsh-tui — 终端里的 DEEPSEEK HARNESS
+# dsh-tui
 
-中文 | [English](README.en.md)
+[中文](README.md) | [English](README.en.md)
 
-一个 [grok-build](https://github.com/xai-org/grok-build) 风格的
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 终端
-agent UI，Rust（ratatui）实现。它**直接说 harness 的 SDK JSON-RPC stdio
-协议** —— 链路里没有 Python SDK —— 整套界面按 DeepSeek Web UI 的调色板
-1:1 上色，鲸鱼也在。
+[![npm beta](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?tag=beta&label=npm%20beta)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
+[![Package and publish npm](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg)](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-深度求索 · 探索未至之境 — *everything is a plugin.*
+DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查看流式推理、
+工具调用、subagent、token 用量和持久化会话。既可以作为官方 `dsh` profile
+插件运行，也可以直接连接 SDK JSON-RPC runtime。
 
-![dsh-tui — 鲸鱼 banner、DEEPSEEK HARNESS 字标、Into the Unknown](assets/screenshots/banner.jpg)
+> **Beta** · `0.0.4-beta` 的 CI 包覆盖 macOS Apple Silicon、macOS Intel、
+> Linux x64 和 Windows x64。当前集成以 `dsh 0.1.0-rc.6` 为基线。
 
-鲸鱼由 `scripts/gen_logo.py` 从 harness Web UI 实际下发的 favicon SVG
-栅格化而来；字标是 figlet `ansi_shadow`，染成鲸腹灰，终端够宽时右侧跟一个
-白边镂空的 `HARNESS`。`src/theme.rs` 的主题 token 与 Web UI
-`design-platform.css` 的 `--dsw-*` 变量 1:1 对应（深浅两套，`/theme`
-切换）。
+![dsh-tui 的 DeepSeek Harness 会话界面](assets/screenshots/banner.jpg)
 
-## 它展示什么
+## 快速开始
 
-Web UI 为一个会话呈现的一切，这里从事件流实时呈现：流式推理（可折叠的
-`✻ thought · 3.2s · 14 lines`）、流式回复文本、每一次工具调用及其参数与
-结果（`bash`、`str_replace_editor`、`read`…）、注入的 plugin 上下文、
-subagent 生命周期、token 用量（含 cache 命中）、回合结束原因、运行时状态。
+### 推荐：作为 dsh profile 插件运行
 
-## 交互（致敬 grok-build）
-
-| 按键 | 行为 |
-|---|---|
-| `enter` | 发送 · **回合进行中排队 follow-up**（协议原生 inbox） |
-| `alt+enter` | 立即发送：打断当前回合，下一个跑它 |
-| `esc` | 打断（草稿保留）· 空闲时 `esc esc` 清空草稿 |
-| `ctrl+c` | 先清草稿 · 再打断 · `ctrl+c ctrl+c` 退出 |
-| `↑` | 提示词历史（输入框为空时） |
-| `!cmd` | 跑一条本地 shell 命令（客户端执行，不经过 agent） |
-| `/` | 斜杠菜单，前缀过滤（`/help /new /model /mode /effort /permission /plan /theme /liang …`） |
-| `ctrl+m` | 模型选择器（宿主目录）→ 推理力度选择器 |
-| `shift+tab` | 轮换权限预设 · `/permission` 打开选择器 |
-| `ctrl+e` | 展开全部思考/工具输出 · `ctrl+t` 主题 · `ctrl+l` 清屏 |
-| `pgup/pgdn` `ctrl+u/d` | 滚动 · 支持鼠标滚轮 · `end` 跟住尾部 |
-| 鼠标拖选 | 聊天区划选 —— **松手即复制** · 双击复制单词 |
-
-agent 的接缝都是真的，不是装饰：`/mode` 选 agent 预设 —— standard ·
-code · minimal · creator（plugin 模式下换成宿主真实的 `agentPresets`
-名册；在会话第一个 prompt 时组装），`/model` 在 plugin 模式下即时切换，
-`/effort off|high|max` 设定本会话的推理力度，`/plan` 把 plan 模式透传给
-宿主。
-
-<p align="center">
-  <img src="assets/screenshots/commands.jpg" width="536"
-       alt="窄终端上的斜杠菜单 — /liang 高亮，小人在旁听" />
-</p>
-
-剪贴板投递是 grok-pager 式的多级路由，绝不硬失败（`src/clipboard.rs`）：
-原生工具（`pbcopy` / `wl-copy` / `xclip` / `xsel`）→ tmux paste buffer →
-控制终端的 OSC 52（必要时套 tmux passthrough 信封）—— 本机、tmux、SSH
-里复制都好使。
-
-## 输入框宠物 · `/liang` 🤫
-
-一个像素画 **梁文锋** —— 爱称 **小难梁** —— 蹲在输入框右缘；`/liang`
-召唤。两个状态，跟随运行状态切换：
-
-| 状态 | 精灵 | 气场 |
-|---|---|---|
-| idle | 🤫 手指抵唇 | 安静 —— 他在想 AGI |
-| working | ⌨︎ 敲一台小终端 | 回合流式进行中 —— 亲自上手 |
-
-这个梗，立此存照：DeepSeek 出了名低调的创始人 —— 传说他至今每篇论文都读、
-GPU 排队的间隙还在写代码 —— 所以他自然也来你的状态角落兼职：模型思考时
-嘘声示意全场安静，回合一开始就疯狂敲键盘。为什么叫小难梁：因为"难"是
-家族事业 —— AGI 很难，但他在加班。
-
-机制：帧是真像素（`assets/pet/liang-*.png`，RGBA 透明底），在会说 **kitty
-graphics protocol** 的终端上直贴（ghostty · kitty · WezTerm，凭 `$TERM` /
-`$TERM_PROGRAM` 嗅探；一次性 transmit-and-display，布局/状态变化时重发 ——
-`src/pet.rs`）。不支持像素图的终端退回 `logo_data.rs` 的 XS 半块鲸鱼，
-角落永不落空。`/liang` 开关（也支持 `/liang on|off`）；宽度低于 60 列时
-他自己退场。
-
-## 安装与运行
-
-npm 包本身就是官方 `dsh` CLI 的 Cordis bundle —— `dsh plugin` 把剩余参数
-转发给 PATH 上的 pnpm（在 profile 目录里执行）：
+需要已安装并配置好的 `dsh`、Node.js 18+ 和 pnpm 10+。
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
 dsh --profile tui
 ```
 
-dsh 的 profile 布局按 **pnpm ≥ 10** 设计。pnpm 9 会对这种“根即唯一成员”
-的单包 workspace 触发 root 护栏（`ERR_PNPM_ADDING_TO_ROOT`），需给
-`add` 补上 `-w`。
+安装命令不需要 `-w`。可用下面的命令确认 bundle 已挂载为 `tui-runner`：
 
-`dsh --profile tui --dump-config` 应能看到 bundle 以稳定插件 id
-`tui-runner` 挂载。想从源码构建：`bash scripts/build-npm.sh` 产出
-`dist/openma-deepseek-harness-tui-*.tgz`，同一条 `add -w` 命令接受这个
-本地路径。
-
-![一个真实的 plugin 模式回合 — 注入的上下文、read 调用、排队中的 follow-up](assets/screenshots/plugin-turn.jpg)
-
-`npm/lib/index.js` 在宿主 TTY 上拉起原生二进制，并挂载官方
-`@deepseek-ai/dsh-sdk-jsonrpc-server`，其传输经管道 fd 3/4 重定向
-（`dsh-tui --attach-fds`）—— 两种模式下 TUI 说的是同一套协议，而 agent、
-工具、providers、持久化全部来自 dsh profile —— 状态行会写
-`connected · dsh-tui-shim`，凭据一栏如实显示 `host dsh (credential
-seam)`。线级行为由 `scripts/test-attach.mjs` 验证。plugin 模式下没有
-回合中打断（回合归宿主所有）。
-
-## 协议
-
-stdio 上的 NDJSON JSON-RPC 2.0（`src/proto.rs`）：请求 `initialize` /
-`session/prompt` / `shutdown`；通知 `session.event`（持久化目录事件：
-`assistant/chunk`、`tool/call`、`tool/result`、`turn/*`、`user/message`
-…）、`session.status`、`subagent.started/finished`。standalone 模式下
-esc 打断会杀掉 runtime 进程 —— 持久化的 JSONL 会话仍在，下一个 prompt
-用同一个 session id 重新拉起。
-
-## 布局
-
-```
-src/proto.rs       NDJSON JSON-RPC 客户端（spawn + attach 两种传输）
-src/runtime.rs     runtime 二进制 / cordis 配置发现
-src/controller.rs  生命周期线程：spawn、initialize、prompt、interrupt
-src/events.rs      通知 → UiEvents（有单测）
-src/transcript.rs  回滚区 cell + 折行 + 样式
-src/app.rs         状态机与按键              src/ui.rs  绘制
-src/theme.rs       Web UI 设计 token         src/logo.rs + logo_data.rs
-src/pet.rs         /liang — kitty 图形宠物（idle/working 精灵）
-src/clipboard.rs   路由式复制：原生工具 → tmux buffer → OSC 52
-src/demo.rs        --demo 的脚本化线缆级回合
-assets/pet/        小难梁精灵帧              assets/screenshots/
-assets/promo/      社交卡片 + build.py（用产品自身像素合成）
-npm/               双模式包（CLI shim + dsh bundle 插件）
-scripts/           gen_logo.py · build-npm.sh · test-attach.mjs
+```sh
+dsh --profile tui --dump-config
 ```
 
-MIT。与 DeepSeek、xAI 均无关联；grok-build 是交互参照，deepseek-harness
-是底座。
+### 先看 Demo
+
+Demo 不需要 runtime 或 API key：
+
+```sh
+npm install --global @openma/deepseek-harness-tui@beta
+dsh-tui --demo
+```
+
+`dsh-tui` 是主命令；`dsb` 保留为兼容别名。
+
+## 核心能力
+
+- 实时呈现推理、回复、工具参数与结果、plugin 上下文和 subagent 生命周期。
+- 回合进行中排队 follow-up；standalone 模式还支持立即打断并发送下一条。
+- 持久化 JSONL 会话，可通过 `/new`、`/resume` 和 `--session-id` 管理。
+- 从 dsh 宿主读取模型、agent preset、权限 preset、provider 和凭据。
+- 深浅两套 DeepSeek Web UI 风格主题，支持窄终端与鼠标交互。
+- 本机、tmux 和 SSH 下通过原生剪贴板、tmux buffer 或 OSC 52 复制文本。
+
+![plugin 模式中的上下文、工具调用和排队 follow-up](assets/screenshots/plugin-turn.jpg)
+
+## 两种运行模式
+
+| | dsh plugin（推荐） | Standalone |
+|---|---|---|
+| Agent、工具与 provider | 来自 dsh profile | 来自独立 SDK runtime |
+| 模型与 agent preset | 使用宿主真实目录，可在 TUI 中切换 | 使用启动参数或 runtime 配置 |
+| 会话存储 | `~/.dsh/sessions` | `~/.dsh-tui/sessions`，可用 `--session-root` 修改 |
+| 回合中断 | 宿主持有回合，不做硬中断 | `esc` 停止 runtime；会话日志保留 |
+| Runtime 安装 | bundle 自带兼容层 | 需要 `dsh-jsonrpc-agent` |
+
+Plugin runner 在宿主 TTY 上启动原生二进制，并通过 fd 3/4 提供一套与官方 SDK
+server 兼容的 JSON-RPC 接口。它不是对
+`@deepseek-ai/dsh-sdk-jsonrpc-server` 的直接挂载；agent、工具、provider 和持久化
+仍由外围 dsh profile 提供。
+
+### Standalone runtime
+
+全局安装只提供 TUI 二进制。Standalone 模式还需要在工作区附近的 `.venv` 中
+安装 DeepSeek Harness SDK，或显式指定 runtime：
+
+```sh
+python -m venv .venv
+.venv/bin/pip install deepseek-harness-sdk
+dsh-tui --workspace .
+```
+
+也可以设置 `DSH_RUNTIME_BIN`，或传入 `--runtime-bin <path>`。凭据优先使用
+`--api-key`、`DEEPSEEK_API_KEY`，随后尝试读取本机 `~/.dsh` 配置。
+
+## 常用交互
+
+| 按键 / 命令 | 行为 |
+|---|---|
+| `enter` | 发送；回合运行时排队 follow-up |
+| `alt+enter` | Standalone：打断当前回合并优先发送；plugin：排队 |
+| `esc` | Standalone：打断且保留草稿；空闲时连按两次清草稿 |
+| `ctrl+c` | 先清草稿，再中断；连按两次退出 |
+| `/` | 打开命令菜单并按前缀过滤 |
+| `/model` · `/mode` | 选择模型和 agent preset；完整目录需要 plugin 模式 |
+| `/permission` · `shift+tab` | 选择或轮换权限 preset；需要 plugin 模式 |
+| `/effort` · `/plan` | 设置推理力度或把 plan 模式传给宿主 |
+| `ctrl+e` · `ctrl+t` | 展开输出 · 切换主题 |
+| `pgup/pgdn` · `ctrl+u/d` | 滚动；`end` 回到实时尾部 |
+| 鼠标拖选 | 松手复制；双击复制单词；`shift+拖选` 使用终端原生选择 |
+| `!cmd` | 在客户端本地执行 shell 命令，不经过 agent |
+
+界面内使用 `/help` 查看命令，使用 `/keys` 查看完整快捷键。
+
+<p align="center">
+  <img src="assets/screenshots/commands.jpg" width="536"
+       alt="dsh-tui 的斜杠菜单" />
+</p>
+
+<details>
+<summary><strong>输入框宠物：/liang 🤫</strong></summary>
+
+`/liang` 会在输入框右侧显示小难梁：空闲时安静思考，回合运行时敲小终端。
+Ghostty、Kitty 和 WezTerm 等支持 kitty graphics protocol 的终端会显示 RGBA
+像素精灵；其他终端退回半块字符鲸鱼。宽度低于 60 列时自动隐藏。
+
+可用 `/liang on`、`/liang off` 显式控制。
+
+</details>
+
+## 从源码构建
+
+需要 Rust stable 和 Node.js 18+：
+
+```sh
+cargo test --locked
+node --test scripts/package-native.test.mjs
+bash scripts/build-npm.sh
+```
+
+本地脚本只编译当前平台，并将 tarball 写入 `dist/`。GitHub Actions 工作流
+`Package and publish npm` 会分别构建以下目录，再汇总为一个 npm 包：
+
+```text
+npm/vendor/darwin-arm64/dsh-tui
+npm/vendor/darwin-x64/dsh-tui
+npm/vendor/linux-x64/dsh-tui
+npm/vendor/win32-x64/dsh-tui.exe
+```
+
+手动运行该工作流并设置 `publish=true` 时，会通过 npm Trusted Publishing
+（OIDC）将 `npm/package.json` 中的版本发布到 `beta` tag。
+
+## 故障排查
+
+- **`no native binary for ...`**：当前安装包不包含你的平台。确认安装的是
+  `@beta`，并查看上方支持矩阵。
+- **`cannot find ... dsh-jsonrpc-agent`**：这是 standalone runtime 缺失；安装
+  SDK、设置 `DSH_RUNTIME_BIN`，或改用 dsh plugin 模式。
+- **pnpm workspace root 错误**：升级到 pnpm 10+，然后重新运行不带 `-w` 的
+  安装命令。
+- **像素宠物不显示**：终端可能不支持 kitty graphics protocol；主界面功能
+  不受影响。
+
+## 项目结构
+
+- `src/`：TUI 状态机、绘制、协议、runtime 生命周期和会话目录。
+- `npm/`：dsh bundle runner、CLI shim、manifest 与原生二进制。
+- `scripts/`：本地构建、跨平台打包校验、协议集成测试与资源生成。
+- `assets/`：截图、主题资源和可选宠物精灵。
+
+协议是 stdio 上的 NDJSON JSON-RPC 2.0。实现细节可从
+[`src/proto.rs`](src/proto.rs)、[`src/controller.rs`](src/controller.rs) 和
+[`npm/lib/index.js`](npm/lib/index.js) 开始阅读。
+
+## License
+
+[MIT](LICENSE)。本项目与 DeepSeek、xAI 无关联；
+[grok-build](https://github.com/xai-org/grok-build) 是交互设计参考，
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 是运行底座。

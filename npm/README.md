@@ -1,59 +1,64 @@
 # @openma/deepseek-harness-tui
 
-DeepSeek Build (`dsh-tui`) — grok-build style terminal UI for the deepseek-harness agent runtime.
+Terminal-native UI for DeepSeek Harness, distributed as both a `dsh` profile
+bundle and a standalone `dsh-tui` command.
 
-This package bundles a platform-native binary and installs two commands:
+> **Beta** · Native binaries are packaged for macOS arm64, macOS x64, Linux
+> x64, and Windows x64. Requires Node.js 18+; plugin installation requires
+> pnpm 10+ and is tested with `dsh 0.1.0-rc.6`.
 
-- `dsh-tui` (primary)
-- `dsb` (alias)
-
-## Install
-
-As a dsh plugin (needs **pnpm ≥ 10** on PATH; on pnpm 9 add `-w` to the `add`):
+## Recommended: dsh profile plugin
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
 dsh --profile tui
 ```
 
-As a standalone CLI:
+The install command does not need `-w`. The profile supplies agents, tools,
+providers, credentials, and durable sessions; the package supplies the native
+TUI and its dsh-compatible JSON-RPC bridge.
+
+## Demo and standalone CLI
 
 ```sh
-npm i -g @openma/deepseek-harness-tui@beta
+npm install --global @openma/deepseek-harness-tui@beta
+dsh-tui --demo
 ```
 
-Or from a local tarball built from source:
+`dsh-tui` is the primary command. `dsb` is a compatibility alias.
+
+The demo needs no API key or runtime. Normal standalone sessions additionally
+need `dsh-jsonrpc-agent`, discovered from a nearby SDK virtual environment,
+`DSH_RUNTIME_BIN`, `--runtime-bin`, or `PATH`:
 
 ```sh
-# From the repo root, after building the tarball:
-npm i -g ./dist/<tgz>
+python -m venv .venv
+.venv/bin/pip install deepseek-harness-sdk
+dsh-tui --workspace .
 ```
 
-## Runtime discovery
+Run `dsh-tui --help` for runtime, model, credential, session, theme, and demo
+options.
 
-The deepseek-harness runtime is discovered separately from this package. Either:
+## Supported platforms
 
-- install the SDK into a `.venv` next to your workspace:
+| Node platform key | Binary |
+|---|---|
+| `darwin-arm64` | `vendor/darwin-arm64/dsh-tui` |
+| `darwin-x64` | `vendor/darwin-x64/dsh-tui` |
+| `linux-x64` | `vendor/linux-x64/dsh-tui` |
+| `win32-x64` | `vendor/win32-x64/dsh-tui.exe` |
 
-  ```sh
-  python -m venv .venv
-  .venv/bin/pip install deepseek-harness-sdk
-  ```
-
-- or point directly at a runtime binary with the `DSH_RUNTIME_BIN` environment variable.
+If installation succeeds but launch reports `no native binary for ...`, confirm
+that you installed the `beta` tag and that your platform appears above.
 
 ## Uninstall
 
 ```sh
-npm uninstall -g @openma/deepseek-harness-tui
+npm uninstall --global @openma/deepseek-harness-tui
 ```
 
-## Rebuild
+Source, screenshots, development commands, and architecture notes live in the
+[GitHub repository](https://github.com/openma-ai/deepseek-harness-tui).
 
-The bundled binary is platform-specific. To (re)build the binary and the tarball on your machine:
-
-```sh
-bash scripts/build-npm.sh
-```
-
-This runs `cargo build --release`, copies the binary into `npm/vendor/<platform>-<arch>/`, and writes a fresh `.tgz` into `dist/`.
+[MIT](https://github.com/openma-ai/deepseek-harness-tui/blob/main/LICENSE).

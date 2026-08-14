@@ -4,7 +4,7 @@
  *
  * Install into a profile and launch:
  *
- *     dsh plugin --profile tui add @openma/deepseek-harness-tui
+ *     dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
  *     dsh --profile tui
  *
  * The runner spawns the platform-native `dsh-tui` binary with the host TTY

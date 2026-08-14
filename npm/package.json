@@ -1,7 +1,7 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.0.3-beta",
-  "description": "DeepSeek Build (dsh-tui) \u2014 grok-build style terminal UI for the deepseek-harness agent runtime; standalone CLI or dsh profile bundle",
+  "version": "0.0.4-beta",
+  "description": "Terminal-native agent UI for DeepSeek Harness; standalone CLI or dsh profile bundle",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,6 +12,13 @@
     "url": "https://github.com/openma-ai/deepseek-harness-tui/issues"
   },
   "main": "lib/index.js",
+  "scripts": {
+    "test": "node --test ../scripts/package-native.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
@@ -26,7 +33,8 @@
     "lib",
     "vendor",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {

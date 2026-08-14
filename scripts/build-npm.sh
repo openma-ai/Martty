@@ -6,11 +6,18 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 cargo build --release
 
-PLAT="$(node -p 'process.platform + "-" + process.arch')"
+PLATFORM="$(node -p 'process.platform')"
+ARCH="$(node -p 'process.arch')"
+BINARY="target/release/dsh-tui"
+if [[ "$PLATFORM" == "win32" ]]; then
+  BINARY="${BINARY}.exe"
+fi
 
-mkdir -p "npm/vendor/$PLAT"
-cp target/release/dsh-tui "npm/vendor/$PLAT/"
-chmod +x "npm/vendor/$PLAT/dsh-tui"
+node scripts/package-native.mjs stage \
+  --source "$BINARY" \
+  --platform "$PLATFORM" \
+  --arch "$ARCH" \
+  --vendor-root npm/vendor
 
 mkdir -p dist
 (cd npm && npm pack --pack-destination ../dist)
