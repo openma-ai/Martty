@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/deepseek_favicon.png" width="88" alt="DeepSeek Harness" />
+  <img src="assets/tui-wordmark.png" width="560" alt="DeepSeek Harness TUI" />
 </p>
-
-<h1 align="center">DeepSeek Harness TUI</h1>
 
 <p align="center">
   DeepSeek Harness in your terminal: streamed reasoning, tools, skills, multi-image prompts, and durable sessions.

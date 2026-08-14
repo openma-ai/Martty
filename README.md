@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/deepseek_favicon.png" width="88" alt="DeepSeek Harness" />
+  <img src="assets/tui-wordmark.png" width="560" alt="DeepSeek Harness TUI" />
 </p>
-
-<h1 align="center">DeepSeek Harness TUI</h1>
 
 <p align="center">
   在终端里运行 DeepSeek Harness：流式推理、工具调用、Skills、多图 prompt 与持久会话。

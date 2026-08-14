@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/openma-ai/deepseek-harness-tui/main/assets/deepseek_favicon.png" width="72" alt="DeepSeek Harness" />
+  <img src="https://raw.githubusercontent.com/openma-ai/deepseek-harness-tui/main/assets/tui-wordmark.png" width="560" alt="DeepSeek Harness TUI" />
 </p>
-
-<h1 align="center">DeepSeek Harness TUI</h1>
 
 <p align="center">
   Terminal-native DeepSeek Harness UI, distributed as a dsh profile bundle and the standalone <code>dsh-tui</code> command.
