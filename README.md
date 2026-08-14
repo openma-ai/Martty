@@ -10,7 +10,7 @@ DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查�
 工具调用、subagent、token 用量和持久化会话。既可以作为官方 `dsh` profile
 插件运行，也可以直接连接 SDK JSON-RPC runtime。
 
-> **v0.1.0** · 官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和
+> **v0.1.1** · 官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和
 > Windows x64。当前集成以 `dsh 0.1.0-rc.6` 为基线。
 
 ![dsh-tui 的 DeepSeek Harness 会话界面](assets/screenshots/banner.jpg)
@@ -150,6 +150,9 @@ npm/vendor/win32-x64/dsh-tui.exe
   SDK、设置 `DSH_RUNTIME_BIN`，或改用 dsh plugin 模式。
 - **pnpm workspace root 错误**：升级到 pnpm 10+，然后重新运行不带 `-w` 的
   安装命令。
+- **`ERR_REQUIRE_ESM_RACE_CONDITION`**：0.1.0 及更早的 runner 是 CJS，会和
+  dsh 并行加载的 ESM 插件抢同一份模块。升级到 `0.1.1` 以上，或从本仓库安装
+  `npm/` 目录。
 - **像素宠物不显示**：终端可能不支持 kitty graphics protocol；主界面功能
   不受影响。
 

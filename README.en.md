@@ -11,7 +11,7 @@ tool calls, subagents, token usage, and durable sessions in one Rust/ratatui
 interface. Run it as an official `dsh` profile plugin or connect it directly to
 the SDK JSON-RPC runtime.
 
-> **v0.1.0** · The official package supports macOS on Apple Silicon and Intel,
+> **v0.1.1** · The official package supports macOS on Apple Silicon and Intel,
 > Linux x64, and Windows x64. The current integration baseline is
 > `dsh 0.1.0-rc.6`.
 
@@ -164,6 +164,9 @@ publishing.
   Install the SDK, set `DSH_RUNTIME_BIN`, or use dsh plugin mode.
 - **pnpm workspace root error**: upgrade to pnpm 10+ and rerun the install
   command without `-w`.
+- **`ERR_REQUIRE_ESM_RACE_CONDITION`**: 0.1.0 and earlier shipped a CommonJS
+  runner that raced Cordis's parallel ESM `import()`. Upgrade to `0.1.1` or
+  install this repo's `npm/` directory.
 - **No pixel pet**: the terminal may not support kitty graphics protocol; the
   rest of the UI is unaffected.
 

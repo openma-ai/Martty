@@ -1,4 +1,3 @@
-'use strict'
 /**
  * dsh plugin runner for the native dsh-tui terminal UI.
  *
@@ -24,21 +23,29 @@
  * The agent, tools, persistence, and providers come from the surrounding dsh
  * profile. Stdout of the host process is the TUI's screen — keep stdout
  * loggers out of the profile (the stock sdk server has the same requirement).
+ *
+ * This file is ESM. Cordis loads profile plugins with parallel import(); a
+ * CommonJS runner that synchronously loads the same ESM graph races Node's
+ * ERR_REQUIRE_ESM_RACE_CONDITION.
  */
 
-const { spawn } = require('node:child_process')
-const fs = require('node:fs')
-const path = require('node:path')
-const { JsonRpcLineTransport } = require('@deepseek-ai/dsh-sdk-protocol')
-const { createUserMessage } = require('@deepseek-ai/dsh-llm')
-const { SessionId } = require('@deepseek-ai/dsh-session')
-const { installModelSelection } = require('@deepseek-ai/dsh-agent')
-const { carrierKeyOf } = require('@deepseek-ai/dsh-scope')
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
+import * as llmDeepseek from '@deepseek-ai/dsh-llm-deepseek'
 
-const name = 'dsh-tui-runner'
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+export const name = 'dsh-tui-runner'
 // Only the agent factory is required; the LLM seam, agent presets, and
 // permission presets are read optionally with ctx.get() (like the stock server).
-const inject = ['agents']
+export const inject = ['agents']
 
 function nativeBinary() {
   const key = `${process.platform}-${process.arch}`
@@ -63,7 +70,7 @@ function successStatus(reason) {
   return reason === 'completed' ? 'ok' : 'error'
 }
 
-function apply(ctx) {
+export function apply(ctx) {
   const bin = nativeBinary()
 
   const child = spawn(bin, ['--attach-fds'], {
@@ -228,7 +235,7 @@ function apply(ctx) {
       if (defaults.provider !== 'deepseek-official') {
         throw new Error(`no adapter registered for provider "${defaults.provider}"`)
       }
-      llmFiber = await ctx.plugin(require('@deepseek-ai/dsh-llm-deepseek'), {})
+      llmFiber = await ctx.plugin(llmDeepseek, {})
     }
     return { serverInfo: { name: 'dsh-tui-shim', version: '0.2.1' } }
   }
@@ -454,5 +461,3 @@ function apply(ctx) {
     }
   }, 'dsh-tui.serve')
 }
-
-module.exports = { name, inject, apply }

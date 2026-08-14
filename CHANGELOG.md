@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-14
+
+### Fixed
+
+- The dsh profile runner is now ESM. A CommonJS runner that `require()`d the
+  host's ESM packages raced Cordis's parallel `import()` and crashed Node 24
+  with `ERR_REQUIRE_ESM_RACE_CONDITION` on `dsh --profile tui`.
+
+[0.1.1]: https://github.com/openma-ai/deepseek-harness-tui/releases/tag/v0.1.1
+
 ## [0.1.0] - 2026-08-14
 
 ### Added
