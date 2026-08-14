@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/tui-wordmark.png" width="560" alt="DeepSeek Harness TUI" />
+  <img src="assets/tui-lockup.svg" width="520" alt="DeepSeek Harness TUI" />
 </p>
 
 <p align="center">
