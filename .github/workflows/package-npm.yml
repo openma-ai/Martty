@@ -12,8 +12,16 @@ permissions:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-24.04
+    name: Test ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: unix
+            runner: ubuntu-24.04
+          - name: windows
+            runner: windows-2025
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -24,9 +32,9 @@ jobs:
       - run: rustup default stable
       - name: Verify release tag matches package versions
         if: startsWith(github.ref, 'refs/tags/')
-        run: node scripts/check-release-tag.mjs "$GITHUB_REF_NAME" npm/package.json Cargo.toml
+        run: node scripts/check-release-tag.mjs "${{ github.ref_name }}" npm/package.json Cargo.toml
       - run: cargo test --locked
-      - run: node --test scripts/*.test.mjs
+      - run: npm test --prefix npm
 
   native:
     name: Build ${{ matrix.name }}

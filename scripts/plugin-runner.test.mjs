@@ -18,7 +18,7 @@ const stubSources = {
   '@deepseek-ai/dsh-agent': `export function installModelSelection() {}`,
   '@deepseek-ai/dsh-scope': `export function carrierKeyOf() { return undefined }`,
   '@deepseek-ai/dsh-llm-deepseek': `export const name = 'llm-deepseek'; export function apply() {}`,
-  'node:child_process': `import { fakeChild } from ${JSON.stringify(harnessUrl)}; export function spawn() { return fakeChild }`,
+  'node:child_process': `export { spawnTui as spawn } from ${JSON.stringify(harnessUrl)}`,
 }
 
 registerHooks({
@@ -56,16 +56,51 @@ test('the bundle does not npm-depend on @deepseek-ai packages', () => {
   }
 })
 
-test('extra-fd EPIPE after the TUI exits is not an unhandled error', () => {
+test('extra-fd EPIPE after the TUI exits is not an unhandled error', async () => {
   const restore = ensureTestNative()
   try {
-    runner.apply(makeCtx())
+    await runner.apply(makeCtx())
     assert.ok(fakeChild.stdio[3].listeners.error.length > 0)
     assert.ok(fakeChild.stdio[4].listeners.error.length > 0)
     const epike = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write' })
     for (const fn of fakeChild.stdio[3].listeners.error) fn(epike)
     for (const fn of fakeChild.stdio[4].listeners.error) fn(epike)
   } finally {
+    restore()
+  }
+})
+
+test('Windows plugin transport uses authenticated loopback TCP instead of extra fds', async () => {
+  const restore = ensureTestNative()
+  const previous = process.env.DSH_TUI_FORCE_TCP
+  process.env.DSH_TUI_FORCE_TCP = '1'
+  state.spawnCalls.length = 0
+  try {
+    await runner.apply(makeCtx())
+    const call = state.spawnCalls.at(-1)
+    assert.equal(call.args[0], '--attach-tcp')
+    assert.match(call.args[1], /^127\.0\.0\.1:\d+$/)
+    assert.deepEqual(call.options.stdio, ['inherit', 'inherit', 'inherit'])
+    assert.match(call.options.env.DSH_TUI_ATTACH_TOKEN, /^[a-f0-9]{64}$/)
+    assert.ok(state.transport, 'JSON-RPC transport is created after authentication')
+  } finally {
+    if (previous === undefined) delete process.env.DSH_TUI_FORCE_TCP
+    else process.env.DSH_TUI_FORCE_TCP = previous
+    restore()
+  }
+})
+
+test('Windows plugin transport reports a child launch failure before handshake timeout', async () => {
+  const restore = ensureTestNative()
+  const previous = process.env.DSH_TUI_FORCE_TCP
+  process.env.DSH_TUI_FORCE_TCP = '1'
+  state.failSpawn = true
+  try {
+    await assert.rejects(runner.apply(makeCtx()), /simulated launch failure/)
+  } finally {
+    state.failSpawn = false
+    if (previous === undefined) delete process.env.DSH_TUI_FORCE_TCP
+    else process.env.DSH_TUI_FORCE_TCP = previous
     restore()
   }
 })
@@ -133,7 +168,7 @@ function ensureTestNative() {
 test('tui/permission stages before the first prompt and applies on create', async () => {
   const restore = ensureTestNative()
   try {
-    runner.apply(makeCtx())
+    await runner.apply(makeCtx())
     const request = (method, params) => state.transport.handler(method, params)
 
   let res = await request('tui/permission', { sessionId: 's1', preset: 'danger-full-access' })
@@ -164,7 +199,7 @@ test('tui/permission stages before the first prompt and applies on create', asyn
   assert.deepEqual(state.setCalls.at(-1), { sessionId: 's1', preset: 'workspace-write' })
 
   state.notifications.length = 0
-  runner.apply(makeCtx({ withPermissionService: false }))
+  await runner.apply(makeCtx({ withPermissionService: false }))
   await assert.rejects(
     request('tui/permission', { sessionId: 's2', preset: 'workspace-write' }),
     /no permission-presets service in this profile/,

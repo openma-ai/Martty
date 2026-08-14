@@ -101,7 +101,8 @@ dsh-tui --demo
 | Runtime installation | The bundle includes its compatibility layer | Requires `dsh-jsonrpc-agent` |
 
 The plugin runner launches the native binary on the host TTY and serves an SDK
-server-compatible JSON-RPC interface over fds 3/4. It does not mount
+server-compatible JSON-RPC interface over fds 3/4 on Unix or an authenticated
+loopback TCP socket on Windows. It does not mount
 `@deepseek-ai/dsh-sdk-jsonrpc-server` directly; the surrounding dsh profile
 still supplies agents, tools, providers, and persistence.
 

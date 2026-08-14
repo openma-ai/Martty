@@ -1054,13 +1054,20 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     let theme = app.theme;
-    // The id marked "(current)": the active model, or the effective agent mode.
+    // The active model is identified by provider + id because multiple
+    // coding plans can expose the same upstream model id.
     let current_mode = app.current_mode();
-    let current_id: Option<&str> = match picker.kind {
-        crate::app::PickerKind::Model => Some(app.cfg.model.as_str()),
-        crate::app::PickerKind::Mode => Some(current_mode.as_str()),
-        crate::app::PickerKind::Permission => Some(app.current_permission()),
-        crate::app::PickerKind::Effort | crate::app::PickerKind::Session => None,
+    let is_current = |item: &crate::app::PickerItem| match picker.kind {
+        crate::app::PickerKind::Model => {
+            item.id == app.cfg.model
+                && item
+                    .provider
+                    .as_deref()
+                    .is_none_or(|provider| provider == app.cfg.provider)
+        }
+        crate::app::PickerKind::Mode => item.id == current_mode,
+        crate::app::PickerKind::Permission => item.id == app.current_permission(),
+        crate::app::PickerKind::Effort | crate::app::PickerKind::Session => false,
     };
     let h = (picker.items.len() as u16 + 2).min(screen.height.saturating_sub(2));
     // Fit the widest row (marker + padded label + ✓ + meta); cap to the screen.
@@ -1068,12 +1075,7 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         .items
         .iter()
         .map(|item| {
-            let label_w = item.label.width()
-                + if Some(item.id.as_str()) == current_id {
-                    2
-                } else {
-                    0
-                };
+            let label_w = item.label.width() + if is_current(item) { 2 } else { 0 };
             2 + label_w.max(24) + item.meta.width()
         })
         .max()
@@ -1097,7 +1099,7 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         };
         // The current model/mode gets a ✓ pinned to its label — it survives
         // narrow terminals, unlike a right-edge tag.
-        let label = if Some(item.id.as_str()) == current_id {
+        let label = if is_current(item) {
             format!("{} ✓", item.label)
         } else {
             item.label.clone()
@@ -1566,6 +1568,47 @@ mod tests {
         assert!(
             frame.contains("bash + str_replace_editor"),
             "descriptions visible\n{frame}"
+        );
+    }
+
+    #[test]
+    fn model_picker_marks_only_the_current_provider_model_pair() {
+        use crate::app::{Picker, PickerItem, PickerKind};
+        let mut app = test_app();
+        app.show_banner = false;
+        app.cfg.provider = "coding-plan-b".into();
+        app.cfg.model = "deepseek-v4".into();
+        app.picker = Some(Picker {
+            kind: PickerKind::Model,
+            title: " model ".into(),
+            sel: 1,
+            items: vec![
+                PickerItem {
+                    id: "deepseek-v4".into(),
+                    label: "deepseek-v4".into(),
+                    meta: "coding-plan-a · DeepSeek V4".into(),
+                    provider: Some("coding-plan-a".into()),
+                },
+                PickerItem {
+                    id: "deepseek-v4".into(),
+                    label: "deepseek-v4".into(),
+                    meta: "coding-plan-b · DeepSeek V4".into(),
+                    provider: Some("coding-plan-b".into()),
+                },
+            ],
+        });
+
+        let frame = dump_frame(&mut app, 100, 24);
+        let marked: Vec<&str> = frame.lines().filter(|line| line.contains("✓")).collect();
+        assert_eq!(
+            marked.len(),
+            1,
+            "only one provider/model row is current:\n{frame}"
+        );
+        assert!(
+            marked[0].contains("coding-plan-b"),
+            "current marker follows the provider: {}",
+            marked[0]
         );
     }
 

@@ -60,6 +60,7 @@ OPTIONS:
       --demo                scripted turns, no runtime / API key needed
       --attach-fds          plugin mode: speak JSON-RPC over inherited fds 3/4
                             (used by `dsh plugin --profile tui add @openma/deepseek-harness-tui`)
+      --attach-tcp <addr>   plugin mode: authenticated loopback TCP (Windows)
       --check-runtime       spawn + initialize the runtime, print info, exit
       --dump-frame [WxH]    render one demo frame as text (default 100x34)
   -V, --version             print version
@@ -87,6 +88,7 @@ struct Args {
     theme: String,
     demo: bool,
     attach_fds: bool,
+    attach_tcp: Option<String>,
     check_runtime: bool,
     dump_frame: Option<(u16, u16)>,
 }
@@ -106,6 +108,7 @@ fn parse_args() -> Result<Args> {
         theme: "dark".into(),
         demo: false,
         attach_fds: false,
+        attach_tcp: None,
         check_runtime: false,
         dump_frame: None,
     };
@@ -128,6 +131,7 @@ fn parse_args() -> Result<Args> {
             "--theme" => args.theme = take("--theme")?,
             "--demo" => args.demo = true,
             "--attach-fds" => args.attach_fds = true,
+            "--attach-tcp" => args.attach_tcp = Some(take("--attach-tcp")?),
             "--check-runtime" => args.check_runtime = true,
             "--dump-frame" => {
                 let dims = it.next().unwrap_or_else(|| "100x34".into());
@@ -169,19 +173,20 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
     };
     std::fs::create_dir_all(&session_root).ok();
 
+    let attached = args.attach_fds || args.attach_tcp.is_some();
     let (bin, sibling_cordis) = if args.demo {
         (
             args.runtime_bin.clone().unwrap_or_else(|| "demo".into()),
             Some("demo".into()),
         )
-    } else if args.attach_fds {
+    } else if attached {
         ("(host dsh)".into(), Some("(host profile)".into()))
     } else {
         runtime::discover_runtime(args.runtime_bin.as_deref(), &workspace)?
     };
     let cordis = if args.demo {
         "demo".into()
-    } else if args.attach_fds {
+    } else if attached {
         "(host profile)".into()
     } else {
         runtime::resolve_cordis(args.cordis.as_deref(), sibling_cordis)?
@@ -221,6 +226,10 @@ fn main() -> Result<()> {
 
     let args = parse_args()?;
 
+    if args.attach_fds && args.attach_tcp.is_some() {
+        bail!("--attach-fds and --attach-tcp are mutually exclusive");
+    }
+
     if args.check_runtime {
         return check_runtime(&args);
     }
@@ -236,8 +245,8 @@ fn main() -> Result<()> {
 
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
 
-    // Plugin mode: the host dsh process reaches us over inherited pipe fds
-    // (3: server→tui frames, 4: tui→server frames); the TTY stays ours.
+    // Plugin mode: Unix uses inherited pipe fds while Windows connects to an
+    // authenticated loopback socket. The TTY stays on stdio 0/1/2.
     let attached_rt = if args.attach_fds {
         #[cfg(unix)]
         {
@@ -254,6 +263,31 @@ fn main() -> Result<()> {
         {
             bail!("--attach-fds requires a unix platform");
         }
+    } else if let Some(address) = &args.attach_tcp {
+        use std::net::{SocketAddr, TcpStream};
+
+        let address: SocketAddr = address
+            .parse()
+            .with_context(|| format!("invalid --attach-tcp address: {address}"))?;
+        if !address.ip().is_loopback() {
+            bail!("--attach-tcp requires a loopback address");
+        }
+        let token = std::env::var("DSH_TUI_ATTACH_TOKEN")
+            .context("--attach-tcp requires DSH_TUI_ATTACH_TOKEN")?;
+        if token.is_empty() {
+            bail!("DSH_TUI_ATTACH_TOKEN must not be empty");
+        }
+        std::env::remove_var("DSH_TUI_ATTACH_TOKEN");
+        let mut writer = TcpStream::connect_timeout(&address, Duration::from_secs(10))
+            .with_context(|| format!("connect plugin transport at {address}"))?;
+        writeln!(writer, "{token}")?;
+        writer.flush()?;
+        let reader = writer.try_clone().context("clone plugin TCP stream")?;
+        Some(std::sync::Arc::new(proto::RuntimeProcess::attach(
+            reader,
+            writer,
+            bus_tx.clone(),
+        )))
     } else {
         None
     };
@@ -265,7 +299,7 @@ fn main() -> Result<()> {
         cfg,
         session_id,
         args.demo,
-        args.attach_fds,
+        args.attach_fds || args.attach_tcp.is_some(),
         bus_tx.clone(),
     );
     // The composer pet: real pixels (kitty graphics) where the terminal can,

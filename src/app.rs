@@ -732,13 +732,15 @@ impl App {
                             match picker.kind {
                                 PickerKind::Model if !models.is_empty() => {
                                     let current = self.cfg.model.clone();
+                                    let current_provider = self.cfg.provider.clone();
                                     picker.items = models
                                         .into_iter()
                                         .map(|m| PickerItem {
                                             id: m.id.clone(),
                                             label: m.id,
                                             meta: format!(
-                                                "{}{}",
+                                                "{} · {}{}",
+                                                m.provider,
                                                 m.name,
                                                 if m.vision { " · vision" } else { "" }
                                             ),
@@ -748,7 +750,11 @@ impl App {
                                     picker.sel = picker
                                         .items
                                         .iter()
-                                        .position(|i| i.id == current)
+                                        .position(|i| {
+                                            i.id == current
+                                                && i.provider.as_deref()
+                                                    == Some(current_provider.as_str())
+                                        })
                                         .unwrap_or(0);
                                 }
                                 PickerKind::Mode if !presets.is_empty() => {
@@ -1607,7 +1613,10 @@ impl App {
     fn select_model(&mut self, item: PickerItem, ctl: &Controller) {
         let model = item.id;
         let provider = item.provider;
-        if model != self.cfg.model {
+        let provider_changed = provider
+            .as_deref()
+            .is_some_and(|candidate| candidate != self.cfg.provider);
+        if model != self.cfg.model || provider_changed {
             self.cfg.model = model.clone();
             self.selected_model = Some(model.clone());
             if let Some(p) = &provider {
@@ -2793,7 +2802,7 @@ mod selection_tests {
 #[cfg(test)]
 mod mode_tests {
     use super::*;
-    use crate::bus::CatalogPreset;
+    use crate::bus::{CatalogModel, CatalogPreset};
     use std::sync::mpsc::Receiver;
 
     /// Unique session root per call — keeps the modes cache from leaking
@@ -2936,6 +2945,59 @@ mod mode_tests {
         assert_eq!(picker.items.len(), 3);
         assert_eq!(picker.sel, 1, "selection lands on the current mode");
         assert!(picker.items[2].meta.contains("broken"));
+    }
+
+    #[test]
+    fn host_catalog_model_picker_distinguishes_duplicate_ids_by_provider() {
+        let (mut app, ctl, _rx) = test_app();
+        app.cfg.provider = "coding-plan-b".into();
+        app.cfg.model = "deepseek-v4".into();
+        app.open_model_picker(&ctl);
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Catalog {
+                models: vec![
+                    CatalogModel {
+                        provider: "coding-plan-a".into(),
+                        id: "deepseek-v4".into(),
+                        name: "DeepSeek V4".into(),
+                        vision: false,
+                    },
+                    CatalogModel {
+                        provider: "coding-plan-b".into(),
+                        id: "deepseek-v4".into(),
+                        name: "DeepSeek V4".into(),
+                        vision: false,
+                    },
+                ],
+                presets: Vec::new(),
+            }),
+            &ctl,
+        );
+
+        let picker = app.picker.as_ref().expect("model picker stays open");
+        assert_eq!(picker.items[0].meta, "coding-plan-a · DeepSeek V4");
+        assert_eq!(picker.items[1].meta, "coding-plan-b · DeepSeek V4");
+        assert_eq!(picker.sel, 1, "current provider and model identify the row");
+    }
+
+    #[test]
+    fn selecting_same_model_id_from_another_provider_switches_provider() {
+        let (mut app, ctl, _rx) = test_app();
+        app.cfg.provider = "coding-plan-a".into();
+        app.cfg.model = "deepseek-v4".into();
+
+        app.select_model(
+            PickerItem {
+                id: "deepseek-v4".into(),
+                label: "deepseek-v4".into(),
+                meta: "coding-plan-b · DeepSeek V4".into(),
+                provider: Some("coding-plan-b".into()),
+            },
+            &ctl,
+        );
+
+        assert_eq!(app.cfg.provider, "coding-plan-b");
+        assert_eq!(app.selected_model.as_deref(), Some("deepseek-v4"));
     }
 
     #[test]

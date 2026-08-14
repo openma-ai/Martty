@@ -24,6 +24,9 @@ providers, credentials, and durable sessions; the package supplies the native
 TUI and its JSON-RPC bridge. Harness packages are resolved from the running
 `dsh`, not reinstalled into the profile.
 
+The bridge uses inherited pipes on Unix and an authenticated loopback TCP
+socket on Windows, so the profile plugin works on every packaged platform.
+
 ## Demo and standalone CLI
 
 ```sh

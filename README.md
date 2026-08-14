@@ -89,8 +89,8 @@ dsh-tui --demo
 | 回合中断 | 宿主持有回合，不做硬中断 | `esc` 停止 runtime；会话日志保留 |
 | Runtime 安装 | bundle 自带兼容层 | 需要 `dsh-jsonrpc-agent` |
 
-Plugin runner 在宿主 TTY 上启动原生二进制，并通过 fd 3/4 提供一套与官方 SDK
-server 兼容的 JSON-RPC 接口。它不是对
+Plugin runner 在宿主 TTY 上启动原生二进制，并通过 Unix fd 3/4 或 Windows
+认证 loopback TCP 提供一套与官方 SDK server 兼容的 JSON-RPC 接口。它不是对
 `@deepseek-ai/dsh-sdk-jsonrpc-server` 的直接挂载；agent、工具、provider 和持久化
 仍由外围 dsh profile 提供。
 
