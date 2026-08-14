@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { state } from './plugin-runner-harness.mjs'
+import { state, fakeChild } from './plugin-runner-harness.mjs'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const packageJsonPath = path.join(repoRoot, 'npm', 'package.json')
@@ -44,6 +44,20 @@ test('the published plugin is ESM so Cordis can import() it in parallel', () => 
   assert.match(source, /export function apply/)
   assert.doesNotMatch(source, /module\.exports/)
   assert.doesNotMatch(source, /require\(['"]@deepseek-ai\//)
+})
+
+test('extra-fd EPIPE after the TUI exits is not an unhandled error', () => {
+  const restore = ensureTestNative()
+  try {
+    runner.apply(makeCtx())
+    assert.ok(fakeChild.stdio[3].listeners.error.length > 0)
+    assert.ok(fakeChild.stdio[4].listeners.error.length > 0)
+    const epike = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write' })
+    for (const fn of fakeChild.stdio[3].listeners.error) fn(epike)
+    for (const fn of fakeChild.stdio[4].listeners.error) fn(epike)
+  } finally {
+    restore()
+  }
 })
 
 function makeCtx({ withPermissionService = true } = {}) {

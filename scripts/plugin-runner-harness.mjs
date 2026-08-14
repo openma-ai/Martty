@@ -24,8 +24,19 @@ export class FakeTransport {
   close() {}
 }
 
+function fakePipe() {
+  const listeners = { error: [] }
+  return {
+    listeners,
+    on(event, fn) {
+      ;(listeners[event] ??= []).push(fn)
+      return this
+    },
+  }
+}
+
 export const fakeChild = {
-  stdio: [null, null, null, {}, {}],
+  stdio: [null, null, null, fakePipe(), fakePipe()],
   on() {},
   kill() {},
 }

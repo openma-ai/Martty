@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-08-14
+
+### Fixed
+
+- Closing the TUI no longer crashes the host Node process with unhandled
+  `write EPIPE` on the JSON-RPC extra fds. The runner now treats those pipe
+  errors as non-fatal, matching the stock SDK client, and skips flushing a
+  pipe the native binary already closed.
+
+[0.1.2]: https://github.com/openma-ai/deepseek-harness-tui/releases/tag/v0.1.2
+
 ## [0.1.1] - 2026-08-14
 
 ### Fixed

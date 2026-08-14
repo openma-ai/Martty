@@ -77,6 +77,14 @@ export function apply(ctx) {
     stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
   })
 
+  // Extra-fd writes race the TUI exiting (window closed, or the binary died
+  // before a JSON-RPC response flushed). Node treats EPIPE on a Socket with
+  // no 'error' listener as an unhandled exception; the child's 'exit' handler
+  // is the lifetime signal, so the stream error only needs to be non-fatal.
+  // Same posture as @deepseek-ai/dsh-sdk-client toward the runtime stdin.
+  child.stdio[3].on('error', () => {})
+  child.stdio[4].on('error', () => {})
+
   // child fd 3 reads what we write; child fd 4 writes what we read.
   const transport = new JsonRpcLineTransport(child.stdio[4], child.stdio[3])
 
@@ -102,6 +110,12 @@ export function apply(ctx) {
   const disposers = []
   let shuttingDown = false
   let shutdownTask
+  let closing = false
+
+  function notify(method, params) {
+    if (closing) return
+    transport.notify(method, params)
+  }
 
   const requireLlm = () => {
     const llm = ctx.get('llm')
@@ -118,16 +132,16 @@ export function apply(ctx) {
   // ----------------------------------------- notification forwarding ------
   // Replicates the stock HarnessSdkJsonRpcServer constructor subscriptions.
   disposers.push(ctx.on('session/event', (session, event) => {
-    transport.notify('session.event', { sessionId: String(session.id), event })
+    notify('session.event', { sessionId: String(session.id), event })
   }))
   disposers.push(ctx.on('agent/status', ({ agent, status }) => {
-    transport.notify('session.status', { sessionId: String(agent.session.id), status })
+    notify('session.status', { sessionId: String(agent.session.id), status })
   }))
   disposers.push(ctx.on('session/created', (session) => {
     sessionObjects.set(String(session.id), session)
     const parentSession = session.header.parentSession
     if (parentSession === undefined) return
-    transport.notify('subagent.started', {
+    notify('subagent.started', {
       parentSessionId: String(parentSession),
       childSessionId: String(session.id),
     })
@@ -140,7 +154,7 @@ export function apply(ctx) {
     const parent = carrierKeyOf(this)
     // This protocol reports only in-process child sessions (like the stock server).
     if (!info.local || parent === undefined) return
-    transport.notify('subagent.finished', {
+    notify('subagent.finished', {
       provider: info.provider,
       agentId: String(info.id),
       parentSessionId: String(parent.session.id),
@@ -196,7 +210,7 @@ export function apply(ctx) {
       svc.set(session, preset)
     } catch {
       try {
-        transport.notify('session.event', {
+        notify('session.event', {
           sessionId,
           event: { type: 'permission/preset', data: { preset: svc.current(session.events) } },
         })
@@ -343,7 +357,7 @@ export function apply(ctx) {
     }
     if (pendingPermissions.get(sessionId) !== preset) {
       pendingPermissions.set(sessionId, preset)
-      transport.notify('session.event', {
+      notify('session.event', {
         sessionId,
         event: { type: 'permission/preset', data: { preset } },
       })
@@ -388,12 +402,15 @@ export function apply(ctx) {
   // The TUI owns the product lifetime in this profile: after the shutdown
   // response is written, flush, dispose the complete root runtime, and exit
   // (the stock sdk server plugin's disposeAndExit).
-  let closing = false
   let exitTask
   const disposeAndExit = (code) => {
     exitTask ??= (async () => {
       closing = true
-      await Promise.allSettled([Promise.resolve().then(() => transport.flush())])
+      // Window-close kills the child first; flushing a dead pipe is EPIPE.
+      // The RPC shutdown path still has a live TUI and must flush the reply.
+      if (child.exitCode === null && child.signalCode === null) {
+        await Promise.allSettled([Promise.resolve().then(() => transport.flush())])
+      }
       await Promise.allSettled([Promise.resolve().then(() => ctx.root.fiber.dispose())])
       process.exit(code)
     })()
@@ -440,6 +457,7 @@ export function apply(ctx) {
   // ------------------------------------------------------ child lifecycle --
   child.on('exit', (code) => {
     if (closing) return
+    closing = true
     void disposeAndExit(code === null ? 0 : code)
   })
   child.on('error', (err) => {
