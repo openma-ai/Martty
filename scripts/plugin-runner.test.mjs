@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { registerHooks } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -95,9 +95,22 @@ function makeCtx({ withPermissionService = true } = {}) {
   }
 }
 
+function ensureTestNative() {
+  const key = `${process.platform}-${process.arch}`
+  const exe = process.platform === 'win32' ? 'dsh-tui.exe' : 'dsh-tui'
+  const dir = path.join(repoRoot, 'npm', 'vendor', key)
+  const bin = path.join(dir, exe)
+  if (existsSync(bin)) return () => {}
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(bin, '')
+  return () => rmSync(bin, { force: true })
+}
+
 test('tui/permission stages before the first prompt and applies on create', async () => {
-  runner.apply(makeCtx())
-  const request = (method, params) => state.transport.handler(method, params)
+  const restore = ensureTestNative()
+  try {
+    runner.apply(makeCtx())
+    const request = (method, params) => state.transport.handler(method, params)
 
   let res = await request('tui/permission', { sessionId: 's1', preset: 'danger-full-access' })
   assert.deepEqual(res, { ok: true, applied: 'on-first-prompt' })
@@ -132,4 +145,7 @@ test('tui/permission stages before the first prompt and applies on create', asyn
     request('tui/permission', { sessionId: 's2', preset: 'workspace-write' }),
     /no permission-presets service in this profile/,
   )
+  } finally {
+    restore()
+  }
 })
