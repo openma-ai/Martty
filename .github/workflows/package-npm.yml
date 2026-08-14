@@ -79,7 +79,7 @@ jobs:
           --platform "${{ matrix.platform }}"
           --arch "${{ matrix.arch }}"
           --vendor-root staged
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.name }}
           path: staged
@@ -95,7 +95,7 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: native-*
           path: npm/vendor
@@ -104,7 +104,7 @@ jobs:
         run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui
       - run: node scripts/package-native.mjs verify --vendor-root npm/vendor
       - run: mkdir -p dist && npm pack ./npm --pack-destination dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: openma-deepseek-harness-tui-npm
           path: dist/*.tgz
@@ -127,8 +127,8 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - run: npm install --global npm@^11.15.0
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: openma-deepseek-harness-tui-npm
           path: dist
-      - run: npm publish dist/*.tgz
+      - run: npm publish ./dist/*.tgz
