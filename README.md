@@ -2,7 +2,7 @@
 
 [中文](README.md) | [English](README.en.md)
 
-[![npm beta](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?tag=beta&label=npm%20beta)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
+[![npm](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
 [![Package and publish npm](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg)](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -10,8 +10,8 @@ DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查�
 工具调用、subagent、token 用量和持久化会话。既可以作为官方 `dsh` profile
 插件运行，也可以直接连接 SDK JSON-RPC runtime。
 
-> **Beta** · `0.0.4-beta` 的 CI 包覆盖 macOS Apple Silicon、macOS Intel、
-> Linux x64 和 Windows x64。当前集成以 `dsh 0.1.0-rc.6` 为基线。
+> **v0.1.0** · 官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和
+> Windows x64。当前集成以 `dsh 0.1.0-rc.6` 为基线。
 
 ![dsh-tui 的 DeepSeek Harness 会话界面](assets/screenshots/banner.jpg)
 
@@ -22,7 +22,7 @@ DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui 界面里查�
 需要已安装并配置好的 `dsh`、Node.js 18+ 和 pnpm 10+。
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
+dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
@@ -37,7 +37,7 @@ dsh --profile tui --dump-config
 Demo 不需要 runtime 或 API key：
 
 ```sh
-npm install --global @openma/deepseek-harness-tui@beta
+npm install --global @openma/deepseek-harness-tui
 dsh-tui --demo
 ```
 
@@ -138,13 +138,14 @@ npm/vendor/linux-x64/dsh-tui
 npm/vendor/win32-x64/dsh-tui.exe
 ```
 
-手动运行该工作流并设置 `publish=true` 时，会通过 npm Trusted Publishing
-（OIDC）将 `npm/package.json` 中的版本发布到 `beta` tag。
+推送与 `npm/package.json` 和 `Cargo.toml` 版本一致的 tag（例如 `v0.1.0`）
+会通过 npm Trusted Publishing（OIDC）发布到 `latest`，随后创建带 tarball
+的 GitHub Release。版本不一致时 CI 会在发布前失败。
 
 ## 故障排查
 
 - **`no native binary for ...`**：当前安装包不包含你的平台。确认安装的是
-  `@beta`，并查看上方支持矩阵。
+  最新版本，并查看上方支持矩阵。
 - **`cannot find ... dsh-jsonrpc-agent`**：这是 standalone runtime 缺失；安装
   SDK、设置 `DSH_RUNTIME_BIN`，或改用 dsh plugin 模式。
 - **pnpm workspace root 错误**：升级到 pnpm 10+，然后重新运行不带 `-w` 的

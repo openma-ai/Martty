@@ -3,14 +3,14 @@
 Terminal-native UI for DeepSeek Harness, distributed as both a `dsh` profile
 bundle and a standalone `dsh-tui` command.
 
-> **Beta** · Native binaries are packaged for macOS arm64, macOS x64, Linux
-> x64, and Windows x64. Requires Node.js 18+; plugin installation requires
-> pnpm 10+ and is tested with `dsh 0.1.0-rc.6`.
+Native binaries are packaged for macOS arm64, macOS x64, Linux x64, and Windows
+x64. Requires Node.js 18+; plugin installation requires pnpm 10+ and is tested
+with `dsh 0.1.0-rc.6`.
 
 ## Recommended: dsh profile plugin
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
+dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
@@ -21,7 +21,7 @@ TUI and its dsh-compatible JSON-RPC bridge.
 ## Demo and standalone CLI
 
 ```sh
-npm install --global @openma/deepseek-harness-tui@beta
+npm install --global @openma/deepseek-harness-tui
 dsh-tui --demo
 ```
 
@@ -50,7 +50,7 @@ options.
 | `win32-x64` | `vendor/win32-x64/dsh-tui.exe` |
 
 If installation succeeds but launch reports `no native binary for ...`, confirm
-that you installed the `beta` tag and that your platform appears above.
+that you installed the latest version and that your platform appears above.
 
 ## Uninstall
 

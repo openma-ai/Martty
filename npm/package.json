@@ -1,6 +1,6 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.0.4-beta",
+  "version": "0.1.0",
   "description": "Terminal-native agent UI for DeepSeek Harness; standalone CLI or dsh profile bundle",
   "license": "MIT",
   "repository": {
@@ -13,11 +13,11 @@
   },
   "main": "lib/index.js",
   "scripts": {
-    "test": "node --test ../scripts/package-native.test.mjs"
+    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs"
   },
   "publishConfig": {
     "access": "public",
-    "tag": "beta"
+    "tag": "latest"
   },
   "exports": {
     ".": "./lib/index.js",

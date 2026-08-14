@@ -2,7 +2,7 @@
 
 [中文](README.md) | [English](README.en.md)
 
-[![npm beta](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?tag=beta&label=npm%20beta)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
+[![npm](https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui)](https://www.npmjs.com/package/@openma/deepseek-harness-tui)
 [![Package and publish npm](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg)](https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -11,8 +11,8 @@ tool calls, subagents, token usage, and durable sessions in one Rust/ratatui
 interface. Run it as an official `dsh` profile plugin or connect it directly to
 the SDK JSON-RPC runtime.
 
-> **Beta** · The `0.0.4-beta` CI package targets macOS on Apple Silicon and
-> Intel, Linux x64, and Windows x64. The current integration baseline is
+> **v0.1.0** · The official package supports macOS on Apple Silicon and Intel,
+> Linux x64, and Windows x64. The current integration baseline is
 > `dsh 0.1.0-rc.6`.
 
 ![A DeepSeek Harness session in dsh-tui](assets/screenshots/banner.jpg)
@@ -24,7 +24,7 @@ the SDK JSON-RPC runtime.
 Requires a configured `dsh` installation, Node.js 18+, and pnpm 10+.
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@beta
+dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
@@ -40,7 +40,7 @@ dsh --profile tui --dump-config
 The demo needs neither a runtime nor an API key:
 
 ```sh
-npm install --global @openma/deepseek-harness-tui@beta
+npm install --global @openma/deepseek-harness-tui
 dsh-tui --demo
 ```
 
@@ -150,13 +150,16 @@ npm/vendor/linux-x64/dsh-tui
 npm/vendor/win32-x64/dsh-tui.exe
 ```
 
-Running the workflow manually with `publish=true` publishes the version in
-`npm/package.json` under the `beta` tag through npm Trusted Publishing (OIDC).
+Pushing a tag that matches both `npm/package.json` and `Cargo.toml` (for example,
+`v0.1.0`) publishes to `latest` through npm Trusted Publishing (OIDC), then
+creates a GitHub Release with the tarball. A version mismatch fails before
+publishing.
 
 ## Troubleshooting
 
 - **`no native binary for ...`**: the installed package does not contain your
-  platform. Confirm that you installed `@beta` and check the support matrix.
+  platform. Confirm that you installed the latest version and check the support
+  matrix.
 - **`cannot find ... dsh-jsonrpc-agent`**: the standalone runtime is missing.
   Install the SDK, set `DSH_RUNTIME_BIN`, or use dsh plugin mode.
 - **pnpm workspace root error**: upgrade to pnpm 10+ and rerun the install
