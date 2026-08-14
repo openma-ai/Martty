@@ -183,7 +183,8 @@ fn parse_assistant_chunk(session: String, data: &Value) -> Vec<UiEvent> {
         }],
         Some("usage") => {
             let usage = chunk.get("usage").unwrap_or(&Value::Null);
-            let cached = u64_field(usage, "cachedInputTokens")
+            let cached = u64_field(usage, "cacheReadTokens")
+                .or_else(|| u64_field(usage, "cachedInputTokens"))
                 .or_else(|| u64_field(usage, "cacheReadInputTokens"))
                 .unwrap_or(0);
             vec![UiEvent::Usage {
@@ -427,6 +428,21 @@ mod tests {
         assert_eq!(
             ev,
             vec![UiEvent::Usage { session: "s".into(), input: 1, output: 0, cached: 9, reasoning: 0 }]
+        );
+    }
+
+    #[test]
+    fn usage_with_harness_cache_read_tokens() {
+        let ev = parse_notification(
+            "session.event",
+            &json!({"sessionId": "s", "event": {"type": "assistant/chunk",
+                "data": {"chunk": {"type": "usage", "usage": {
+                    "inputTokens": 1, "outputTokens": 2,
+                    "cacheReadTokens": 9, "reasoningTokens": 3}}}}}),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::Usage { session: "s".into(), input: 1, output: 2, cached: 9, reasoning: 3 }]
         );
     }
 
