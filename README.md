@@ -83,13 +83,16 @@ graphics protocol** 的终端上直贴（ghostty · kitty · WezTerm，凭 `$TER
 ## 安装与运行
 
 npm 包本身就是官方 `dsh` CLI 的 Cordis bundle —— `dsh plugin` 把剩余参数
-转发给 profile 目录里的 pnpm。profile 是单包 pnpm workspace（根即唯一
-成员），所以动根的命令要带 `-w`：
+转发给 PATH 上的 pnpm（在 profile 目录里执行）：
 
 ```sh
-dsh plugin --profile tui add -w @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
+
+dsh 的 profile 布局按 **pnpm ≥ 10** 设计。pnpm 9 会对这种“根即唯一成员”
+的单包 workspace 触发 root 护栏（`ERR_PNPM_ADDING_TO_ROOT`），需给
+`add` 补上 `-w`。
 
 `dsh --profile tui --dump-config` 应能看到 bundle 以稳定插件 id
 `tui-runner` 挂载。想从源码构建：`bash scripts/build-npm.sh` 产出

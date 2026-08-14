@@ -21,7 +21,7 @@ use ratatui::layout::Rect;
 pub const LIANG_IDLE_PNG: &[u8] = include_bytes!("../assets/pet/liang-idle.png");
 pub const LIANG_WORKING_PNG: &[u8] = include_bytes!("../assets/pet/liang-working.png");
 
-/// Sprite pixel size — `ui::pet_rect` keeps the cell box aspect-true.
+/// Sprite frame pixel size — `ui::pet_rect` keeps the cell box aspect-true.
 pub const SPRITE_W: u32 = 192;
 pub const SPRITE_H: u32 = 208;
 

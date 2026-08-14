@@ -9,6 +9,15 @@ This package bundles a platform-native binary and installs two commands:
 
 ## Install
 
+As a dsh plugin (needs **pnpm ≥ 10** on PATH; on pnpm 9 add `-w` to the `add`):
+
+```sh
+dsh plugin --profile tui add @openma/deepseek-harness-tui
+dsh --profile tui
+```
+
+As a standalone CLI:
+
 ```sh
 npm i -g @openma/deepseek-harness-tui@beta
 ```
