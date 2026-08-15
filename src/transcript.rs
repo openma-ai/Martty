@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::events::UiEvent;
 use crate::theme::Theme;
@@ -887,11 +887,11 @@ impl Transcript {
                         ));
                     }
                     if !title.is_empty() {
+                        let prefix_w: usize = spans.iter().map(|s| s.content.width()).sum();
+                        let chevron_w = if has_more { 2 } else { 0 };
+                        let budget = width.saturating_sub(prefix_w + 2 + chevron_w);
                         spans.push(Span::styled(
-                            format!(
-                                "  {}",
-                                clamp_str(title, width.saturating_sub(name.len() + 6))
-                            ),
+                            format!("  {}", clamp_str(title, budget)),
                             Style::default().fg(theme.fg_tertiary),
                         ));
                     }
@@ -904,15 +904,17 @@ impl Transcript {
                     emit(&mut out, &mut owners, Line::from(spans), Some(ci));
 
                     if let Some(err) = error {
-                        emit(
-                            &mut out,
-                            &mut owners,
-                            Line::from(vec![
-                                Span::styled("│ ".to_string(), Style::default().fg(theme.err)),
-                                Span::styled(err.clone(), Style::default().fg(theme.err)),
-                            ]),
-                            Some(ci),
-                        );
+                        for l in wrap(err, width.saturating_sub(2)) {
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                Line::from(vec![
+                                    Span::styled("│ ".to_string(), Style::default().fg(theme.err)),
+                                    Span::styled(l, Style::default().fg(theme.err)),
+                                ]),
+                                Some(ci),
+                            );
+                        }
                     }
 
                     if !body.is_empty() {
@@ -1210,25 +1212,53 @@ pub fn tool_title(name: &str, arguments: &str) -> String {
 }
 
 fn one_line(s: &str) -> String {
-    let mut t = s.replace('\n', " ⏎ ");
-    if t.chars().count() > 120 {
-        t = t.chars().take(119).collect::<String>() + "…";
-    }
-    t
+    clamp_str(&s.replace('\n', " ⏎ "), 120)
 }
 
 fn clamp_str(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    if s.chars().count() <= max {
-        return s.to_string();
+    let s = expand_tabs(s);
+    if s.width() <= max {
+        return s;
     }
-    s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+    let mut out = String::new();
+    let mut w = 0usize;
+    let budget = max.saturating_sub(1);
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// Expand tabs to spaces at 8-column stops so wrap/layout width matches
+/// what a terminal actually paints (a raw `\t` is otherwise width 0/1).
+fn expand_tabs(s: &str) -> String {
+    let mut out = String::new();
+    let mut col = 0usize;
+    for ch in s.chars() {
+        if ch == '\t' {
+            let pad = 8 - (col % 8);
+            out.push_str(&" ".repeat(pad));
+            col += pad;
+        } else {
+            out.push(ch);
+            col += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+    }
+    out
 }
 
 /// Greedy display-width wrap with word-boundary preference; never panics on
-/// CJK/emoji.
+/// CJK/emoji. Tabs expand to spaces before wrapping so a tab-indented source
+/// line cannot paint past `width` (issue #5).
 pub fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(4);
     let mut out = Vec::new();
@@ -1237,6 +1267,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
             out.push(String::new());
             continue;
         }
+        let raw = expand_tabs(raw);
         let mut line = String::new();
         let mut w = 0usize;
         for ch in raw.chars() {
@@ -1244,19 +1275,21 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
             if w + cw > width && !line.is_empty() {
                 // Prefer breaking at the last space when it is not too early.
                 match line.rfind(' ') {
-                    Some(bidx)
-                        if unicode_width::UnicodeWidthStr::width(&line[..bidx]) >= width / 2 =>
-                    {
+                    Some(bidx) if line[..bidx].width() >= width / 2 => {
                         let tail = line[bidx + 1..].to_string();
                         line.truncate(bidx);
                         out.push(std::mem::replace(&mut line, tail));
-                        w = unicode_width::UnicodeWidthStr::width(line.as_str());
+                        w = line.width();
                     }
                     _ => {
                         out.push(std::mem::take(&mut line));
                         w = 0;
                     }
                 }
+            }
+            if w + cw > width && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+                w = 0;
             }
             line.push(ch);
             w += cw;
@@ -1366,10 +1399,78 @@ mod tests {
         assert_eq!(tr.usage.cached, 6);
     }
 
+    fn line_width(line: &Line) -> usize {
+        line.spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum()
+    }
+
     #[test]
     fn wrap_handles_cjk() {
         let lines = wrap("深度求索深度求索", 8);
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn wrap_expands_tabs_and_never_exceeds_width() {
+        use unicode_width::UnicodeWidthStr;
+        let cases = [
+            format!("\t{}", "x".repeat(120)),
+            format!("{}\t{}", "x".repeat(10), "y".repeat(110)),
+            "\t".repeat(20) + &"code();".repeat(15),
+            "a".repeat(200),
+            "深度求索".repeat(40),
+        ];
+        for text in cases {
+            for width in [40usize, 80, 120] {
+                for line in wrap(&text, width) {
+                    let w = UnicodeWidthStr::width(line.as_str());
+                    assert!(
+                        w <= width,
+                        "wrapped line {line:?} is {w} cols, budget {width}"
+                    );
+                    assert!(
+                        !line.contains('\t'),
+                        "tabs must expand to spaces so display width matches: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn write_tool_tab_indented_body_fits_terminal_width() {
+        // GitHub issue #5: writing a file whose lines contain tabs rendered
+        // at 128 cols in a 120-col terminal (tab counted as 0, displayed as 8,
+        // plus the "│ " gutter).
+        let mut tr = t("s");
+        let body = format!("\t{}", "x".repeat(120));
+        tr.apply(UiEvent::ToolCall {
+            session: "s".into(),
+            call_id: "c1".into(),
+            name: "str_replace_editor".into(),
+            arguments: r#"{"command":"create","path":"src/lib.rs"}"#.into(),
+        });
+        tr.apply(UiEvent::ToolResult {
+            session: "s".into(),
+            call_id: "c1".into(),
+            is_error: false,
+            text: body,
+            error: Some("x".repeat(140)),
+        });
+        let theme = Theme::dark();
+        let width = 120u16;
+        let layout = tr.layout(&theme, width, ' ', false);
+        for (i, line) in layout.lines.iter().enumerate() {
+            let w = line_width(line);
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                w <= width as usize,
+                "line {i} width {w} > {width}: {text:?}"
+            );
+            assert!(!text.contains('\t'), "tab leaked into layout line {i}");
+        }
     }
 
     #[test]
