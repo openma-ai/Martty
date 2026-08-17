@@ -13,8 +13,9 @@
 //!   `┌─ lang ──┐` / `└──┘` edges, content rows get `│` side borders and a
 //!   padded panel background, and all code — blocks and inline spans alike —
 //!   renders in upright light gray;
-//! - GFM tables keep tui-markdown's box-drawing layout and are truncated with
-//!   an ellipsis when wider than the viewport (wrapping would break the box).
+//! - GFM tables keep tui-markdown's box-drawing layout, with a `├─┼─┤`
+//!   junction between every pair of body rows; tables wider than the viewport
+//!   are truncated with an ellipsis (wrapping would break the box).
 //!
 //! Colors stay inside the DeepSeek palette: grayscale body text, brand-blue
 //! accents for links and headings, red still reserved for errors.
@@ -38,6 +39,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
 
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
+    let mut prev_table_row = false;
     for line in &parsed.lines {
         // Flatten the line-level base style (blockquote, code block, …) into
         // each span so wrapping can move spans freely without losing it.
@@ -109,9 +111,23 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         }
 
         if is_table_line(&segs) {
-            out.push(truncate_line(two_tone(segs, theme), width, theme));
+            let row = truncate_line(two_tone(segs, theme), width, theme);
+            // Data rows get their own frame line: tui-markdown only draws
+            // the header separator, so insert a `├─┼─┤` junction whenever a
+            // `│` row follows another `│` row (i.e. between body rows).
+            let is_data_row = row
+                .spans
+                .first()
+                .and_then(|s| s.content.chars().next())
+                == Some('│');
+            if is_data_row && prev_table_row {
+                out.push(table_row_separator(&row, theme));
+            }
+            prev_table_row = is_data_row;
+            out.push(row);
             continue;
         }
+        prev_table_row = false;
 
         let segs = collapse_autolinks(segs);
 
@@ -254,6 +270,40 @@ fn is_table_line(segs: &[Seg]) -> bool {
         .and_then(|s| s.text.chars().next())
         .map(|c| matches!(c, '┌' | '├' | '└' | '│'))
         .unwrap_or(false)
+}
+
+/// The `├─┼─┤` junction between table body rows, derived from the row's own
+/// column layout in *display columns* (CJK/emoji cells are two columns wide)
+/// so separators always line up with the cells.
+fn table_row_separator(row: &Line, theme: &Theme) -> Line<'static> {
+    // Display columns where the row's `│` borders sit.
+    let mut bars: Vec<usize> = Vec::new();
+    let mut w = 0usize;
+    for s in &row.spans {
+        for c in s.content.chars() {
+            if c == '│' {
+                bars.push(w);
+            }
+            w += UnicodeWidthChar::width(c).unwrap_or(0).max(1);
+        }
+    }
+    let mut sep = String::with_capacity(w);
+    let mut bars = bars.iter().peekable();
+    for col in 0..w {
+        if bars.peek() == Some(&&col) {
+            bars.next();
+            sep.push(if col == 0 {
+                '├'
+            } else if col == w - 1 {
+                '┤'
+            } else {
+                '┼'
+            });
+        } else {
+            sep.push('─');
+        }
+    }
+    Line::from(Span::styled(sep, Style::default().fg(theme.border)))
 }
 
 /// Split off the leading blockquote (`>` runs) or list (`- ` / `- [x] ` /
@@ -912,6 +962,58 @@ mod tests {
     }
 
     #[test]
+    fn table_body_rows_are_separated_by_frame_lines() {
+        let theme = Theme::dark();
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |";
+        let lines = render(md, &theme, 40);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| plain(std::slice::from_ref(l)))
+            .collect();
+        // Header separator + one junction between each pair of body rows.
+        let junctions: Vec<&String> = texts.iter().filter(|t| t.starts_with('├')).collect();
+        assert_eq!(junctions.len(), 3, "junction lines: {texts:?}");
+        // Every junction spans the full table width and meets the columns.
+        for j in junctions {
+            assert!(j.ends_with('┤'), "junction closed: {j}");
+            assert!(j.contains('┼'), "junction crosses columns: {j}");
+            assert_eq!(
+                UnicodeWidthStr::width(j.as_str()),
+                UnicodeWidthStr::width(texts[0].as_str()),
+                "width: {j}"
+            );
+        }
+        // Row order: 1, separator, 3, separator, 5.
+        let order: Vec<&str> = texts
+            .iter()
+            .map(|t| t.as_str())
+            .filter(|t| t.contains('│') || t.starts_with('├'))
+            .collect();
+        let joined = order.join("\n");
+        let i1 = joined.find("│ 1").unwrap();
+        let i3 = joined.find("│ 3").unwrap();
+        assert!(joined[i1..i3].contains('├'), "separator between rows: {joined}");
+    }
+
+    #[test]
+    fn table_junctions_match_cjk_row_widths() {
+        // CJK and emoji cells are two display columns wide; the junction
+        // lines must still match the box exactly.
+        let md = "| 功能 | 状态 |\n|---|---|\n| 用户认证 | ✅ 完成 |\n| 报表导出 | ⏳ 待开始 |";
+        let lines = render_dark(md, 60);
+        let widths: Vec<usize> = lines.iter().map(|l| line_width(l)).collect();
+        let first = widths[0];
+        for (l, w) in lines.iter().zip(&widths) {
+            assert_eq!(
+                *w, first,
+                "all frame lines share the box width: {}",
+                plain(std::slice::from_ref(l))
+            );
+        }
+        assert!(widths.len() >= 6, "top/head/sep/rows/bottom: {widths:?}");
+    }
+
+    #[test]
     fn table_alignment_pads_right_and_center_columns() {
         let md = "| a | bb | ccc |\n|:--|--:|:--:|\n| x | y | z |";
         let lines = render_dark(md, 40);
@@ -1010,6 +1112,8 @@ mod tests {
         }));
     }
 }
+
+
 
 
 
