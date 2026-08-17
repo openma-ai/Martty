@@ -28,4 +28,5 @@ pub use normalize::rescue_key;
 pub struct ModifierState {
     pub command: bool,
     pub option: bool,
+    pub a_key: bool,
 }

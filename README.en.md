@@ -36,10 +36,12 @@ and iterate on its own terminal capabilities.
 
 ### Recommended: dsh TUI surface plugin
 
-Needs Node.js 18+. The same idempotent command creates a missing profile or updates an existing one:
+Needs Node.js 18+. The same command installs or upgrades: it creates a missing
+profile, while an existing profile explicitly re-resolves TUI and its dependency
+graph from npm's `latest` tag:
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 dsh --profile tui
 ```
 

@@ -128,6 +128,22 @@ pub(crate) fn test_controller() -> (Controller, Receiver<Cmd>) {
     )
 }
 
+#[cfg(test)]
+pub(crate) fn test_interruptible_controller() -> (Controller, Receiver<Cmd>) {
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    (
+        Controller {
+            cmd_tx,
+            runtime: Arc::new(Mutex::new(None)),
+            interrupted: Arc::new(AtomicBool::new(false)),
+            demo: false,
+            attached: true,
+            acp: true,
+        },
+        cmd_rx,
+    )
+}
+
 fn controller_loop(
     mut cfg: RuntimeConfig,
     demo: bool,

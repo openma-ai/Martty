@@ -352,6 +352,15 @@ fn main() -> Result<()> {
             .name("input".into())
             .spawn(move || loop {
                 match crossterm::event::read() {
+                    Ok(crossterm::event::Event::Key(key)) => {
+                        // Recover terminal-lost physical modifiers at read
+                        // time, before a quick key release can race the UI
+                        // event queue (notably Option+A becoming U+00E5).
+                        let ev = crossterm::event::Event::Key(crate::input::rescue_key(key));
+                        if tx.send(AppEvent::Term(ev)).is_err() {
+                            break;
+                        }
+                    }
                     Ok(ev) => {
                         if tx.send(AppEvent::Term(ev)).is_err() {
                             break;

@@ -3,10 +3,8 @@
 //! macOS terminals rarely deliver ⌘ (and often ⌥) to the application:
 //! they swallow the chord, remap it to readline control codes, or send
 //! the bare key. The keymap handles the control-code translations; this
-//! module covers the third case — a *bare* navigation/deletion key that
-//! arrives while ⌘/⌥ is physically held (per the CoreGraphics probe)
-//! gets its modifier restored, so `⌘←` works even in terminals that
-//! encode it as a plain `Left`.
+//! module covers the third case: navigation/deletion chords, plus the one
+//! Option+A app chord that macOS may precompose as Unicode.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -23,17 +21,35 @@ fn probe() -> ModifierState {
     }
 }
 
-/// Upgrade `key` with physically-held modifiers when the terminal sent
-/// none. Only navigation/deletion keys are rescued — never text, Enter,
-/// or Esc, so typing and terminal-level paste stay untouched.
+/// Upgrade `key` with physically-held state when the terminal sent no
+/// modifiers. Arbitrary text, Enter, Esc, and paste stay untouched.
 pub fn rescue_key(key: KeyEvent) -> KeyEvent {
-    rescue_with(key, probe())
+    let held = probe();
+    let rescued = rescue_with(key, held);
+    #[cfg(target_os = "macos")]
+    if rescued == key && key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('\u{00e5}')) {
+        // macOS US input materializes Option+A as `å`. Some terminals only
+        // deliver that character after CoreGraphics already reports key-up,
+        // so the physical-state probe cannot win the race. Since Option+A is
+        // an application chord, consume its canonical terminal encoding.
+        return KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT);
+    }
+    rescued
 }
 
 /// Pure core of [`rescue_key`] (probe injected for tests).
 fn rescue_with(key: KeyEvent, held: ModifierState) -> KeyEvent {
     if !key.modifiers.is_empty() {
         return key; // the terminal spoke; believe it
+    }
+    // macOS US input turns Option+A into U+00E5 before many terminals report
+    // it. Recover from physical key state rather than matching that Unicode
+    // output, so keyboard layouts and composed text are not globally stolen.
+    if held.option && held.a_key && matches!(key.code, KeyCode::Char(_)) {
+        let mut out = key;
+        out.code = KeyCode::Char('a');
+        out.modifiers = KeyModifiers::ALT;
+        return out;
     }
     if !matches!(
         key.code,
@@ -70,14 +86,22 @@ mod tests {
     const CMD: ModifierState = ModifierState {
         command: true,
         option: false,
+        a_key: false,
     };
     const OPT: ModifierState = ModifierState {
         command: false,
         option: true,
+        a_key: false,
     };
     const BOTH: ModifierState = ModifierState {
         command: true,
         option: true,
+        a_key: false,
+    };
+    const OPT_A: ModifierState = ModifierState {
+        command: false,
+        option: true,
+        a_key: true,
     };
 
     #[test]
@@ -92,6 +116,19 @@ mod tests {
         for code in [KeyCode::Left, KeyCode::Right, KeyCode::Backspace] {
             assert_eq!(rescue_with(bare(code), OPT).modifiers, KeyModifiers::ALT);
         }
+    }
+
+    #[test]
+    fn option_a_unicode_output_is_restored_to_the_agent_shortcut() {
+        let out = rescue_with(bare(KeyCode::Char('å')), OPT_A);
+        assert_eq!(out.code, KeyCode::Char('a'));
+        assert_eq!(out.modifiers, KeyModifiers::ALT);
+    }
+
+    #[test]
+    fn unicode_text_is_not_stolen_without_the_physical_a_key() {
+        let key = bare(KeyCode::Char('å'));
+        assert_eq!(rescue_with(key, OPT), key);
     }
 
     #[test]

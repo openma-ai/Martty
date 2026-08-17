@@ -15,9 +15,12 @@ x64. Requires Node.js 18+.
 
 ```sh
 npm install --global @openma/deepseek-harness-tui
-dsh plugin --profile tui add @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 dsh --profile tui
 ```
+
+The same profile command installs or upgrades. It creates a missing profile and
+explicitly re-resolves an existing profile from npm's `latest` tag.
 
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run

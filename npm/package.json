@@ -1,6 +1,6 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.2.2-beta.2",
+  "version": "0.2.3",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@openma/deepseek-harness-acp": "0.4.10-beta.1"
+    "@openma/deepseek-harness-acp": "0.4.10"
   },
   "engines": {
     "node": ">=18"
