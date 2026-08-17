@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { registerHooks } from 'node:module'
+import { createRequire, registerHooks } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
@@ -27,8 +27,11 @@ registerHooks({
 
 const harness = await import(harnessUrl)
 const packageLib = path.join(import.meta.dirname, '../npm/lib')
+const requireFromTui = createRequire(path.join(packageLib, '../package.json'))
+const ownAcpPlugin = requireFromTui.resolve('@openma/deepseek-harness-acp/plugin')
+const ownAcpBridge = requireFromTui.resolve('@openma/deepseek-harness-acp/bridge')
 
-test('source-linked Host entries resolve the ACP package through the profile loader', async () => {
+test('Host entries resolve ACP from the TUI dependency graph through the profile loader', async () => {
   const imports = []
   const embedded = {
     name: 'embedded-acp',
@@ -38,8 +41,8 @@ test('source-linked Host entries resolve the ACP package through the profile loa
   const loader = {
     async import(specifier) {
       imports.push(specifier)
-      if (specifier === '@openma/deepseek-harness-acp/plugin') return embedded
-      if (specifier === '@openma/deepseek-harness-acp/bridge') {
+      if (specifier === ownAcpPlugin) return embedded
+      if (specifier === ownAcpBridge) {
         return { nodeAcpStream: harness.nodeAcpStream }
       }
       throw new Error(`unexpected loader import ${specifier}`)
@@ -84,7 +87,7 @@ test('source-linked Host entries resolve the ACP package through the profile loa
 
   assert.deepEqual(runner.inject, ['loader', 'acpServer', 'cmdlineArgs', 'appExit'])
   assert.deepEqual(imports, [
-    '@openma/deepseek-harness-acp/plugin',
-    '@openma/deepseek-harness-acp/bridge',
+    ownAcpPlugin,
+    ownAcpBridge,
   ])
 })

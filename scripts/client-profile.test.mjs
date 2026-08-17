@@ -10,7 +10,11 @@ const packageRoot = path.resolve(import.meta.dirname, '../npm')
 function runDsh(home, args) {
   return spawnSync('dsh', args, {
     cwd: packageRoot,
-    env: { ...process.env, DSH_HOME: home },
+    env: {
+      ...process.env,
+      DSH_HOME: home,
+      npm_config_ignore_workspace_root_check: 'true',
+    },
     encoding: 'utf8',
   })
 }

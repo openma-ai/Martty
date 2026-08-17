@@ -765,12 +765,17 @@ async fn run(
             let agent = AcpAgent::from_args(args).map_err(acp_err)?;
             connect(agent, cfg, bus, cmd_rx).await.map_err(acp_err)
         }
+        #[cfg(unix)]
         AcpEndpoint::AttachStdio { incoming, outgoing } => {
             let incoming = unix_stream_from_file(incoming)?.compat();
             let outgoing = unix_stream_from_file(outgoing)?.compat_write();
             connect(ByteStreams::new(outgoing, incoming), cfg, bus, cmd_rx)
                 .await
                 .map_err(acp_err)
+        }
+        #[cfg(not(unix))]
+        AcpEndpoint::AttachStdio { .. } => {
+            Err(anyhow::anyhow!("stdio fd attach is only supported on Unix"))
         }
         AcpEndpoint::AttachTcp(stream) => {
             stream
