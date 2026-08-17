@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@openma/deepseek-harness-acp": "0.4.10-beta.0"
+    "@openma/deepseek-harness-acp": "0.4.10-beta.1"
   },
   "engines": {
     "node": ">=18"
