@@ -1,24 +1,237 @@
-//! Lightweight markdown rendering for assistant text.
+//! Markdown rendering for assistant text, built on tui-markdown.
 //!
-//! Renders a terminal-appropriate subset of markdown to styled lines:
-//! headings, fenced code blocks, blockquotes, unordered/ordered lists,
-//! horizontal rules, and inline emphasis / inline code / strikethrough /
-//! links / images.
+//! tui-markdown (pulldown-cmark) owns CommonMark + GFM parsing and block
+//! structure; this module maps its output onto the DeepSeek palette through a
+//! custom `StyleSheet`, then post-processes the rendered lines:
+//!
+//! - body runs are split into CJK vs Latin/digit runs so Chinese and English
+//!   take two different foreground colors (the transcript's two-tone body);
+//! - lines wrap to the chat width, keeping hanging indents under list markers
+//!   and blockquote prefixes;
+//! - `---` rules are redrawn as full-width `─` lines;
+//! - fenced code blocks become framed boxes: fence delimiters turn into
+//!   `┌─ lang ──┐` / `└──┘` edges, content rows get `│` side borders and a
+//!   padded panel background, and all code — blocks and inline spans alike —
+//!   renders in upright light gray;
+//! - GFM tables keep tui-markdown's box-drawing layout and are truncated with
+//!   an ellipsis when wider than the viewport (wrapping would break the box).
 //!
 //! Colors stay inside the DeepSeek palette: grayscale body text, brand-blue
-//! accents for links / bullets / inline code / h1-h2, red still reserved for
-//! errors. That keeps the transcript in the same visual language as the rest
-//! of the TUI rather than turning it into a rainbow.
+//! accents for links and headings, red still reserved for errors.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use tui_markdown::{AlertKind, ImageFallback, Options, StyleSheet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::theme::{
     Theme, DEEPSEEK_200, DEEPSEEK_300, DEEPSEEK_400, DEEPSEEK_450, DEEPSEEK_500, DEEPSEEK_600,
     DEEPSEEK_800, DEEPSEEK_900,
 };
-use crate::transcript::wrap;
+
+/// Render markdown `text` to wrapped, styled lines for `width` columns.
+pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(8);
+    let options =
+        Options::new(DeepSeekStyleSheet(*theme)).image_fallback(ImageFallback::AltTextAndUrl);
+    let parsed = tui_markdown::from_str_with_options(text, &options);
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut in_code = false;
+    for line in &parsed.lines {
+        // Flatten the line-level base style (blockquote, code block, …) into
+        // each span so wrapping can move spans freely without losing it.
+        let segs: Vec<Seg> = line
+            .spans
+            .iter()
+            .map(|s| Seg {
+                text: s.content.to_string(),
+                style: line.style.patch(s.style),
+            })
+            .collect();
+
+        // Code blocks become framed boxes: fence delimiter lines turn into
+        // the top/bottom edges (the top one carries the language label),
+        // content rows get `│` side borders and a padded panel background.
+        // Content hard-wraps without collapsing whitespace so indentation and
+        // ASCII art survive; empty lines inside a block still carry the code
+        // line style, so they join the box instead of punching a hole in it.
+        // Checked before the rule/table heuristics — a fenced `---` or a line
+        // starting with a box-drawing char is code, not a rule or table.
+        let is_code = if segs.is_empty() {
+            line.style.bg == Some(theme.panel)
+        } else {
+            segs.iter().all(|s| s.style.bg == Some(theme.panel))
+        };
+        if is_code {
+            let text: String = segs.iter().map(|s| s.text.as_str()).collect();
+            if !segs.is_empty() && text.starts_with("```") {
+                if in_code {
+                    out.push(code_frame_bottom(width, theme));
+                    in_code = false;
+                } else {
+                    out.push(code_frame_top(text.trim_start_matches('`').trim(), width, theme));
+                    in_code = true;
+                }
+                continue;
+            }
+            if in_code {
+                let inner = width.saturating_sub(4).max(1);
+                let rows = if segs.is_empty() {
+                    vec![Line::default()]
+                } else {
+                    wrap_pre(segs, inner)
+                };
+                for row in rows {
+                    out.push(code_frame_row(row, inner, theme));
+                }
+            } else {
+                // A code-styled line outside any fence (e.g. a paragraph that
+                // is one inline-code span): preformatted, but no frame.
+                if segs.is_empty() {
+                    out.push(Line::default());
+                } else {
+                    out.extend(wrap_pre(segs, width));
+                }
+            }
+            continue;
+        }
+        if segs.is_empty() {
+            out.push(Line::default());
+            continue;
+        }
+        if is_plain_rule(&segs) {
+            out.push(Line::from(Span::styled(
+                "─".repeat(width.min(120)),
+                Style::default().fg(theme.border),
+            )));
+            continue;
+        }
+
+        if is_table_line(&segs) {
+            out.push(truncate_line(two_tone(segs, theme), width, theme));
+            continue;
+        }
+
+        let segs = collapse_autolinks(segs);
+
+        // Hanging indent: quote (`>`) and list (`- ` / `1. `) prefixes stay on
+        // the first wrapped line; continuations align under the body text.
+        // Prefixes keep their block style — the two-tone split applies to the
+        // body only, so markers don't turn into bright Latin runs.
+        let (prefix, body) = split_prefix(segs);
+        let body = two_tone(body, theme);
+        let indent: usize = prefix.iter().map(|s| UnicodeWidthStr::width(s.text.as_str())).sum();
+        let mut wrapped = wrap_segments(body, width.saturating_sub(indent));
+        if wrapped.is_empty() && !prefix.is_empty() {
+            wrapped.push(Line::default());
+        }
+        for (k, mut l) in wrapped.into_iter().enumerate() {
+            let mut spans: Vec<Span> = Vec::new();
+            if k == 0 {
+                spans.extend(prefix.iter().map(|s| Span::styled(s.text.clone(), s.style)));
+            } else if indent > 0 {
+                spans.push(Span::raw(" ".repeat(indent)));
+            }
+            spans.append(&mut l.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
+}
+
+/// tui-markdown style sheet mapping markdown constructs onto the DeepSeek
+/// palette. Only non-default choices are overridden.
+#[derive(Clone)]
+struct DeepSeekStyleSheet(Theme);
+
+impl StyleSheet for DeepSeekStyleSheet {
+    fn heading(&self, level: u8) -> Style {
+        heading_style(&self.0, level as usize)
+    }
+
+    /// Headings read through color alone; the `#` markers are omitted.
+    fn heading_marker(&self, _level: u8) -> &str {
+        ""
+    }
+
+    /// Inline code and fenced blocks share one look: light gray on the
+    /// lighter panel background.
+    fn code(&self) -> Style {
+        Style::default().fg(self.0.fg).bg(self.0.panel)
+    }
+
+    fn link(&self) -> Style {
+        Style::default()
+            .fg(self.0.brand_soft)
+            .add_modifier(Modifier::UNDERLINED)
+    }
+
+    fn blockquote(&self) -> Style {
+        Style::default()
+            .fg(self.0.fg_tertiary)
+            .add_modifier(Modifier::ITALIC)
+    }
+
+    fn metadata_block(&self) -> Style {
+        Style::default().fg(self.0.caption)
+    }
+
+    fn html(&self) -> Style {
+        Style::default().fg(self.0.caption)
+    }
+
+    fn math_inline(&self) -> Style {
+        Style::default()
+            .fg(self.0.brand_soft)
+            .add_modifier(Modifier::ITALIC)
+    }
+
+    fn math_display(&self) -> Style {
+        Style::default().fg(self.0.brand_soft)
+    }
+
+    fn footnote_ref(&self) -> Style {
+        Style::default()
+            .fg(self.0.caption)
+            .add_modifier(Modifier::ITALIC)
+    }
+
+    fn footnote_def(&self) -> Style {
+        Style::default().fg(self.0.caption)
+    }
+
+    fn definition_term(&self) -> Style {
+        Style::default().fg(self.0.fg).add_modifier(Modifier::BOLD)
+    }
+
+    fn alert(&self, kind: AlertKind) -> Style {
+        let color = match kind {
+            AlertKind::Note => self.0.brand,
+            AlertKind::Tip => self.0.ok_soft(),
+            AlertKind::Important => self.0.brand_soft,
+            AlertKind::Warning => self.0.warn_soft(),
+            AlertKind::Caution => self.0.err,
+        };
+        Style::default().fg(color)
+    }
+
+    fn table_header(&self) -> Style {
+        Style::default().fg(self.0.fg).add_modifier(Modifier::BOLD)
+    }
+
+    fn table_cell(&self) -> Style {
+        Style::default().fg(self.0.fg_secondary)
+    }
+
+    fn table_border(&self) -> Style {
+        Style::default().fg(self.0.border)
+    }
+
+    fn image_alt(&self) -> Style {
+        Style::default().fg(self.0.brand).add_modifier(Modifier::BOLD)
+    }
+}
 
 /// One styled run of text (pre-wrapping). Wrapping is done later so styles
 /// survive soft line breaks.
@@ -28,278 +241,265 @@ struct Seg {
     style: Style,
 }
 
-/// Render markdown `text` to wrapped, styled lines for `width` columns.
-pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(8);
-    let mut out: Vec<Line> = Vec::new();
-    let mut in_fence = false;
+/// A lone `---` line with no styling is a horizontal rule (metadata-block
+/// delimiters carry the metadata style, so they are excluded).
+fn is_plain_rule(segs: &[Seg]) -> bool {
+    segs.len() == 1 && segs[0].text == "---" && segs[0].style == Style::default()
+}
 
-    for raw in text.lines() {
-        let trimmed = raw.trim_start();
-        let fence_marker = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+/// Table lines start with a box-drawing border character.
+fn is_table_line(segs: &[Seg]) -> bool {
+    segs
+        .first()
+        .and_then(|s| s.text.chars().next())
+        .map(|c| matches!(c, '┌' | '├' | '└' | '│'))
+        .unwrap_or(false)
+}
 
-        if fence_marker {
-            in_fence = !in_fence;
-            out.push(Line::from(Span::styled(
-                raw.to_string(),
-                Style::default().fg(theme.caption).bg(theme.code_bg),
-            )));
-            continue;
+/// Split off the leading blockquote (`>` runs) or list (`- ` / `- [x] ` /
+/// `1. `) marker so wrapped continuations can hang under the body text.
+fn split_prefix(segs: Vec<Seg>) -> (Vec<Seg>, Vec<Seg>) {
+    // Blockquotes: tui-markdown prefixes every quote line with one `>` span
+    // per nesting level plus a separating space.
+    let mut n = 0;
+    let mut saw_gt = false;
+    for s in &segs {
+        if s.text == ">" {
+            saw_gt = true;
+            n += 1;
+        } else if saw_gt && !s.text.is_empty() && s.text.chars().all(|c| c == ' ') {
+            n += 1;
+        } else {
+            break;
         }
-        if in_fence {
-            for l in wrap(raw, width) {
-                out.push(Line::from(Span::styled(
-                    l,
-                    Style::default().fg(theme.fg_secondary).bg(theme.code_bg),
-                )));
-            }
-            continue;
-        }
-        if raw.trim().is_empty() {
-            out.push(Line::default());
-            continue;
-        }
-        if let Some((level, rest)) = heading(raw) {
-            let style = heading_style(theme, level);
-            out.extend(wrap_segments(
-                inline_parse(&rest, style, theme, false),
-                width,
-            ));
-            continue;
-        }
-        if let Some(rest) = strip_blockquote(raw) {
-            let base = Style::default()
-                .fg(theme.fg_tertiary)
-                .add_modifier(Modifier::ITALIC);
-            let body = wrap_segments(
-                inline_parse(&rest, base, theme, true),
-                width.saturating_sub(2),
-            );
-            for (k, mut line) in body.into_iter().enumerate() {
-                let mut spans = vec![Span::styled(
-                    if k == 0 { "▎ " } else { "  " }.to_string(),
-                    Style::default().fg(theme.brand_soft),
-                )];
-                spans.append(&mut line.spans);
-                out.push(Line::from(spans));
-            }
-            continue;
-        }
-        if let Some((marker, rest)) = list_item(raw) {
-            let base = Style::default().fg(theme.fg_secondary);
-            let segs = inline_parse(&rest, base, theme, true);
-            let indent = marker.width() + 1;
-            let body = wrap_segments(segs, width.saturating_sub(indent));
-            for (k, mut line) in body.into_iter().enumerate() {
-                let mut spans = vec![Span::styled(
-                    if k == 0 {
-                        format!("{marker} ")
-                    } else {
-                        " ".repeat(indent)
-                    },
-                    Style::default().fg(theme.brand),
-                )];
-                spans.append(&mut line.spans);
-                out.push(Line::from(spans));
-            }
-            continue;
-        }
-        if is_hr(trimmed) {
-            out.push(Line::from(Span::styled(
-                "─".repeat(width.min(120)),
-                Style::default().fg(theme.border),
-            )));
-            continue;
-        }
+    }
+    if saw_gt {
+        return (segs[..n].to_vec(), segs[n..].to_vec());
+    }
 
-        // Plain paragraph: inline markdown only.
-        let base = Style::default().fg(theme.fg_secondary);
-        out.extend(wrap_segments(inline_parse(raw, base, theme, true), width));
+    // Lists: the marker lives at the start of the first span, possibly after
+    // nesting indentation. Marker bytes are ASCII, so byte indexing is safe.
+    let Some(first) = segs.first() else {
+        return (Vec::new(), segs);
+    };
+    let t = first.text.as_str();
+    let lead = t.len() - t.trim_start().len();
+    let rest = &t[lead..];
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let marker = if rest.starts_with("- [x] ") || rest.starts_with("- [ ] ") {
+        lead + 6
+    } else if rest.starts_with("- ") {
+        lead + 2
+    } else if digits > 0 && rest[digits..].starts_with(". ") {
+        lead + digits + 2
+    } else {
+        0
+    };
+    if marker == 0 {
+        return (Vec::new(), segs);
+    }
+    let mut prefix = vec![Seg {
+        text: t[..marker].to_string(),
+        style: first.style,
+    }];
+    let mut body = Vec::new();
+    let remainder = &t[marker..];
+    if !remainder.is_empty() {
+        body.push(Seg {
+            text: remainder.to_string(),
+            style: first.style,
+        });
+    }
+    body.extend(segs.into_iter().skip(1));
+    prefix.shrink_to_fit();
+    (prefix, body)
+}
+
+/// Two-tone body coloring: plain body runs (paragraph/list/table-cell text,
+/// including blockquote italic) are split into CJK vs Latin/digit runs, CJK
+/// keeping the muted body gray and Latin/digits taking the brighter `fg`.
+/// Spans that already carry an accent (headings, links, code, captions) are
+/// left untouched.
+fn two_tone(segs: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
+    let mut out = Vec::new();
+    for seg in segs {
+        if is_body_style(seg.style, theme) {
+            for (run, is_cjk) in split_script(&seg.text) {
+                let fg = if is_cjk {
+                    seg.style.fg.unwrap_or(theme.fg_secondary)
+                } else {
+                    theme.fg
+                };
+                out.push(Seg {
+                    text: run,
+                    style: seg.style.fg(fg),
+                });
+            }
+        } else {
+            out.push(seg);
+        }
     }
     out
 }
 
-/// Inline markdown → styled segments. Emphasis is shallow (toggled flags),
-/// which is exactly what chat text needs; code spans are treated verbatim so
-/// identifiers and symbols inside backticks never get re-interpreted.
-///
-/// When `script` is true, plain body runs are split into CJK vs Latin/digit
-/// runs so Chinese and English can take two different foreground colors
-/// (headings, links, and inline code keep their own accent colors).
-fn inline_parse(line: &str, base: Style, theme: &Theme, script: bool) -> Vec<Seg> {
-    let chars: Vec<char> = line.chars().collect();
-    let n = chars.len();
-    let mut segs: Vec<Seg> = Vec::new();
-    let mut buf = String::new();
-    let mut bold = false;
-    let mut italic = false;
-    let mut strike = false;
-    let mut code = false;
-
-    let flush = |buf: &mut String, segs: &mut Vec<Seg>, style: Style| {
-        if buf.is_empty() {
-            return;
-        }
-        let text = std::mem::take(buf);
-        if script && style.bg.is_none() && style.fg == base.fg {
-            for (run, is_cjk) in split_script(&text) {
-                let mut s = style;
-                s = s.fg(if is_cjk {
-                    base.fg.unwrap_or(theme.fg_secondary)
-                } else {
-                    theme.fg
-                });
-                segs.push(Seg {
-                    text: run,
-                    style: s,
-                });
-            }
-        } else {
-            segs.push(Seg { text, style });
-        }
+/// "Plain body" styles: no background, body-gray or tertiary foreground, and
+/// at most italics (blockquotes). Anything with an accent color or stronger
+/// modifier keeps its own styling.
+fn is_body_style(style: Style, theme: &Theme) -> bool {
+    let fg_ok = match style.fg {
+        None => true,
+        Some(fg) => fg == theme.fg_secondary || fg == theme.fg_tertiary,
     };
-
-    let mut i = 0;
-    while i < n {
-        if code {
-            if chars[i] == '`' {
-                flush(
-                    &mut buf,
-                    &mut segs,
-                    seg_style(base, theme, bold, italic, strike, true),
-                );
-                code = false;
-                i += 1;
-            } else {
-                buf.push(chars[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        let style = seg_style(base, theme, bold, italic, strike, false);
-        if chars[i] == '`' {
-            flush(&mut buf, &mut segs, style);
-            code = true;
-            i += 1;
-            continue;
-        }
-        if i + 1 < n
-            && ((chars[i] == '*' && chars[i + 1] == '*')
-                || (chars[i] == '_' && chars[i + 1] == '_'))
-        {
-            flush(&mut buf, &mut segs, style);
-            bold = !bold;
-            i += 2;
-            continue;
-        }
-        if i + 1 < n && chars[i] == '~' && chars[i + 1] == '~' {
-            flush(&mut buf, &mut segs, style);
-            strike = !strike;
-            i += 2;
-            continue;
-        }
-        if chars[i] == '*' || chars[i] == '_' {
-            flush(&mut buf, &mut segs, style);
-            italic = !italic;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '!' && i + 1 < n && chars[i + 1] == '[' {
-            if let Some((alt, url, next)) = parse_target(&chars, i + 1) {
-                flush(&mut buf, &mut segs, style);
-                let label = if alt.trim().is_empty() {
-                    "image".to_string()
-                } else {
-                    alt.trim().to_string()
-                };
-                segs.push(Seg {
-                    text: format!("🖼 {label}"),
-                    style: Style::default()
-                        .fg(theme.brand)
-                        .add_modifier(Modifier::BOLD),
-                });
-                if !url.is_empty() {
-                    segs.push(Seg {
-                        text: format!(" ({})", clamp(&url, 40)),
-                        style: Style::default().fg(theme.caption),
-                    });
-                }
-                i = next;
-                continue;
-            }
-        }
-        if chars[i] == '[' {
-            if let Some((text, url, next)) = parse_target(&chars, i) {
-                flush(&mut buf, &mut segs, style);
-                let label = if text.trim().is_empty() {
-                    url.clone()
-                } else {
-                    text.clone()
-                };
-                segs.push(Seg {
-                    text: label,
-                    style: Style::default()
-                        .fg(theme.brand_soft)
-                        .add_modifier(Modifier::UNDERLINED),
-                });
-                if !url.is_empty() && url != text {
-                    segs.push(Seg {
-                        text: format!(" ({})", clamp(&url, 40)),
-                        style: Style::default().fg(theme.caption),
-                    });
-                }
-                i = next;
-                continue;
-            }
-        }
-        if chars[i] == '<' {
-            if let Some((url, next)) = parse_autolink(&chars, i) {
-                flush(&mut buf, &mut segs, style);
-                segs.push(Seg {
-                    text: url,
-                    style: Style::default()
-                        .fg(theme.brand_soft)
-                        .add_modifier(Modifier::UNDERLINED),
-                });
-                i = next;
-                continue;
-            }
-        }
-        buf.push(chars[i]);
-        i += 1;
-    }
-    flush(
-        &mut buf,
-        &mut segs,
-        seg_style(base, theme, bold, italic, strike, code),
-    );
-    segs
+    style.bg.is_none()
+        && fg_ok
+        && style.add_modifier.difference(Modifier::ITALIC).is_empty()
 }
 
-fn seg_style(
-    base: Style,
-    theme: &Theme,
-    bold: bool,
-    italic: bool,
-    strike: bool,
-    code: bool,
-) -> Style {
-    if code {
-        Style::default().fg(theme.brand_soft).bg(theme.code_bg)
+/// Code block frame: top edge with an optional language label
+/// (`┌─ rust ──────┐`). Border glyphs use the theme's border gray, the
+/// language label the caption gray.
+fn code_frame_top(lang: &str, width: usize, theme: &Theme) -> Line<'static> {
+    let border = Style::default().fg(theme.border);
+    let label = if lang.is_empty() {
+        String::new()
     } else {
-        let mut s = base;
-        if bold {
-            s = s.add_modifier(Modifier::BOLD);
+        // Language names are ASCII in practice; clamp anyway so a hostile
+        // info string can't blow the frame width.
+        let max = width.saturating_sub(8);
+        let lang: String = lang.chars().take(max).collect();
+        format!("─ {lang} ")
+    };
+    let pad = width
+        .saturating_sub(2)
+        .saturating_sub(UnicodeWidthStr::width(label.as_str()));
+    Line::from(vec![
+        Span::styled("┌".to_string(), border),
+        Span::styled(label, Style::default().fg(theme.caption)),
+        Span::styled("─".repeat(pad), border),
+        Span::styled("┐".to_string(), border),
+    ])
+}
+
+/// Bottom edge of a code block frame (`└──────┘`).
+fn code_frame_bottom(width: usize, theme: &Theme) -> Line<'static> {
+    let border = Style::default().fg(theme.border);
+    Line::from(vec![
+        Span::styled("└".to_string(), border),
+        Span::styled("─".repeat(width.saturating_sub(2)), border),
+        Span::styled("┘".to_string(), border),
+    ])
+}
+
+/// One content row inside the frame: `│ ` + padded content + ` │`, the
+/// padding painted with the panel background so the row is a full rectangle.
+fn code_frame_row(line: Line<'static>, inner: usize, theme: &Theme) -> Line<'static> {
+    let border = Style::default().fg(theme.border);
+    let fill = Style::default().bg(theme.panel);
+    let w: usize = line.spans.iter().map(|s| s.content.width()).sum();
+    let mut spans = vec![
+        Span::styled("│".to_string(), border),
+        Span::styled(" ".to_string(), fill),
+    ];
+    spans.extend(line.spans);
+    spans.push(Span::styled(" ".repeat(inner.saturating_sub(w) + 1), fill));
+    spans.push(Span::styled("│".to_string(), border));
+    Line::from(spans)
+}
+
+/// Hard-wrap preformatted text, preserving every character — including
+/// leading and repeated whitespace that the prose wrapper would collapse.
+fn wrap_pre(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut style = segs.first().map(|s| s.style).unwrap_or_default();
+    let mut w = 0usize;
+    for seg in segs {
+        for c in seg.text.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0).max(1);
+            if w + cw > width && w > 0 {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                out.push(Line::from(std::mem::take(&mut spans)));
+                w = 0;
+            }
+            if !buf.is_empty() && style != seg.style {
+                spans.push(Span::styled(std::mem::take(&mut buf), style));
+                style = seg.style;
+            }
+            buf.push(c);
+            w += cw;
         }
-        if italic {
-            s = s.add_modifier(Modifier::ITALIC);
-        }
-        if strike {
-            s = s.add_modifier(Modifier::CROSSED_OUT);
-        }
-        s
     }
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, style));
+    }
+    if !spans.is_empty() {
+        out.push(Line::from(spans));
+    }
+    out
+}
+
+/// tui-markdown renders every link as `label (destination)`; for autolinks
+/// and bare-URL links the label *is* the destination, doubling the URL. Drop
+/// the redundant ` (url)` tail when label and destination are identical.
+fn collapse_autolinks(segs: Vec<Seg>) -> Vec<Seg> {
+    let is_link = |s: &Seg| s.style.add_modifier.contains(Modifier::UNDERLINED);
+    let mut out: Vec<Seg> = Vec::with_capacity(segs.len());
+    let mut i = 0;
+    while i < segs.len() {
+        if i + 3 < segs.len()
+            && segs[i + 1].text == " ("
+            && segs[i + 3].text == ")"
+            && segs[i].text == segs[i + 2].text
+            && !segs[i].text.is_empty()
+            && is_link(&segs[i])
+            && is_link(&segs[i + 2])
+        {
+            out.push(segs[i].clone());
+            i += 4;
+            continue;
+        }
+        out.push(segs[i].clone());
+        i += 1;
+    }
+    out
+}
+
+/// Truncate a line to `width` columns, appending an ellipsis when content was
+/// dropped. Used for table lines, where wrapping would break the box.
+fn truncate_line(segs: Vec<Seg>, width: usize, theme: &Theme) -> Line<'static> {
+    let budget = width.saturating_sub(1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut w = 0usize;
+    let mut stopped = false;
+    for seg in segs {
+        let mut buf = String::new();
+        for c in seg.text.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0).max(1);
+            if w + cw > budget {
+                stopped = true;
+                break;
+            }
+            w += cw;
+            buf.push(c);
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, seg.style));
+        }
+        if stopped {
+            break;
+        }
+    }
+    if stopped {
+        spans.push(Span::styled(
+            "…".to_string(),
+            Style::default().fg(theme.caption),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// CJK + fullwidth + kana/hangul — the "Chinese" side of the script split.
@@ -341,64 +541,6 @@ fn split_script(text: &str) -> Vec<(String, bool)> {
     out
 }
 
-/// Parse `[text](url)` starting at the `[` index (or at the `[` after `!`).
-fn parse_target(chars: &[char], start: usize) -> Option<(String, String, usize)> {
-    if chars.get(start) != Some(&'[') {
-        return None;
-    }
-    // First `]` closes (no nested brackets in chat markdown).
-    let close = chars
-        .iter()
-        .enumerate()
-        .skip(start + 1)
-        .find(|(_, &c)| c == ']')?
-        .0;
-    if close + 1 >= chars.len() || chars[close + 1] != '(' {
-        return None;
-    }
-    let end = chars
-        .iter()
-        .enumerate()
-        .skip(close + 2)
-        .find(|(_, &c)| c == ')')?
-        .0;
-    let text: String = chars[start + 1..close].iter().collect();
-    let url: String = chars[close + 2..end].iter().collect();
-    Some((text, url, end + 1))
-}
-
-fn parse_autolink(chars: &[char], start: usize) -> Option<(String, usize)> {
-    if chars.get(start) != Some(&'<') {
-        return None;
-    }
-    let tail: String = chars[start + 1..].iter().collect();
-    if !(tail.starts_with("http://") || tail.starts_with("https://")) {
-        return None;
-    }
-    let rel = chars[start + 1..].iter().position(|&c| c == '>')?;
-    let end = start + 1 + rel;
-    let url: String = chars[start + 1..end].iter().collect();
-    if url.is_empty() {
-        return None;
-    }
-    Some((url, end + 1))
-}
-
-fn heading(line: &str) -> Option<(usize, String)> {
-    let bytes = line.as_bytes();
-    let mut level = 0;
-    while level < bytes.len() && bytes[level] == b'#' {
-        level += 1;
-    }
-    if level == 0 || level > 6 {
-        return None;
-    }
-    if level < bytes.len() && bytes[level] != b' ' {
-        return None;
-    }
-    Some((level, line[level..].trim().to_string()))
-}
-
 fn heading_style(theme: &Theme, level: usize) -> Style {
     use crate::theme::Mode;
     // Headings run down the DeepSeek blue ramp (bright → deep) so each
@@ -422,47 +564,6 @@ fn heading_style(theme: &Theme, level: usize) -> Style {
         },
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
-}
-
-fn strip_blockquote(line: &str) -> Option<String> {
-    let t = line.trim_start();
-    t.strip_prefix('>')
-        .map(|rest| rest.trim_start().to_string())
-}
-
-fn list_item(line: &str) -> Option<(String, String)> {
-    for prefix in ["- ", "* ", "+ "] {
-        if let Some(rest) = line.strip_prefix(prefix) {
-            return Some(("•".to_string(), rest.to_string()));
-        }
-    }
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
-        let num = &line[..i];
-        let rest = &line[i + 2..];
-        return Some((format!("{num}."), rest.to_string()));
-    }
-    None
-}
-
-fn is_hr(line: &str) -> bool {
-    let t: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-    t.chars().count() >= 3
-        && (t.chars().all(|c| c == '-')
-            || t.chars().all(|c| c == '*')
-            || t.chars().all(|c| c == '_'))
-}
-
-fn clamp(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
-    }
 }
 
 /// Word-boundary wrap that keeps per-segment styles across soft line breaks.
@@ -584,82 +685,184 @@ mod tests {
             .collect()
     }
 
+    fn render_dark(md: &str, width: usize) -> Vec<Line<'static>> {
+        render(md, &Theme::dark(), width)
+    }
+
+    fn line_width(line: &Line) -> usize {
+        line.spans.iter().map(|s| s.content.width()).sum()
+    }
+
     #[test]
     fn inline_emphasis_styles_runs() {
         let theme = Theme::dark();
-        let base = Style::default().fg(theme.fg_secondary);
-        let segs = inline_parse("a **bold** b *it* c `code` d ~~x~~", base, &theme, false);
-        let text: String = segs.iter().map(|s| s.text.as_str()).collect();
+        let lines = render("a **bold** b *it* c `code` d ~~x~~", &theme, 60);
+        let text = plain(&lines);
         assert_eq!(text, "a bold b it c code d x");
-        assert!(segs
+        let spans: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+        assert!(spans
             .iter()
-            .any(|s| s.text == "bold" && s.style.add_modifier.contains(Modifier::BOLD)));
-        assert!(segs
+            .any(|s| s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(spans
             .iter()
-            .any(|s| s.text == "it" && s.style.add_modifier.contains(Modifier::ITALIC)));
-        assert!(segs
+            .any(|s| s.content == "it" && s.style.add_modifier.contains(Modifier::ITALIC)));
+        assert!(spans.iter().any(|s| {
+            s.content == "code"
+                && s.style.bg == Some(theme.panel)
+                && s.style.fg == Some(theme.fg)
+                && !s.style.add_modifier.contains(Modifier::ITALIC)
+        }));
+        assert!(spans
             .iter()
-            .any(|s| s.text == "code" && s.style.bg == Some(theme.code_bg)));
-        assert!(segs
-            .iter()
-            .any(|s| s.text == "x" && s.style.add_modifier.contains(Modifier::CROSSED_OUT)));
+            .any(|s| s.content == "x" && s.style.add_modifier.contains(Modifier::CROSSED_OUT)));
     }
 
     #[test]
-    fn link_and_image_render_as_chips() {
-        let theme = Theme::dark();
-        let lines = render("see [docs](https://x.dev) and ![pic](a.png)", &theme, 60);
+    fn link_and_image_render_with_urls() {
+        let lines = render_dark("see [docs](https://x.dev) and ![pic](a.png)", 80);
         let text = plain(&lines);
         assert!(text.contains("docs"), "{text}");
-        assert!(text.contains("https://x.dev"), "{text}");
-        assert!(text.contains("🖼 pic"), "{text}");
+        assert!(text.contains("(https://x.dev)"), "{text}");
+        assert!(text.contains("[img] pic"), "{text}");
+        assert!(text.contains("(a.png)"), "{text}");
     }
 
     #[test]
-    fn fence_keeps_code_background() {
+    fn code_block_renders_as_framed_box_with_lang_label() {
         let theme = Theme::dark();
-        let lines = render("before\n```rust\nlet x = 1;\n```\nafter", &theme, 40);
-        assert!(plain(&lines).contains("let x = 1;"));
-        assert!(lines.iter().any(|l| {
-            l.spans
-                .iter()
-                .any(|s| s.content.contains("let x") && s.style.bg == Some(theme.code_bg))
+        let lines = render("before\n\n```rust\nlet x = 1;\n```\n\nafter", &theme, 40);
+        let text = plain(&lines);
+        assert!(text.contains("let x = 1;"), "{text}");
+        // Fence delimiters become frame edges; the top one names the language.
+        assert!(!text.contains("```"), "fences replaced: {text}");
+        assert!(text.contains("┌─ rust ─"), "top edge with label: {text}");
+        assert!(text.contains('└'), "bottom edge: {text}");
+        let code_line = lines
+            .iter()
+            .find(|l| plain(std::slice::from_ref(l)).contains("let x = 1;"))
+            .expect("code line");
+        assert_eq!(code_line.spans[0].content, "│");
+        assert_eq!(code_line.spans.last().unwrap().content, "│");
+        let code_span = code_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("let x = 1;"))
+            .expect("code span");
+        // Light gray, upright (no italics), on the panel background.
+        assert_eq!(code_span.style.fg, Some(theme.fg));
+        assert_eq!(code_span.style.bg, Some(theme.panel));
+        assert!(!code_span.style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(line_width(code_line), 40, "row fills the width");
+    }
+
+    #[test]
+    fn code_line_with_box_chars_is_not_mistaken_for_a_table() {
+        let theme = Theme::dark();
+        let md = "```\n│ diagram text that runs well past the wrap column\n```";
+        let lines = render(md, &theme, 20);
+        let text = plain(&lines);
+        // Box-drawing code content wraps (mid-word if needed) instead of
+        // truncating…
+        assert!(!text.contains('…'), "no ellipsis: {text}");
+        assert!(text.contains("diagram text"), "{text}");
+        assert!(text.contains("wrap colu"), "{text}");
+        // …and every wrapped row stays inside the frame.
+        let rows: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.spans.first().map(|s| s.content.as_ref()) == Some("│"))
+            .collect();
+        assert!(rows.len() > 1, "wrapped rows: {text}");
+        for row in rows {
+            assert_eq!(line_width(row), 20, "framed row: {row:?}");
+        }
+    }
+
+    #[test]
+    fn blockquote_gets_prefix_and_italic() {
+        let theme = Theme::dark();
+        let lines = render("> quoted", &theme, 40);
+        let text = plain(&lines);
+        assert!(text.contains("> quoted"), "{text}");
+        let spans: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+        // The `>` marker keeps the muted quote color…
+        assert!(spans.iter().any(|s| {
+            s.content == ">"
+                && s.style.fg == Some(theme.fg_tertiary)
+                && s.style.add_modifier.contains(Modifier::ITALIC)
+        }));
+        // …while Latin body text takes the brighter two-tone foreground.
+        assert!(spans.iter().any(|s| {
+            s.content.contains("quoted")
+                && s.style.fg == Some(theme.fg)
+                && s.style.add_modifier.contains(Modifier::ITALIC)
         }));
     }
 
     #[test]
-    fn blockquote_and_list_get_markers() {
-        let theme = Theme::dark();
-        let lines = render("> quoted\n- item one\n2. item two", &theme, 40);
+    fn list_markers_render() {
+        let lines = render_dark("- item one\n2. item two", 40);
         let text = plain(&lines);
-        assert!(text.contains("▎ quoted"), "{text}");
-        assert!(text.contains("• item one"), "{text}");
+        assert!(text.contains("- item one"), "{text}");
         assert!(text.contains("2. item two"), "{text}");
     }
 
     #[test]
-    fn wrapping_preserves_content() {
+    fn list_wrap_hangs_under_marker() {
+        let lines = render_dark("- one two three four five", 12);
+        let text = plain(&lines);
+        assert!(lines.len() > 1, "wraps: {text:?}");
+        assert!(text.contains("- one two"), "{text}");
+        // Continuation lines align under the body, two columns in.
+        assert!(
+            lines[1..].iter().any(|l| l.spans[0].content == "  "),
+            "hanging indent: {text:?}"
+        );
+    }
+
+    #[test]
+    fn rule_renders_full_width() {
         let theme = Theme::dark();
+        let lines = render("above\n\n---\n\nbelow", &theme, 30);
+        let rule = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains('─')))
+            .expect("rule line");
+        assert_eq!(line_width(rule), 30);
+        assert_eq!(rule.spans[0].style.fg, Some(theme.border));
+    }
+
+    #[test]
+    fn wrapping_preserves_content() {
         let long = "one two three four five six seven eight nine ten";
-        let lines = render(long, &theme, 12);
+        let lines = render_dark(long, 12);
         assert!(lines.len() > 1, "soft wraps at width: {lines:?}");
         let joined = plain(&lines);
         for word in long.split(' ') {
             assert!(joined.contains(word), "word {word} kept: {joined}");
         }
+        for l in &lines {
+            assert!(line_width(l) <= 12, "line fits: {l:?}");
+        }
     }
 
     #[test]
     fn heading_levels_have_distinct_colors() {
-        let theme = Theme::dark();
-        let lines = render("# a\n## b\n### c\n#### d\n##### e\n###### f", &theme, 40);
-        let mut colors: Vec<Option<ratatui::style::Color>> =
-            (0..6).map(|i| lines[i].spans[0].style.fg).collect();
+        let lines = render_dark("# a\n## b\n### c\n#### d\n##### e\n###### f", 40);
+        let heads: Vec<&Line> = lines.iter().filter(|l| !l.spans.is_empty()).collect();
+        assert_eq!(heads.len(), 6, "six headings: {}", plain(&lines));
+        let mut colors: Vec<Option<ratatui::style::Color>> = heads
+            .iter()
+            .map(|l| l.spans[0].style.fg)
+            .collect();
         colors.dedup();
         assert!(
             colors.len() >= 4,
             "heading sizes should span several colors: {colors:?}"
         );
+        assert!(heads.iter().all(|l| l.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD)));
     }
 
     #[test]
@@ -680,11 +883,138 @@ mod tests {
             Some(theme.fg_secondary),
             "CJK stays the body gray"
         );
-        assert_eq!(
-            latin.style.fg,
-            Some(theme.fg),
-            "Latin/digits render brighter"
-        );
+        assert_eq!(latin.style.fg, Some(theme.fg), "Latin/digits render brighter");
         assert_ne!(cjk.style.fg, latin.style.fg);
     }
+
+    #[test]
+    fn table_renders_as_box_with_header_and_rows() {
+        let theme = Theme::dark();
+        let md = "| 样式 | 语法 |\n|------|------|\n| 粗体 | `**b**` |";
+        let lines = render(md, &theme, 40);
+        let text = plain(&lines);
+        assert!(text.contains('┌'), "top border: {text}");
+        assert!(text.contains('├'), "header separator: {text}");
+        assert!(text.contains('└'), "bottom border: {text}");
+        assert!(text.contains("样式"), "header cell: {text}");
+        assert!(text.contains("粗体"), "body cell: {text}");
+        // The `---` delimiter row must not leak through as literal text.
+        assert!(!text.contains("---"), "delimiter hidden: {text}");
+        // Header cells are bold; inline code in a cell keeps its chip style.
+        assert!(lines.iter().any(|l| l
+            .spans
+            .iter()
+            .any(|s| { s.content.contains("样式") && s.style.add_modifier.contains(Modifier::BOLD) })));
+        assert!(lines.iter().any(|l| l
+            .spans
+            .iter()
+            .any(|s| { s.content.contains("**b**") && s.style.bg == Some(theme.panel) })));
+    }
+
+    #[test]
+    fn table_alignment_pads_right_and_center_columns() {
+        let md = "| a | bb | ccc |\n|:--|--:|:--:|\n| x | y | z |";
+        let lines = render_dark(md, 40);
+        let text = plain(&lines);
+        assert!(text.contains("│  y │"), "right-aligned: {text}");
+        assert!(text.contains("│  z  │"), "center-aligned: {text}");
+    }
+
+    #[test]
+    fn overwide_table_truncates_with_ellipsis() {
+        let md = "| column | another |\n|---|---|\n| aaaaaaaaaa | bbbbbbbbbb |";
+        let lines = render_dark(md, 16);
+        let text = plain(&lines);
+        assert!(text.contains('…'), "truncated: {text}");
+        for l in &lines {
+            assert!(line_width(l) <= 16, "fits: {l:?}");
+        }
+    }
+
+    #[test]
+    fn smoke_complex_markdown_demo() {
+        let demo = include_str!("../complex-markdown-demo.md");
+        for width in [24usize, 40, 80, 120] {
+            let lines = render_dark(demo, width);
+            assert!(!lines.is_empty(), "width {width} renders");
+            for l in &lines {
+                assert!(
+                    line_width(l) <= width,
+                    "width {width}: line fits ({} cols): {l:?}",
+                    line_width(l)
+                );
+            }
+        }
+        let text = plain(&render_dark(demo, 100));
+        for token in [
+            "fetchData",
+            "npm install",
+            "E = mc^2",
+            "┌",
+            "│",
+            "[img]",
+            "[x]",
+            "术语",
+        ] {
+            assert!(text.contains(token), "token {token} survives");
+        }
+        // The markdown source's table delimiter rows must not leak through.
+        assert!(!text.contains("|:-----"), "table delimiters hidden");
+    }
+
+    #[test]
+    fn code_block_preserves_indentation() {
+        let md = "```python\nif ok:\n    body()\n        deep()\n```";
+        let lines = render_dark(md, 60);
+        let text = plain(&lines);
+        assert!(text.contains("    body()"), "indent kept: {text}");
+        assert!(text.contains("        deep()"), "deep indent kept: {text}");
+    }
+
+    #[test]
+    fn code_block_wraps_without_losing_chars() {
+        let md = "```\nabcdefghij klmnopqrst\n```";
+        let lines = render_dark(md, 12);
+        let text = plain(&lines);
+        // Inner width is 12 − 4 frame columns = 8: content hard-wraps whole.
+        for chunk in ["abcdefgh", "ij klmno", "pqrst"] {
+            assert!(text.contains(chunk), "chunk {chunk} kept: {text}");
+        }
+        for l in &lines {
+            assert!(line_width(l) <= 12, "fits: {l:?}");
+        }
+    }
+
+    #[test]
+    fn autolink_is_not_duplicated() {
+        let lines = render_dark("see <https://example.com> now", 80);
+        let text = plain(&lines);
+        assert_eq!(
+            text.matches("https://example.com").count(),
+            1,
+            "url appears once: {text}"
+        );
+        // Explicit links with a distinct label keep the destination.
+        let lines = render_dark("[docs](https://x.dev)", 80);
+        assert!(plain(&lines).contains("docs (https://x.dev)"));
+    }
+
+    #[test]
+    fn nested_blockquote_keeps_markers_together() {
+        let theme = Theme::dark();
+        let lines = render("> outer\n> > inner", &theme, 60);
+        let text = plain(&lines);
+        assert!(text.contains(">> inner"), "nested markers: {text}");
+        assert!(lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
+            s.content == ">" && s.style.fg == Some(theme.fg_tertiary)
+        }));
+    }
 }
+
+
+
+
+
+
+
+
