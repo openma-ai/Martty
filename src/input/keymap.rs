@@ -38,6 +38,8 @@ pub enum Action {
     JumpTail,
     CursorLeft,
     CursorRight,
+    CursorUp,
+    CursorDown,
     WordLeft,
     WordRight,
     LineStart,
@@ -84,7 +86,13 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('v') if ctrl => AttachClipboard,
         // ctrl+p (not ctrl+m): terminals send ctrl+m as the Enter byte.
         KeyCode::Char('p') if ctrl => ModelPicker,
-        KeyCode::Char('a') if ctrl => CycleAgent,
+        KeyCode::Char('a') if alt => CycleAgent,
+        // Keep the agent shortcut on the modified chord. Legacy terminals
+        // may collapse it to ^a, which safely degrades to line-start.
+        KeyCode::Char('a') if ctrl && shift => CycleAgent,
+        // ^a = start of line — also what macOS terminals commonly send for
+        // ⌘← when their natural-editing mode consumes the Command modifier.
+        KeyCode::Char('a') if ctrl => LineStart,
         // ctrl+. → the shortcut list; needs a terminal that can encode
         // ctrl+punctuation (kitty protocol) — /keys always works.
         KeyCode::Char('.') if ctrl => ShowKeys,
@@ -127,8 +135,10 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // Word hops: ⌥-arrows on macOS · ctrl-arrows on linux/windows.
         KeyCode::Left if alt || ctrl => WordLeft,
         KeyCode::Right if alt || ctrl => WordRight,
-        KeyCode::Up => HistoryPrev,
-        KeyCode::Down => HistoryNext,
+        KeyCode::Up if ctx.input_empty => HistoryPrev,
+        KeyCode::Down if ctx.input_empty => HistoryNext,
+        KeyCode::Up => CursorUp,
+        KeyCode::Down => CursorDown,
         KeyCode::Left => CursorLeft,
         KeyCode::Right => CursorRight,
 
@@ -224,10 +234,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_cycles_agents_while_other_editing_codes_keep_their_meaning() {
+    fn ctrl_a_moves_to_line_start_for_terminals_that_encode_cmd_left_as_readline() {
         assert_eq!(
             classify(&key(KeyCode::Char('a'), CTRL), typing()),
-            Some(Action::CycleAgent)
+            Some(Action::LineStart)
         );
         assert_eq!(
             classify(&key(KeyCode::Char('e'), CTRL), typing()),
@@ -236,6 +246,49 @@ mod tests {
         assert_eq!(
             classify(&key(KeyCode::Char('u'), CTRL), typing()),
             Some(Action::KillToStart)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_a_keeps_agent_cycling_off_the_readline_ctrl_a_chord() {
+        assert_eq!(
+            classify(
+                &key(KeyCode::Char('a'), CTRL | KeyModifiers::SHIFT),
+                typing()
+            ),
+            Some(Action::CycleAgent)
+        );
+    }
+
+    #[test]
+    fn option_a_cycles_the_agent_without_stealing_readline_ctrl_a() {
+        assert_eq!(
+            classify(&key(KeyCode::Char('a'), ALT), typing()),
+            Some(Action::CycleAgent)
+        );
+        assert_eq!(
+            classify(&key(KeyCode::Char('a'), CTRL), typing()),
+            Some(Action::LineStart)
+        );
+    }
+
+    #[test]
+    fn arrows_move_inside_a_draft_and_only_browse_history_when_it_is_empty() {
+        assert_eq!(
+            classify(&key(KeyCode::Up, NONE), typing()),
+            Some(Action::CursorUp)
+        );
+        assert_eq!(
+            classify(&key(KeyCode::Down, NONE), typing()),
+            Some(Action::CursorDown)
+        );
+        assert_eq!(
+            classify(&key(KeyCode::Up, NONE), empty()),
+            Some(Action::HistoryPrev)
+        );
+        assert_eq!(
+            classify(&key(KeyCode::Down, NONE), empty()),
+            Some(Action::HistoryNext)
         );
     }
 

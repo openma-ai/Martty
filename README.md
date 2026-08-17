@@ -198,9 +198,9 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 | `enter` | 发送；回合运行时排队 follow-up |
 | `ctrl+x` | 不取消当前回合，立即 steer 当前 agent |
 | `esc` | 打断当前回合（保留草稿）；空闲时清空草稿 |
-| `ctrl+c` | 先清草稿，再中断；连按两次退出 |
+| `ctrl+c` | 有草稿先清除；空闲连按 2 次、运行中连按 5 次退出；不中断当前回合 |
 | `/` | 打开命令菜单并按前缀过滤；agent 广告的 skills 也在其中，选中后仍以 `/name ` prompt 发送 |
-| `/model` · `/agent` | 选择 agent 广告的模型和 agent preset；`ctrl+a` 不弹表单，直接轮换 agent |
+| `/model` · `/agent` | 选择 agent 广告的模型和 agent preset；`option+a` 不弹表单，直接轮换 agent |
 | `/auth` | ACP 登录（多种方法时弹出选择；否则 Terminal Auth 或 `authenticate` `_meta`）；会话中途 `auth_required` 也会打开同一界面；agent 的 `/login` 仍当 prompt |
 | `/permission` · `shift+tab` | 选择或轮换 agent 广告的权限模式 |
 | `/effort` · `/plan` | 设置推理力度或把 plan 模式传给宿主 |

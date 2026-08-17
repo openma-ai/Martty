@@ -833,16 +833,24 @@ impl Transcript {
                 CellKind::Reasoning {
                     text,
                     done,
+                    started,
                     seconds,
                     agent,
-                    ..
                 } => {
                     emit(&mut out, &mut owners, Line::default(), None);
                     let head_style = Style::default().fg(theme.caption);
                     let body_style = Style::default()
                         .fg(theme.fg_tertiary)
                         .add_modifier(Modifier::ITALIC);
-                    let lines = wrap(text.trim_end(), width.saturating_sub(2));
+                    // A reasoning stream can open with an empty/whitespace
+                    // delta. The heading is enough for that frame; an empty
+                    // body must not make its height jump from one row to two.
+                    let body = text.trim();
+                    let lines = if body.is_empty() {
+                        Vec::new()
+                    } else {
+                        wrap(body, width.saturating_sub(2))
+                    };
                     let n = lines.len();
                     if *done {
                         let dur = seconds.map(|s| format!(" · {s:.1}s")).unwrap_or_default();
@@ -871,7 +879,11 @@ impl Transcript {
                             &mut out,
                             &mut owners,
                             Line::from(Span::styled(
-                                format!("✻ {}thinking…", agent_prefix(agent)),
+                                format!(
+                                    "✻ {}thinking… {}s",
+                                    agent_prefix(agent),
+                                    started.elapsed().as_secs()
+                                ),
                                 Style::default().fg(theme.brand_soft),
                             )),
                             None,

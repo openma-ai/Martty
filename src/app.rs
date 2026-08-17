@@ -2,7 +2,7 @@
 //!
 //! Enter sends (or queues mid-turn, client-side); Ctrl+X steers the active
 //! turn immediately; Esc cancels a running turn with the draft preserved, and
-//! double-Esc clears an idle draft; Ctrl+C clears first, then arms quit;
+//! Esc owns interrupt; Ctrl+C clears a draft, then needs two empty presses to quit;
 //! `!` runs a local shell command; `/` opens the slash menu; Up recalls
 //! history on an empty prompt.
 
@@ -31,6 +31,13 @@ pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦'
 
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_millis(1500);
+
+#[derive(Clone, Copy)]
+struct CtrlCQuitChord {
+    started: Instant,
+    presses: u8,
+    required: u8,
+}
 const TIP_TTL: Duration = Duration::from_secs(4);
 
 /// Some terminal layers incorrectly wrap Kitty/CSI-u key reports in
@@ -155,7 +162,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "agent",
         usage: "/agent [id]",
-        desc: "switch agent preset · ctrl+a",
+        desc: "switch agent preset · option+a",
     },
     SlashCommand {
         name: "effort",
@@ -625,6 +632,8 @@ pub struct App {
     pub subagents: Vec<SubagentView>,
     pub active_subagent: Option<String>,
     pub input: Input,
+    /// Display-cell width of the composer text well from the latest frame.
+    pub(crate) composer_wrap_width: usize,
     pub state: RunState,
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
@@ -688,7 +697,7 @@ pub struct App {
     key_debug: bool,
     pub ambient_tip_idx: usize,
     pub ambient_tip_at: Instant,
-    ctrl_c_armed: Option<Instant>,
+    ctrl_c_armed: Option<CtrlCQuitChord>,
     pub session_id: String,
     pub cfg: RuntimeConfig,
     /// Model explicitly picked this session (`/model`); wins over
@@ -901,6 +910,7 @@ impl App {
             subagents: Vec::new(),
             active_subagent: None,
             input: Input::new(),
+            composer_wrap_width: 80,
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
@@ -1007,8 +1017,8 @@ impl App {
             }
         }
         // disarm expired chords
-        if let Some(t) = self.ctrl_c_armed {
-            if t.elapsed() > CTRL_C_QUIT_WINDOW {
+        if let Some(chord) = self.ctrl_c_armed {
+            if chord.started.elapsed() > CTRL_C_QUIT_WINDOW {
                 self.ctrl_c_armed = None;
             }
         }
@@ -1860,6 +1870,7 @@ impl App {
         let b1 = byte_of(&self.input.buf, end);
         self.input.buf.replace_range(b0..b1, "");
         self.input.cursor = start;
+        self.input.reset_vertical_goal();
         if let Some(att) = self.pending_images.remove(idx) {
             self.show_tip(format!("removed {}", att.name));
         }
@@ -2233,6 +2244,22 @@ impl App {
             return;
         }
 
+        // The slash menu owns vertical arrows while it is visible. Ordinary
+        // non-empty drafts use them for visual-line cursor motion below.
+        if key.modifiers == KeyModifiers::NONE && self.input.buf.starts_with('/') {
+            let n = self.slash_matches().len();
+            if n > 0 {
+                match key.code {
+                    KeyCode::Up => self.slash_sel = self.slash_sel.checked_sub(1).unwrap_or(n - 1),
+                    KeyCode::Down => self.slash_sel = (self.slash_sel + 1) % n,
+                    _ => {}
+                }
+                if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                    return;
+                }
+            }
+        }
+
         let ctx = crate::input::KeyCtx {
             input_empty: self.input.is_empty(),
         };
@@ -2242,20 +2269,6 @@ impl App {
         // Any edit may have cut an [image n] token — the tray follows the
         // text (grok's lexicon-scan model).
         self.reconcile_attachments();
-
-        // slash menu selection with arrows while menu is visible
-        if self.input.buf.starts_with('/') {
-            let n = self.slash_matches().len();
-            if n > 0 {
-                match key.code {
-                    KeyCode::Up => {
-                        self.slash_sel = self.slash_sel.checked_sub(1).unwrap_or(n - 1);
-                    }
-                    KeyCode::Down => self.slash_sel = (self.slash_sel + 1) % n,
-                    _ => {}
-                }
-            }
-        }
     }
 
     /// Apply one classified [`Action`] — the only place key semantics touch
@@ -2322,14 +2335,31 @@ impl App {
             Action::PageDown => self.scroll_by(-20),
             Action::JumpTop => self.scroll_up = usize::MAX,
             Action::JumpTail => self.scroll_up = 0,
-            Action::CursorLeft => self.input.cursor = self.input.cursor.saturating_sub(1),
+            Action::CursorLeft => {
+                self.input.cursor = self.input.cursor.saturating_sub(1);
+                self.input.reset_vertical_goal();
+            }
             Action::CursorRight => {
                 self.input.cursor = (self.input.cursor + 1).min(self.input.len_chars());
+                self.input.reset_vertical_goal();
             }
-            Action::WordLeft => self.input.cursor = self.input.prev_word(),
-            Action::WordRight => self.input.cursor = self.input.next_word(),
-            Action::LineStart => self.input.cursor = 0,
-            Action::LineEnd => self.input.cursor = self.input.len_chars(),
+            Action::CursorUp => self.input.move_vertical(self.composer_wrap_width, -1),
+            Action::CursorDown => self.input.move_vertical(self.composer_wrap_width, 1),
+            Action::WordLeft => {
+                self.input.cursor = self.input.prev_word();
+                self.input.reset_vertical_goal();
+            }
+            Action::WordRight => {
+                self.input.cursor = self.input.next_word();
+                self.input.reset_vertical_goal();
+            }
+            Action::LineStart => {
+                self.input
+                    .move_to_visual_line_start(self.composer_wrap_width);
+            }
+            Action::LineEnd => {
+                self.input.move_to_visual_line_end(self.composer_wrap_width);
+            }
             Action::Backspace => {
                 // Deleting into an inline chip cuts the whole [image n]
                 // token (and un-stages that image) instead of one bracket.
@@ -3005,7 +3035,7 @@ impl App {
         self.show_tip(format!("agent → {label} …"));
     }
 
-    /// Ctrl+A cycles the advertised agent presets directly. `/agent` keeps
+    /// Option+A cycles the advertised agent presets directly. `/agent` keeps
     /// the picker for explicit selection; the shortcut mirrors Shift+Tab's
     /// one-keystroke permission switching.
     fn cycle_agent(&mut self, ctl: &Controller) {
@@ -3218,32 +3248,39 @@ impl App {
         }
     }
 
-    fn handle_ctrl_c(&mut self, ctl: &Controller) {
+    fn handle_ctrl_c(&mut self, _ctl: &Controller) {
         if !self.input.is_empty() {
-            // grok: Ctrl+C clears the draft first, keeps the turn.
+            // Clearing the draft never counts as the first press of the
+            // double-Ctrl+C quit chord.
+            self.ctrl_c_armed = None;
             self.input.history.push(self.input.buf.clone());
             self.input.clear();
             self.reconcile_attachments();
             self.show_tip("draft cleared — ↑ recalls it");
             return;
         }
-        if matches!(self.state, RunState::Running | RunState::Starting)
-            && self.state_note != "cancelling"
-        {
-            if ctl.interrupt_now() {
-                ctl.send(Cmd::Interrupt {
-                    session_id: self.session_id.clone(),
-                });
-                self.state_note = "cancelling".into();
-            }
+        let required = if matches!(self.state, RunState::Running | RunState::Starting) {
+            5
+        } else {
+            2
+        };
+        let mut chord = self.ctrl_c_armed.take().unwrap_or(CtrlCQuitChord {
+            started: Instant::now(),
+            presses: 0,
+            required,
+        });
+        chord.presses += 1;
+        if chord.presses >= chord.required {
+            self.quit = true;
             return;
         }
-        if self.ctrl_c_armed.take().is_some() {
-            self.quit = true;
+        let remaining = chord.required - chord.presses;
+        self.ctrl_c_armed = Some(chord);
+        self.show_tip(if remaining == 1 {
+            "press ctrl+c again to exit".into()
         } else {
-            self.ctrl_c_armed = Some(Instant::now());
-            self.show_tip("press ctrl+c again to exit");
-        }
+            format!("press ctrl+c {remaining} more times to exit while the agent is running")
+        });
     }
 
     fn history_prev(&mut self) {
@@ -3658,10 +3695,10 @@ DeepSeek Build (dsh-tui) — 终端里的 deepseek-harness
   enter        发送；当前轮次运行时将后续消息排队
   ctrl+x       立即 steer 当前轮次
   esc          中断（保留草稿）；空闲时清除草稿
-  ctrl+c       清除草稿 · 中断 · 连按两次退出
+  ctrl+c       有草稿先清除；空闲连按 2 次、运行中连按 5 次退出（不中断）
   shift+tab    轮换权限预设；/permission 打开选择器
   ctrl+p       打开模型选择器，然后选择推理强度
-  ctrl+a       直接轮换 Agent 预设
+  option+a     直接轮换 Agent 预设
   /agent       切换 ACP 广告的 Agent 预设
   /lang        切换界面语言：/lang zh 或 /lang en
   /auth        ACP 登录；多种方式时打开选择器
@@ -3687,11 +3724,11 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
   enter        send · queues a follow-up while a turn runs
   ctrl+x       steer the active turn immediately
   esc          interrupt (draft survives) · clears the draft when idle
-  ctrl+c       clear draft · interrupt · 2× quits
+  ctrl+c       clear a draft; 2× quits idle, 5× while running (never interrupts)
   shift+tab    cycle permission (workspace-write ⇄ full access)
                · /permission opens the preset picker
   ctrl+p       model picker (host catalog) → effort picker
-  ctrl+a       cycle agent preset directly
+  option+a     cycle agent preset directly
   /agent       switch the agent preset advertised over ACP
                (live switch via session/set_config_option · /new for a fresh session)
   /auth        ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
@@ -3735,11 +3772,11 @@ usage (incl. cache hits), and the turn end reason.";
             let text = format!(
                 "\
 快捷键
-  enter 发送 · ctrl+x 立即发送 · esc / ctrl+c 取消
+  enter 发送 · ctrl+x 立即发送 · esc 取消 · ctrl+c 清草稿/连按退出
   空输入时 ↑ 调历史 · tab 补全 / 命令
-  ctrl+a 切 Agent · ctrl+p 模型 · ctrl+t 主题 · ctrl+o 展开 · ctrl+l 清屏 · ctrl+. 快捷键
+  option+a 切 Agent · ctrl+p 模型 · ctrl+t 主题 · ctrl+o 展开 · ctrl+l 清屏 · ctrl+. 快捷键
   pgup/pgdn 翻页 · home/end 顶部/底部 · 空输入时 ctrl+u/ctrl+d 半页
-  readline：home/ctrl+e 行首/行尾 · ctrl+b/ctrl+f 移动 · ctrl+k/ctrl+u 删除
+  readline：home/ctrl+a 行首 · end/ctrl+e 行尾 · ctrl+b/ctrl+f 移动 · ctrl+k/ctrl+u 删除
             ctrl+w 删除前一词 · 输入时 ctrl+d 向前删除
 {os}
   点击工具展开/折叠 · 滚轮滚动对话
@@ -3760,11 +3797,11 @@ usage (incl. cache hits), and the turn end reason.";
         let text = format!(
             "\
 keys — grok-build homage set
-  enter send · ctrl+x send-now · esc / ctrl+c cancel semantics
+  enter send · ctrl+x send-now · esc interrupts · ctrl+c clears / 2× quits
   ↑ history (empty prompt) · tab completes /commands
-  ctrl+a cycle agent · ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
+  option+a cycle agent · ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
   pgup/pgdn page · home/end top/tail · ctrl+u/ctrl+d half-page (empty prompt)
-  readline: home/ctrl+e line ends · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
+  readline: home/ctrl+a line start · end/ctrl+e line end · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
             ctrl+w word back · ctrl+d delete forward (while typing)
 {os}
   click tool expands/collapses · wheel scrolls the conversation
@@ -5080,14 +5117,11 @@ mod mode_tests {
     }
 
     #[test]
-    fn ctrl_a_cycles_the_agent_directly_without_touching_the_draft() {
+    fn option_a_cycles_the_agent_directly_without_touching_the_draft() {
         let (mut app, ctl, rx) = test_app();
         app.input.set("keep this draft".into());
 
-        app.handle_key(
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            &ctl,
-        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT), &ctl);
 
         assert_eq!(app.input.buf, "keep this draft");
         assert!(app.picker.is_none(), "the shortcut must not open a form");
@@ -5096,11 +5130,40 @@ mod mode_tests {
         while app.modes.agent_preset.as_deref() != Some("code") {
             let remaining = deadline
                 .checked_duration_since(std::time::Instant::now())
-                .expect("ctrl+a switches to the next agent preset");
+                .expect("option+a switches to the next agent preset");
             let ev = rx.recv_timeout(remaining).expect("agent preset event");
             app.handle(ev, &ctl);
         }
         assert_eq!(app.current_mode(), "code");
+    }
+
+    #[test]
+    fn cmd_left_moves_to_the_current_wrapped_line_start_not_the_draft_start() {
+        let (mut app, ctl, _rx) = test_app();
+        app.input.set("abcdefghij".into());
+        app.input.cursor = 6;
+        app.composer_wrap_width = 4;
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER), &ctl);
+
+        assert_eq!(app.input.cursor, 4, "second visual row starts before 'e'");
+    }
+
+    #[test]
+    fn cmd_right_moves_to_the_current_wrapped_line_end_not_the_draft_end() {
+        let (mut app, ctl, _rx) = test_app();
+        app.input.set("abcdefghij".into());
+        app.input.cursor = 6;
+        app.composer_wrap_width = 4;
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SUPER), &ctl);
+
+        assert_eq!(app.input.cursor, 8, "second visual row ends after 'h'");
+        assert_eq!(
+            app.input.visual_cursor(4),
+            (1, 4),
+            "the wrap boundary keeps its upstream line-end affinity"
+        );
     }
 
     #[test]
@@ -5978,16 +6041,61 @@ mod mode_tests {
     }
 
     #[test]
-    fn ctrl_c_while_cancelling_arms_quit() {
+    fn ctrl_c_with_a_draft_clears_it_before_starting_a_fresh_double_press_to_quit() {
         let (mut app, ctl, _rx) = test_app();
+        app.ctrl_c_armed = Some(CtrlCQuitChord {
+            started: Instant::now(),
+            presses: 1,
+            required: 2,
+        });
+        app.input.set("unfinished draft".into());
+
+        app.handle_ctrl_c(&ctl);
+        assert!(app.input.is_empty());
+        assert!(
+            app.ctrl_c_armed.is_none(),
+            "clearing is not the first quit press"
+        );
+        assert!(!app.quit);
+
+        app.handle_ctrl_c(&ctl);
+        assert!(app.ctrl_c_armed.is_some());
+        assert!(!app.quit);
+
+        app.handle_ctrl_c(&ctl);
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn ctrl_c_while_running_never_interrupts_and_five_empty_presses_quit() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_interruptible_controller();
         app.state = RunState::Running;
-        app.state_note = "cancelling".into();
+
         app.handle_ctrl_c(&ctl);
         assert!(
             app.ctrl_c_armed.is_some(),
-            "already-cancelling ctrl+c must not be eaten as another interrupt"
+            "an empty Ctrl+C should arm quit even while the turn is running"
         );
         assert!(!app.quit);
+        assert_eq!(app.state, RunState::Running);
+        assert!(
+            matches!(
+                commands.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "Ctrl+C must not send Cmd::Interrupt"
+        );
+
+        app.handle_ctrl_c(&ctl);
+        assert!(!app.quit);
+
+        app.handle_ctrl_c(&ctl);
+        assert!(!app.quit);
+
+        app.handle_ctrl_c(&ctl);
+        assert!(!app.quit);
+
         app.handle_ctrl_c(&ctl);
         assert!(app.quit);
     }

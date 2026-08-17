@@ -30,6 +30,28 @@ fn composer_height(height: u16) -> u16 {
     }
 }
 
+/// Grow with hard/soft-wrapped draft rows, while leaving at least half of a
+/// normal terminal to the conversation. Beyond the cap, `draw_input` keeps a
+/// cursor-following viewport inside the composer.
+fn resolved_composer_height(area: Rect, app: &App) -> u16 {
+    let minimum = composer_height(area.height);
+    let pet_pad = if app.pet_visible && area.width >= 60 && area.height >= 10 {
+        PET_PAD
+    } else {
+        0
+    };
+    let inner_width = area.width.saturating_sub(2 + pet_pad);
+    let prompt_width = "❯ ".width() as u16;
+    let wrap_width = inner_width.saturating_sub(prompt_width).max(1) as usize;
+    let maximum = (area.height / 2).max(minimum).min(12);
+    let desired = app
+        .input
+        .visual_row_count(wrap_width)
+        .saturating_add(1)
+        .min(maximum as usize) as u16;
+    desired.max(minimum).min(maximum)
+}
+
 /// The pet's cell rectangle — the kitty-graphics placement target —
 /// perched on the composer's bottom-right, matching the sprite's 192:208
 /// aspect in 1:2 cells. None hides it (`/liang` off, or the terminal is too
@@ -78,10 +100,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let composer_h = if child_view {
         1
     } else {
-        composer_height(main.height)
+        resolved_composer_height(main, app)
     };
     let usage_h = if main.height >= 20 { 1 } else { 0 };
     let agents_h = if app.subagents.is_empty() { 0 } else { 1 };
+    // Keep the conversation visually detached from the composer chrome.
+    // This row is intentionally left untouched so the canvas/background
+    // shows through instead of becoming another panel-colored separator.
+    let gap_h = if child_view { 0 } else { 1 };
     // One-row rounded cap fused with the text (`╭ Tip · … ─╮`): the
     // 盖子 at its shortest — the tip floats inside the border line.
     let tips_h = if !child_view && main.height >= 16 {
@@ -91,20 +117,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     let chat_h = main
         .height
-        .saturating_sub(composer_h + tips_h + usage_h + agents_h);
+        .saturating_sub(composer_h + tips_h + usage_h + agents_h + gap_h);
 
     let chat = Rect::new(main.x, main.y, main.width, chat_h);
-    let agents = Rect::new(main.x, main.y + chat_h, main.width, agents_h);
-    let tips = Rect::new(main.x, main.y + chat_h + agents_h, main.width, tips_h);
-    let composer = Rect::new(
-        main.x,
-        main.y + chat_h + agents_h + tips_h,
-        main.width,
-        composer_h,
-    );
+    let chrome_y = main.y + chat_h + gap_h;
+    let agents = Rect::new(main.x, chrome_y, main.width, agents_h);
+    let tips = Rect::new(main.x, chrome_y + agents_h, main.width, tips_h);
+    let composer = Rect::new(main.x, chrome_y + agents_h + tips_h, main.width, composer_h);
     let usage = Rect::new(
         main.x,
-        main.y + chat_h + agents_h + tips_h + composer_h,
+        chrome_y + agents_h + tips_h + composer_h,
         main.width,
         usage_h,
     );
@@ -423,6 +445,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     app.att_chips.clear();
     app.att_thumbs.clear();
     let well = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
+    app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, well);
 
     // Bottom meta row: run state + mode/permission chips left, model
@@ -456,11 +479,9 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     );
 }
 
-/// The run-state line — rendered as the transcript's always-last line
-/// (hugging the newest message), not in the composer: `● idle` when quiet,
-/// spinner + phase + elapsed + queue depth while a turn runs, and
-/// exceptional finishes in their accent color.
-fn state_line(app: &App) -> Line<'static> {
+/// The active run-state line — rendered as the transcript's always-last line
+/// while work is in progress. Quiet sessions need no redundant `● idle` row.
+fn state_line(app: &App) -> Option<Line<'static>> {
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
     let active_child = app
@@ -477,30 +498,14 @@ fn state_line(app: &App) -> Line<'static> {
             }
         })
         .unwrap_or(app.state);
+    // Open reasoning/assistant cells already own the live presentation
+    // (`thinking…` or the streaming cursor). Adding another `streaming` row
+    // made the same phase alternate between one and two status rows.
+    if state == RunState::Running && transcript.streaming() {
+        return None;
+    }
     match state {
-        RunState::Idle => {
-            spans.push(Span::styled("● ", Style::default().fg(theme.ok_soft())));
-            spans.push(Span::styled(
-                app.locale.tr("idle", "空闲"),
-                Style::default().fg(theme.fg_tertiary),
-            ));
-            // A clean finish is implied by "idle" — only surface the
-            // exceptional endings, in their own accent color.
-            match transcript.last_finish.as_deref() {
-                None | Some("completed") | Some("stop") => {}
-                Some(kind) => {
-                    let color = if kind == "error" {
-                        theme.err
-                    } else {
-                        theme.warn_soft()
-                    };
-                    spans.push(Span::styled(
-                        format!(" · {kind}"),
-                        Style::default().fg(color),
-                    ));
-                }
-            }
-        }
+        RunState::Idle => return None,
         RunState::Starting | RunState::Running => {
             spans.push(Span::styled(
                 format!("{} ", app.spinner()),
@@ -512,8 +517,6 @@ fn state_line(app: &App) -> Line<'static> {
                 } else {
                     app.state_note.clone()
                 }
-            } else if transcript.streaming() {
-                app.locale.tr("streaming", "生成中").to_string()
             } else if !app.state_note.is_empty() {
                 app.state_note.clone()
             } else {
@@ -536,7 +539,7 @@ fn state_line(app: &App) -> Line<'static> {
             }
         }
     }
-    Line::from(spans)
+    Some(Line::from(spans))
 }
 
 /// Meta row, left side: the session's mode chips only (run state lives at
@@ -866,12 +869,13 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         .layout(&theme, inner.width, app.spinner(), thumbs);
     lines.extend(layout.lines);
     owners.extend(layout.owners);
-    // The run state rides as the transcript's last line — hugging the
-    // newest message (no separator; it scrolls with the list). The landing
-    // banner skips it: an "idle" badge on a welcome screen is noise.
+    // Active work rides as the transcript's last line — hugging the newest
+    // message (no separator; it scrolls with the list). Idle draws nothing.
     if !app.show_banner {
-        lines.push(state_line(app));
-        owners.push(None);
+        if let Some(line) = state_line(app) {
+            lines.push(line);
+            owners.push(None);
+        }
     }
 
     let total = lines.len();
@@ -1153,12 +1157,8 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let avail = (area.width as usize).saturating_sub(pw).max(1);
     let mut rows: Vec<Vec<(usize, char)>> = vec![Vec::new()];
     let mut col = 0usize;
-    let mut cursor: Option<(usize, usize)> = None; // (row, display col)
     for (i, ch) in app.input.buf.chars().enumerate() {
         if ch == '\n' {
-            if i == app.input.cursor {
-                cursor = Some((rows.len() - 1, col));
-            }
             rows.push(Vec::new());
             col = 0;
             continue;
@@ -1168,20 +1168,13 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             rows.push(Vec::new());
             col = 0;
         }
-        if i == app.input.cursor {
-            cursor = Some((rows.len() - 1, col));
-        }
         rows.last_mut().expect("input row").push((i, ch));
         col += cw;
     }
-    let cursor = cursor.unwrap_or_else(|| {
-        if col >= avail {
-            rows.push(Vec::new());
-            (rows.len() - 1, 0)
-        } else {
-            (rows.len() - 1, col)
-        }
-    });
+    let cursor = app.input.visual_cursor(avail);
+    while rows.len() <= cursor.0 {
+        rows.push(Vec::new());
+    }
 
     // Keep the cursor row inside the well; otherwise show the tail.
     let h = area.height as usize;
@@ -2264,6 +2257,23 @@ mod tests {
             world > hello,
             "hard newline pushes the second line down:\n{frame}"
         );
+    }
+
+    #[test]
+    fn composer_grows_to_show_a_multiline_draft_until_its_cap() {
+        let mut app = test_app();
+        app.show_banner = false;
+        let _ = dump_frame(&mut app, 100, 30);
+        let empty_chat_height = app.chat_view.area.height;
+
+        app.input.set("one\ntwo\nthree\nfour\nfive\nsix".into());
+        let frame = dump_frame(&mut app, 100, 30);
+
+        assert!(
+            app.chat_view.area.height < empty_chat_height,
+            "composer should take rows from chat as the draft grows:\n{frame}"
+        );
+        assert!(frame.contains("one") && frame.contains("six"), "{frame}");
     }
 
     #[test]
