@@ -33,18 +33,12 @@
 
 ### 推荐：作为 dsh 的 TUI surface plugin
 
-需要 Node.js 18+。首次安装会同时创建缺失的 profile：
+需要 Node.js 18+。同一条命令用于首次安装和以后升级；缺失的 profile 会自动创建，
+已有 profile 会显式按 npm 的 `latest` 标签重新解析 TUI 及其依赖图：
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui
+dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 dsh --profile tui
-```
-
-profile 本质上是 pnpm project；升级使用 pnpm 的 `update --latest` 语义，TUI
-声明的新 ACP 运行时版本会随依赖图一起更新：
-
-```sh
-dsh plugin --profile tui update @openma/deepseek-harness-tui --latest
 ```
 
 Host 进程的 Base Cordis 树挂 ACP plugin；独立 TUI Client 进程通过标准
