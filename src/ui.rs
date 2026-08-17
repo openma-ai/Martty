@@ -1,13 +1,13 @@
 //! Rendering: banner, scrollback, tips row, status bar, prompt, hints, overlays.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, RunState, AMBIENT_TIPS};
+use crate::app::{App, RunState};
 use crate::logo;
 use crate::logo_data::WHALE_XS;
 use crate::pet::{SPRITE_H, SPRITE_W};
@@ -52,7 +52,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme;
     f.render_widget(
-        Block::default().style(Style::default().bg(theme.bg).fg(theme.fg)),
+        Block::default().style(
+            Style::default()
+                .bg(app.canvas_background_color())
+                .fg(theme.fg),
+        ),
         area,
     );
     if area.height < 6 || area.width < 24 {
@@ -64,38 +68,72 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    let (main, right) = shell_areas(area, app);
+
     // Composer card: input well on top, one meta row (run state + mode /
     // permission chips + model) at the bottom — the old shortcut-hints row
     // is gone (the tip banner and /keys carry that). A one-row usage footer
     // (token flow + cache hit rate) sits below on tall enough screens.
-    let composer_h = composer_height(area.height);
-    let usage_h = if area.height >= 20 { 1 } else { 0 };
+    let child_view = app.active_subagent.is_some();
+    let composer_h = if child_view {
+        1
+    } else {
+        composer_height(main.height)
+    };
+    let usage_h = if main.height >= 20 { 1 } else { 0 };
+    let agents_h = if app.subagents.is_empty() { 0 } else { 1 };
     // One-row rounded cap fused with the text (`╭ Tip · … ─╮`): the
     // 盖子 at its shortest — the tip floats inside the border line.
-    let tips_h = if area.height >= 16 { 1 } else { 0 };
-    let chat_h = area.height.saturating_sub(composer_h + tips_h + usage_h);
+    let tips_h = if !child_view && main.height >= 16 {
+        1
+    } else {
+        0
+    };
+    let chat_h = main
+        .height
+        .saturating_sub(composer_h + tips_h + usage_h + agents_h);
 
-    let chat = Rect::new(area.x, area.y, area.width, chat_h);
-    let tips = Rect::new(area.x, area.y + chat_h, area.width, tips_h);
-    let composer = Rect::new(area.x, area.y + chat_h + tips_h, area.width, composer_h);
+    let chat = Rect::new(main.x, main.y, main.width, chat_h);
+    let agents = Rect::new(main.x, main.y + chat_h, main.width, agents_h);
+    let tips = Rect::new(main.x, main.y + chat_h + agents_h, main.width, tips_h);
+    let composer = Rect::new(
+        main.x,
+        main.y + chat_h + agents_h + tips_h,
+        main.width,
+        composer_h,
+    );
     let usage = Rect::new(
-        area.x,
-        area.y + chat_h + tips_h + composer_h,
-        area.width,
+        main.x,
+        main.y + chat_h + agents_h + tips_h + composer_h,
+        main.width,
         usage_h,
     );
 
     draw_chat(f, app, chat);
+    if agents_h > 0 {
+        draw_agent_rail(f, app, agents);
+    }
     if tips_h > 0 {
         draw_tips(f, app, tips);
     }
     // The pet floats on the composer surface's right end; composer text
     // keeps clear of it.
-    let pet = pet_rect(area, app);
+    let pet = if child_view {
+        None
+    } else {
+        pet_rect(main, app)
+    };
     let pet_pad = if pet.is_some() { PET_PAD } else { 0 };
-    draw_composer(f, app, composer, pet_pad);
+    if child_view {
+        draw_child_navigation(f, app, composer);
+    } else {
+        draw_composer(f, app, composer, pet_pad);
+    }
     if usage_h > 0 {
         draw_usage_bar(f, app, usage, pet_pad);
+    }
+    if let Some(right) = right {
+        draw_right_slot(f, app, right);
     }
     if let Some(cells) = pet {
         if !app.pet_pixels {
@@ -104,11 +142,219 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         // Otherwise main() places the favicon PNG over `cells` after draw.
     }
-    draw_slash_menu(f, app, composer, chat);
-    // Hover/cursor preview for inline [image n] chips sits above the
-    // composer (drawn last so it tops the menu-free chat area).
-    draw_attachment_preview(f, app, composer, area);
+    if !child_view {
+        draw_slash_menu(f, app, composer, chat);
+        // Hover/cursor preview for inline [image n] chips sits above the
+        // composer (drawn last so it tops the menu-free chat area).
+        draw_attachment_preview(f, app, composer, area);
+    }
     draw_model_picker(f, app, area);
+    draw_plugin_slider(f, app, area);
+    draw_permission_ask(f, app, area);
+    draw_elicitation_form(f, app, area);
+}
+
+fn slider_number(value: f64) -> String {
+    if (value - value.round()).abs() < 1e-9 {
+        format!("{value:.0}")
+    } else {
+        let text = format!("{value:.3}");
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn draw_plugin_slider(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(slider) = &app.slider_overlay else {
+        return;
+    };
+    let theme = app.theme;
+    let width = screen.width.saturating_sub(4).min(72).max(24);
+    let track_width = width.saturating_sub(8).max(12) as usize;
+    let span = slider.max - slider.min;
+    let position = if span > 0.0 {
+        (((slider.value - slider.min) / span) * (track_width.saturating_sub(1) as f64))
+            .round()
+            .clamp(0.0, track_width.saturating_sub(1) as f64) as usize
+    } else {
+        0
+    };
+    let mut track = vec!['─'; track_width];
+    for cell in track.iter_mut().take(position) {
+        *cell = '━';
+    }
+    for mark in &slider.marks {
+        let at = (((mark.value - slider.min) / span) * (track_width.saturating_sub(1) as f64))
+            .round()
+            .clamp(0.0, track_width.saturating_sub(1) as f64) as usize;
+        track[at] = '●';
+    }
+    track[position] = '◆';
+
+    let marks = slider
+        .marks
+        .iter()
+        .map(|mark| format!("{} {}", slider_number(mark.value), mark.label))
+        .collect::<Vec<_>>()
+        .join("   ·   ");
+    let mut lines = vec![
+        Line::from(Span::styled(
+            track.into_iter().collect::<String>(),
+            Style::default().fg(theme.brand),
+        )),
+        Line::from(vec![
+            Span::styled(
+                slider_number(slider.value),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" / {}", slider_number(slider.max)),
+                Style::default().fg(theme.caption),
+            ),
+        ]),
+    ];
+    if !marks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            marks,
+            Style::default().fg(theme.fg_secondary),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "←/→ preview   enter apply   esc cancel",
+        Style::default().fg(theme.caption),
+    )));
+
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let area = Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.brand))
+        .title(Span::styled(
+            format!(" {} ", slider.title),
+            Style::default().fg(theme.fg),
+        ))
+        .style(Style::default().bg(theme.panel));
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(block),
+        area,
+    );
+}
+
+/// Reserve a root-level right rail only while a plugin has content. Narrow
+/// terminals keep the original full-width shell and reveal the rail again
+/// automatically when enough columns are available.
+fn shell_areas(area: Rect, app: &App) -> (Rect, Option<Rect>) {
+    let has_nodes = app
+        .right_slot
+        .as_ref()
+        .is_some_and(|snapshot| !snapshot.nodes.is_empty());
+    if !has_nodes || area.width < 88 {
+        return (area, None);
+    }
+    let right_width = (area.width / 3).clamp(30, 44);
+    let main = Rect::new(area.x, area.y, area.width - right_width, area.height);
+    let right = Rect::new(main.right(), area.y, right_width, area.height);
+    (main, Some(right))
+}
+
+fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
+    let Some(snapshot) = &app.right_slot else {
+        return;
+    };
+    let theme = app.theme;
+    let inner_width = area.width.saturating_sub(4) as usize;
+    let lines = crate::slots::render(snapshot, &theme, inner_width);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            " chrome.right ",
+            Style::default().fg(theme.caption),
+        ))
+        .style(Style::default().bg(theme.surface).fg(theme.fg));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let label = app
+        .active_subagent
+        .as_deref()
+        .and_then(|id| app.subagents.iter().find(|view| view.id == id))
+        .map(|view| view.label.as_str())
+        .unwrap_or("subagent");
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {label} · read-only"),
+                Style::default().fg(theme.fg_secondary),
+            ),
+            Span::styled(
+                "   esc back · ↓ switch agents",
+                Style::default().fg(theme.caption),
+            ),
+        ]))
+        .style(Style::default().bg(theme.panel)),
+        area,
+    );
+}
+
+fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let mut spans = vec![Span::styled(
+        " agents  ",
+        Style::default().fg(theme.caption),
+    )];
+    let main_active = app.active_subagent.is_none();
+    spans.push(Span::styled(
+        if main_active { "▸ main" } else { "  main" },
+        Style::default()
+            .fg(if main_active {
+                theme.brand
+            } else {
+                theme.fg_secondary
+            })
+            .add_modifier(if main_active {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    ));
+    for view in &app.subagents {
+        let active = app.active_subagent.as_deref() == Some(view.id.as_str());
+        let marker = if view.running { '●' } else { '✓' };
+        spans.push(Span::styled(
+            format!(
+                "  {}{marker} {}",
+                if active { "▸ " } else { "" },
+                view.label
+            ),
+            Style::default()
+                .fg(if view.running { theme.brand } else { theme.ok })
+                .add_modifier(if active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+    }
+    spans.push(Span::styled(
+        "  ↓ switch",
+        Style::default().fg(theme.caption),
+    ));
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
+        area,
+    );
 }
 
 /// Fallback pet for terminals without a pixel protocol: the XS half-block
@@ -217,13 +463,30 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
 fn state_line(app: &App) -> Line<'static> {
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    match app.state {
+    let active_child = app
+        .active_subagent
+        .as_deref()
+        .and_then(|id| app.subagents.iter().find(|view| view.id == id));
+    let transcript = app.displayed_transcript();
+    let state = active_child
+        .map(|view| {
+            if view.running {
+                RunState::Running
+            } else {
+                RunState::Idle
+            }
+        })
+        .unwrap_or(app.state);
+    match state {
         RunState::Idle => {
             spans.push(Span::styled("● ", Style::default().fg(theme.ok_soft())));
-            spans.push(Span::styled("idle", Style::default().fg(theme.fg_tertiary)));
+            spans.push(Span::styled(
+                app.locale.tr("idle", "空闲"),
+                Style::default().fg(theme.fg_tertiary),
+            ));
             // A clean finish is implied by "idle" — only surface the
             // exceptional endings, in their own accent color.
-            match app.transcript.last_finish.as_deref() {
+            match transcript.last_finish.as_deref() {
                 None | Some("completed") | Some("stop") => {}
                 Some(kind) => {
                     let color = if kind == "error" {
@@ -243,29 +506,31 @@ fn state_line(app: &App) -> Line<'static> {
                 format!("{} ", app.spinner()),
                 Style::default().fg(theme.brand),
             ));
-            let label = if app.state == RunState::Starting {
+            let label = if state == RunState::Starting {
                 if app.state_note.is_empty() {
-                    "starting".to_string()
+                    app.locale.tr("starting", "启动中").to_string()
                 } else {
                     app.state_note.clone()
                 }
-            } else if app.transcript.streaming() {
-                "streaming".to_string()
+            } else if transcript.streaming() {
+                app.locale.tr("streaming", "生成中").to_string()
             } else if !app.state_note.is_empty() {
                 app.state_note.clone()
             } else {
-                "working".to_string()
+                app.locale.tr("working", "工作中").to_string()
             };
             spans.push(Span::styled(label, Style::default().fg(theme.brand_soft)));
-            if let Some(t0) = app.run_started {
-                spans.push(Span::styled(
-                    format!(" {}s", t0.elapsed().as_secs()),
-                    Style::default().fg(theme.caption),
-                ));
+            if active_child.is_none() {
+                if let Some(t0) = app.run_started {
+                    spans.push(Span::styled(
+                        format!(" {}s", t0.elapsed().as_secs()),
+                        Style::default().fg(theme.caption),
+                    ));
+                }
             }
-            if app.queued > 0 {
+            if active_child.is_none() && app.queued > 0 {
                 spans.push(Span::styled(
-                    format!(" · {} queued", app.queued),
+                    format!(" · {} {}", app.queued, app.locale.tr("queued", "条排队中")),
                     Style::default().fg(theme.warn_soft()),
                 ));
             }
@@ -277,6 +542,9 @@ fn state_line(app: &App) -> Line<'static> {
 /// Meta row, left side: the session's mode chips only (run state lives at
 /// the transcript tail).
 fn status_title(app: &App) -> Line<'static> {
+    if !app.session_bound {
+        return Line::default();
+    }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
     // Mode chips: folded from the durable event stream (same facts as the
@@ -284,7 +552,7 @@ fn status_title(app: &App) -> Line<'static> {
     // facts, so the landing screen still advertises preset + permission.
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
-        format!("⚙ {preset} "),
+        format!("⚙ {} ", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
     let perm = app
@@ -293,7 +561,16 @@ fn status_title(app: &App) -> Line<'static> {
         .clone()
         .or_else(|| app.modes.sandbox.clone())
         .unwrap_or_else(|| app.current_permission().to_string());
-    let label = crate::app::permission_label(&perm);
+    let label = if app.locale == crate::locale::Locale::Zh {
+        match perm.as_str() {
+            "read-only" => "只读".to_string(),
+            "workspace-write" => "工作区可写".to_string(),
+            "danger-full-access" => "完全访问".to_string(),
+            _ => crate::app::permission_label(&perm),
+        }
+    } else {
+        crate::app::permission_label(&perm)
+    };
     spans.push(Span::styled(
         format!("⛨ {label}"),
         Style::default().fg(if perm == "danger-full-access" {
@@ -324,7 +601,7 @@ fn status_title(app: &App) -> Line<'static> {
 }
 
 /// Contextual shortcut hints — a tiny state machine over (run state ×
-/// draft): what Enter does *right now*, how to interrupt, how to send
+/// draft): what Enter does *right now*, how to interrupt, how to steer
 /// immediately. Idle+empty falls back to the `^. keys` discovery hint.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
@@ -335,15 +612,21 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
     let running = !matches!(app.state, RunState::Idle);
     let pairs: Vec<(&str, &str)> = match (running, app.input.is_empty()) {
         // Working, nothing typed: the only move is stopping it.
-        (true, true) => vec![("esc", "interrupt")],
-        // Working with a draft: enter queues; ^x interrupts and sends now.
-        (true, false) => vec![("⏎", "queue"), ("^x", "send now"), ("esc", "interrupt")],
+        (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
+        // Working with a draft: enter queues; ^x steers without cancellation.
+        (true, false) => vec![
+            ("⏎", app.locale.tr("queue", "排队")),
+            ("^x", "steer"),
+            ("esc", app.locale.tr("interrupt", "中断")),
+        ],
         // Idle, empty: point at the full shortcut list.
-        (false, true) => vec![("^.", "keys")],
+        (false, true) => vec![("^.", app.locale.tr("keys", "快捷键"))],
         // Idle with a draft: enter's meaning follows the prefix.
-        (false, false) if app.input.buf.starts_with('/') => vec![("⏎", "command")],
+        (false, false) if app.input.buf.starts_with('/') => {
+            vec![("⏎", app.locale.tr("command", "命令"))]
+        }
         (false, false) if app.input.buf.starts_with('!') => vec![("⏎", "shell")],
-        (false, false) => vec![("⏎", "send")],
+        (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
     };
     let mut spans = Vec::new();
     for (i, (k, l)) in pairs.iter().enumerate() {
@@ -376,22 +659,24 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
         ));
     }
     spans.extend(context_hints(app));
-    // Chip precedence: an explicit /model pick (until a turn realizes it)
-    // → the model that actually streamed last → the configured default.
-    let shown_model = app
-        .selected_model
-        .clone()
-        .or_else(|| app.transcript.last_model.clone())
-        .unwrap_or_else(|| app.cfg.model.clone());
-    spans.push(Span::styled(
-        shown_model,
-        Style::default().fg(theme.brand_soft),
-    ));
-    if let Some(effort) = &app.modes.effort {
+    if app.session_bound {
+        // Chip precedence: an explicit /model pick (until a turn realizes it)
+        // → the model that actually streamed last → the configured default.
+        let shown_model = app
+            .selected_model
+            .clone()
+            .or_else(|| app.transcript.last_model.clone())
+            .unwrap_or_else(|| app.cfg.model.clone());
         spans.push(Span::styled(
-            format!(" · {effort}"),
-            Style::default().fg(theme.caption),
+            shown_model,
+            Style::default().fg(theme.brand_soft),
         ));
+        if let Some(effort) = &app.modes.effort {
+            spans.push(Span::styled(
+                format!(" · {effort}"),
+                Style::default().fg(theme.caption),
+            ));
+        }
     }
     if app.demo {
         spans.push(Span::styled(
@@ -408,7 +693,10 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
 /// status strip distinct from the composer panel above it.
 fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
-    f.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
+    f.render_widget(
+        Block::default().style(Style::default().bg(app.canvas_background_color())),
+        area,
+    );
     let inner = Rect::new(
         area.x + 1,
         area.y,
@@ -418,8 +706,8 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     if inner.width < 12 {
         return;
     }
-    let u = app.transcript.usage;
-    let s = app.transcript.stats;
+    let u = app.displayed_transcript().usage;
+    let s = app.displayed_transcript().stats;
 
     let lbl = Style::default().fg(theme.caption);
     let val = Style::default().fg(theme.fg_secondary);
@@ -431,9 +719,15 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
 
     if u.input > 0 || u.output > 0 {
         let mut sp = Vec::new();
-        sp.push(Span::styled("Input ".to_string(), lbl));
+        sp.push(Span::styled(
+            app.locale.tr("Input ", "输入 ").to_string(),
+            lbl,
+        ));
         sp.push(Span::styled(format!("{} tok", fmt_tokens(u.input)), val));
-        sp.push(Span::styled(" • Output ".to_string(), lbl));
+        sp.push(Span::styled(
+            app.locale.tr(" • Output ", " • 输出 ").to_string(),
+            lbl,
+        ));
         sp.push(Span::styled(format!("{} tok", fmt_tokens(u.output)), val));
         sections.push((0, sp));
     }
@@ -441,11 +735,19 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     if s.turns > 0 || s.steps > 0 {
         let mut sp = Vec::new();
         sp.push(Span::styled(
-            format!("{} turn{}", s.turns, if s.turns == 1 { "" } else { "s" }),
+            if app.locale == crate::locale::Locale::Zh {
+                format!("{} 轮", s.turns)
+            } else {
+                format!("{} turn{}", s.turns, if s.turns == 1 { "" } else { "s" })
+            },
             val,
         ));
         sp.push(Span::styled(
-            format!(" • {} step{}", s.steps, if s.steps == 1 { "" } else { "s" }),
+            if app.locale == crate::locale::Locale::Zh {
+                format!(" • {} 步", s.steps)
+            } else {
+                format!(" • {} step{}", s.steps, if s.steps == 1 { "" } else { "s" })
+            },
             val,
         ));
         sections.push((1, sp));
@@ -454,7 +756,10 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     if u.input > 0 {
         let rate = (u.cached as f64 / u.input as f64).min(1.0);
         let mut sp = Vec::new();
-        sp.push(Span::styled("Cache hit ".to_string(), lbl));
+        sp.push(Span::styled(
+            app.locale.tr("Cache hit ", "缓存命中 ").to_string(),
+            lbl,
+        ));
         sp.push(Span::styled(
             format!("{:.0}%", rate * 100.0),
             Style::default()
@@ -468,7 +773,10 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
         let mut sp = Vec::new();
         sp.push(Span::styled("LLM ".to_string(), lbl));
         sp.push(Span::styled(fmt_duration_ms(s.llm_millis()), val));
-        sp.push(Span::styled(" • Tool call ".to_string(), lbl));
+        sp.push(Span::styled(
+            app.locale.tr(" • Tool call ", " • 工具调用 ").to_string(),
+            lbl,
+        ));
         sp.push(Span::styled(fmt_duration_ms(s.tool_millis), val));
         sections.push((3, sp));
     }
@@ -476,7 +784,10 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     if s.ttft_count > 0 || u.output > 0 {
         let tps = tok_per_sec(u.output, s.llm_millis());
         let mut sp = Vec::new();
-        sp.push(Span::styled("TTFT avg ".to_string(), lbl));
+        sp.push(Span::styled(
+            app.locale.tr("TTFT avg ", "平均 TTFT ").to_string(),
+            lbl,
+        ));
         sp.push(Span::styled(fmt_ttft(s.ttft_avg_millis()), val));
         if tps > 0 {
             sp.push(Span::styled(" • ".to_string(), lbl));
@@ -505,7 +816,13 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     if sections.is_empty() {
         spans.push(Span::styled(
-            "no stats yet — send a prompt".to_string(),
+            if app.active_subagent.is_some() {
+                app.locale.tr("no stats yet", "暂无统计").to_string()
+            } else {
+                app.locale
+                    .tr("no stats yet — send a prompt", "暂无统计 — 发送一条消息")
+                    .to_string()
+            },
             lbl,
         ));
     } else {
@@ -545,7 +862,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let thumbs = crate::pet::kitty_supported();
     let layout = app
-        .transcript
+        .displayed_transcript()
         .layout(&theme, inner.width, app.spinner(), thumbs);
     lines.extend(layout.lines);
     owners.extend(layout.owners);
@@ -644,7 +961,7 @@ fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
     let transient = app.tip.is_some();
     let text = match &app.tip {
         Some((t, _)) => t.clone(),
-        None => AMBIENT_TIPS[app.ambient_tip_idx % AMBIENT_TIPS.len()].to_string(),
+        None => app.locale.ambient_tip(app.ambient_tip_idx).to_string(),
     };
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
@@ -653,7 +970,7 @@ fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(text, Style::default().fg(theme.fg)));
     } else {
         spans.push(Span::styled(
-            "Tip".to_string(),
+            app.locale.tr("Tip", "提示").to_string(),
             Style::default()
                 .fg(theme.brand_soft)
                 .add_modifier(Modifier::BOLD),
@@ -675,7 +992,7 @@ fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
         .title(Line::from(spans))
-        .style(Style::default().bg(theme.bg));
+        .style(Style::default().bg(app.canvas_background_color()));
     f.render_widget(block, area);
 }
 
@@ -782,8 +1099,17 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
 
     if app.input.is_empty() {
         let placeholder = match app.state {
-            RunState::Idle => "describe what you want to build…".to_string(),
-            _ => "queue a follow-up — ctrl+x sends it now".to_string(),
+            RunState::Idle => app
+                .locale
+                .tr("describe what you want to build…", "描述你想构建的内容…")
+                .to_string(),
+            _ => app
+                .locale
+                .tr(
+                    "queue a follow-up — ctrl+x steers now",
+                    "输入后续消息 — ctrl+x 立即 steer",
+                )
+                .to_string(),
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -990,7 +1316,7 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
             Style::default().fg(theme.fg_secondary)
         };
         let desc = if cmd.skill {
-            format!("{} · skill", cmd.desc)
+            format!("{} · {}", cmd.desc, app.locale.tr("skill", "技能"))
         } else {
             cmd.desc.to_string()
         };
@@ -1001,9 +1327,9 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
         ]));
     }
     let title = if matches.iter().any(|m| m.skill) {
-        " commands · skills "
+        app.locale.tr(" commands · skills ", " 命令 · 技能 ")
     } else {
-        " commands "
+        app.locale.tr(" commands ", " 命令 ")
     };
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -1066,8 +1392,13 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
                     .is_none_or(|provider| provider == app.cfg.provider)
         }
         crate::app::PickerKind::Mode => item.id == current_mode,
+        crate::app::PickerKind::Theme => item.id == app.active_palette_id,
         crate::app::PickerKind::Permission => item.id == app.current_permission(),
-        crate::app::PickerKind::Effort | crate::app::PickerKind::Session => false,
+        crate::app::PickerKind::Effort
+        | crate::app::PickerKind::Session
+        | crate::app::PickerKind::Subagent
+        | crate::app::PickerKind::Auth
+        | crate::app::PickerKind::Plugin => false,
     };
     let h = (picker.items.len() as u16 + 2).min(screen.height.saturating_sub(2));
     // Fit the widest row (marker + padded label + ✓ + meta); cap to the screen.
@@ -1128,6 +1459,201 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn draw_permission_ask(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(ask) = &app.permission_ask else {
+        return;
+    };
+    let theme = app.theme;
+    let h = (ask.options.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let needed = ask
+        .options
+        .iter()
+        .map(|opt| 2 + opt.name.width().max(24) + 1 + opt.kind.width())
+        .max()
+        .unwrap_or(0) as u16;
+    let cap = screen.width.saturating_sub(4).max(24);
+    let w = (needed + 2).max(58).min(cap);
+    let x = screen.x + (screen.width - w) / 2;
+    let y = screen.y + (screen.height - h) / 3;
+    let area = Rect::new(x, y, w, h);
+    f.render_widget(Clear, area);
+    let mut lines = Vec::new();
+    for (i, opt) in ask.options.iter().enumerate() {
+        let selected = i == ask.sel;
+        let marker = if selected { "▸ " } else { "  " };
+        let reject = opt.kind.starts_with("reject");
+        let style = if selected {
+            Style::default()
+                .fg(if reject { theme.err } else { theme.brand })
+                .add_modifier(Modifier::BOLD)
+        } else if reject {
+            Style::default().fg(theme.err)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
+            Span::styled(format!("{:<24}", opt.name), style),
+            Span::styled(opt.kind.clone(), Style::default().fg(theme.caption)),
+        ]));
+    }
+    let title = format!(" approval · {} · enter select · esc cancel ", ask.title);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.warn))
+        .title(Span::styled(title, Style::default().fg(theme.caption)))
+        .style(Style::default().bg(theme.panel));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(ask) = &app.elicitation_ask else {
+        return;
+    };
+    let Some(state) = ask.form.fields.get(ask.form.index) else {
+        return;
+    };
+    let theme = app.theme;
+    let content_width = screen.width.saturating_sub(10).clamp(28, 74) as usize;
+    let mut lines = Vec::new();
+    lines.push(Line::from(Span::styled(
+        ask.form.message.clone(),
+        Style::default().fg(theme.caption),
+    )));
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        state.field.title.clone(),
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+    )));
+    if let Some(description) = &state.field.description {
+        for paragraph in description.lines() {
+            lines.push(Line::from(Span::styled(
+                pad_or_ellipsize(paragraph, content_width),
+                Style::default().fg(theme.fg_secondary),
+            )));
+        }
+    }
+    lines.push(Line::default());
+
+    match &state.field.kind {
+        crate::elicitation::ElicitationFieldKind::Single { options, .. }
+        | crate::elicitation::ElicitationFieldKind::Multi { options, .. } => {
+            let multi = matches!(
+                state.field.kind,
+                crate::elicitation::ElicitationFieldKind::Multi { .. }
+            );
+            for (index, option) in options.iter().enumerate() {
+                let focused = index == state.cursor;
+                let mark = if multi {
+                    if state.selected.get(index).copied().unwrap_or(false) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    }
+                } else if focused {
+                    "(●)"
+                } else {
+                    "( )"
+                };
+                let mut spans = vec![
+                    Span::styled(
+                        if focused { "▸ " } else { "  " }.to_string(),
+                        Style::default().fg(theme.brand),
+                    ),
+                    Span::styled(
+                        format!("{mark} {}", option.label),
+                        Style::default()
+                            .fg(if focused {
+                                theme.brand
+                            } else {
+                                theme.fg_secondary
+                            })
+                            .add_modifier(if focused {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                ];
+                if let Some(description) = &option.description {
+                    spans.push(Span::styled(
+                        format!(" · {description}"),
+                        Style::default().fg(theme.caption),
+                    ));
+                }
+                lines.push(Line::from(spans));
+                if option.custom && state.editing_custom {
+                    lines.push(Line::from(vec![
+                        Span::styled("      ❯ ", Style::default().fg(theme.brand)),
+                        Span::styled(
+                            format!("{}▏", state.input.buf),
+                            Style::default().fg(theme.fg),
+                        ),
+                    ]));
+                }
+            }
+        }
+        crate::elicitation::ElicitationFieldKind::Boolean { .. } => {
+            for (index, label) in ["Yes", "No"].iter().enumerate() {
+                let focused = index == state.cursor;
+                let chosen = state.selected.get(index).copied().unwrap_or(false);
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if focused { "▸ " } else { "  " }.to_string(),
+                        Style::default().fg(theme.brand),
+                    ),
+                    Span::styled(
+                        format!("{} {label}", if chosen { "(●)" } else { "( )" }),
+                        Style::default().fg(if focused {
+                            theme.brand
+                        } else {
+                            theme.fg_secondary
+                        }),
+                    ),
+                ]));
+            }
+        }
+        _ => {
+            lines.push(Line::from(vec![
+                Span::styled("❯ ", Style::default().fg(theme.brand)),
+                Span::styled(
+                    format!("{}▏", state.input.buf),
+                    Style::default().fg(theme.fg),
+                ),
+            ]));
+        }
+    }
+    if let Some(error) = &ask.form.error {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(theme.err),
+        )));
+    }
+
+    let cap_w = screen.width.saturating_sub(4).max(24);
+    let w = (content_width as u16 + 4).min(cap_w);
+    let h = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let x = screen.x + (screen.width.saturating_sub(w)) / 2;
+    let y = screen.y + (screen.height.saturating_sub(h)) / 3;
+    let area = Rect::new(x, y, w, h);
+    f.render_widget(Clear, area);
+    let count = ask.form.fields.len();
+    let title = format!(
+        " ask · {}/{} · enter next/submit · tab skip · esc cancel ",
+        ask.form.index + 1,
+        count,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.brand))
+        .title(Span::styled(title, Style::default().fg(theme.caption)))
+        .style(Style::default().bg(theme.panel));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 /// Welcome banner: whale, wordmark, slogans, session facts. Shown while
 /// `app.show_banner` is set; the whale dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
@@ -1142,7 +1668,7 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     out.push(centered(
         width,
         vec![Span::styled(
-            "Into the Unknown".to_string(),
+            app.locale.tr("Into the Unknown", "探索未知").to_string(),
             Style::default()
                 .fg(theme.fg_tertiary)
                 .add_modifier(Modifier::BOLD),
@@ -1157,15 +1683,18 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ])
     };
     out.push(kv(
-        "version",
+        app.locale.tr("version", "版本"),
         format!("dsh-tui {}", env!("CARGO_PKG_VERSION")),
     ));
     out.push(kv(
-        "model",
+        app.locale.tr("model", "模型"),
         format!("{} · {}", app.cfg.provider, app.cfg.model),
     ));
-    out.push(kv("workspace", shorten_home(&app.cfg.workspace)));
-    out.push(kv("session", app.session_id.clone()));
+    out.push(kv(
+        app.locale.tr("workspace", "工作区"),
+        shorten_home(&app.cfg.workspace),
+    ));
+    out.push(kv(app.locale.tr("session", "会话"), app.session_id.clone()));
     let runtime_short = app
         .cfg
         .bin
@@ -1173,29 +1702,86 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .next()
         .unwrap_or(&app.cfg.bin)
         .to_string();
-    out.push(kv("runtime", runtime_short));
+    out.push(kv(app.locale.tr("runtime", "运行时"), runtime_short));
     if app.demo {
-        out.push(kv("mode", "demo — scripted turns, no API calls".into()));
+        out.push(kv(
+            app.locale.tr("mode", "模式"),
+            app.locale
+                .tr(
+                    "demo — scripted turns, no API calls",
+                    "演示 — 脚本轮次，不调用 API",
+                )
+                .into(),
+        ));
+    } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
+        let detail = app
+            .auth
+            .method_name
+            .as_deref()
+            .or(app.auth.method_id.as_deref())
+            .unwrap_or("agent");
+        out.push(Line::from(vec![
+            Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
+            Span::styled(
+                if app.locale == crate::locale::Locale::Zh {
+                    format!("需要登录 · {detail} — 使用 /auth（Agent 的 /login 仍作为消息发送）")
+                } else {
+                    format!("sign-in needed · {detail} — /auth (agent /login stays a prompt)")
+                },
+                Style::default().fg(theme.warn_soft()),
+            ),
+        ]));
+    } else if app.auth.status == crate::acp_auth::AuthStatus::Configured {
+        let detail = app
+            .auth
+            .method_name
+            .as_deref()
+            .or(app.auth.method_id.as_deref())
+            .unwrap_or("ACP");
+        out.push(kv(
+            app.locale.tr("credentials", "凭据"),
+            format!("ACP authenticate · {detail}"),
+        ));
     } else if app.attached {
-        out.push(kv("credentials", "host dsh (credential seam)".into()));
+        out.push(kv(
+            app.locale.tr("credentials", "凭据"),
+            app.locale
+                .tr("host dsh (credential seam)", "Host dsh（凭据边界）")
+                .into(),
+        ));
     } else if let Some(source) = app.cfg.credential_source() {
-        out.push(kv("credentials", source.into()));
+        out.push(kv(app.locale.tr("credentials", "凭据"), source.into()));
     } else {
         out.push(Line::from(vec![
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
-                "DEEPSEEK_API_KEY not set — export it, or relaunch with --demo".to_string(),
+                app.locale
+                    .tr(
+                        "DEEPSEEK_API_KEY not set — export it, or relaunch with --demo",
+                        "未设置 DEEPSEEK_API_KEY — 请导出变量，或使用 --demo 重启",
+                    )
+                    .to_string(),
                 Style::default().fg(theme.warn_soft()),
             ),
         ]));
     }
     out.push(Line::from(Span::styled(
-        "  full workspace access — prefer a disposable checkout".to_string(),
+        app.locale
+            .tr(
+                "  full workspace access — prefer a disposable checkout",
+                "  可访问完整工作区 — 建议使用可丢弃的 checkout",
+            )
+            .to_string(),
         Style::default().fg(theme.caption),
     )));
     out.push(Line::default());
     out.push(Line::from(Span::styled(
-        "  /help commands · /keys shortcuts · ! shell · esc interrupt".to_string(),
+        app.locale
+            .tr(
+                "  /help commands · /keys shortcuts · ! shell · esc interrupt",
+                "  /help 命令 · /keys 快捷键 · ! shell · esc 中断",
+            )
+            .to_string(),
         Style::default().fg(theme.caption),
     )));
     out
@@ -1320,6 +1906,22 @@ mod tests {
         App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx)
     }
 
+    fn live_test_app() -> App {
+        let cfg = RuntimeConfig {
+            bin: "dsh-acp".into(),
+            cordis: "cordis".into(),
+            workspace: "/tmp".into(),
+            session_root: fresh_root(),
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, _rx) = mpsc::channel();
+        App::new(Theme::dark(), cfg, "pending".into(), false, true, tx)
+    }
+
     #[test]
     fn composer_is_a_tinted_surface() {
         use ratatui::backend::TestBackend;
@@ -1345,6 +1947,57 @@ mod tests {
     }
 
     #[test]
+    fn active_image_background_clears_only_the_base_canvas() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+
+        let mut app = test_app();
+        app.show_banner = false;
+        app.pet_pixels = true;
+        let mut palette: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/fixtures/demo-skin.v0.json")).unwrap();
+        palette["background"] = serde_json::json!({
+            "source": { "kind": "file", "path": "/opt/liang/stage-00.png" },
+            "fit": "cover",
+            "opacity": 0.42
+        });
+        let (ctl, _commands) = crate::controller::test_controller();
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "palette": palette,
+                    "activate": true
+                }),
+            },
+            &ctl,
+        );
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(
+            buf[(4, 10)].bg,
+            Color::Reset,
+            "chat reveals the image layer"
+        );
+        assert_eq!(
+            buf[(4, 19)].bg,
+            Color::Reset,
+            "footer reveals the image layer"
+        );
+        assert_eq!(
+            buf[(40, 15)].bg,
+            app.theme.panel,
+            "composer remains readable"
+        );
+    }
+
+    #[test]
     fn model_chip_prefers_fresh_pick_until_a_turn_realizes_it() {
         let flat = |spans: Vec<Span>| -> String {
             spans.iter().map(|s| s.content.as_ref()).collect::<String>()
@@ -1360,6 +2013,76 @@ mod tests {
         app.selected_model = None;
         let s = flat(status_right(&app));
         assert!(s.contains("deepseek-v4-pro"), "{s}");
+    }
+
+    #[test]
+    fn live_meta_row_hides_session_options_until_session_bound() {
+        let flat_line = |line: Line| -> String {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let flat_spans = |spans: Vec<Span>| -> String {
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let mut app = live_test_app();
+        app.modes.agent_preset = Some("minimal".into());
+        app.modes.permission = Some("danger-full-access".into());
+        app.modes.effort = Some("high".into());
+
+        assert_eq!(flat_line(status_title(&app)), "");
+        let pending = flat_spans(status_right(&app));
+        assert!(pending.contains("^. keys"), "{pending}");
+        assert!(!pending.contains("deepseek-chat"), "{pending}");
+        assert!(!pending.contains("high"), "{pending}");
+
+        let (ctl, _commands) = crate::controller::test_controller();
+        app.handle(
+            crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::SessionBound {
+                session_id: "acp-session".into(),
+                notice: None,
+            }),
+            &ctl,
+        );
+
+        let bound_left = flat_line(status_title(&app));
+        let bound_right = flat_spans(status_right(&app));
+        assert!(bound_left.contains("minimal"), "{bound_left}");
+        assert!(bound_left.contains("Full access"), "{bound_left}");
+        assert!(bound_right.contains("deepseek-chat"), "{bound_right}");
+        assert!(bound_right.contains("high"), "{bound_right}");
+    }
+
+    #[test]
+    fn cordis_protocol_id_is_rendered_as_creator() {
+        let mut app = test_app();
+        let (ctl, _commands) = crate::controller::test_controller();
+        app.handle(
+            crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Catalog {
+                models: Vec::new(),
+                presets: vec![crate::bus::CatalogPreset {
+                    id: "cordis".into(),
+                    name: "Creator from ACP".into(),
+                    description: String::new(),
+                    broken: false,
+                }],
+            }),
+            &ctl,
+        );
+        app.modes.agent_preset = Some("cordis".into());
+
+        let rendered = status_title(&app)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("Creator from ACP"), "{rendered}");
+        assert!(!rendered.contains("cordis"), "{rendered}");
     }
 
     #[test]
@@ -1390,7 +2113,7 @@ mod tests {
         app.input.set("follow-up".into());
         let s = flat(context_hints(&app));
         assert!(
-            s.contains("⏎ queue") && s.contains("^x send now") && s.contains("esc interrupt"),
+            s.contains("⏎ queue") && s.contains("^x steer") && s.contains("esc interrupt"),
             "{s}"
         );
     }
@@ -1411,6 +2134,78 @@ mod tests {
         assert!(footer.contains("Cache hit 65%"), "{footer}");
         assert!(footer.contains("Input 1.8K tok"), "{footer}");
         assert!(footer.contains("Output 412 tok"), "{footer}");
+    }
+
+    #[test]
+    fn agent_rail_lists_created_subagents_and_their_status() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.subagents.push(crate::app::SubagentView {
+            id: "child-1".into(),
+            parent: "dsh-test".into(),
+            label: "subagent 1".into(),
+            running: true,
+            transcript: crate::transcript::Transcript::new("child-1".into()),
+        });
+        app.subagents.push(crate::app::SubagentView {
+            id: "child-2".into(),
+            parent: "dsh-test".into(),
+            label: "subagent 2".into(),
+            running: false,
+            transcript: crate::transcript::Transcript::new("child-2".into()),
+        });
+
+        let frame = dump_frame(&mut app, 100, 24);
+        assert!(frame.contains("agents"), "{frame}");
+        assert!(frame.contains("● subagent 1"), "{frame}");
+        assert!(frame.contains("✓ subagent 2"), "{frame}");
+    }
+
+    #[test]
+    fn child_view_replaces_the_composer_with_read_only_navigation() {
+        let mut app = test_app();
+        app.show_banner = false;
+        let mut transcript = crate::transcript::Transcript::new("child-1".into());
+        transcript.apply(crate::events::UiEvent::TextDelta {
+            session: "child-1".into(),
+            text: "child-only output".into(),
+        });
+        app.subagents.push(crate::app::SubagentView {
+            id: "child-1".into(),
+            parent: "dsh-test".into(),
+            label: "subagent 1".into(),
+            running: true,
+            transcript,
+        });
+        app.active_subagent = Some("child-1".into());
+
+        let frame = dump_frame(&mut app, 100, 24);
+        assert!(frame.contains("child-only output"), "{frame}");
+        assert!(frame.contains("read-only"), "{frame}");
+        assert!(frame.contains("esc back"), "{frame}");
+        assert!(
+            !frame.contains("describe what you want to build"),
+            "{frame}"
+        );
+        assert!(!frame.contains("send a prompt"), "{frame}");
+    }
+
+    #[test]
+    fn active_running_child_does_not_show_the_main_idle_state() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.subagents.push(crate::app::SubagentView {
+            id: "child-1".into(),
+            parent: "dsh-test".into(),
+            label: "subagent 1".into(),
+            running: true,
+            transcript: crate::transcript::Transcript::new("child-1".into()),
+        });
+        app.active_subagent = Some("child-1".into());
+
+        let frame = dump_frame(&mut app, 100, 24);
+        assert!(frame.contains("working"), "{frame}");
+        assert!(!frame.contains("● idle"), "{frame}");
     }
 
     #[test]
@@ -1683,5 +2478,145 @@ mod tests {
             crate::app::slice_by_cells(&app.chat_view.lines[line], 0, 9).trim_end(),
             "copied text matches the highlighted cells"
         );
+    }
+
+    #[test]
+    fn permission_ask_overlay_lists_kind_name_and_title() {
+        use crate::app::PermissionAskOverlay;
+        use crate::bus::PermissionAskOption;
+        let mut app = test_app();
+        app.show_banner = false;
+        app.permission_ask = Some(PermissionAskOverlay {
+            title: "bash".into(),
+            sel: 1,
+            options: vec![
+                PermissionAskOption {
+                    option_id: "reject".into(),
+                    kind: "reject_once".into(),
+                    name: "Reject".into(),
+                },
+                PermissionAskOption {
+                    option_id: "allow".into(),
+                    kind: "allow_once".into(),
+                    name: "Allow once".into(),
+                },
+            ],
+            reply: None,
+        });
+        let frame = dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("bash"), "tool title in overlay\n{frame}");
+        assert!(frame.contains("Reject"), "option name\n{frame}");
+        assert!(frame.contains("Allow once"), "option name\n{frame}");
+        assert!(frame.contains("reject_once"), "option kind\n{frame}");
+        assert!(frame.contains("allow_once"), "option kind\n{frame}");
+        let allow_row = frame
+            .lines()
+            .find(|l| l.contains("Allow once"))
+            .expect("allow row");
+        assert!(
+            allow_row.contains("▸"),
+            "selection on allow_once: {allow_row}"
+        );
+    }
+
+    #[test]
+    fn plugin_slider_overlay_renders_track_marks_and_keyboard_affordances() {
+        use crate::app::{SliderMark, SliderOverlay};
+
+        let mut app = test_app();
+        app.show_banner = false;
+        app.slider_overlay = Some(SliderOverlay {
+            id: "liang-effort".into(),
+            title: "Liang reasoning effort".into(),
+            min: 0.0,
+            max: 30.0,
+            step: 1.0,
+            marks: vec![
+                SliderMark {
+                    value: 0.0,
+                    id: Some("off".into()),
+                    label: "Off".into(),
+                },
+                SliderMark {
+                    value: 15.0,
+                    id: Some("high".into()),
+                    label: "High".into(),
+                },
+                SliderMark {
+                    value: 30.0,
+                    id: Some("max".into()),
+                    label: "Max".into(),
+                },
+            ],
+            snap_to_marks: true,
+            value: 16.0,
+        });
+
+        let frame = dump_frame(&mut app, 100, 30);
+
+        assert!(frame.contains("Liang reasoning effort"), "title\n{frame}");
+        for label in ["Off", "High", "Max"] {
+            assert!(frame.contains(label), "mark {label}\n{frame}");
+        }
+        assert!(frame.contains("16 / 30"), "current numeric value\n{frame}");
+        assert!(
+            frame.contains("←/→ preview")
+                && frame.contains("enter apply")
+                && frame.contains("esc cancel"),
+            "keyboard affordances\n{frame}"
+        );
+    }
+
+    #[test]
+    fn elicitation_overlay_renders_a_real_question_form() {
+        use crate::app::ElicitationAskOverlay;
+        use crate::elicitation::{
+            ElicitationField, ElicitationFieldKind, ElicitationForm, ElicitationFormState,
+            ElicitationOption,
+        };
+
+        let mut app = test_app();
+        app.show_banner = false;
+        app.elicitation_ask = Some(ElicitationAskOverlay {
+            form: ElicitationFormState::new(ElicitationForm {
+                message: "The agent needs your input.".into(),
+                fields: vec![ElicitationField {
+                    name: "question_0".into(),
+                    custom_name: Some("question_0_custom".into()),
+                    title: "Target".into(),
+                    description: Some("Where should this run?".into()),
+                    required: true,
+                    kind: ElicitationFieldKind::Single {
+                        options: vec![
+                            ElicitationOption {
+                                value: "local".into(),
+                                label: "Local".into(),
+                                description: Some("Run here.".into()),
+                                custom: false,
+                            },
+                            ElicitationOption {
+                                value: "other".into(),
+                                label: "Other".into(),
+                                description: None,
+                                custom: true,
+                            },
+                        ],
+                        default: None,
+                    },
+                }],
+            }),
+            reply: None,
+        });
+
+        let frame = dump_frame(&mut app, 100, 30);
+
+        assert!(frame.contains("Target"), "field header\n{frame}");
+        assert!(
+            frame.contains("Where should this run?"),
+            "question\n{frame}"
+        );
+        assert!(frame.contains("Local"), "choice\n{frame}");
+        assert!(frame.contains("Other"), "custom choice\n{frame}");
+        assert!(frame.contains("enter"), "keyboard affordance\n{frame}");
     }
 }

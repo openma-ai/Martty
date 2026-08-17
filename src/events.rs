@@ -61,6 +61,21 @@ pub enum UiEvent {
     SubagentFinished {
         child: String,
     },
+    /// ACP `user_message_chunk` (session/load replay needs user lines).
+    UserMessage {
+        session: String,
+        text: String,
+    },
+    /// ACP `session_info_update` title.
+    SessionTitle {
+        session: String,
+        title: String,
+    },
+    /// ACP `plan` / `plan_update` snapshot (todo entries, not `plan/mode`).
+    Plan {
+        session: String,
+        summary: String,
+    },
     /// `plan/mode` — dsh-plan-mode collaboration state (last one wins).
     PlanMode {
         session: String,
@@ -97,6 +112,11 @@ pub enum UiEvent {
         session: String,
         outcome: String,
     },
+    /// Cordis TUI theme update (not a session log event).
+    Palette {
+        pack: crate::theme::PalettePack,
+        activate: bool,
+    },
 }
 
 /// Parse a JSON-RPC notification into zero or more UI events.
@@ -121,6 +141,14 @@ pub fn parse_notification(method: &str, params: &Value) -> Vec<UiEvent> {
             child: str_field(params, "childSessionId"),
         }],
         "session.event" => parse_session_event(params),
+        "session/update" => parse_session_update(params),
+        crate::cordis::THEME_UPDATE => match crate::theme::parse_palette_notification(params) {
+            Ok(Some(n)) => vec![UiEvent::Palette {
+                pack: n.pack,
+                activate: n.activate,
+            }],
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }
@@ -236,6 +264,491 @@ fn parse_session_event(params: &Value) -> Vec<UiEvent> {
         "user/message" => parse_user_message(session, data),
         _ => Vec::new(),
     }
+}
+
+fn parse_session_update(params: &Value) -> Vec<UiEvent> {
+    let root_session = str_field(params, "sessionId");
+    let update = params.get("update").unwrap_or(params);
+    let subagent = update
+        .get("_meta")
+        .and_then(|meta| meta.get("dsh"))
+        .and_then(|dsh| dsh.get("subagent"));
+    let session = subagent
+        .and_then(|subagent| subagent.get("childSessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or(&root_session)
+        .to_string();
+    let kind = update
+        .get("sessionUpdate")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match kind {
+        "agent_message_chunk" => {
+            let text = acp_text_content(update.get("content"));
+            let completion = update
+                .get("_meta")
+                .and_then(|meta| meta.get("dsh"))
+                .filter(|dsh| {
+                    dsh.get("event").and_then(Value::as_str) == Some("assistant_message")
+                });
+            let mut events = Vec::new();
+            if !text.is_empty() {
+                events.push(UiEvent::TextDelta {
+                    session: session.clone(),
+                    text,
+                });
+            }
+            if let Some(dsh) = completion {
+                events.push(UiEvent::AssistantFinal {
+                    session,
+                    text: String::new(),
+                    model: dsh.get("model").and_then(Value::as_str).map(str::to_string),
+                });
+            }
+            events
+        }
+        "agent_thought_chunk" => {
+            let text = acp_text_content(update.get("content"));
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![UiEvent::ReasoningDelta { session, text }]
+            }
+        }
+        "user_message_chunk" => {
+            let text = acp_text_content(update.get("content"));
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![UiEvent::UserMessage { session, text }]
+            }
+        }
+        "session_info_update" => {
+            let dsh = update.get("_meta").and_then(|meta| meta.get("dsh"));
+            if let Some(usage) = dsh
+                .filter(|dsh| dsh.get("event").and_then(Value::as_str) == Some("prompt/usage"))
+                .and_then(|dsh| dsh.get("usage"))
+            {
+                return vec![UiEvent::Usage {
+                    session,
+                    input: u64_field(usage, "inputTokens").unwrap_or(0),
+                    output: u64_field(usage, "outputTokens").unwrap_or(0),
+                    cached: u64_field(usage, "cachedReadTokens").unwrap_or(0)
+                        + u64_field(usage, "cachedWriteTokens").unwrap_or(0),
+                    reasoning: u64_field(usage, "thoughtTokens").unwrap_or(0),
+                }];
+            }
+            if let Some(dsh) =
+                dsh.filter(|dsh| dsh.get("event").and_then(Value::as_str) == Some("user/message"))
+            {
+                return vec![UiEvent::UserInjected {
+                    session,
+                    source: str_field(dsh, "source"),
+                    preview: str_field(dsh, "preview"),
+                }];
+            }
+            let title = update
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() {
+                Vec::new()
+            } else {
+                vec![UiEvent::SessionTitle {
+                    session,
+                    title: title.to_string(),
+                }]
+            }
+        }
+        "plan" | "plan_update" => {
+            let summary = plan_summary(update);
+            if summary.is_empty() && update.get("entries").and_then(Value::as_array).is_none() {
+                Vec::new()
+            } else {
+                vec![UiEvent::Plan { session, summary }]
+            }
+        }
+        "plan_removed" => vec![UiEvent::Plan {
+            session,
+            summary: String::new(),
+        }],
+        "tool_call"
+            if subagent
+                .and_then(|subagent| subagent.get("state"))
+                .and_then(Value::as_str)
+                == Some("started") =>
+        {
+            vec![UiEvent::SubagentStarted {
+                parent: root_session,
+                child: session,
+            }]
+        }
+        "tool_call" => vec![UiEvent::ToolCall {
+            session,
+            call_id: first_str(update, &["toolCallId", "tool_call_id"]),
+            name: first_str(update, &["title", "kind", "toolName"]),
+            arguments: update
+                .get("rawInput")
+                .or_else(|| update.get("raw_input"))
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        }],
+        "tool_call_update"
+            if subagent
+                .and_then(|subagent| subagent.get("state"))
+                .and_then(Value::as_str)
+                == Some("finished") =>
+        {
+            vec![UiEvent::SubagentFinished { child: session }]
+        }
+        "tool_call_update" => {
+            let status = first_str(update, &["status"]);
+            if status != "completed" && status != "failed" {
+                return Vec::new();
+            }
+            let text = acp_tool_output_text(update);
+            vec![UiEvent::ToolResult {
+                session,
+                call_id: first_str(update, &["toolCallId", "tool_call_id"]),
+                is_error: status == "failed",
+                text,
+                error: None,
+            }]
+        }
+        "current_mode_update" => {
+            let mode = first_str(update, &["currentModeId", "current_mode_id"]);
+            if mode.is_empty() {
+                Vec::new()
+            } else {
+                vec![
+                    UiEvent::PermissionPreset {
+                        session: session.clone(),
+                        preset: mode.clone(),
+                    },
+                    UiEvent::SandboxMode { session, mode },
+                ]
+            }
+        }
+        "config_option_update" => {
+            let options = update
+                .get("configOptions")
+                .or_else(|| update.get("config_options"));
+            options
+                .map(|options| config_option_events(session, options))
+                .unwrap_or_default()
+        }
+        // Standard ACP `usage_update` reports context-window pressure as
+        // `used`/`size`; turn token totals come from `PromptResponse.usage`.
+        "usage_update" => Vec::new(),
+        _ => Vec::new(),
+    }
+}
+
+fn acp_text_content(content: Option<&Value>) -> String {
+    let Some(content) = content else {
+        return String::new();
+    };
+    if let Some(text) = content.get("text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    concat_text_blocks(content)
+}
+
+fn acp_tool_output_text(update: &Value) -> String {
+    if let Some(data) = update
+        .get("_meta")
+        .and_then(|m| m.get("terminal_output"))
+        .and_then(|t| t.get("data"))
+        .and_then(Value::as_str)
+    {
+        if !data.is_empty() {
+            return data.to_string();
+        }
+    }
+    if let Some(raw) = update.get("rawOutput").or_else(|| update.get("raw_output")) {
+        if let Some(s) = raw.as_str() {
+            return s.to_string();
+        }
+        if let Some(s) = raw.get("output").and_then(Value::as_str) {
+            return s.to_string();
+        }
+        return raw.to_string();
+    }
+    if let Some(content) = update.get("content") {
+        return concat_text_blocks(content);
+    }
+    String::new()
+}
+
+fn plan_summary(update: &Value) -> String {
+    let entries = update
+        .get("entries")
+        .or_else(|| update.get("plan").and_then(|p| p.get("entries")))
+        .and_then(Value::as_array);
+    if let Some(entries) = entries {
+        let parts: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| {
+                let content = entry.get("content").and_then(Value::as_str)?;
+                let status = entry.get("status").and_then(Value::as_str).unwrap_or("");
+                if status.is_empty() {
+                    Some(content.to_string())
+                } else {
+                    Some(format!("{content} [{status}]"))
+                }
+            })
+            .collect();
+        return parts.join(" · ");
+    }
+    update
+        .get("plan")
+        .and_then(|p| p.get("content"))
+        .and_then(Value::as_str)
+        .or_else(|| update.get("content").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn first_str(v: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        let s = str_field(v, key);
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    String::new()
+}
+
+/// Flatten ACP select options, including `{ group, options }` rows.
+pub fn flatten_select_options(options: &Value) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let Some(arr) = options.as_array() else {
+        return out;
+    };
+    for item in arr {
+        if let Some(nested) = item.get("options") {
+            out.extend(flatten_select_options(nested));
+            continue;
+        }
+        let Some(value) = item.get("value").and_then(Value::as_str) else {
+            continue;
+        };
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(value)
+            .to_string();
+        let description = item
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        out.push((value.to_string(), name, description));
+    }
+    out
+}
+
+/// The extra composition select, if the agent advertised one.
+/// Prefers `agent` / `preset` / `agent-preset`; else the first uncategorized
+/// select that is not mode/model/effort.
+pub fn composition_option<'a>(options: &'a Value) -> Option<&'a Value> {
+    let arr = options.as_array()?;
+    let named = arr.iter().find(|option| {
+        matches!(
+            option.get("id").and_then(Value::as_str),
+            Some("agent" | "preset" | "agent-preset")
+        )
+    });
+    if named.is_some() {
+        return named;
+    }
+    arr.iter().find(|option| {
+        option.get("type").and_then(Value::as_str) == Some("select")
+            && option.get("category").and_then(Value::as_str).is_none()
+            && !matches!(
+                option.get("id").and_then(Value::as_str),
+                Some("mode" | "model" | "effort" | "collaboration_mode")
+            )
+    })
+}
+
+fn composition_current_value(options: Option<&Value>) -> Option<String> {
+    let options = options?;
+    let option = composition_option(options)?;
+    option
+        .get("currentValue")
+        .or_else(|| option.get("current_value"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn collaboration_mode_active(options: Option<&Value>) -> Option<bool> {
+    let option = options?
+        .as_array()?
+        .iter()
+        .find(|option| option.get("id").and_then(Value::as_str) == Some("collaboration_mode"))?;
+    option
+        .get("currentValue")
+        .or_else(|| option.get("current_value"))
+        .and_then(Value::as_str)
+        .map(|value| value == "plan")
+}
+
+/// Fold a complete ACP `configOptions` snapshot into the client-facing facts
+/// that drive existing composer chrome. Used for both setup responses and
+/// later `config_option_update` notifications.
+pub fn config_option_events(session: String, options: &Value) -> Vec<UiEvent> {
+    let mut events = Vec::new();
+    if let Some(active) = collaboration_mode_active(Some(options)) {
+        events.push(UiEvent::PlanMode {
+            session: session.clone(),
+            active,
+        });
+    }
+    if let Some(preset) = composition_current_value(Some(options)) {
+        events.push(UiEvent::AgentPreset { session, preset });
+    }
+    events
+}
+
+/// Models + composition choices from ACP `configOptions`.
+pub fn catalog_from_config_options(
+    options: &Value,
+) -> (
+    Vec<crate::bus::CatalogModel>,
+    Vec<crate::bus::CatalogPreset>,
+    Option<String>,
+) {
+    let mut models = Vec::new();
+    if let Some(arr) = options.as_array() {
+        if let Some(model) = arr
+            .iter()
+            .find(|o| o.get("id").and_then(Value::as_str) == Some("model"))
+        {
+            for (id, name, _) in
+                flatten_select_options(model.get("options").unwrap_or(&Value::Null))
+            {
+                let (provider, model_id) = match id.split_once('/') {
+                    Some((p, m)) => (p.to_string(), m.to_string()),
+                    None => (String::new(), id.clone()),
+                };
+                models.push(crate::bus::CatalogModel {
+                    provider,
+                    id: model_id,
+                    name,
+                    vision: false,
+                });
+            }
+        }
+    }
+    let composition = composition_option(options);
+    let composition_id = composition
+        .and_then(|o| o.get("id").and_then(Value::as_str))
+        .map(str::to_string);
+    let mut presets = Vec::new();
+    if let Some(option) = composition {
+        for (id, name, description) in
+            flatten_select_options(option.get("options").unwrap_or(&Value::Null))
+        {
+            let broken = description.starts_with("Broken:");
+            presets.push(crate::bus::CatalogPreset {
+                id,
+                name,
+                description,
+                broken,
+            });
+        }
+    }
+    (models, presets, composition_id)
+}
+
+/// ACP session modes (`session/new.modes` / `availableModes`).
+pub fn session_modes_from_value(modes: &Value) -> (Vec<crate::bus::CatalogPreset>, Option<String>) {
+    let current = first_str(modes, &["currentModeId", "current_mode_id"]);
+    let current = if current.is_empty() {
+        None
+    } else {
+        Some(current)
+    };
+    let mut out = Vec::new();
+    let Some(arr) = modes
+        .get("availableModes")
+        .or_else(|| modes.get("available_modes"))
+        .and_then(Value::as_array)
+    else {
+        return (out, current);
+    };
+    for mode in arr {
+        let Some(id) = mode.get("id").and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            other => other.as_str().map(str::to_string),
+        }) else {
+            continue;
+        };
+        out.push(crate::bus::CatalogPreset {
+            name: mode
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(&id)
+                .to_string(),
+            description: mode
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            id,
+            broken: false,
+        });
+    }
+    (out, current)
+}
+
+/// Slash entries from `available_commands_update`.
+pub fn skills_from_available_commands(commands: &Value) -> Vec<crate::bus::SkillInfo> {
+    let mut out = Vec::new();
+    let Some(arr) = commands.as_array() else {
+        return out;
+    };
+    for command in arr {
+        let Some(name) = command.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        out.push(crate::bus::SkillInfo {
+            name: name.to_string(),
+            description: command
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            config_action: command_config_action(command),
+        });
+    }
+    out
+}
+
+fn command_config_action(command: &Value) -> Option<crate::bus::CommandConfigAction> {
+    for carrier in [command.get("metadata"), command.get("_meta")]
+        .into_iter()
+        .flatten()
+    {
+        let action = carrier.get("commandAction")?;
+        if action.get("kind").and_then(Value::as_str) != Some("setConfigOption") {
+            continue;
+        }
+        let config_id = action.get("configId")?.as_str()?;
+        let value = action.get("value")?.as_str()?;
+        let reset_value = action
+            .get("resetValue")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        return Some(crate::bus::CommandConfigAction {
+            config_id: config_id.to_string(),
+            value: value.to_string(),
+            reset_value,
+        });
+    }
+    None
 }
 
 fn parse_assistant_chunk(session: String, data: &Value) -> Vec<UiEvent> {
@@ -417,6 +930,80 @@ mod tests {
 
         let ev = parse_notification("subagent.finished", &json!({"childSessionId": "c"}));
         assert_eq!(ev, vec![UiEvent::SubagentFinished { child: "c".into() }]);
+    }
+
+    #[test]
+    fn standard_acp_subagent_tool_calls_restore_the_lifecycle() {
+        let started = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "parent",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "subagent:run-1",
+                    "title": "Start subagent child",
+                    "status": "in_progress",
+                    "_meta": {"dsh": {"subagent": {
+                        "state": "started",
+                        "childSessionId": "child"
+                    }}}
+                }
+            }),
+        );
+        assert_eq!(
+            started,
+            vec![UiEvent::SubagentStarted {
+                parent: "parent".into(),
+                child: "child".into(),
+            }]
+        );
+
+        let finished = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "parent",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "subagent:run-1",
+                    "status": "completed",
+                    "_meta": {"dsh": {"subagent": {
+                        "state": "finished",
+                        "childSessionId": "child"
+                    }}}
+                }
+            }),
+        );
+        assert_eq!(
+            finished,
+            vec![UiEvent::SubagentFinished {
+                child: "child".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn nested_acp_updates_are_attributed_to_the_child_session() {
+        let events = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "parent",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "child says hi"},
+                    "_meta": {"dsh": {"subagent": {
+                        "childSessionId": "child",
+                        "parentToolCallId": "subagent:run-1"
+                    }}}
+                }
+            }),
+        );
+        assert_eq!(
+            events,
+            vec![UiEvent::TextDelta {
+                session: "child".into(),
+                text: "child says hi".into(),
+            }]
+        );
     }
 
     #[test]
@@ -766,6 +1353,296 @@ mod tests {
     }
 
     #[test]
+    fn tui_palette_notification_activates_ember() {
+        let palette: Value =
+            serde_json::from_str(include_str!("../docs/fixtures/demo-skin.v0.json")).unwrap();
+        let ev = parse_notification(
+            crate::cordis::THEME_UPDATE,
+            &json!({"protocol": 0, "palette": palette, "activate": true}),
+        );
+        match &ev[..] {
+            [UiEvent::Palette { pack, activate }] => {
+                assert_eq!(pack.id, "ember");
+                assert!(*activate);
+                assert_eq!(
+                    pack.theme(crate::theme::Mode::Dark).brand,
+                    ratatui::style::Color::Rgb(247, 140, 60)
+                );
+            }
+            other => panic!("expected Palette, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tui_palette_wrong_protocol_or_invalid_yields_nothing() {
+        let palette: Value =
+            serde_json::from_str(include_str!("../docs/fixtures/demo-skin.v0.json")).unwrap();
+        assert!(parse_notification(
+            crate::cordis::THEME_UPDATE,
+            &json!({"protocol": 1, "palette": palette, "activate": true})
+        )
+        .is_empty());
+        assert!(parse_notification(
+            crate::cordis::THEME_UPDATE,
+            &json!({"protocol": 0, "palette": {"id": "x"}, "activate": true})
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn session_update_maps_chunks_tools_and_agent_option() {
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "hi"}
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::TextDelta {
+                session: "s".into(),
+                text: "hi".into()
+            }]
+        );
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": ""},
+                    "messageId": "2:3",
+                    "_meta": {
+                        "dsh": {"event": "assistant_message", "model": "deepseek-v4"}
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::AssistantFinal {
+                session: "s".into(),
+                text: String::new(),
+                model: Some("deepseek-v4".into()),
+            }]
+        );
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "sessionUpdate": "current_mode_update",
+                "currentModeId": "read-only"
+            }),
+        );
+        assert!(ev.iter().any(
+            |e| matches!(e, UiEvent::PermissionPreset { preset, .. } if preset == "read-only")
+        ));
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [
+                        {"type": "select", "id": "mode", "category": "mode", "currentValue": "read-only", "options": []},
+                        {"type": "select", "id": "agent", "currentValue": "cordis", "options": [{"value": "cordis", "name": "Cordis"}]}
+                    ]
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::AgentPreset {
+                session: "s".into(),
+                preset: "cordis".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn context_usage_update_is_not_misread_as_token_breakdown() {
+        let events = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "used": 170,
+                    "size": 1000
+                }
+            }),
+        );
+
+        assert!(
+            events.is_empty(),
+            "ACP usage_update is context pressure; token breakdown comes from PromptResponse.usage"
+        );
+    }
+
+    #[test]
+    fn dsh_injected_context_metadata_restores_the_existing_ui_event() {
+        let events = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {
+                        "dsh": {
+                            "event": "user/message",
+                            "source": "compaction",
+                            "preview": "summary context"
+                        }
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(
+            events,
+            vec![UiEvent::UserInjected {
+                session: "s".into(),
+                source: "compaction".into(),
+                preview: "summary context".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn dsh_resume_usage_metadata_restores_one_token_snapshot() {
+        let events = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {
+                        "dsh": {
+                            "event": "prompt/usage",
+                            "usage": {
+                                "inputTokens": 41,
+                                "outputTokens": 9,
+                                "thoughtTokens": 4,
+                                "cachedReadTokens": 13,
+                                "cachedWriteTokens": 2
+                            }
+                        }
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(
+            events,
+            vec![UiEvent::Usage {
+                session: "s".into(),
+                input: 41,
+                output: 9,
+                cached: 15,
+                reasoning: 4,
+            }]
+        );
+    }
+
+    #[test]
+    fn collaboration_config_update_restores_plan_mode_from_standard_acp() {
+        let events = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [{
+                        "type": "select",
+                        "id": "collaboration_mode",
+                        "currentValue": "plan",
+                        "options": [
+                            {"value": "default", "name": "Default"},
+                            {"value": "plan", "name": "Plan"}
+                        ]
+                    }]
+                }
+            }),
+        );
+
+        assert_eq!(
+            events,
+            vec![UiEvent::PlanMode {
+                session: "s".into(),
+                active: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn available_plan_command_keeps_its_standard_config_action() {
+        let commands = skills_from_available_commands(&json!([{
+            "name": "plan",
+            "description": "Enter or leave plan mode",
+            "_meta": {
+                "commandAction": {
+                    "kind": "setConfigOption",
+                    "configId": "collaboration_mode",
+                    "value": "plan",
+                    "resetValue": "default"
+                }
+            }
+        }]));
+
+        assert_eq!(
+            commands[0].config_action,
+            Some(crate::bus::CommandConfigAction {
+                config_id: "collaboration_mode".into(),
+                value: "plan".into(),
+                reset_value: Some("default".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn catalog_prefers_agent_id_and_flattens_groups() {
+        let options = json!([
+            {"type": "select", "id": "model", "category": "model", "options": [{"value": "deepseek/m1", "name": "M1"}]},
+            {"type": "select", "id": "agent", "options": [
+                {"group": "system", "name": "System", "options": [
+                    {"value": "cordis", "name": "Cordis", "description": "inspect"},
+                    {"value": "broken", "name": "Broken", "description": "Broken: missing yaml"}
+                ]}
+            ]}
+        ]);
+        let (models, presets, id) = catalog_from_config_options(&options);
+        assert_eq!(id.as_deref(), Some("agent"));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "m1");
+        assert_eq!(presets.len(), 2);
+        assert_eq!(presets[0].id, "cordis");
+        assert!(presets[1].broken);
+    }
+
+    #[test]
+    fn session_modes_read_available_and_current() {
+        let modes = json!({
+            "currentModeId": "workspace-write",
+            "availableModes": [
+                {"id": "read-only", "name": "Read only", "description": "no writes"},
+                {"id": "workspace-write", "name": "Workspace write"}
+            ]
+        });
+        let (list, current) = session_modes_from_value(&modes);
+        assert_eq!(current.as_deref(), Some("workspace-write"));
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "read-only");
+        assert_eq!(list[1].name, "Workspace write");
+    }
+
+    #[test]
     fn malformed_payloads_yield_empty_vec() {
         // Non-object params.
         assert!(parse_notification("session.event", &json!("garbage")).is_empty());
@@ -899,5 +1776,115 @@ mod mode_event_tests {
         );
         // malformed plan/mode stays silent
         assert!(parse_notification("session.event", &ev("plan/mode", json!({}))).is_empty());
+    }
+
+    #[test]
+    fn session_update_maps_user_title_plan_and_terminal_output() {
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "hello from load"}
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::UserMessage {
+                session: "s".into(),
+                text: "hello from load".into()
+            }]
+        );
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "title": "fix the tests"
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::SessionTitle {
+                session: "s".into(),
+                title: "fix the tests".into()
+            }]
+        );
+        assert!(parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {"sessionUpdate": "session_info_update", "title": null}
+            }),
+        )
+        .is_empty());
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "plan",
+                    "entries": [
+                        {"content": "locate fn main", "status": "completed"},
+                        {"content": "read", "status": "in_progress"}
+                    ]
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::Plan {
+                session: "s".into(),
+                summary: "locate fn main [completed] · read [in_progress]".into()
+            }]
+        );
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "plan",
+                    "entries": []
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::Plan {
+                session: "s".into(),
+                summary: String::new()
+            }],
+            "an empty full snapshot must clear the previous plan"
+        );
+
+        let ev = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "c1",
+                    "status": "completed",
+                    "_meta": {"terminal_output": {"terminal_id": "c1", "data": "ls output"}}
+                }
+            }),
+        );
+        assert_eq!(
+            ev,
+            vec![UiEvent::ToolResult {
+                session: "s".into(),
+                call_id: "c1".into(),
+                is_error: false,
+                text: "ls output".into(),
+                error: None,
+            }]
+        );
     }
 }

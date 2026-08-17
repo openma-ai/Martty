@@ -1,0 +1,10 @@
+{
+  "name": "deepseek-harness-tui-creator-overlay",
+  "private": true,
+  "main": "../lib/creator-overlay.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { registerHooks } from 'node:module'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
@@ -9,22 +10,18 @@ import { state, fakeChild } from './plugin-runner-harness.mjs'
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const packageJsonPath = path.join(repoRoot, 'npm', 'package.json')
 const runnerPath = path.join(repoRoot, 'npm', 'lib', 'index.js')
+const bootPath = path.join(repoRoot, 'npm', 'lib', 'boot.js')
 const harnessUrl = pathToFileURL(path.join(repoRoot, 'scripts', 'plugin-runner-harness.mjs')).href
 
 const stubSources = {
-  './jsonrpc-line-transport.js': `import { FakeTransport } from ${JSON.stringify(harnessUrl)}; export { FakeTransport as JsonRpcLineTransport }`,
-  '@deepseek-ai/dsh-llm': `export function createUserMessage(m) { return { id: 'msg-1', ...m } }`,
-  '@deepseek-ai/dsh-session': `export function SessionId(s) { return s }`,
-  '@deepseek-ai/dsh-agent': `export function installModelSelection() {}`,
-  '@deepseek-ai/dsh-scope': `export function carrierKeyOf() { return undefined }`,
-  '@deepseek-ai/dsh-llm-deepseek': `export const name = 'llm-deepseek'; export function apply() {}`,
   'node:child_process': `export { spawnTui as spawn } from ${JSON.stringify(harnessUrl)}`,
 }
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    const fromRunner = context.parentURL?.includes('/npm/lib/index.js')
-    if (fromRunner && specifier in stubSources) {
+    const fromPluginLib = context.parentURL?.includes('/npm/lib/index.js')
+      || context.parentURL?.includes('/npm/lib/spawn-tui.js')
+    if (fromPluginLib && specifier in stubSources) {
       return {
         url: `data:text/javascript,${encodeURIComponent(stubSources[specifier])}`,
         shortCircuit: true,
@@ -35,6 +32,45 @@ registerHooks({
 })
 
 const runner = await import(pathToFileURL(runnerPath).href)
+const { bootClient } = await import(pathToFileURL(bootPath).href)
+const { installTuiTheme } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-theme.js')).href
+)
+const { installTuiSlots } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-slots.js')).href
+)
+const { installTuiCommands } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-commands.js')).href
+)
+const { installTuiOverlay } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-overlay.js')).href
+)
+const { installAcpSessionConfig } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'acp-session-config.js')).href
+)
+const { selectNativeBinary } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'spawn-tui.js')).href
+)
+
+test('a source checkout prefers its current debug painter over a stale packaged binary', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'dsh-tui-native-select-'))
+  try {
+    const debug = path.join(root, 'target', 'debug', 'dsh-tui')
+    const packaged = path.join(root, 'npm', 'vendor', 'darwin-arm64', 'dsh-tui')
+    mkdirSync(path.dirname(debug), { recursive: true })
+    mkdirSync(path.dirname(packaged), { recursive: true })
+    writeFileSync(debug, 'current-debug')
+    writeFileSync(packaged, 'stale-packaged')
+
+    assert.equal(selectNativeBinary({ devBin: debug, packagedBin: packaged }), debug)
+    assert.equal(
+      selectNativeBinary({ envBin: '/missing/override', devBin: debug, packagedBin: packaged }),
+      debug,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('the published plugin is ESM so Cordis can import() it in parallel', () => {
   const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
@@ -42,23 +78,76 @@ test('the published plugin is ESM so Cordis can import() it in parallel', () => 
   const source = readFileSync(runnerPath, 'utf8')
   assert.match(source, /^import /m)
   assert.match(source, /export function apply/)
+  assert.equal(runner.inject.includes('acpClient'), true)
   assert.doesNotMatch(source, /module\.exports/)
-  assert.doesNotMatch(source, /require\(['"]@deepseek-ai\//)
-  assert.match(source, /from '\.\/jsonrpc-line-transport\.js'/)
-  assert.doesNotMatch(source, /from '@deepseek-ai\/dsh-sdk-protocol'/)
+  assert.doesNotMatch(source, /from '@deepseek-ai\/dsh-/)
+  assert.doesNotMatch(source, /from '@openma\/deepseek-harness-acp/)
 })
 
-test('the bundle does not npm-depend on @deepseek-ai packages', () => {
+test('the bundle carries ACP as a dependency and its Creator overlay internally', () => {
   const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
+  assert.deepEqual(pkg.dsh, { bundle: { patch: './cordis.patch.yml' } })
   for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
-    const names = Object.keys(pkg[field] ?? {}).filter((name) => name.startsWith('@deepseek-ai/'))
-    assert.deepEqual(names, [], field)
+    const names = Object.keys(pkg[field] ?? {})
+    const forbidden = names.filter(
+      (name) => name.startsWith('@deepseek-ai/dsh-'),
+    )
+    assert.deepEqual(forbidden, [], field)
+    const otherDeepseek = names.filter(
+      (name) => name.startsWith('@deepseek-ai/') && name !== '@deepseek-ai/cordis',
+    )
+    assert.deepEqual(otherDeepseek, [], field)
+  }
+  assert.equal(pkg.dependencies['@deepseek-ai/cordis'] !== undefined, true)
+  assert.equal(pkg.dependencies['@openma/deepseek-harness-acp'] !== undefined, true)
+  assert.equal(pkg.dependencies['@openma/deepseek-harness-tui-creator'], undefined)
+  assert.equal(pkg.exports['./creator-overlay'], './lib/creator-overlay.js')
+  assert.equal(pkg.files.includes('creator'), true)
+  assert.equal(pkg.files.includes('skills/tui-plugin-development/SKILL.md'), true)
+})
+
+test('standalone boot mounts the Cordis Client runner before the shell', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  try {
+    const ctx = await bootClient({
+      stream: { stdin: fakeStream(), stdout: fakeStream() },
+      extraArgs: [],
+    })
+    const clientRunner = ctx.get('tuiCordisClientRunner')
+    assert.equal(typeof clientRunner?.bindTransport, 'function')
+    assert.equal(typeof clientRunner?.onHost, 'function')
+    assert.equal(typeof ctx.get('tuiSlots')?.register, 'function')
+    assert.equal(typeof ctx.get('tuiCommands')?.register, 'function')
+    assert.equal(typeof ctx.get('tuiOverlay')?.openSlider, 'function')
+  } finally {
+    restore()
+  }
+})
+
+test('Client-process boot keeps ACP on stdio and maps inherited TTY fds to the painter', async () => {
+  runner.resetShellForTests()
+  state.spawnCalls.length = 0
+  const restore = ensureTestNative()
+  try {
+    await bootClient({
+      stream: { stdin: fakeStream(), stdout: fakeStream() },
+      extraArgs: [],
+      tty: { stdin: 3, stdout: 4 },
+    })
+    assert.deepEqual(state.spawnCalls.at(-1).options.stdio, [
+      3, 4, 'inherit', 'pipe', 'pipe',
+    ])
+  } finally {
+    runner.resetShellForTests()
+    restore()
   }
 })
 
 test('extra-fd EPIPE after the TUI exits is not an unhandled error', {
   skip: process.platform === 'win32' ? 'Windows uses the TCP plugin transport' : false,
 }, async () => {
+  runner.resetShellForTests()
   const restore = ensureTestNative()
   try {
     await runner.apply(makeCtx())
@@ -73,6 +162,7 @@ test('extra-fd EPIPE after the TUI exits is not an unhandled error', {
 })
 
 test('Windows plugin transport uses authenticated loopback TCP instead of extra fds', async () => {
+  runner.resetShellForTests()
   const restore = ensureTestNative()
   const previous = process.env.DSH_TUI_FORCE_TCP
   process.env.DSH_TUI_FORCE_TCP = '1'
@@ -84,7 +174,6 @@ test('Windows plugin transport uses authenticated loopback TCP instead of extra 
     assert.match(call.args[1], /^127\.0\.0\.1:\d+$/)
     assert.deepEqual(call.options.stdio, ['inherit', 'inherit', 'inherit'])
     assert.match(call.options.env.DSH_TUI_ATTACH_TOKEN, /^[a-f0-9]{64}$/)
-    assert.ok(state.transport, 'JSON-RPC transport is created after authentication')
   } finally {
     if (previous === undefined) delete process.env.DSH_TUI_FORCE_TCP
     else process.env.DSH_TUI_FORCE_TCP = previous
@@ -93,6 +182,7 @@ test('Windows plugin transport uses authenticated loopback TCP instead of extra 
 })
 
 test('Windows plugin transport reports a child launch failure before handshake timeout', async () => {
+  runner.resetShellForTests()
   const restore = ensureTestNative()
   const previous = process.env.DSH_TUI_FORCE_TCP
   process.env.DSH_TUI_FORCE_TCP = '1'
@@ -107,53 +197,54 @@ test('Windows plugin transport reports a child launch failure before handshake t
   }
 })
 
-function makeCtx({ withPermissionService = true } = {}) {
-  const handlers = new Map()
-  const agents = new Map()
-  const permissionSvc = {
-    get names() {
-      return ['workspace-write', 'danger-full-access']
+function fakeStream() {
+  const listeners = { error: [] }
+  return {
+    listeners,
+    on(event, fn) {
+      ;(listeners[event] ??= []).push(fn)
+      return this
     },
-    set(session, name) {
-      if (!this.names.includes(name)) {
-        throw new Error(`permission: unknown preset "${name}" (known: ${this.names.join(', ')})`)
-      }
-      state.setCalls.push({ sessionId: session.id, preset: name })
-    },
-    current() {
-      return 'workspace-write'
+    write() {
+      return true
     },
   }
-  return {
+}
+
+function makeCtx({ cordisClientRunner } = {}) {
+  const defaultClientRunner = {
+    bindTransport() {},
+    onHost() {},
+    selectTheme() {},
+  }
+  const ctx = {
+    acpClient: {
+      stdin: fakeStream(),
+      stdout: fakeStream(),
+    },
     get(name) {
-      if (name === 'permissionPresets') return withPermissionService ? permissionSvc : undefined
+      if (name === 'acpClient') return this.acpClient
+      if (name === 'tuiCordisClientRunner') return this.tuiCordisClientRunner
+      if (name === 'tuiSlots') return this.tuiSlots
+      if (name === 'tuiCommands') return this.tuiCommands
+      if (name === 'tuiOverlay') return this.tuiOverlay
+      if (name === 'acpSessionConfig') return this.acpSessionConfig
       return undefined
     },
-    on(event, fn) {
-      const list = handlers.get(event) ?? []
-      list.push(fn)
-      handlers.set(event, list)
+    on() {
       return () => {}
     },
     effect(fn) {
-      fn()
+      return fn()
     },
-    agents: {
-      async create({ sessionId, setup }) {
-        const session = { id: sessionId, events: [], header: {} }
-        const agent = { id: `agent-${sessionId}`, session, followup() {} }
-        agents.set(agent.id, agent)
-        await setup({})
-        for (const fn of handlers.get('session/created') ?? []) fn(session)
-        return { agent, dispose() {} }
-      },
-      get(id) {
-        return agents.get(id)
-      },
-    },
-    root: { fiber: { dispose() {} } },
-    plugin: async () => ({ dispose() {} }),
   }
+  ctx.tuiCordisClientRunner = cordisClientRunner ?? defaultClientRunner
+  installTuiTheme(ctx)
+  installTuiSlots(ctx)
+  installTuiCommands(ctx)
+  installTuiOverlay(ctx)
+  installAcpSessionConfig(ctx)
+  return ctx
 }
 
 function ensureTestNative() {
@@ -167,46 +258,229 @@ function ensureTestNative() {
   return () => rmSync(bin, { force: true })
 }
 
-test('tui/permission stages before the first prompt and applies on create', async () => {
+test('shell consumes tuiTheme and register notifies _dsh/cordis/tui/theme/update toward the painter', async () => {
+  runner.resetShellForTests()
   const restore = ensureTestNative()
   try {
-    await runner.apply(makeCtx())
-    const request = (method, params) => state.transport.handler(method, params)
+    const ctx = makeCtx()
+    await runner.apply(ctx)
+    assert.equal(typeof ctx.tuiTheme?.register, 'function')
 
-  let res = await request('tui/permission', { sessionId: 's1', preset: 'danger-full-access' })
-  assert.deepEqual(res, { ok: true, applied: 'on-first-prompt' })
-  assert.equal(state.setCalls.length, 0, 'nothing applied yet — no session')
-  assert.deepEqual(state.notifications, [
-    {
-      method: 'session.event',
-      params: { sessionId: 's1', event: { type: 'permission/preset', data: { preset: 'danger-full-access' } } },
-    },
-  ])
-
-  res = await request('tui/permission', { sessionId: 's1', preset: 'danger-full-access' })
-  assert.deepEqual(res, { ok: true, applied: 'on-first-prompt' })
-  assert.equal(state.notifications.length, 1)
-
-  await assert.rejects(
-    request('tui/permission', { sessionId: 's1', preset: 'bogus' }),
-    /unknown permission preset "bogus" \(known: workspace-write, danger-full-access\)/,
-  )
-
-  res = await request('session/prompt', { sessionId: 's1', contentBlocks: [{ type: 'text', text: 'hi' }] })
-  assert.equal(res.messageId, 'msg-1')
-  assert.deepEqual(state.setCalls, [{ sessionId: 's1', preset: 'danger-full-access' }])
-
-  res = await request('tui/permission', { sessionId: 's1', preset: 'workspace-write' })
-  assert.deepEqual(res, { ok: true, applied: 'live' })
-  assert.deepEqual(state.setCalls.at(-1), { sessionId: 's1', preset: 'workspace-write' })
-
-  state.notifications.length = 0
-  await runner.apply(makeCtx({ withPermissionService: false }))
-  await assert.rejects(
-    request('tui/permission', { sessionId: 's2', preset: 'workspace-write' }),
-    /no permission-presets service in this profile/,
-  )
+    const writes = []
+    fakeChild.stdio[3].write = (chunk) => {
+      writes.push(String(chunk))
+      return true
+    }
+    const palette = JSON.parse(readFileSync(path.join(repoRoot, 'docs/fixtures/demo-skin.v0.json'), 'utf8'))
+    ctx.tuiTheme.register(structuredClone(palette))
+    const note = writes.map((line) => JSON.parse(line)).find((entry) => entry.method === '_dsh/cordis/tui/theme/update')
+    assert.ok(note, 'register emits _dsh/cordis/tui/theme/update')
+    assert.equal(note.params.protocol, 0)
+    assert.equal(note.params.activate, false)
+    assert.equal(note.params.palette.id, 'ember')
   } finally {
+    restore()
+  }
+})
+
+test('shell routes /theme selection through the dynamic Client Plugin runner', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  try {
+    const seen = []
+    const ctx = makeCtx({
+      cordisClientRunner: {
+        bindTransport() {},
+        onHost() {},
+        selectTheme(params) {
+          seen.push(params)
+          return { ok: true }
+        },
+      },
+    })
+    await runner.apply(ctx)
+
+    for (const listener of fakeChild.stdio[4].listeners.data ?? []) {
+      listener(Buffer.from(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'theme-select-1',
+        method: '_dsh/cordis/tui/theme/selected',
+        params: { protocol: 0, agentId: 'agent-1', id: 'ember' },
+      })}\n`))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    assert.deepEqual(seen, [{ protocol: 0, agentId: 'agent-1', id: 'ember' }])
+  } finally {
+    restore()
+  }
+})
+
+test('shell binds chrome.right snapshots toward the native painter', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  try {
+    const ctx = makeCtx()
+    await runner.apply(ctx)
+    const writes = []
+    fakeChild.stdio[3].write = (chunk) => {
+      writes.push(String(chunk))
+      return true
+    }
+
+    ctx.tuiSlots.register(
+      { name: 'chrome.right', id: 'test' },
+      [{ id: 'hello', kind: 'markdown', text: 'hello' }],
+    )
+
+    const note = writes.map((line) => JSON.parse(line)).find((entry) => entry.method === '_dsh/cordis/tui/slots/update')
+    assert.ok(note, 'register emits _dsh/cordis/tui/slots/update')
+    assert.equal(note.params.slot, 'chrome.right')
+    assert.deepEqual(note.params.nodes, [
+      { id: 'test:hello', kind: 'markdown', text: 'hello' },
+    ])
+  } finally {
+    restore()
+  }
+})
+
+test('shell binds the ACP extension transport to the sibling Cordis Client runner', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  let requestAgent
+  const clientRunner = {
+    bindTransport(request) {
+      requestAgent = request
+    },
+    onHost() {},
+    selectTheme() {},
+  }
+  try {
+    await runner.apply(makeCtx({ cordisClientRunner: clientRunner }))
+    assert.equal(typeof requestAgent, 'function')
+  } finally {
+    restore()
+  }
+})
+
+test('shell routes Host Client-run requests to the sibling Cordis Client runner', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  const seen = []
+  const clientRunner = {
+    bindTransport() {},
+    sync() {},
+    onHost(message) {
+      seen.push(message)
+    },
+    selectTheme() {},
+  }
+  try {
+    const ctx = makeCtx({ cordisClientRunner: clientRunner })
+    await runner.apply(ctx)
+    for (const listener of fakeChild.stdio[4].listeners.data ?? []) {
+      listener(Buffer.from(`${JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+      })}\n`))
+    }
+    for (const listener of ctx.acpClient.stdout.listeners.data ?? []) {
+      listener(Buffer.from(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: { _meta: { dsh: { cordis: { protocol: 0 } } } },
+        },
+      })}\n`))
+    }
+    const request = {
+      jsonrpc: '2.0',
+      method: '_dsh/cordis/run/request',
+      params: { requestId: 'run-1', pluginId: 'dyn-1', packageId: 'pkg-1' },
+    }
+    for (const listener of ctx.acpClient.stdout.listeners.data ?? []) {
+      listener(Buffer.from(`${JSON.stringify(request)}\n`))
+    }
+    assert.deepEqual(seen, [request])
+  } finally {
+    restore()
+  }
+})
+
+test('shell dispatches Cordis TUI requests to lifecycle-owned commands and overlays', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  const invoked = []
+  const previews = []
+  try {
+    const ctx = makeCtx()
+    ctx.tuiCommands.register(
+      { name: 'threshold', description: 'adjust threshold' },
+      (args) => {
+        invoked.push(args)
+        return { opened: true }
+      },
+    )
+    ctx.tuiOverlay.openSlider(
+      { id: 'threshold', title: 'Threshold', min: 0, max: 100, step: 5, value: 40 },
+      { onChange: (value) => previews.push(value) },
+    )
+    await runner.apply(ctx)
+    const writes = []
+    fakeChild.stdio[3].write = (chunk) => {
+      writes.push(String(chunk))
+      return true
+    }
+    const incoming = [
+      {
+        jsonrpc: '2.0',
+        id: 23,
+        method: '_dsh/cordis/tui/commands/invoke',
+        params: { protocol: 0, name: 'threshold', args: '55' },
+      },
+      {
+        jsonrpc: '2.0',
+        method: '_dsh/cordis/tui/overlay/event',
+        params: { protocol: 0, id: 'threshold', event: 'change', value: 55 },
+      },
+    ]
+    for (const message of incoming) {
+      for (const listener of fakeChild.stdio[4].listeners.data ?? []) {
+        listener(Buffer.from(`${JSON.stringify(message)}\n`))
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    assert.deepEqual(invoked, ['55'])
+    assert.deepEqual(previews, [55])
+    const response = writes
+      .flatMap((line) => line.trim().split('\n').filter(Boolean))
+      .map((line) => JSON.parse(line))
+      .find((message) => message.id === 23)
+    assert.deepEqual(response, { jsonrpc: '2.0', id: 23, result: { opened: true } })
+  } finally {
+    restore()
+  }
+})
+
+test('hot-reloaded shell modules keep exactly one TTY painter', async () => {
+  const restore = ensureTestNative()
+  const href = pathToFileURL(runnerPath).href
+  const nonce = `${process.pid}-${Date.now()}`
+  const first = await import(`${href}?hmr=${nonce}-a`)
+  const second = await import(`${href}?hmr=${nonce}-b`)
+  first.resetShellForTests()
+  state.spawnCalls.length = 0
+
+  try {
+    await Promise.all([first.apply(makeCtx()), second.apply(makeCtx())])
+    assert.equal(
+      state.spawnCalls.length,
+      1,
+      'module reloads must share one process-wide TTY owner',
+    )
+  } finally {
+    first.resetShellForTests()
     restore()
   }
 })

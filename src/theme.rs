@@ -7,7 +7,8 @@
 //! hints, green for success/liveness, amber for attention, red for
 //! errors. Minimal, not monotone.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Color;
+use serde_json::Value;
 
 // --- static palette -------------------------------------------------------
 
@@ -101,9 +102,409 @@ pub enum Mode {
     Light,
 }
 
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Dark => "dark",
+            Mode::Light => "light",
+        }
+    }
+}
+
+/// Closed token names for protocol 0 palettes (`tuiTheme.register` / Cordis theme update).
+pub const TOKEN_NAMES: &[&str] = &[
+    "bg",
+    "surface",
+    "panel",
+    "fg",
+    "fg_secondary",
+    "fg_tertiary",
+    "caption",
+    "brand",
+    "brand_soft",
+    "bubble_bg",
+    "bubble_fg",
+    "border",
+    "code_bg",
+    "ok",
+    "warn",
+    "err",
+    "hint",
+    "chip_bg",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TokenMap {
+    bg: Color,
+    surface: Color,
+    panel: Color,
+    fg: Color,
+    fg_secondary: Color,
+    fg_tertiary: Color,
+    caption: Color,
+    brand: Color,
+    brand_soft: Color,
+    bubble_bg: Color,
+    bubble_fg: Color,
+    border: Color,
+    code_bg: Color,
+    ok: Color,
+    warn: Color,
+    err: Color,
+    hint: Color,
+    chip_bg: Color,
+}
+
+const DEFAULT_DARK: TokenMap = TokenMap {
+    bg: BLUISH_1000,
+    surface: BLUISH_950,
+    panel: BLUISH_900,
+    fg: BLUISH_50,
+    fg_secondary: BLUISH_300,
+    fg_tertiary: BLUISH_500,
+    caption: BLUISH_600,
+    brand: DEEPSEEK_450,
+    brand_soft: DEEPSEEK_400,
+    bubble_bg: BLUISH_900,
+    bubble_fg: BLUISH_75,
+    border: BLUISH_850,
+    code_bg: BLUISH_950,
+    ok: GREEN_400,
+    warn: AMBER_400,
+    err: RED_400,
+    hint: SLATE_400,
+    chip_bg: BLUISH_850,
+};
+
+const DEFAULT_LIGHT: TokenMap = TokenMap {
+    bg: BLUISH_00,
+    surface: BLUISH_50,
+    panel: BLUISH_60,
+    fg: BLUISH_1000,
+    fg_secondary: BLUISH_750,
+    fg_tertiary: BLUISH_700,
+    caption: BLUISH_400,
+    brand: DEEPSEEK_500,
+    brand_soft: DEEPSEEK_450,
+    bubble_bg: BLUISH_75,
+    bubble_fg: BLUISH_1000,
+    border: BLUISH_200,
+    code_bg: BLUISH_60,
+    ok: GREEN_500,
+    warn: AMBER_600,
+    err: RED_600,
+    hint: SLATE_600,
+    chip_bg: BLUISH_100,
+};
+
+/// Why a protocol-0 palette was rejected. Wrong `protocol` is not an error:
+/// the compositor ignores it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteError(pub String);
+
+impl std::fmt::Display for PaletteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// A named dark/light token pack. Built-in `default` plus registered Cordis packs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PalettePack {
+    pub id: String,
+    pub label: String,
+    /// Dynamic Client Plugin that owns this selectable theme, when any.
+    pub plugin_id: Option<String>,
+    /// Whether the owning Plugin is currently mounted.
+    pub loaded: bool,
+    /// Optional terminal background owned by this theme pack.
+    pub background: Option<ThemeBackground>,
+    dark: TokenMap,
+    light: TokenMap,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackgroundSource {
+    File { path: String },
+    Data { base64: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundFit {
+    Cover,
+    Contain,
+    Stretch,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThemeBackground {
+    pub source: BackgroundSource,
+    pub fit: BackgroundFit,
+    pub anchor: (f64, f64),
+    pub opacity: f64,
+}
+
+/// A parsed Cordis TUI theme update (`protocol` 0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaletteNotification {
+    pub pack: PalettePack,
+    pub activate: bool,
+}
+
+impl PalettePack {
+    pub fn builtin_default() -> Self {
+        Self {
+            id: "default".into(),
+            label: "Default".into(),
+            plugin_id: None,
+            loaded: true,
+            background: None,
+            dark: DEFAULT_DARK,
+            light: DEFAULT_LIGHT,
+        }
+    }
+
+    /// Current-mode `Theme` for this pack. Toggle stays inside these maps.
+    pub fn theme(&self, mode: Mode) -> Theme {
+        Theme::from_maps(mode, self.dark, self.light)
+    }
+
+    /// Parse a palette object (`id` / `label` / complete `dark`+`light` maps).
+    pub fn from_json(v: &Value) -> Result<Self, PaletteError> {
+        let obj = v
+            .as_object()
+            .ok_or_else(|| PaletteError("palette must be an object".into()))?;
+        for key in obj.keys() {
+            if !matches!(
+                key.as_str(),
+                "id" | "label" | "dark" | "light" | "background"
+            ) {
+                return Err(PaletteError(format!("unknown palette field {key}")));
+            }
+        }
+        let id = obj.get("id").and_then(Value::as_str).unwrap_or("");
+        if id.is_empty() {
+            return Err(PaletteError("palette id must be a non-empty string".into()));
+        }
+        let label = obj.get("label").and_then(Value::as_str).unwrap_or("");
+        if label.is_empty() {
+            return Err(PaletteError(
+                "palette label must be a non-empty string".into(),
+            ));
+        }
+        let dark = parse_token_map(obj.get("dark").unwrap_or(&Value::Null))?;
+        let light = parse_token_map(obj.get("light").unwrap_or(&Value::Null))?;
+        let background = obj.get("background").map(parse_background).transpose()?;
+        Ok(Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            plugin_id: None,
+            loaded: true,
+            background,
+            dark,
+            light,
+        })
+    }
+}
+
+fn parse_background(v: &Value) -> Result<ThemeBackground, PaletteError> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| PaletteError("background must be an object".into()))?;
+    for key in obj.keys() {
+        if !matches!(key.as_str(), "source" | "fit" | "anchor" | "opacity") {
+            return Err(PaletteError(format!("unknown background field {key}")));
+        }
+    }
+    let source_obj = obj
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| PaletteError("background source must be an object".into()))?;
+    let kind = source_obj.get("kind").and_then(Value::as_str).unwrap_or("");
+    let source = match kind {
+        "file" => {
+            if source_obj
+                .keys()
+                .any(|key| !matches!(key.as_str(), "kind" | "path"))
+            {
+                return Err(PaletteError(
+                    "file background only accepts kind and path".into(),
+                ));
+            }
+            let path = source_obj.get("path").and_then(Value::as_str).unwrap_or("");
+            if path.is_empty() || !std::path::Path::new(path).is_absolute() {
+                return Err(PaletteError("background file path must be absolute".into()));
+            }
+            BackgroundSource::File {
+                path: path.to_string(),
+            }
+        }
+        "data" => {
+            if source_obj
+                .keys()
+                .any(|key| !matches!(key.as_str(), "kind" | "mediaType" | "base64"))
+            {
+                return Err(PaletteError(
+                    "data background only accepts kind, mediaType and base64".into(),
+                ));
+            }
+            if source_obj.get("mediaType").and_then(Value::as_str) != Some("image/png") {
+                return Err(PaletteError(
+                    "background data mediaType must be image/png".into(),
+                ));
+            }
+            let base64 = source_obj
+                .get("base64")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if base64.is_empty() {
+                return Err(PaletteError(
+                    "background data base64 must be non-empty".into(),
+                ));
+            }
+            BackgroundSource::Data {
+                base64: base64.to_string(),
+            }
+        }
+        _ => {
+            return Err(PaletteError(
+                "background source kind must be file or data".into(),
+            ));
+        }
+    };
+    let fit = match obj.get("fit").and_then(Value::as_str).unwrap_or("cover") {
+        "cover" => BackgroundFit::Cover,
+        "contain" => BackgroundFit::Contain,
+        "stretch" => BackgroundFit::Stretch,
+        _ => {
+            return Err(PaletteError(
+                "background fit must be cover, contain or stretch".into(),
+            ));
+        }
+    };
+    let anchor_obj = match obj.get("anchor") {
+        Some(value) => value
+            .as_object()
+            .ok_or_else(|| PaletteError("background anchor must be an object".into()))?,
+        None => {
+            return Ok(ThemeBackground {
+                source,
+                fit,
+                anchor: (0.5, 0.5),
+                opacity: unit_field(obj.get("opacity"), 1.0, "background opacity")?,
+            })
+        }
+    };
+    for key in anchor_obj.keys() {
+        if !matches!(key.as_str(), "x" | "y") {
+            return Err(PaletteError(format!(
+                "unknown background anchor field {key}"
+            )));
+        }
+    }
+    Ok(ThemeBackground {
+        source,
+        fit,
+        anchor: (
+            unit_field(anchor_obj.get("x"), 0.5, "background anchor x")?,
+            unit_field(anchor_obj.get("y"), 0.5, "background anchor y")?,
+        ),
+        opacity: unit_field(obj.get("opacity"), 1.0, "background opacity")?,
+    })
+}
+
+fn unit_field(value: Option<&Value>, default: f64, at: &str) -> Result<f64, PaletteError> {
+    let number = value.and_then(Value::as_f64).unwrap_or(default);
+    if !number.is_finite() || !(0.0..=1.0).contains(&number) {
+        return Err(PaletteError(format!("{at} must be from 0 to 1")));
+    }
+    Ok(number)
+}
+
+/// Parse Cordis TUI theme-update params. `protocol != 0` (or missing) → `Ok(None)`.
+pub fn parse_palette_notification(
+    params: &Value,
+) -> Result<Option<PaletteNotification>, PaletteError> {
+    let protocol_ok = params.get("protocol").and_then(Value::as_u64) == Some(0);
+    if !protocol_ok {
+        return Ok(None);
+    }
+    let palette = params
+        .get("palette")
+        .ok_or_else(|| PaletteError("missing palette".into()))?;
+    let mut pack = PalettePack::from_json(palette)?;
+    pack.plugin_id = params
+        .get("owner")
+        .and_then(|owner| owner.get("pluginId"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    pack.loaded = params
+        .get("loaded")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let activate = params
+        .get("activate")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(Some(PaletteNotification { pack, activate }))
+}
+
+fn parse_token_map(v: &Value) -> Result<TokenMap, PaletteError> {
+    let map = v
+        .as_object()
+        .ok_or_else(|| PaletteError("token map must be an object".into()))?;
+    for key in map.keys() {
+        if !TOKEN_NAMES.iter().any(|n| n == key) {
+            return Err(PaletteError(format!("unknown token {key}")));
+        }
+    }
+    Ok(TokenMap {
+        bg: color_field(map, "bg")?,
+        surface: color_field(map, "surface")?,
+        panel: color_field(map, "panel")?,
+        fg: color_field(map, "fg")?,
+        fg_secondary: color_field(map, "fg_secondary")?,
+        fg_tertiary: color_field(map, "fg_tertiary")?,
+        caption: color_field(map, "caption")?,
+        brand: color_field(map, "brand")?,
+        brand_soft: color_field(map, "brand_soft")?,
+        bubble_bg: color_field(map, "bubble_bg")?,
+        bubble_fg: color_field(map, "bubble_fg")?,
+        border: color_field(map, "border")?,
+        code_bg: color_field(map, "code_bg")?,
+        ok: color_field(map, "ok")?,
+        warn: color_field(map, "warn")?,
+        err: color_field(map, "err")?,
+        hint: color_field(map, "hint")?,
+        chip_bg: color_field(map, "chip_bg")?,
+    })
+}
+
+fn color_field(map: &serde_json::Map<String, Value>, key: &str) -> Result<Color, PaletteError> {
+    let Some(v) = map.get(key) else {
+        return Err(PaletteError(format!("missing token {key}")));
+    };
+    let Some(s) = v.as_str() else {
+        return Err(PaletteError(format!("token {key} must be #RRGGBB")));
+    };
+    parse_hex(s).ok_or_else(|| PaletteError(format!("token {key} must be #RRGGBB")))
+}
+
+fn parse_hex(s: &str) -> Option<Color> {
+    let b = s.as_bytes();
+    if b.len() != 7 || b[0] != b'#' {
+        return None;
+    }
+    let r = u8::from_str_radix(std::str::from_utf8(&b[1..3]).ok()?, 16).ok()?;
+    let g = u8::from_str_radix(std::str::from_utf8(&b[3..5]).ok()?, 16).ok()?;
+    let bl = u8::from_str_radix(std::str::from_utf8(&b[5..7]).ok()?, 16).ok()?;
+    Some(Color::Rgb(r, g, bl))
+}
+
 /// Semantic colors — a cold monochrome remap of the Web UI neutral-bluish
 /// scale (the alias slot names are kept for reference).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
     pub mode: Mode,
     /// `--dsw-alias-bg-base`
@@ -145,62 +546,58 @@ pub struct Theme {
     /// selection/status chip background
     #[allow(dead_code)]
     pub chip_bg: Color,
+    dark: TokenMap,
+    light: TokenMap,
 }
 
 impl Theme {
-    pub fn dark() -> Self {
+    fn from_maps(mode: Mode, dark: TokenMap, light: TokenMap) -> Self {
+        let t = match mode {
+            Mode::Dark => dark,
+            Mode::Light => light,
+        };
         Theme {
-            mode: Mode::Dark,
-            bg: BLUISH_1000,
-            surface: BLUISH_950,
-            panel: BLUISH_900,
-            fg: BLUISH_50,
-            fg_secondary: BLUISH_300,
-            fg_tertiary: BLUISH_500,
-            caption: BLUISH_600,
-            brand: DEEPSEEK_450,
-            brand_soft: DEEPSEEK_400,
-            bubble_bg: BLUISH_900,
-            bubble_fg: BLUISH_75,
-            border: BLUISH_850,
-            code_bg: BLUISH_950,
-            ok: GREEN_400,
-            warn: AMBER_400,
-            err: RED_400,
-            hint: SLATE_400,
-            chip_bg: BLUISH_850,
+            mode,
+            bg: t.bg,
+            surface: t.surface,
+            panel: t.panel,
+            fg: t.fg,
+            fg_secondary: t.fg_secondary,
+            fg_tertiary: t.fg_tertiary,
+            caption: t.caption,
+            brand: t.brand,
+            brand_soft: t.brand_soft,
+            bubble_bg: t.bubble_bg,
+            bubble_fg: t.bubble_fg,
+            border: t.border,
+            code_bg: t.code_bg,
+            ok: t.ok,
+            warn: t.warn,
+            err: t.err,
+            hint: t.hint,
+            chip_bg: t.chip_bg,
+            dark,
+            light,
         }
     }
 
+    pub fn dark() -> Self {
+        Self::from_maps(Mode::Dark, DEFAULT_DARK, DEFAULT_LIGHT)
+    }
+
     pub fn light() -> Self {
-        Theme {
-            mode: Mode::Light,
-            bg: BLUISH_00,
-            surface: BLUISH_50,
-            panel: BLUISH_60,
-            fg: BLUISH_1000,
-            fg_secondary: BLUISH_750,
-            fg_tertiary: BLUISH_700,
-            caption: BLUISH_400,
-            brand: DEEPSEEK_500,
-            brand_soft: DEEPSEEK_450,
-            bubble_bg: BLUISH_75,
-            bubble_fg: BLUISH_1000,
-            border: BLUISH_200,
-            code_bg: BLUISH_60,
-            ok: GREEN_500,
-            warn: AMBER_600,
-            err: RED_600,
-            hint: SLATE_600,
-            chip_bg: BLUISH_100,
-        }
+        Self::from_maps(Mode::Light, DEFAULT_DARK, DEFAULT_LIGHT)
     }
 
     pub fn toggled(&self) -> Self {
         match self.mode {
-            Mode::Dark => Theme::light(),
-            Mode::Light => Theme::dark(),
+            Mode::Dark => Self::from_maps(Mode::Light, self.dark, self.light),
+            Mode::Light => Self::from_maps(Mode::Dark, self.dark, self.light),
         }
+    }
+
+    pub fn with_mode(&self, mode: Mode) -> Self {
+        Self::from_maps(mode, self.dark, self.light)
     }
 
     /// Success accent used for finished tool glyphs and the idle dot.
@@ -219,58 +616,6 @@ impl Theme {
             Mode::Dark => (BLUISH_50, BLUISH_700),
             Mode::Light => (BLUISH_800, BLUISH_400),
         }
-    }
-
-    // ── style tokens ──────────────────────────────────────────────
-    // Named semantic styles — surfaces compose these instead of ad-hoc
-    // fg/bg picks, so the same concept renders identically everywhere
-    // (transcript cards, composer, menus).
-
-    /// Chip: a short labeled capsule on the bubble surface — the user
-    /// message label, the shell card's `$ cmd`, inline `[image n]` chips.
-    pub fn t_chip(&self) -> Style {
-        Style::default()
-            .fg(self.bubble_fg)
-            .bg(self.bubble_bg)
-            .add_modifier(Modifier::BOLD)
-    }
-
-    /// Informational hint text — the tip body, skill menu entries.
-    pub fn t_hint(&self) -> Style {
-        Style::default().fg(self.hint)
-    }
-
-    /// The idle state marker — calm neutral, not a celebration.
-    pub fn t_state_idle(&self) -> Style {
-        Style::default().fg(self.fg_tertiary)
-    }
-
-    /// Success/liveness accent — finished tools, clean shell exits.
-    pub fn t_state_ok(&self) -> Style {
-        Style::default().fg(self.ok)
-    }
-
-    /// Attention accent — queued work, warnings, shells in flight.
-    pub fn t_state_warn(&self) -> Style {
-        Style::default().fg(self.warn)
-    }
-
-    /// Local-shell prompt accent (`!` in the draft, the card's status
-    /// glyph) — one amber family top to bottom.
-    pub fn t_shell(&self) -> Style {
-        Style::default().fg(self.warn).add_modifier(Modifier::BOLD)
-    }
-
-    /// Key cap in contextual hints (`⏎`, `^x`, `esc`).
-    pub fn t_key(&self) -> Style {
-        Style::default()
-            .fg(self.fg_tertiary)
-            .add_modifier(Modifier::BOLD)
-    }
-
-    /// The label after a key cap (“send”, “interrupt”).
-    pub fn t_key_label(&self) -> Style {
-        Style::default().fg(self.caption)
     }
 }
 
@@ -339,5 +684,150 @@ mod tests {
                 assert!(!is_gray(c), "accents must be colored, got {c:?}");
             }
         }
+    }
+
+    fn ember_json() -> serde_json::Value {
+        serde_json::from_str(include_str!("../docs/fixtures/demo-skin.v0.json")).unwrap()
+    }
+
+    fn ember_notification(activate: bool) -> serde_json::Value {
+        serde_json::json!({
+            "protocol": 0,
+            "palette": ember_json(),
+            "activate": activate,
+        })
+    }
+
+    #[test]
+    fn demo_skin_fixture_parses_both_modes() {
+        let pack = PalettePack::from_json(&ember_json()).expect("ember fixture");
+        assert_eq!(pack.id, "ember");
+        assert_eq!(pack.label, "Ember");
+        let dark = pack.theme(Mode::Dark);
+        let light = pack.theme(Mode::Light);
+        assert_eq!(dark.mode, Mode::Dark);
+        assert_eq!(light.mode, Mode::Light);
+        assert_eq!(dark.brand, Color::Rgb(247, 140, 60)); // #F78C3C
+        assert_eq!(light.brand, Color::Rgb(217, 106, 30)); // #D96A1E
+        assert_eq!(dark.bg, Color::Rgb(22, 16, 14)); // #16100E
+        assert_eq!(light.bg, Color::Rgb(255, 246, 238)); // #FFF6EE
+    }
+
+    #[test]
+    fn palette_parses_an_optional_png_background() {
+        let mut value = ember_json();
+        value["background"] = serde_json::json!({
+            "source": { "kind": "file", "path": "/opt/liang/stage-00.png" },
+            "fit": "cover",
+            "anchor": { "x": 0.75, "y": 0.5 },
+            "opacity": 0.42
+        });
+
+        let pack = PalettePack::from_json(&value).expect("theme background");
+        let debug = format!("{pack:?}");
+        assert!(debug.contains("/opt/liang/stage-00.png"), "{debug}");
+        assert!(debug.contains("Cover"), "{debug}");
+        assert!(debug.contains("0.75"), "{debug}");
+        assert!(debug.contains("0.42"), "{debug}");
+    }
+
+    #[test]
+    fn missing_token_extra_token_and_bad_hex_are_errors() {
+        let mut missing = ember_json();
+        missing["dark"].as_object_mut().unwrap().remove("brand");
+        assert!(PalettePack::from_json(&missing).is_err());
+
+        let mut extra = ember_json();
+        extra["dark"]
+            .as_object_mut()
+            .unwrap()
+            .insert("neon".into(), serde_json::json!("#FFFFFF"));
+        assert!(PalettePack::from_json(&extra).is_err());
+
+        for bad in ["#F78C3", "F78C3C", "#F78C3C00", "#GGGGGG", "#f78c3c0", ""] {
+            let mut hex = ember_json();
+            hex["dark"]["brand"] = serde_json::json!(bad);
+            assert!(
+                PalettePack::from_json(&hex).is_err(),
+                "expected rejection for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_protocol_is_ignored_without_panic() {
+        let ignored = parse_palette_notification(&serde_json::json!({
+            "protocol": 1,
+            "palette": ember_json(),
+            "activate": true,
+        }))
+        .expect("protocol mismatch is not a crash");
+        assert!(ignored.is_none());
+
+        let ignored = parse_palette_notification(&serde_json::json!({
+            "palette": ember_json(),
+            "activate": true,
+        }))
+        .expect("missing protocol is not a crash");
+        assert!(ignored.is_none());
+    }
+
+    #[test]
+    fn toggled_ember_stays_ember() {
+        let pack = PalettePack::from_json(&ember_json()).unwrap();
+        let dark = pack.theme(Mode::Dark);
+        let light = dark.toggled();
+        assert_eq!(light.mode, Mode::Light);
+        assert_eq!(light.brand, Color::Rgb(217, 106, 30));
+        assert_ne!(light.brand, DEEPSEEK_450);
+        assert_ne!(light.brand, DEEPSEEK_500);
+        let back = light.toggled();
+        assert_eq!(back.mode, Mode::Dark);
+        assert_eq!(back.brand, Color::Rgb(247, 140, 60));
+    }
+
+    #[test]
+    fn default_toggled_still_uses_deepseek_blue() {
+        assert_eq!(Theme::dark().toggled().brand, DEEPSEEK_500);
+        assert_eq!(Theme::light().toggled().brand, DEEPSEEK_450);
+        assert_eq!(Theme::dark().toggled().brand, Theme::light().brand);
+    }
+
+    #[test]
+    fn palette_notification_activate_flag() {
+        let on = parse_palette_notification(&ember_notification(true))
+            .unwrap()
+            .expect("protocol 0");
+        assert!(on.activate);
+        assert_eq!(on.pack.id, "ember");
+
+        let off = parse_palette_notification(&ember_notification(false))
+            .unwrap()
+            .expect("protocol 0");
+        assert!(!off.activate);
+
+        let missing = parse_palette_notification(&serde_json::json!({
+            "protocol": 0,
+            "palette": ember_json(),
+        }))
+        .unwrap()
+        .expect("protocol 0");
+        assert!(!missing.activate);
+    }
+
+    #[test]
+    fn palette_notification_carries_dynamic_plugin_ownership_and_load_state() {
+        let notification = parse_palette_notification(&serde_json::json!({
+            "protocol": 0,
+            "palette": ember_json(),
+            "activate": false,
+            "loaded": false,
+            "owner": { "pluginId": "night-lime-1" },
+        }))
+        .unwrap()
+        .expect("protocol 0");
+
+        assert_eq!(notification.pack.plugin_id.as_deref(), Some("night-lime-1"));
+        assert!(!notification.pack.loaded);
     }
 }

@@ -1,11 +1,7 @@
-//! Controller thread: owns the runtime lifecycle and executes UI commands.
+//! Controller thread: executes UI commands.
 //!
-//! The UI thread never blocks on JSON-RPC. It sends [`Cmd`]s; the controller
-//! spawns/initializes the runtime lazily, forwards prompts, and posts
-//! [`CtlEvent`]s back over the bus. Interrupts kill the runtime process from
-//! the UI thread directly (there is no interrupt RPC in the protocol); the
-//! durable JSONL session survives and the next prompt respawns the runtime
-//! with the same session id.
+//! Live sessions delegate to the ACP client in `acp.rs`. The JSON-RPC branch
+//! remains only for the private demo-skin compositor attach.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -24,6 +20,7 @@ pub struct Controller {
     interrupted: Arc<AtomicBool>,
     demo: bool,
     attached: bool,
+    acp: bool,
 }
 
 impl Controller {
@@ -55,6 +52,31 @@ impl Controller {
             interrupted,
             demo,
             attached,
+            acp: false,
+        }
+    }
+
+    /// Live ACP: official rust-sdk client on spawn or inherited fds.
+    /// Does not steal fds with [`RuntimeProcess::attach`].
+    pub fn start_acp(
+        cfg: RuntimeConfig,
+        endpoint: crate::acp::AcpEndpoint,
+        bus: Sender<AppEvent>,
+    ) -> Controller {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
+        let runtime: Arc<Mutex<Option<Arc<RuntimeProcess>>>> = Arc::new(Mutex::new(None));
+        let interrupted = Arc::new(AtomicBool::new(false));
+        std::thread::Builder::new()
+            .name("dsh-controller".into())
+            .spawn(move || crate::acp::run_blocking(cfg, endpoint, bus, cmd_rx))
+            .expect("spawn acp controller");
+        Controller {
+            cmd_tx,
+            runtime,
+            interrupted,
+            demo: false,
+            attached: true,
+            acp: true,
         }
     }
 
@@ -62,14 +84,13 @@ impl Controller {
         let _ = self.cmd_tx.send(cmd);
     }
 
-    /// Hard interrupt from the UI thread. Returns false only for demo mode;
-    /// plugin mode reports true and the real cancel is delivered through
-    /// `Cmd::Interrupt` → the host's `session/interrupt` RPC.
+    /// Interrupt from the UI thread. Demo mode has no live turn; ACP mode
+    /// delivers `Cmd::Interrupt` to the agent.
     pub fn interrupt_now(&self) -> bool {
         if self.demo {
             return false;
         }
-        if self.attached {
+        if self.attached || self.acp {
             return true;
         }
         self.interrupted.store(true, Ordering::SeqCst);
@@ -89,6 +110,22 @@ impl Controller {
             .map(|rt| rt.is_alive())
             .unwrap_or(false)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_controller() -> (Controller, Receiver<Cmd>) {
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    (
+        Controller {
+            cmd_tx,
+            runtime: Arc::new(Mutex::new(None)),
+            interrupted: Arc::new(AtomicBool::new(false)),
+            demo: true,
+            attached: false,
+            acp: false,
+        },
+        cmd_rx,
+    )
 }
 
 fn controller_loop(
@@ -121,12 +158,36 @@ fn controller_loop(
                     handle_prompt(&mut cfg, &bus, &runtime, &interrupted, &session_id, &text);
                 }
             }
-            Cmd::PromptImages {
-                session_id,
-                text,
-                images,
+            Cmd::Steer {
+                session_id, text, ..
             } => {
                 if demo {
+                    crate::demo::run_demo_turn(bus.clone(), session_id, text);
+                    continue;
+                }
+                if attached {
+                    handle_prompt_attached(
+                        &cfg,
+                        &bus,
+                        &runtime,
+                        &mut attached_initialized,
+                        &session_id,
+                        &text,
+                    );
+                } else {
+                    handle_prompt(&mut cfg, &bus, &runtime, &interrupted, &session_id, &text);
+                }
+            }
+            Cmd::PromptImages { session_id, blocks } => {
+                if demo {
+                    let text = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            crate::bus::PromptBlock::Text(text) => Some(text.as_str()),
+                            crate::bus::PromptBlock::Image(_) => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
                     crate::demo::run_demo_turn(bus.clone(), session_id, text);
                     continue;
                 }
@@ -137,12 +198,41 @@ fn controller_loop(
                         &runtime,
                         &mut attached_initialized,
                         &session_id,
-                        &text,
-                        &images,
+                        &blocks,
                     );
                 } else {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                        "image attachments need plugin mode (dsh profile)".into(),
+                        "image attachments are unavailable on the legacy demo transport".into(),
+                    )));
+                }
+            }
+            Cmd::SteerImages {
+                session_id, blocks, ..
+            } => {
+                if demo {
+                    let text = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            crate::bus::PromptBlock::Text(text) => Some(text.as_str()),
+                            crate::bus::PromptBlock::Image(_) => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    crate::demo::run_demo_turn(bus.clone(), session_id, text);
+                    continue;
+                }
+                if attached {
+                    handle_prompt_images_attached(
+                        &cfg,
+                        &bus,
+                        &runtime,
+                        &mut attached_initialized,
+                        &session_id,
+                        &blocks,
+                    );
+                } else {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                        "image attachments are unavailable on the legacy demo transport".into(),
                     )));
                 }
             }
@@ -217,7 +307,7 @@ fn controller_loop(
                         }
                     }
                 } else {
-                    // Standalone: restart semantics, same durable session.
+                    // Legacy spawned JSON-RPC runtime: restart, same durable session.
                     let mut guard = runtime.lock().unwrap();
                     if let Some(rt) = guard.take() {
                         rt.kill();
@@ -265,7 +355,7 @@ fn controller_loop(
                     }
                     None => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                            "catalog needs plugin mode (dsh --profile tui)".into(),
+                            "catalog is unavailable on the legacy demo transport".into(),
                         )));
                     }
                 }
@@ -277,10 +367,12 @@ fn controller_loop(
                             SkillInfo {
                                 name: "commit-helper".into(),
                                 description: "draft a conventional commit from the diff".into(),
+                                config_action: None,
                             },
                             SkillInfo {
                                 name: "code-review".into(),
                                 description: "structured review of the working tree".into(),
+                                config_action: None,
                             },
                         ],
                     }));
@@ -290,13 +382,38 @@ fn controller_loop(
                 let result = rt
                     .filter(|rt| attached && rt.is_alive())
                     .map(|rt| rt.request("tui/skills", Some(json!({})), Duration::from_secs(20)));
-                // Standalone mode has no skill registry — an empty catalog
+                // The legacy demo transport has no skill registry — an empty catalog
                 // simply leaves the slash menu with the builtins.
                 let skills = match result {
                     Some(Ok(value)) => parse_skills(&value),
                     _ => Vec::new(),
                 };
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+            }
+            Cmd::FetchPlugins { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Plugins {
+                    plugins: Vec::new(),
+                }));
+            }
+            Cmd::SetPluginEnabled { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "dynamic plugins require the ACP transport".into(),
+                )));
+            }
+            Cmd::InvokePluginCommand { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "client plugin commands require the ACP compositor transport".into(),
+                )));
+            }
+            Cmd::PluginThemeSelected { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "client themes require the ACP compositor transport".into(),
+                )));
+            }
+            Cmd::PluginOverlayEvent { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "client plugin overlays require the ACP compositor transport".into(),
+                )));
             }
             Cmd::FetchEfforts { provider, model } => {
                 if demo {
@@ -401,7 +518,8 @@ fn controller_loop(
                     }
                     None => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                            "permission presets need plugin mode (dsh --profile tui)".into(),
+                            "permission presets are unavailable on the legacy demo transport"
+                                .into(),
                         )));
                     }
                 }
@@ -444,10 +562,25 @@ fn controller_loop(
                     }
                     None => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                            "agent modes need plugin mode (dsh --profile tui)".into(),
+                            "agent modes are unavailable on the legacy demo transport".into(),
                         )));
                     }
                 }
+            }
+            Cmd::Authenticate { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "ACP authenticate is only available on a live ACP connection".into(),
+                )));
+            }
+            Cmd::SetConfigOption { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "session/set_config_option needs a live ACP connection".into(),
+                )));
+            }
+            Cmd::NewSession | Cmd::ListSessions { .. } | Cmd::LoadSession { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "session/new, session/list, and session/load need a live ACP connection".into(),
+                )));
             }
             Cmd::Shutdown => {
                 let mut guard = runtime.lock().unwrap();
@@ -460,8 +593,7 @@ fn controller_loop(
     }
 }
 
-/// Plugin mode: the peer is the host dsh process — never spawn or kill;
-/// initialize lazily once (and again after /model).
+/// Private demo compositor attach: never spawn or kill; initialize lazily.
 fn handle_prompt_attached(
     cfg: &RuntimeConfig,
     bus: &Sender<AppEvent>,
@@ -480,61 +612,61 @@ fn handle_prompt_attached(
     send_attached_prompt(&rt, bus, params);
 }
 
-/// Plugin mode image prompt: commit each staged raster through the host
-/// attachment store, then send one prompt whose content blocks carry the
-/// text (when present) followed by every image.
+/// Legacy compositor image prompt: commit each staged raster through the peer
+/// attachment store, then send one prompt whose content blocks keep draft
+/// order (text and images interleaved).
 fn handle_prompt_images_attached(
     cfg: &RuntimeConfig,
     bus: &Sender<AppEvent>,
     runtime: &Arc<Mutex<Option<Arc<RuntimeProcess>>>>,
     initialized: &mut bool,
     session_id: &str,
-    text: &str,
-    images: &[crate::bus::ImagePart],
+    parts: &[crate::bus::PromptBlock],
 ) {
     let Some(rt) = ensure_attached_ready(cfg, bus, runtime, initialized) else {
         return;
     };
-    let mut attachments = Vec::with_capacity(images.len());
-    for img in images {
-        let attach = json!({
-            "data": img.data,
-            "mediaType": img.media_type,
-            "name": img.name,
-        });
-        match rt.request("tui/attach-image", Some(attach), Duration::from_secs(120)) {
-            Ok(result) => match result.get("attachment").cloned() {
-                Some(a) => attachments.push(a),
-                None => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                        "tui/attach-image returned no attachment for {}",
-                        img.name
-                    ))));
-                    return;
+    let mut blocks = Vec::new();
+    for part in parts {
+        match part {
+            crate::bus::PromptBlock::Text(text) => {
+                if !text.is_empty() {
+                    blocks.push(json!({ "type": "text", "text": text }));
                 }
-            },
-            Err(err) => {
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                    "tui/attach-image failed for {}: {err:#}",
-                    img.name
-                ))));
-                return;
+            }
+            crate::bus::PromptBlock::Image(img) => {
+                let attach = json!({
+                    "data": img.data,
+                    "mediaType": img.media_type,
+                    "name": img.name,
+                });
+                match rt.request("tui/attach-image", Some(attach), Duration::from_secs(120)) {
+                    Ok(result) => match result.get("attachment").cloned() {
+                        Some(a) => blocks.push(json!({ "type": "image", "attachment": a })),
+                        None => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                "tui/attach-image returned no attachment for {}",
+                                img.name
+                            ))));
+                            return;
+                        }
+                    },
+                    Err(err) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                            "tui/attach-image failed for {}: {err:#}",
+                            img.name
+                        ))));
+                        return;
+                    }
+                }
             }
         }
-    }
-
-    let mut blocks = Vec::new();
-    if !text.is_empty() {
-        blocks.push(json!({ "type": "text", "text": text }));
-    }
-    for attachment in attachments {
-        blocks.push(json!({ "type": "image", "attachment": attachment }));
     }
     let params = json!({ "sessionId": session_id, "contentBlocks": blocks });
     send_attached_prompt(&rt, bus, params);
 }
 
-/// Ensure the plugin-mode runtime is spawned and initialized; returns the
+/// Ensure the attached demo peer is initialized; returns the
 /// live process, or None after reporting the failure.
 fn ensure_attached_ready(
     cfg: &RuntimeConfig,
@@ -710,6 +842,7 @@ fn parse_skills(value: &Value) -> Vec<SkillInfo> {
             out.push(SkillInfo {
                 name: name.to_string(),
                 description,
+                config_action: None,
             });
         }
     }
@@ -843,6 +976,6 @@ mod tests {
     fn stock_presets_cover_the_four_web_ui_modes() {
         let presets = stock_presets();
         let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["standard", "code", "minimal", "creator"]);
+        assert_eq!(ids, ["standard", "code", "minimal", "cordis"]);
     }
 }

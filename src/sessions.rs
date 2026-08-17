@@ -6,9 +6,8 @@
 //! <root>/<workspace-slug>/<session-id>/session.jsonl[.zstd]
 //! ```
 //!
-//! Roots: the configured `session_root` (standalone runtime,
-//! `DSH_SESSION_ROOT`) and the host dsh store `~/.dsh/sessions` (plugin
-//! mode). A flat `<root>/<session-id>/session.jsonl` layout is tolerated
+//! Roots: the configured `session_root` and the local dsh store
+//! `~/.dsh/sessions`. A flat `<root>/<session-id>/session.jsonl` layout is tolerated
 //! too. The workspace slug is the absolute path with `/` mapped to `-`,
 //! wrapped in `-…--` (observed: `/Users/x/proj` → `--Users-x-proj--`).
 
@@ -36,7 +35,7 @@ pub fn workspace_slug(workspace: &str) -> String {
 }
 
 /// Candidate session roots, existing ones only: the configured root plus
-/// the host dsh store (plugin-mode sessions land there).
+/// the local dsh store.
 fn session_roots(cfg_root: &str) -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from(cfg_root)];
     if let Ok(home) = std::env::var("HOME") {

@@ -4,11 +4,17 @@ set -euo pipefail
 # cd to repo root (parent of this script's directory)
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-cargo build --release
+TARGET_DIR="${DSH_TUI_CARGO_TARGET_DIR:-target}"
+if [[ "$TARGET_DIR" != /* ]]; then
+  TARGET_DIR="$PWD/$TARGET_DIR"
+fi
+
+./scripts/cargo-guard.sh build --release --locked
+TARGET_DIR="$(CDPATH= cd -- "$TARGET_DIR" && pwd -P)"
 
 PLATFORM="$(node -p 'process.platform')"
 ARCH="$(node -p 'process.arch')"
-BINARY="target/release/dsh-tui"
+BINARY="$TARGET_DIR/release/dsh-tui"
 if [[ "$PLATFORM" == "win32" ]]; then
   BINARY="${BINARY}.exe"
 fi

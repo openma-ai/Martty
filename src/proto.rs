@@ -105,8 +105,7 @@ impl RuntimeProcess {
         Ok(proc)
     }
 
-    /// Attach to an already-running harness (dsh plugin mode): the JSON-RPC
-    /// peer is reached through inherited pipe fds instead of a child process.
+    /// Attach to the private demo compositor over inherited pipe fds.
     /// `reader` receives server frames; `writer` carries ours.
     pub fn attach(
         reader: impl Read + Send + 'static,
@@ -233,8 +232,7 @@ impl RuntimeProcess {
         self.kill();
     }
 
-    /// Are we attached to an external peer (dsh plugin mode) rather than
-    /// owning a child process?
+    /// Are we attached to an external demo peer rather than owning a child?
     #[allow(dead_code)]
     pub fn is_attached(&self) -> bool {
         self.child.lock().unwrap().is_none() && self.stdin.lock().unwrap().is_some()

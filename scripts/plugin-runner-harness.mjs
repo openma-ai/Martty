@@ -36,6 +36,9 @@ function fakePipe() {
       ;(listeners[event] ??= []).push(fn)
       return this
     },
+    write() {
+      return true
+    },
   }
 }
 

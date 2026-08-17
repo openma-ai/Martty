@@ -1,23 +1,28 @@
 //! App state and input handling — the grok-build interaction homage.
 //!
-//! Enter sends (or queues mid-turn, protocol-natively); Ctrl+X interrupts
-//! and sends now; Esc cancels a running turn with the draft preserved, and
+//! Enter sends (or queues mid-turn, client-side); Ctrl+X steers the active
+//! turn immediately; Esc cancels a running turn with the draft preserved, and
 //! double-Esc clears an idle draft; Ctrl+C clears first, then arms quit;
 //! `!` runs a local shell command; `/` opens the slash menu; Up recalls
 //! history on an empty prompt.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::bus::{AppEvent, Cmd, CtlEvent};
+use crate::bus::{
+    permission_ask_default_sel, AppEvent, Cmd, CtlEvent, PermissionAskOption, PermissionAskReply,
+    SessionListItem,
+};
 use crate::controller::Controller;
 use crate::events::parse_notification;
 use crate::input::Action;
+use crate::locale::{Locale, LocaleSettings};
 use crate::runtime::RuntimeConfig;
 use crate::theme::Theme;
 use crate::transcript::{NoticeLevel, Transcript};
@@ -27,6 +32,88 @@ pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦'
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_millis(1500);
 const TIP_TTL: Duration = Duration::from_secs(4);
+
+/// Some terminal layers incorrectly wrap Kitty/CSI-u key reports in
+/// bracketed-paste markers. Crossterm then exposes the key bytes as a paste,
+/// so recover them only when the *entire* payload is made of CSI-u keys.
+fn decode_leaked_csi_u_keys(text: &str) -> Option<Vec<KeyEvent>> {
+    if text.is_empty() {
+        return None;
+    }
+
+    let mut rest = text;
+    let mut keys = Vec::new();
+    while !rest.is_empty() {
+        let encoded = rest.strip_prefix("\u{1b}[")?;
+        let end = encoded.find('u')?;
+        keys.push(decode_csi_u_key(&encoded[..end])?);
+        rest = &encoded[end + 1..];
+    }
+    Some(keys)
+}
+
+fn decode_csi_u_key(params: &str) -> Option<KeyEvent> {
+    let mut fields = params.split(';');
+    let codepoint = fields.next()?.split(':').next()?.parse::<u32>().ok()?;
+    let modifier_and_kind = fields.next();
+    // Text-as-codepoints and any other trailing fields are deliberately not
+    // recovered: falling back to ordinary paste is safer than guessing.
+    if fields.next().is_some() {
+        return None;
+    }
+
+    let (modifier_mask, kind) = match modifier_and_kind {
+        Some(field) => {
+            let mut parts = field.split(':');
+            let mask = parts.next()?.parse::<u32>().ok()?;
+            if mask == 0 {
+                return None;
+            }
+            let kind = match parts.next() {
+                None | Some("1") => KeyEventKind::Press,
+                Some("2") => KeyEventKind::Repeat,
+                Some("3") => KeyEventKind::Release,
+                Some(_) => return None,
+            };
+            if parts.next().is_some() {
+                return None;
+            }
+            (mask - 1, kind)
+        }
+        None => (0, KeyEventKind::Press),
+    };
+
+    let mut modifiers = KeyModifiers::NONE;
+    if modifier_mask & 1 != 0 {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    if modifier_mask & 2 != 0 {
+        modifiers |= KeyModifiers::ALT;
+    }
+    if modifier_mask & 4 != 0 {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    if modifier_mask & 8 != 0 {
+        modifiers |= KeyModifiers::SUPER;
+    }
+    if modifier_mask & 16 != 0 {
+        modifiers |= KeyModifiers::HYPER;
+    }
+    if modifier_mask & 32 != 0 {
+        modifiers |= KeyModifiers::META;
+    }
+
+    let ch = char::from_u32(codepoint)?;
+    let code = match ch {
+        '\u{1b}' => KeyCode::Esc,
+        '\r' => KeyCode::Enter,
+        '\t' if modifiers.contains(KeyModifiers::SHIFT) => KeyCode::BackTab,
+        '\t' => KeyCode::Tab,
+        '\u{7f}' => KeyCode::Backspace,
+        _ => KeyCode::Char(ch),
+    };
+    Some(KeyEvent::new_with_kind(code, modifiers, kind))
+}
 
 pub struct SlashCommand {
     pub name: &'static str,
@@ -63,12 +150,12 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "model",
         usage: "/model [id]",
-        desc: "switch model · live in plugin mode",
+        desc: "switch model · live over ACP",
     },
     SlashCommand {
-        name: "mode",
-        usage: "/mode [id]",
-        desc: "agent mode · standard / code / minimal / creator",
+        name: "agent",
+        usage: "/agent [id]",
+        desc: "switch agent preset · ctrl+a",
     },
     SlashCommand {
         name: "effort",
@@ -97,13 +184,28 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "theme",
-        usage: "/theme [dark|light]",
-        desc: "toggle the DeepSeek palette",
+        usage: "/theme [dark|light|id]",
+        desc: "toggle mode or switch palette pack",
+    },
+    SlashCommand {
+        name: "plugins",
+        usage: "/plugins",
+        desc: "stop or restore dynamic plugins",
     },
     SlashCommand {
         name: "session",
         usage: "/session",
         desc: "show session + runtime info",
+    },
+    SlashCommand {
+        name: "auth",
+        usage: "/auth [method|api-key]",
+        desc: "ACP sign-in (Backchat authenticate)",
+    },
+    SlashCommand {
+        name: "lang",
+        usage: "/lang [zh|en]",
+        desc: "switch interface language",
     },
     SlashCommand {
         name: "logo",
@@ -130,9 +232,9 @@ pub const MODEL_PRESETS: &[&str] = &[
     "deepseek-reasoner",
 ];
 
-/// The four stock agent modes the Web UI ships (id, display name, one-line
-/// description). They seed the mode picker; plugin mode replaces them with
-/// the host's real `agentPresets` roster, which may add custom presets.
+/// Demo seeds for `/agent` when no agent catalog has arrived. Live ACP
+/// replaces these with the extra composition select the agent advertised.
+/// Shipped creator id is `cordis`.
 pub const AGENT_MODES: &[(&str, &str, &str)] = &[
     (
         "standard",
@@ -150,7 +252,7 @@ pub const AGENT_MODES: &[(&str, &str, &str)] = &[
         "two tools · persistent bash + str_replace_editor",
     ),
     (
-        "creator",
+        "cordis",
         "Creator mode",
         "standard + runtime inspection and preset authoring",
     ),
@@ -213,6 +315,31 @@ pub fn permission_label(id: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn permission_picker_items(
+    modes: &[crate::bus::CatalogPreset],
+    reported: Option<&str>,
+    current: &str,
+) -> Vec<PickerItem> {
+    modes
+        .iter()
+        .map(|p| {
+            let mark = if reported == Some(p.id.as_str()) {
+                " · current"
+            } else if reported.is_none() && p.id == current {
+                " · default"
+            } else {
+                ""
+            };
+            PickerItem {
+                id: p.id.clone(),
+                label: permission_label(&p.id),
+                meta: format!("{}{mark}", p.description),
+                provider: None,
+            }
+        })
+        .collect()
 }
 
 /// Map a file extension to the attachment media type the host accepts.
@@ -280,7 +407,7 @@ fn read_clipboard_image() -> Option<(Vec<u8>, &'static str)> {
     None
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
     Idle,
     Starting,
@@ -340,7 +467,7 @@ pub struct ChatView {
     pub top: usize,
     pub lines: Vec<String>,
     /// Per layout line, the transcript cell that owns it (only tool cells
-    /// claim ownership) — the seam for click-to-expand and wheel-to-scroll.
+    /// claim ownership) — the seam for click-to-expand.
     pub owners: Vec<Option<usize>>,
     /// Visible image thumbnails, filled by `ui::draw_chat` every frame.
     pub images: Vec<ThumbPlacement>,
@@ -351,8 +478,12 @@ pub enum PickerKind {
     Model,
     Effort,
     Mode,
+    Theme,
     Permission,
     Session,
+    Subagent,
+    Auth,
+    Plugin,
 }
 
 #[derive(Clone)]
@@ -373,6 +504,53 @@ pub struct SlashEntry {
     pub usage: String,
     pub desc: String,
     pub skill: bool,
+    pub plugin: bool,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct PluginCommand {
+    name: String,
+    description: String,
+}
+
+#[derive(serde::Deserialize)]
+struct PluginCommandCatalog {
+    protocol: u64,
+    commands: Vec<PluginCommand>,
+}
+
+#[derive(serde::Deserialize)]
+struct PluginOverlaySnapshot {
+    protocol: u64,
+    overlay: Option<PluginOverlay>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum PluginOverlay {
+    Slider(SliderOverlay),
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SliderOverlay {
+    pub id: String,
+    pub title: String,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    #[serde(default)]
+    pub marks: Vec<SliderMark>,
+    #[serde(rename = "snapToMarks", default)]
+    pub snap_to_marks: bool,
+    pub value: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SliderMark {
+    pub value: f64,
+    #[serde(default)]
+    pub id: Option<String>,
+    pub label: String,
 }
 
 pub struct Picker {
@@ -380,6 +558,44 @@ pub struct Picker {
     pub title: String,
     pub sel: usize,
     pub items: Vec<PickerItem>,
+}
+
+pub struct SubagentView {
+    pub id: String,
+    pub parent: String,
+    pub label: String,
+    pub running: bool,
+    pub transcript: Transcript,
+}
+
+/// Overlay for one ACP `session/request_permission` ask.
+pub struct PermissionAskOverlay {
+    pub title: String,
+    pub sel: usize,
+    pub options: Vec<PermissionAskOption>,
+    pub(crate) reply: Option<tokio::sync::oneshot::Sender<PermissionAskReply>>,
+}
+
+/// One live ACP form elicitation. Its editor is separate from the composer.
+pub struct ElicitationAskOverlay {
+    pub form: crate::elicitation::ElicitationFormState,
+    pub(crate) reply: Option<tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>>,
+}
+
+impl Drop for ElicitationAskOverlay {
+    fn drop(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(crate::elicitation::ElicitationReply::Cancelled);
+        }
+    }
+}
+
+impl Drop for PermissionAskOverlay {
+    fn drop(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(PermissionAskReply::Cancelled);
+        }
+    }
 }
 
 /// Folded per-session mode state (from the durable event stream — the same
@@ -400,7 +616,14 @@ pub struct Modes {
 
 pub struct App {
     pub theme: Theme,
+    pub locale: Locale,
+    pub palettes: Vec<crate::theme::PalettePack>,
+    pub active_palette_id: String,
+    /// Latest compositor-private root slot snapshot. Empty means no sidebar.
+    pub right_slot: Option<crate::slots::SlotSnapshot>,
     pub transcript: Transcript,
+    pub subagents: Vec<SubagentView>,
+    pub active_subagent: Option<String>,
     pub input: Input,
     pub state: RunState,
     pub state_note: String,
@@ -423,8 +646,20 @@ pub struct App {
     pub chat_view: ChatView,
     /// Sessions offered by the open `/resume` picker (id → file lookup).
     resume_candidates: Vec<crate::sessions::SessionSummary>,
+    /// `/resume` picker rows came from ACP `session/list` (pick → `session/load`).
+    resume_via_acp: bool,
+    /// Agent advertised `loadSession`.
+    load_session: bool,
+    /// Last ACP `session_info_update` title.
+    session_title: Option<String>,
     pub slash_sel: usize,
     pub picker: Option<Picker>,
+    /// ACP tool permission ask (separate from `/permission` session modes).
+    pub permission_ask: Option<PermissionAskOverlay>,
+    /// Standard ACP form elicitation, above permission and picker overlays.
+    pub elicitation_ask: Option<ElicitationAskOverlay>,
+    /// Client Plugin modal rendered and driven by the native compositor.
+    pub slider_overlay: Option<SliderOverlay>,
     /// Images staged in the composer as inline `[image N]` chips living in
     /// the draft text; editing a token away un-stages its image.
     pub pending_images: crate::attachments::Staged,
@@ -436,9 +671,18 @@ pub struct App {
     /// Chip index under the mouse pointer (grok-style hover preview).
     pub hover_att: Option<usize>,
     pub modes: Modes,
-    /// User-invocable host skills (plugin mode `tui/skills`); merged into
+    /// User-invocable host skills (`available_commands_update`); merged into
     /// the slash menu after the builtins.
     pub skills: Vec<crate::bus::SkillInfo>,
+    /// Client Plugin commands are compositor-private and live exactly as long
+    /// as their owning Plugin Fiber.
+    plugin_commands: Vec<PluginCommand>,
+    /// Last backend-owned dynamic plugin inventory (`/plugins`).
+    dynamic_plugins: Vec<crate::bus::DynamicPluginItem>,
+    /// Last advertised composition select (`/agent`).
+    last_presets: Vec<crate::bus::CatalogPreset>,
+    /// Last advertised session modes (`/permission`, shift+tab).
+    permission_choices: Vec<crate::bus::CatalogPreset>,
     pub tip: Option<(String, Instant)>,
     /// DSH_TUI_KEYDEBUG=1: echo every delivered key event in the tip row.
     key_debug: bool,
@@ -451,10 +695,25 @@ pub struct App {
     /// `transcript.last_model` in the chip until a turn realizes it.
     pub selected_model: Option<String>,
     pub demo: bool,
-    /// dsh plugin mode: the host owns runtime, credentials, and catalog.
+    /// A live ACP agent owns runtime, credentials, and its advertised catalog.
     pub attached: bool,
+    /// A real `session/new` or `session/load` has supplied this session id.
+    /// Cached session options stay hidden until this becomes true.
+    pub session_bound: bool,
+    /// ACP initialize / authenticate status (live ACP only).
+    pub auth: crate::acp_auth::AuthSnapshot,
+    /// Leave the TUI and run this agent login, then `authenticate`.
+    pending_terminal_auth: Option<crate::acp_auth::TerminalAuthLaunch>,
     pub quit: bool,
     pub queued: usize,
+    /// Transcript cells grouped by the client FIFO prompt that owns them.
+    queued_cells: VecDeque<Vec<usize>>,
+    /// Send Now bubbles awaiting the concurrent ACP request result.
+    pending_steer_cells: HashMap<u64, Vec<usize>>,
+    next_prompt_id: u64,
+    /// A first prompt was handed to the controller but has not reached the
+    /// ACP request task yet. Runtime startup alone does not make a turn busy.
+    prompt_pending: bool,
     shell_seq: u64,
     shell_pending: Vec<(u64, usize)>, // (id, cell idx)
     bus_tx: Sender<AppEvent>,
@@ -462,23 +721,165 @@ pub struct App {
     pub needs_redraw: bool,
 }
 
+fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
+    use crate::events::UiEvent;
+    match event {
+        UiEvent::SessionStatus { session, .. }
+        | UiEvent::TurnStart { session, .. }
+        | UiEvent::TurnEnd { session, .. }
+        | UiEvent::TextDelta { session, .. }
+        | UiEvent::ReasoningDelta { session, .. }
+        | UiEvent::AssistantFinal { session, .. }
+        | UiEvent::ToolCall { session, .. }
+        | UiEvent::ToolResult { session, .. }
+        | UiEvent::Usage { session, .. }
+        | UiEvent::UserInjected { session, .. }
+        | UiEvent::UserMessage { session, .. }
+        | UiEvent::SessionTitle { session, .. }
+        | UiEvent::Plan { session, .. }
+        | UiEvent::PlanMode { session, .. }
+        | UiEvent::SandboxMode { session, .. }
+        | UiEvent::ApprovalPolicy { session, .. }
+        | UiEvent::PermissionPreset { session, .. }
+        | UiEvent::AgentPreset { session, .. }
+        | UiEvent::ApprovalAsked { session, .. }
+        | UiEvent::ApprovalDecided { session, .. } => Some(session),
+        UiEvent::SubagentStarted { .. }
+        | UiEvent::SubagentFinished { .. }
+        | UiEvent::Palette { .. } => None,
+    }
+}
+
 /// Byte offset of char index `i` in `s` (end-of-string when past it).
 fn byte_of(s: &str, i: usize) -> usize {
     s.char_indices().nth(i).map(|(b, _)| b).unwrap_or(s.len())
 }
 
-pub const AMBIENT_TIPS: &[&str] = &[
-    "esc interrupts a running turn — your draft survives",
-    "type ! to run a local shell command without the agent",
-    "enter queues a follow-up; ctrl+x interrupts and sends it now",
-    "click a tool to expand it · wheel over a tool scrolls its output",
-    "the footer under the composer shows token usage + cache hit rate",
-    "answers render markdown: headings, code, links, and images",
-    "/mode picks the agent preset — standard · code · minimal · creator",
-    "/new starts a fresh session · /theme toggles the DeepSeek palette",
-];
+/// Draft pieces after stripping `[image n]` chips, still in reading order.
+enum StagedBlock {
+    Text(String),
+    Image(crate::attachments::Attachment),
+}
+
+fn token_spans_in(
+    buf: &str,
+    attachments: &[crate::attachments::Attachment],
+) -> Vec<(usize, usize, usize)> {
+    let mut spans = Vec::new();
+    for (idx, att) in attachments.iter().enumerate() {
+        if let Some(byte) = buf.find(&att.token) {
+            let start = buf[..byte].chars().count();
+            spans.push((start, start + att.token.chars().count(), idx));
+        }
+    }
+    spans.sort_unstable();
+    spans
+}
+
+fn unique_session_list_match(sessions: &[SessionListItem], prefix: &str) -> Result<String, String> {
+    let matches: Vec<&SessionListItem> = sessions
+        .iter()
+        .filter(|s| s.id.starts_with(prefix))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => Err(format!(
+            "no session matches “{prefix}” — /resume lists them"
+        )),
+        many => match many.iter().find(|s| s.id == prefix) {
+            Some(one) => Ok(one.id.clone()),
+            None => Err(format!(
+                "“{prefix}” is ambiguous ({} matches) — /resume lists them",
+                many.len()
+            )),
+        },
+    }
+}
+
+fn trim_staged_blocks(blocks: &mut Vec<StagedBlock>) {
+    while matches!(blocks.first(), Some(StagedBlock::Text(t)) if t.trim().is_empty()) {
+        blocks.remove(0);
+    }
+    while matches!(blocks.last(), Some(StagedBlock::Text(t)) if t.trim().is_empty()) {
+        blocks.pop();
+    }
+    if let Some(StagedBlock::Text(t)) = blocks.first_mut() {
+        *t = t.trim().to_string();
+    }
+    if let Some(StagedBlock::Text(t)) = blocks.last_mut() {
+        *t = t.trim().to_string();
+    }
+    blocks.retain(|b| !matches!(b, StagedBlock::Text(t) if t.is_empty()));
+}
+
+/// Split a composer draft on inline image chips, preserving 图文交替.
+fn split_draft_into_staged_blocks(
+    buf: &str,
+    attachments: Vec<crate::attachments::Attachment>,
+) -> Vec<StagedBlock> {
+    let spans = token_spans_in(buf, &attachments);
+    let chars: Vec<char> = buf.chars().collect();
+    let mut slots: Vec<Option<crate::attachments::Attachment>> =
+        attachments.into_iter().map(Some).collect();
+    let mut blocks = Vec::new();
+    let mut char_i = 0usize;
+    for &(start, end, idx) in &spans {
+        if start > char_i {
+            let text: String = chars[char_i..start.min(chars.len())].iter().collect();
+            if !text.is_empty() {
+                blocks.push(StagedBlock::Text(text));
+            }
+        }
+        if let Some(att) = slots.get_mut(idx).and_then(Option::take) {
+            blocks.push(StagedBlock::Image(att));
+        }
+        char_i = end.min(chars.len());
+    }
+    if char_i < chars.len() {
+        let text: String = chars[char_i..].iter().collect();
+        if !text.is_empty() {
+            blocks.push(StagedBlock::Text(text));
+        }
+    }
+    trim_staged_blocks(&mut blocks);
+    blocks
+}
+
+fn image_part_from(att: &crate::attachments::Attachment) -> crate::bus::ImagePart {
+    crate::bus::ImagePart {
+        data: crate::pet::base64(&att.data),
+        media_type: att.media_type.clone(),
+        name: att.name.clone(),
+        path: att.path.clone(),
+    }
+}
+
+fn prompt_blocks_from_staged(staged: Vec<StagedBlock>) -> Vec<crate::bus::PromptBlock> {
+    staged
+        .into_iter()
+        .map(|block| match block {
+            StagedBlock::Text(text) => crate::bus::PromptBlock::Text(text),
+            StagedBlock::Image(att) => crate::bus::PromptBlock::Image(image_part_from(&att)),
+        })
+        .collect()
+}
 
 impl App {
+    pub fn active_background(&self) -> Option<&crate::theme::ThemeBackground> {
+        self.palettes
+            .iter()
+            .find(|pack| pack.id == self.active_palette_id && pack.loaded)
+            .and_then(|pack| pack.background.as_ref())
+    }
+
+    pub fn canvas_background_color(&self) -> ratatui::style::Color {
+        if self.pet_pixels && self.active_background().is_some() {
+            ratatui::style::Color::Reset
+        } else {
+            self.theme.bg
+        }
+    }
+
     pub fn new(
         theme: Theme,
         cfg: RuntimeConfig,
@@ -487,9 +888,18 @@ impl App {
         attached: bool,
         bus_tx: Sender<AppEvent>,
     ) -> Self {
+        let palettes = vec![crate::theme::PalettePack::builtin_default()];
+        let theme = palettes[0].theme(theme.mode);
+        let locale = Self::load_locale(&cfg);
         App {
             theme,
+            locale,
+            palettes,
+            active_palette_id: "default".into(),
+            right_slot: None,
             transcript: Transcript::new(session_id.clone()),
+            subagents: Vec::new(),
+            active_subagent: None,
             input: Input::new(),
             state: RunState::Idle,
             state_note: String::new(),
@@ -504,14 +914,24 @@ impl App {
             last_click: None,
             chat_view: ChatView::default(),
             resume_candidates: Vec::new(),
+            resume_via_acp: false,
+            load_session: false,
+            session_title: None,
             slash_sel: 0,
             picker: None,
+            permission_ask: None,
+            elicitation_ask: None,
+            slider_overlay: None,
             pending_images: crate::attachments::Staged::default(),
             att_chips: Vec::new(),
             att_thumbs: Vec::new(),
             hover_att: None,
             modes: Self::load_modes_cache(&cfg).unwrap_or_default(),
             skills: Vec::new(),
+            plugin_commands: Vec::new(),
+            dynamic_plugins: Vec::new(),
+            last_presets: Vec::new(),
+            permission_choices: Vec::new(),
             tip: None,
             key_debug: std::env::var("DSH_TUI_KEYDEBUG").is_ok_and(|v| v == "1"),
             ambient_tip_idx: 0,
@@ -522,8 +942,15 @@ impl App {
             selected_model: None,
             demo,
             attached,
+            session_bound: demo,
+            auth: crate::acp_auth::AuthSnapshot::none(),
+            pending_terminal_auth: None,
             quit: false,
             queued: 0,
+            queued_cells: VecDeque::new(),
+            pending_steer_cells: HashMap::new(),
+            next_prompt_id: 1,
+            prompt_pending: false,
             shell_seq: 0,
             shell_pending: Vec::new(),
             bus_tx,
@@ -536,8 +963,33 @@ impl App {
         SPINNER[self.spinner_idx % SPINNER.len()]
     }
 
+    pub fn displayed_transcript(&self) -> &Transcript {
+        self.active_subagent
+            .as_deref()
+            .and_then(|id| self.subagents.iter().find(|view| view.id == id))
+            .map(|view| &view.transcript)
+            .unwrap_or(&self.transcript)
+    }
+
+    fn displayed_transcript_mut(&mut self) -> &mut Transcript {
+        if let Some(index) = self
+            .active_subagent
+            .as_deref()
+            .and_then(|id| self.subagents.iter().position(|view| view.id == id))
+        {
+            return &mut self.subagents[index].transcript;
+        }
+        &mut self.transcript
+    }
+
     pub fn tick(&mut self) {
-        if self.state != RunState::Idle || self.transcript.streaming() {
+        if self.state != RunState::Idle
+            || self.transcript.streaming()
+            || self
+                .subagents
+                .iter()
+                .any(|view| view.running || view.transcript.streaming())
+        {
             self.spinner_idx = self.spinner_idx.wrapping_add(1);
             self.needs_redraw = true;
         }
@@ -549,7 +1001,7 @@ impl App {
         }
         if self.ambient_tip_at.elapsed() > Duration::from_secs(14) {
             self.ambient_tip_at = Instant::now();
-            self.ambient_tip_idx = (self.ambient_tip_idx + 1) % AMBIENT_TIPS.len();
+            self.ambient_tip_idx = (self.ambient_tip_idx + 1) % crate::locale::AMBIENT_TIP_COUNT;
             if self.tip.is_none() {
                 self.needs_redraw = true;
             }
@@ -567,6 +1019,183 @@ impl App {
         self.needs_redraw = true;
     }
 
+    fn apply_palette_rpc(&mut self, params: &serde_json::Value) {
+        match crate::theme::parse_palette_notification(params) {
+            Ok(Some(n)) => self.merge_palette(n.pack, n.activate),
+            Ok(None) => {}
+            Err(err) => self.show_tip(format!("palette ignored: {err}")),
+        }
+        self.needs_redraw = true;
+    }
+
+    fn remove_palette_rpc(&mut self, params: &serde_json::Value) {
+        if params.get("protocol").and_then(serde_json::Value::as_u64) != Some(0) {
+            return;
+        }
+        let Some(id) = params.get("id").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        if id == "default" {
+            return;
+        }
+        if self.active_palette_id == id {
+            self.activate_palette("default");
+        }
+        self.palettes.retain(|palette| palette.id != id);
+        self.needs_redraw = true;
+    }
+
+    fn merge_palette(&mut self, pack: crate::theme::PalettePack, activate: bool) {
+        let id = pack.id.clone();
+        let loaded = pack.loaded;
+        if let Some(existing) = self.palettes.iter_mut().find(|p| p.id == id) {
+            *existing = pack;
+        } else {
+            self.palettes.push(pack);
+        }
+        if !loaded && self.active_palette_id == id {
+            self.activate_palette("default");
+        } else if activate && loaded {
+            self.activate_palette(&id);
+        } else if loaded && self.active_palette_id == id {
+            self.sync_theme_from_active();
+        }
+    }
+
+    fn activate_palette(&mut self, id: &str) {
+        if !self.palettes.iter().any(|p| p.id == id) {
+            return;
+        }
+        self.active_palette_id = id.to_string();
+        self.sync_theme_from_active();
+        self.show_tip(format!(
+            "theme: {} {}",
+            self.active_palette_id,
+            self.theme.mode.as_str()
+        ));
+    }
+
+    fn select_palette(&mut self, id: &str, ctl: &Controller) {
+        let Some(palette) = self.palettes.iter().find(|palette| palette.id == id) else {
+            return;
+        };
+        if palette.loaded {
+            self.activate_palette(id);
+        } else {
+            self.show_tip(format!("loading theme plugin for {id}…"));
+        }
+        ctl.send(Cmd::PluginThemeSelected {
+            agent_id: self.session_id.clone(),
+            id: id.into(),
+        });
+    }
+
+    fn sync_theme_from_active(&mut self) {
+        let mode = self.theme.mode;
+        if let Some(pack) = self
+            .palettes
+            .iter()
+            .find(|p| p.id == self.active_palette_id)
+        {
+            self.theme = pack.theme(mode);
+        }
+    }
+
+    fn apply_theme_arg(&mut self, arg: &str, ctl: &Controller) {
+        match arg {
+            "" => self.open_theme_picker(),
+            "dark" => {
+                self.theme = self.theme.with_mode(crate::theme::Mode::Dark);
+                self.show_tip(format!("theme: {} dark", self.active_palette_id));
+            }
+            "light" => {
+                self.theme = self.theme.with_mode(crate::theme::Mode::Light);
+                self.show_tip(format!("theme: {} light", self.active_palette_id));
+            }
+            id => {
+                if self.palettes.iter().any(|p| p.id == id) {
+                    self.select_palette(id, ctl);
+                } else {
+                    self.show_tip(format!("unknown palette: {id}"));
+                    self.transcript
+                        .push_notice(NoticeLevel::Warn, format!("unknown palette `{id}`"));
+                }
+            }
+        }
+    }
+
+    fn open_theme_picker(&mut self) {
+        let items = self
+            .palettes
+            .iter()
+            .map(|pack| PickerItem {
+                id: pack.id.clone(),
+                label: pack.label.clone(),
+                meta: if pack.loaded {
+                    pack.id.clone()
+                } else {
+                    format!("{} · stopped", pack.id)
+                },
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        let sel = items
+            .iter()
+            .position(|item| item.id == self.active_palette_id)
+            .unwrap_or(0);
+        self.picker = Some(Picker {
+            kind: PickerKind::Theme,
+            title: self
+                .locale
+                .tr(
+                    " theme · enter apply · esc close · ctrl+t dark/light ",
+                    " 主题 · enter 应用 · esc 关闭 · ctrl+t 切换明暗 ",
+                )
+                .into(),
+            sel,
+            items,
+        });
+    }
+
+    fn open_plugin_picker(&mut self) {
+        let items = self
+            .dynamic_plugins
+            .iter()
+            .map(|plugin| PickerItem {
+                id: plugin.id.clone(),
+                label: plugin.name.clone(),
+                meta: if plugin.running {
+                    self.locale
+                        .tr("running · enter stop", "运行中 · enter 停用")
+                        .into()
+                } else {
+                    self.locale
+                        .tr("stopped · enter restore", "已停用 · enter 恢复")
+                        .into()
+                },
+                provider: None,
+            })
+            .collect();
+        self.picker = Some(Picker {
+            kind: PickerKind::Plugin,
+            title: self
+                .locale
+                .tr(
+                    " dynamic plugins · enter stop/restore · esc close ",
+                    " 动态插件 · enter 停用/恢复 · esc 关闭 ",
+                )
+                .into(),
+            sel: 0,
+            items,
+        });
+    }
+
+    fn plugin_command_active(&self, name: &str) -> bool {
+        self.plugin_commands
+            .iter()
+            .any(|command| command.name == name)
+    }
+
     pub fn slash_matches(&self) -> Vec<SlashEntry> {
         if !self.input.buf.starts_with('/') || self.input.buf.contains(' ') {
             return Vec::new();
@@ -578,21 +1207,45 @@ impl App {
             .map(|c| SlashEntry {
                 name: c.name.to_string(),
                 usage: c.usage.to_string(),
-                desc: c.desc.to_string(),
+                desc: self.locale.command_desc(c.name, c.desc).to_string(),
                 skill: false,
+                plugin: false,
             })
             .collect();
-        // Host skills share the '/' namespace; a builtin shadows its name.
+        for command in &self.plugin_commands {
+            if command.name.starts_with(prefix)
+                && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
+            {
+                out.push(SlashEntry {
+                    name: command.name.clone(),
+                    usage: format!("/{}", command.name),
+                    desc: command.description.clone(),
+                    skill: false,
+                    plugin: true,
+                });
+            }
+        }
+        // Host skills share the '/' namespace. Builtins win first, then an
+        // active client command, because the latter never enters a prompt.
         for s in &self.skills {
-            if s.name.starts_with(prefix) && !SLASH_COMMANDS.iter().any(|c| c.name == s.name) {
+            if s.name.eq_ignore_ascii_case("logout") {
+                continue;
+            }
+            if s.name.starts_with(prefix)
+                && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
+                && !self.plugin_command_active(&s.name)
+            {
                 out.push(SlashEntry {
                     name: s.name.clone(),
                     usage: format!("/{}", s.name),
                     desc: s.description.clone(),
                     skill: true,
+                    plugin: false,
                 });
             }
         }
+        // An exact command must win over a longer name sharing its prefix.
+        out.sort_by_key(|entry| entry.name != prefix);
         out
     }
 
@@ -615,58 +1268,81 @@ impl App {
     fn handle_inner(&mut self, ev: AppEvent, ctl: &Controller) {
         match ev {
             AppEvent::Term(term) => self.handle_term(term, ctl),
+            AppEvent::Ui(ui) => self.apply_ui(ui),
             AppEvent::Rpc { method, params } => {
-                for ui in parse_notification(&method, &params) {
-                    // Fold per-session mode facts for the composer chips.
-                    {
-                        use crate::events::UiEvent as E;
-                        match &ui {
-                            E::PlanMode { session, active } if *session == self.session_id => {
-                                self.modes.plan = *active;
-                            }
-                            E::SandboxMode { session, mode } if *session == self.session_id => {
-                                self.modes.sandbox = Some(mode.clone());
-                            }
-                            E::ApprovalPolicy { session, policy }
-                                if *session == self.session_id =>
-                            {
-                                self.modes.approval = Some(policy.clone());
-                            }
-                            E::PermissionPreset { session, preset }
-                                if *session == self.session_id =>
-                            {
-                                self.modes.permission = Some(preset.clone());
-                            }
-                            E::AgentPreset { session, preset } if *session == self.session_id => {
-                                self.modes.agent_preset = Some(preset.clone());
-                            }
-                            _ => {}
+                if method == crate::cordis::THEME_UPDATE {
+                    self.apply_palette_rpc(&params);
+                    return;
+                }
+                if method == crate::cordis::THEME_REMOVE {
+                    self.remove_palette_rpc(&params);
+                    return;
+                }
+                if method == crate::cordis::COMMANDS_UPDATE {
+                    match serde_json::from_value::<PluginCommandCatalog>(params) {
+                        Ok(catalog) if catalog.protocol == 0 => {
+                            self.plugin_commands = catalog.commands;
                         }
+                        Ok(_) => {}
+                        Err(err) => self.show_tip(format!("commands ignored: {err}")),
                     }
-                    if let crate::events::UiEvent::SessionStatus { session, running } = &ui {
-                        if *session == self.session_id {
-                            self.state = if *running {
-                                RunState::Running
-                            } else {
-                                RunState::Idle
-                            };
-                            if *running {
-                                if self.run_started.is_none() {
-                                    self.run_started = Some(Instant::now());
+                    self.needs_redraw = true;
+                    return;
+                }
+                if method == crate::cordis::OVERLAY_UPDATE {
+                    match serde_json::from_value::<PluginOverlaySnapshot>(params) {
+                        Ok(snapshot) if snapshot.protocol == 0 => {
+                            self.slider_overlay = match snapshot.overlay {
+                                Some(PluginOverlay::Slider(mut slider))
+                                    if !slider.id.is_empty()
+                                        && slider.min.is_finite()
+                                        && slider.max.is_finite()
+                                        && slider.step.is_finite()
+                                        && slider.value.is_finite()
+                                        && slider.min < slider.max
+                                        && slider.step > 0.0
+                                        && (!slider.snap_to_marks || !slider.marks.is_empty())
+                                        && slider.marks.iter().all(|mark| {
+                                            mark.value.is_finite()
+                                                && mark.value >= slider.min
+                                                && mark.value <= slider.max
+                                                && !mark.label.is_empty()
+                                        }) =>
+                                {
+                                    slider.value = slider.value.clamp(slider.min, slider.max);
+                                    Some(slider)
                                 }
-                            } else {
-                                self.run_started = None;
-                                self.queued = 0;
-                                self.state_note.clear();
+                                Some(_) => {
+                                    self.show_tip("overlay ignored: invalid slider");
+                                    None
+                                }
+                                None => None,
+                            };
+                        }
+                        Ok(_) => {}
+                        Err(err) => self.show_tip(format!("overlay ignored: {err}")),
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
+                if method == crate::cordis::SLOTS_UPDATE {
+                    match crate::slots::parse_snapshot(&params) {
+                        Ok(Some(snapshot)) => {
+                            let stale = self.right_slot.as_ref().is_some_and(|current| {
+                                matches!((snapshot.rev, current.rev), (Some(next), Some(previous)) if next <= previous)
+                            });
+                            if !stale {
+                                self.right_slot = Some(snapshot);
                             }
                         }
+                        Ok(None) => {}
+                        Err(err) => self.show_tip(format!("slot ignored: {err}")),
                     }
-                    if let crate::events::UiEvent::TurnStart { session, .. } = &ui {
-                        if *session == self.session_id && self.queued > 0 {
-                            self.queued = self.queued.saturating_sub(1);
-                        }
-                    }
-                    self.transcript.apply(ui);
+                    self.needs_redraw = true;
+                    return;
+                }
+                for ui in parse_notification(&method, &params) {
+                    self.apply_ui(ui);
                 }
                 self.needs_redraw = true;
             }
@@ -674,6 +1350,10 @@ impl App {
                 // kept in proto's tail buffer for diagnostics; stay quiet here
             }
             AppEvent::RuntimeExited(code) => {
+                self.prompt_pending = false;
+                self.queued = 0;
+                self.queued_cells.clear();
+                self.pending_steer_cells.clear();
                 if self.state != RunState::Idle {
                     self.state = RunState::Idle;
                     self.run_started = None;
@@ -690,44 +1370,79 @@ impl App {
             }
             AppEvent::Ctl(ctl_ev) => {
                 match ctl_ev {
-                    CtlEvent::Starting { runtime } => {
+                    CtlEvent::Starting { .. } => {
                         self.state = RunState::Starting;
                         self.run_started = Some(Instant::now());
                         self.state_note = "starting runtime".into();
-                        let short = runtime.rsplit('/').next().unwrap_or(&runtime).to_string();
-                        self.transcript
-                            .push_notice(NoticeLevel::Info, format!("⛭ spawning {short}"));
                     }
                     CtlEvent::Ready { server } => {
                         self.server_info = Some(server.clone());
-                        self.state_note = "waiting for model".into();
-                        self.transcript
-                            .push_notice(NoticeLevel::Info, format!("⛭ connected · {server}"));
+                        if !self.prompt_pending {
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.state_note.clear();
+                        }
                     }
                     CtlEvent::PromptQueued { .. } => {
+                        let started_queued_prompt = !self.prompt_pending && self.queued > 0;
+                        self.prompt_pending = false;
                         if self.state == RunState::Starting {
                             self.state = RunState::Running;
                         }
                         self.state_note.clear();
+                        if started_queued_prompt {
+                            self.queued = self.queued.saturating_sub(1);
+                            if let Some(cells) = self.queued_cells.pop_front() {
+                                self.transcript.mark_prompt_delivered(&cells);
+                            }
+                        }
+                    }
+                    CtlEvent::SteerSettled {
+                        message_id,
+                        deferred,
+                    } => {
+                        if let Some(cells) = self.pending_steer_cells.remove(&message_id) {
+                            if deferred {
+                                self.transcript.mark_prompt_queued(&cells);
+                                self.queued += 1;
+                                self.queued_cells.push_back(cells);
+                                self.show_tip(
+                                    "agent deferred Send Now — queued after the active turn",
+                                );
+                            }
+                        }
                     }
                     CtlEvent::Error(err) => {
+                        self.prompt_pending = false;
                         self.state = RunState::Idle;
                         self.run_started = None;
                         self.transcript.push_notice(NoticeLevel::Error, err);
                     }
+                    CtlEvent::CancelRequested => {
+                        self.state_note = "cancelling".into();
+                        self.transcript.cancel_open_work();
+                    }
                     CtlEvent::Interrupted => {
+                        self.prompt_pending = false;
                         self.state = RunState::Idle;
                         self.run_started = None;
-                        self.queued = 0;
-                        self.transcript.push_notice(
-                            NoticeLevel::Warn,
-                            "interrupted — runtime stopped; the session log is preserved and the next prompt restarts it".into(),
-                        );
+                        self.state_note.clear();
+                        self.transcript.cancel_open_work();
+                        self.transcript
+                            .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
                     }
                     CtlEvent::Skills { skills } => {
                         self.skills = skills;
                     }
+                    CtlEvent::Plugins { plugins } => {
+                        self.dynamic_plugins = plugins;
+                        self.open_plugin_picker();
+                    }
                     CtlEvent::Catalog { models, presets } => {
+                        if !presets.is_empty() {
+                            self.last_presets = presets.clone();
+                        }
+                        let mode_current = self.current_mode();
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
                                 PickerKind::Model if !models.is_empty() => {
@@ -758,11 +1473,6 @@ impl App {
                                         .unwrap_or(0);
                                 }
                                 PickerKind::Mode if !presets.is_empty() => {
-                                    let current = self
-                                        .modes
-                                        .agent_preset
-                                        .clone()
-                                        .unwrap_or_else(|| "standard".into());
                                     picker.items = presets
                                         .into_iter()
                                         .map(|p| PickerItem {
@@ -779,10 +1489,36 @@ impl App {
                                     picker.sel = picker
                                         .items
                                         .iter()
-                                        .position(|i| i.id == current)
+                                        .position(|i| i.id == mode_current)
                                         .unwrap_or(0);
                                 }
                                 _ => {}
+                            }
+                        }
+                    }
+                    CtlEvent::SessionModes { modes, current } => {
+                        if !modes.is_empty() {
+                            self.permission_choices = modes.clone();
+                        }
+                        if let Some(id) = current {
+                            self.modes.permission = Some(id);
+                        }
+                        let reported = self.modes.permission.clone();
+                        let current_id = self.current_permission().to_string();
+                        let choices = self.permission_choices.clone();
+                        if let Some(picker) = &mut self.picker {
+                            if matches!(picker.kind, PickerKind::Permission) && !choices.is_empty()
+                            {
+                                picker.items = permission_picker_items(
+                                    &choices,
+                                    reported.as_deref(),
+                                    &current_id,
+                                );
+                                picker.sel = picker
+                                    .items
+                                    .iter()
+                                    .position(|i| i.id == current_id)
+                                    .unwrap_or(0);
                             }
                         }
                     }
@@ -790,10 +1526,14 @@ impl App {
                         self.open_effort_picker(efforts, default);
                     }
                     CtlEvent::PresetSet { preset } => {
+                        let label = self.agent_label(&preset);
                         self.modes.agent_preset = Some(preset.clone());
                         self.transcript.push_notice(
                             NoticeLevel::Info,
-                            format!("⚙ mode → {preset} · composes on this session's first prompt"),
+                            format!(
+                                "⚙ agent → {} · composes on this session's first prompt",
+                                label
+                            ),
                         );
                     }
                     CtlEvent::TuiOpDone(desc) => {
@@ -802,7 +1542,67 @@ impl App {
                     CtlEvent::TuiOpFailed(desc) => {
                         self.transcript.push_notice(NoticeLevel::Warn, desc);
                     }
+                    CtlEvent::Auth(snap) => {
+                        let retrying_prompt =
+                            self.state == RunState::Running || self.prompt_pending;
+                        if let Some((level, text)) = snap.notice() {
+                            self.transcript.push_notice(level, text);
+                        }
+                        if snap.status == crate::acp_auth::AuthStatus::Configured {
+                            if matches!(
+                                self.picker.as_ref().map(|p| p.kind),
+                                Some(PickerKind::Auth)
+                            ) {
+                                self.picker = None;
+                            }
+                        }
+                        if snap.status == crate::acp_auth::AuthStatus::NeedsAuth {
+                            self.prompt_pending = retrying_prompt;
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.state_note.clear();
+                        }
+                        self.auth = snap;
+                    }
+                    CtlEvent::OpenAuth => {
+                        self.open_auth_surface(ctl);
+                    }
+                    CtlEvent::AgentCaps { load_session } => {
+                        self.load_session = load_session;
+                    }
+                    CtlEvent::SessionBound { session_id, notice } => {
+                        if self.session_id != session_id {
+                            self.reset_subagent_views();
+                        }
+                        self.session_id = session_id.clone();
+                        self.transcript.set_root_session(session_id);
+                        self.session_bound = true;
+                        if let Some(notice) = notice {
+                            self.transcript.push_notice(NoticeLevel::Info, notice);
+                        }
+                        ctl.send(Cmd::FetchSkills);
+                    }
+                    CtlEvent::SessionList { sessions, prefix } => {
+                        self.on_acp_session_list(sessions, prefix, ctl);
+                    }
+                    CtlEvent::SessionListUnavailable { prefix, error } => {
+                        self.on_acp_session_list_unavailable(prefix, error, ctl);
+                    }
                 }
+                self.needs_redraw = true;
+            }
+            AppEvent::PermissionAsk {
+                title,
+                options,
+                reply,
+            } => {
+                self.open_permission_ask(title, options, reply);
+            }
+            AppEvent::ElicitationAsk { form, reply } => {
+                self.elicitation_ask = Some(ElicitationAskOverlay {
+                    form: crate::elicitation::ElicitationFormState::new(form),
+                    reply: Some(reply),
+                });
                 self.needs_redraw = true;
             }
             AppEvent::ShellDone { id, code, output } => {
@@ -815,6 +1615,112 @@ impl App {
         }
     }
 
+    /// Fold one decoded protocol fact into both client chrome and transcript.
+    /// Direct ACP facts and JSON-RPC notifications must take the same path.
+    fn apply_ui(&mut self, ui: crate::events::UiEvent) {
+        use crate::events::UiEvent as E;
+
+        if let E::SubagentStarted { parent, child } = &ui {
+            if !self.subagents.iter().any(|view| view.id == *child) {
+                self.subagents.push(SubagentView {
+                    id: child.clone(),
+                    parent: parent.clone(),
+                    label: format!("subagent {}", self.subagents.len() + 1),
+                    running: true,
+                    transcript: Transcript::new(child.clone()),
+                });
+            }
+            if parent == &self.session_id {
+                self.transcript.apply(ui);
+            } else if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *parent) {
+                view.transcript.apply(ui);
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
+        if let E::SubagentFinished { child } = &ui {
+            let parent = self
+                .subagents
+                .iter_mut()
+                .find(|view| view.id == *child)
+                .map(|view| {
+                    view.running = false;
+                    view.parent.clone()
+                });
+            if parent.as_deref() == Some(self.session_id.as_str()) {
+                self.transcript.apply(ui);
+            } else if let Some(parent) = parent {
+                if let Some(view) = self.subagents.iter_mut().find(|view| view.id == parent) {
+                    view.transcript.apply(ui);
+                }
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
+        if let Some(session) = ui_session(&ui) {
+            if session != self.session_id {
+                if let Some(view) = self.subagents.iter_mut().find(|view| view.id == session) {
+                    view.transcript.apply(ui);
+                    self.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+
+        let mut apply_to_transcript = true;
+        match &ui {
+            E::PlanMode { session, active } if *session == self.session_id => {
+                if self.modes.plan == *active {
+                    apply_to_transcript = false;
+                } else {
+                    self.modes.plan = *active;
+                }
+            }
+            E::SandboxMode { session, mode } if *session == self.session_id => {
+                self.modes.sandbox = Some(mode.clone());
+            }
+            E::ApprovalPolicy { session, policy } if *session == self.session_id => {
+                self.modes.approval = Some(policy.clone());
+            }
+            E::PermissionPreset { session, preset } if *session == self.session_id => {
+                self.modes.permission = Some(preset.clone());
+            }
+            E::AgentPreset { session, preset } if *session == self.session_id => {
+                self.modes.agent_preset = Some(preset.clone());
+                apply_to_transcript = false;
+            }
+            E::SessionTitle { session, title } if *session == self.session_id => {
+                self.session_title = Some(title.clone());
+            }
+            _ => {}
+        }
+
+        if let E::SessionStatus { session, running } = &ui {
+            if *session == self.session_id {
+                self.state = if *running {
+                    RunState::Running
+                } else {
+                    RunState::Idle
+                };
+                if *running {
+                    if self.run_started.is_none() {
+                        self.run_started = Some(Instant::now());
+                    }
+                } else {
+                    self.prompt_pending = false;
+                    self.run_started = None;
+                    self.state_note.clear();
+                }
+            }
+        }
+        if apply_to_transcript {
+            self.transcript.apply(ui);
+        }
+        self.needs_redraw = true;
+    }
+
     fn handle_term(&mut self, ev: Event, ctl: &Controller) {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -825,6 +1731,19 @@ impl App {
             Event::Mouse(mouse) => self.handle_mouse(mouse),
             Event::Resize(..) => self.needs_redraw = true,
             Event::Paste(text) => {
+                if let Some(keys) = decode_leaked_csi_u_keys(&text) {
+                    for key in keys {
+                        if key.kind != KeyEventKind::Release {
+                            self.handle_key(crate::input::rescue_key(key), ctl);
+                        }
+                    }
+                    return;
+                }
+                if let Some(ask) = &mut self.elicitation_ask {
+                    ask.form.paste(&text);
+                    self.needs_redraw = true;
+                    return;
+                }
                 self.input.insert_str(&text.replace('\n', " "));
                 self.reconcile_attachments();
                 self.needs_redraw = true;
@@ -1014,63 +1933,25 @@ impl App {
         self.chat_view.owners.get(p.line).copied().flatten()
     }
 
-    /// Wheel: scroll the tool viewport under the pointer, otherwise the chat.
-    fn mouse_scroll(&mut self, delta: i64, col: u16, row: u16) {
-        if let Some(ci) = self.tool_at(col, row) {
-            if self.scroll_tool(ci, delta) {
-                return;
-            }
-        }
+    /// Mouse wheel always scrolls the conversation, including over tool cards.
+    fn mouse_scroll(&mut self, delta: i64, _col: u16, _row: u16) {
         self.scroll_by(delta);
-    }
-
-    /// Scroll one collapsed tool viewport by `delta` body lines. Returns true
-    /// when the event was consumed (expanded tools fall back to chat scroll).
-    fn scroll_tool(&mut self, ci: usize, delta: i64) -> bool {
-        let expanded = self
-            .transcript
-            .cells
-            .get(ci)
-            .map(|c| c.expanded)
-            .unwrap_or(false)
-            || self.transcript.expand_all;
-        if expanded {
-            return false;
-        }
-        let width = self.chat_view.area.width.saturating_sub(2) as usize;
-        let Some(total) = self.transcript.tool_total_lines(ci, width) else {
-            return false;
-        };
-        let viewport = crate::transcript::TOOL_VIEWPORT;
-        if total <= viewport {
-            return false;
-        }
-        let max = total - viewport;
-        let cur = match self.transcript.cells[ci].scroll {
-            usize::MAX => max,
-            s => s,
-        };
-        let next = (cur as i64 + delta).clamp(0, max as i64) as usize;
-        self.transcript.cells[ci].scroll = if next >= max { usize::MAX } else { next };
-        self.needs_redraw = true;
-        true
     }
 
     /// Toggle a tool between its collapsed viewport and full expansion.
     fn toggle_tool(&mut self, ci: usize) {
-        let Some(cell) = self.transcript.cells.get_mut(ci) else {
-            return;
+        let label = {
+            let Some(cell) = self.displayed_transcript_mut().cells.get_mut(ci) else {
+                return;
+            };
+            cell.expanded = !cell.expanded;
+            if cell.expanded {
+                "expanded"
+            } else {
+                "collapsed"
+            }
         };
-        cell.expanded = !cell.expanded;
-        cell.scroll = usize::MAX; // reopen pinned to the tail
-        let label = if cell.expanded {
-            "expanded"
-        } else {
-            "collapsed"
-        };
-        self.show_tip(format!(
-            "{label} tool output · click toggles · wheel scrolls"
-        ));
+        self.show_tip(format!("{label} tool output · click toggles"));
         self.needs_redraw = true;
     }
 
@@ -1179,10 +2060,108 @@ impl App {
         let _ = std::fs::write(&path, root.to_string());
     }
 
+    fn locale_settings_path(cfg: &RuntimeConfig) -> std::path::PathBuf {
+        std::path::Path::new(&cfg.session_root).join("dsh-tui-settings.json")
+    }
+
+    fn load_locale(cfg: &RuntimeConfig) -> Locale {
+        std::fs::read_to_string(Self::locale_settings_path(cfg))
+            .ok()
+            .and_then(|text| serde_json::from_str::<LocaleSettings>(&text).ok())
+            .map(|settings| settings.language)
+            .unwrap_or_default()
+    }
+
+    fn save_locale(&self) {
+        let path = Self::locale_settings_path(&self.cfg);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&LocaleSettings {
+            language: self.locale,
+        }) {
+            let _ = std::fs::write(path, text);
+        }
+    }
+
+    fn set_locale(&mut self, arg: &str) {
+        let next = if arg.trim().is_empty() {
+            self.locale.alternate()
+        } else if let Some(locale) = Locale::parse(arg) {
+            locale
+        } else {
+            self.show_tip(
+                self.locale
+                    .tr("usage: /lang [zh|en]", "用法：/lang [zh|en]"),
+            );
+            return;
+        };
+        self.locale = next;
+        self.save_locale();
+        self.show_tip(match next {
+            Locale::En => "Language switched to English",
+            Locale::Zh => "界面语言已切换为中文",
+        });
+        self.needs_redraw = true;
+    }
+
     pub fn scroll_by(&mut self, delta: i64) {
         let cur = self.scroll_up as i64;
         self.scroll_up = (cur + delta).max(0) as usize; // clamped to content in ui::draw
         self.needs_redraw = true;
+    }
+
+    fn handle_slider_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+        if key.code == KeyCode::Enter {
+            if let Some(mut slider) = self.slider_overlay.take() {
+                if slider.snap_to_marks {
+                    if let Some(mark) = slider.marks.iter().min_by(|left, right| {
+                        (left.value - slider.value)
+                            .abs()
+                            .total_cmp(&(right.value - slider.value).abs())
+                    }) {
+                        slider.value = mark.value;
+                    }
+                }
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: slider.id,
+                    event: "submit".into(),
+                    value: Some(serde_json::json!(slider.value)),
+                });
+            }
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            if let Some(slider) = self.slider_overlay.take() {
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: slider.id,
+                    event: "cancel".into(),
+                    value: Some(serde_json::json!(slider.value)),
+                });
+            }
+            return;
+        }
+        let direction = match key.code {
+            KeyCode::Left => -1.0,
+            KeyCode::Right => 1.0,
+            _ => return,
+        };
+        let Some(slider) = self.slider_overlay.as_mut() else {
+            return;
+        };
+        let next = (slider.value + direction * slider.step).clamp(slider.min, slider.max);
+        if next == slider.value {
+            return;
+        }
+        slider.value = next;
+        ctl.send(Cmd::PluginOverlayEvent {
+            id: slider.id.clone(),
+            event: "change".into(),
+            value: Some(serde_json::json!(slider.value)),
+        });
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctl: &Controller) {
@@ -1193,9 +2172,64 @@ impl App {
             self.show_tip(format!("key: {:?} + {:?}", key.modifiers, key.code));
         }
 
+        // Standard ACP form elicitation is the top-most modal.
+        if self.elicitation_ask.is_some() {
+            self.handle_elicitation_key(key);
+            return;
+        }
+
+        // ACP tool permission sits above session pickers (Backchat ask panel).
+        if self.permission_ask.is_some() {
+            self.handle_permission_ask_key(key);
+            return;
+        }
+
+        if self.slider_overlay.is_some() {
+            self.handle_slider_key(key, ctl);
+            return;
+        }
+
         // --- model picker overlay steals input first (grok modal semantics)
         if self.picker.is_some() {
             self.handle_picker_key(key, ctl);
+            return;
+        }
+
+        if self.active_subagent.is_some() {
+            if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::NONE {
+                self.handle_esc(ctl);
+                return;
+            }
+            if key.code == KeyCode::Down && key.modifiers == KeyModifiers::NONE {
+                self.open_subagent_switcher();
+                return;
+            }
+            let ctx = crate::input::KeyCtx { input_empty: true };
+            if let Some(action) = crate::input::classify(&key, ctx) {
+                match action {
+                    Action::Esc
+                    | Action::Quit
+                    | Action::ToggleTheme
+                    | Action::ScrollHalfUp
+                    | Action::ScrollHalfDown
+                    | Action::PageUp
+                    | Action::PageDown
+                    | Action::JumpTop
+                    | Action::JumpTail => self.dispatch(action, ctl),
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        if key.code == KeyCode::Down
+            && key.modifiers == KeyModifiers::NONE
+            && self.active_subagent.is_none()
+            && self.input.is_empty()
+            && self.input.hist_pos.is_none()
+            && !self.subagents.is_empty()
+        {
+            self.open_subagent_switcher();
             return;
         }
 
@@ -1260,10 +2294,11 @@ impl App {
             }
             Action::ToggleTheme => {
                 self.theme = self.theme.toggled();
-                self.show_tip(match self.theme.mode {
-                    crate::theme::Mode::Dark => "theme: deepseek dark",
-                    crate::theme::Mode::Light => "theme: deepseek light",
-                });
+                self.show_tip(format!(
+                    "theme: {} {}",
+                    self.active_palette_id,
+                    self.theme.mode.as_str()
+                ));
             }
             Action::ToggleExpandAll => {
                 self.transcript.expand_all = !self.transcript.expand_all;
@@ -1276,6 +2311,7 @@ impl App {
             Action::SendNow => self.send_now(ctl),
             Action::AttachClipboard => self.clip_image("", ctl),
             Action::ModelPicker => self.open_model_picker(ctl),
+            Action::CycleAgent => self.cycle_agent(ctl),
             Action::ShowKeys => self.push_keys(),
             Action::CyclePermission => self.cycle_permission(ctl),
             Action::HistoryPrev => self.history_prev(),
@@ -1312,6 +2348,85 @@ impl App {
         }
     }
 
+    fn handle_permission_ask_key(&mut self, key: KeyEvent) {
+        let n = self
+            .permission_ask
+            .as_ref()
+            .map(|ask| ask.options.len().max(1))
+            .unwrap_or(1);
+        match key.code {
+            KeyCode::Esc => self.finish_permission_ask(PermissionAskReply::Cancelled),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.finish_permission_ask(PermissionAskReply::Cancelled);
+            }
+            KeyCode::Up => {
+                if let Some(ask) = &mut self.permission_ask {
+                    ask.sel = ask.sel.checked_sub(1).unwrap_or(n - 1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(ask) = &mut self.permission_ask {
+                    ask.sel = (ask.sel + 1) % n;
+                }
+            }
+            KeyCode::Enter => {
+                let id = self
+                    .permission_ask
+                    .as_ref()
+                    .and_then(|ask| ask.options.get(ask.sel).map(|o| o.option_id.clone()));
+                self.finish_permission_ask(match id {
+                    Some(id) => PermissionAskReply::Selected(id),
+                    None => PermissionAskReply::Cancelled,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_elicitation_key(&mut self, key: KeyEvent) {
+        let reply = self
+            .elicitation_ask
+            .as_mut()
+            .and_then(|ask| ask.form.handle_key(key));
+        if let Some(reply) = reply {
+            self.finish_elicitation(reply);
+        }
+    }
+
+    fn finish_elicitation(&mut self, reply: crate::elicitation::ElicitationReply) {
+        if let Some(mut ask) = self.elicitation_ask.take() {
+            if let Some(tx) = ask.reply.take() {
+                let _ = tx.send(reply);
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    fn open_permission_ask(
+        &mut self,
+        title: String,
+        options: Vec<PermissionAskOption>,
+        reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
+    ) {
+        let sel = permission_ask_default_sel(&options);
+        self.permission_ask = Some(PermissionAskOverlay {
+            title,
+            sel,
+            options,
+            reply: Some(reply),
+        });
+        self.needs_redraw = true;
+    }
+
+    fn finish_permission_ask(&mut self, reply: PermissionAskReply) {
+        if let Some(mut ask) = self.permission_ask.take() {
+            if let Some(tx) = ask.reply.take() {
+                let _ = tx.send(reply);
+            }
+        }
+        self.needs_redraw = true;
+    }
+
     fn handle_picker_key(&mut self, key: KeyEvent, ctl: &Controller) {
         let Some(picker) = &mut self.picker else {
             return;
@@ -1331,8 +2446,26 @@ impl App {
                 match kind {
                     PickerKind::Model => self.select_model(item, ctl),
                     PickerKind::Mode => self.set_mode(item.id, ctl),
+                    PickerKind::Theme => self.select_palette(&item.id, ctl),
                     PickerKind::Permission => self.set_permission(item.id, ctl),
-                    PickerKind::Session => self.resume_session(&item.id, ctl),
+                    PickerKind::Session => {
+                        if self.resume_via_acp {
+                            self.load_acp_session(&item.id, ctl);
+                        } else {
+                            self.resume_session(&item.id, ctl);
+                        }
+                    }
+                    PickerKind::Subagent => {
+                        self.active_subagent = if item.id == self.session_id {
+                            None
+                        } else if self.subagents.iter().any(|view| view.id == item.id) {
+                            Some(item.id)
+                        } else {
+                            None
+                        };
+                        self.scroll_up = 0;
+                        self.sel = None;
+                    }
                     PickerKind::Effort => {
                         let effort = item.id;
                         self.modes.effort = Some(effort.clone());
@@ -1345,14 +2478,71 @@ impl App {
                         self.transcript
                             .push_notice(NoticeLevel::Info, format!("reasoning effort → {effort}"));
                     }
+                    PickerKind::Auth => self.start_auth(&item.id, ctl),
+                    PickerKind::Plugin => {
+                        let action = self
+                            .dynamic_plugins
+                            .iter()
+                            .find(|plugin| plugin.id == item.id)
+                            .map(|plugin| (plugin.id.clone(), !plugin.running));
+                        if let Some((plugin_id, enabled)) = action {
+                            ctl.send(Cmd::SetPluginEnabled {
+                                agent_id: self.session_id.clone(),
+                                plugin_id: plugin_id.clone(),
+                                enabled,
+                            });
+                            self.show_tip(if enabled {
+                                format!("restoring plugin {plugin_id}…")
+                            } else {
+                                format!("stopping plugin {plugin_id}…")
+                            });
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
 
+    fn open_subagent_switcher(&mut self) {
+        let mut items = vec![PickerItem {
+            id: self.session_id.clone(),
+            label: self.locale.tr("main", "主会话").into(),
+            meta: self.locale.tr("current session", "当前会话").into(),
+            provider: None,
+        }];
+        items.extend(self.subagents.iter().map(|view| PickerItem {
+            id: view.id.clone(),
+            label: view.label.clone(),
+            meta: if view.running {
+                self.locale.tr("running", "运行中").into()
+            } else {
+                self.locale.tr("finished", "已完成").into()
+            },
+            provider: None,
+        }));
+        let current = self.active_subagent.as_deref().unwrap_or(&self.session_id);
+        let current_index = items
+            .iter()
+            .position(|item| item.id == current)
+            .unwrap_or(0);
+        let sel = (current_index + 1) % items.len();
+        self.picker = Some(Picker {
+            kind: PickerKind::Subagent,
+            title: self
+                .locale
+                .tr(
+                    " agents · ↑/↓ select · enter open · esc close ",
+                    " Agent · ↑/↓ 选择 · enter 打开 · esc 关闭 ",
+                )
+                .into(),
+            sel,
+            items,
+        });
+    }
+
     fn open_model_picker(&mut self, ctl: &Controller) {
-        // Ask the host for its real catalog (plugin mode); seed the picker
+        // Ask the ACP agent for its real catalog; seed the picker
         // with fallback presets / env snapshot meanwhile.
         ctl.send(Cmd::FetchCatalog);
         let mut items: Vec<PickerItem> = host_catalog_models()
@@ -1382,7 +2572,13 @@ impl App {
             .unwrap_or(0);
         self.picker = Some(Picker {
             kind: PickerKind::Model,
-            title: " model · enter select · esc close ".into(),
+            title: self
+                .locale
+                .tr(
+                    " model · enter select · esc close ",
+                    " 模型 · enter 选择 · esc 关闭 ",
+                )
+                .into(),
             sel,
             items,
         });
@@ -1397,7 +2593,7 @@ impl App {
                     id: e.clone(),
                     label: e,
                     meta: if is_default {
-                        "default".into()
+                        self.locale.tr("default", "默认").into()
                     } else {
                         String::new()
                     },
@@ -1418,15 +2614,34 @@ impl App {
         }
         self.picker = Some(Picker {
             kind: PickerKind::Effort,
-            title: " reasoning effort · enter select · esc close ".into(),
+            title: self
+                .locale
+                .tr(
+                    " reasoning effort · enter select · esc close ",
+                    " 推理强度 · enter 选择 · esc 关闭 ",
+                )
+                .into(),
             sel: 0,
             items,
         });
     }
 
     /// `/resume`: list this workspace's durable sessions in a picker
-    /// (grok-build's session picker, JSONL-backed).
-    fn open_resume_picker(&mut self) {
+    /// (grok-build's session picker). Live ACP prefers `session/list`.
+    fn open_resume_picker(&mut self, ctl: &Controller) {
+        if !self.demo && self.load_session {
+            ctl.send(Cmd::ListSessions { prefix: None });
+            self.show_tip("listing ACP sessions…");
+            return;
+        }
+        if !self.demo {
+            self.show_tip("agent did not advertise loadSession — listing local JSONL");
+        }
+        self.open_local_resume_picker();
+    }
+
+    fn open_local_resume_picker(&mut self) {
+        self.resume_via_acp = false;
         let sessions = crate::sessions::list_sessions(
             &self.cfg.session_root,
             &self.cfg.workspace,
@@ -1458,7 +2673,13 @@ impl App {
         self.resume_candidates = sessions;
         self.picker = Some(Picker {
             kind: PickerKind::Session,
-            title: " resume session · enter select · esc close ".into(),
+            title: self
+                .locale
+                .tr(
+                    " resume session · enter select · esc close ",
+                    " 恢复会话 · enter 选择 · esc 关闭 ",
+                )
+                .into(),
             sel: 0,
             items,
         });
@@ -1516,6 +2737,7 @@ impl App {
         };
 
         self.session_id = session.id.clone();
+        self.reset_subagent_views();
         self.transcript.clear();
         self.transcript.set_root_session(session.id.clone());
         // Replay folds the session's real mode facts over the cached ones.
@@ -1524,6 +2746,9 @@ impl App {
         self.selected_model = None;
         self.show_banner = false;
         self.queued = 0;
+        self.queued_cells.clear();
+        self.pending_steer_cells.clear();
+        self.prompt_pending = false;
         self.sel = None;
         let mut replayed = 0usize;
         for ev in &events {
@@ -1562,43 +2787,213 @@ impl App {
         self.needs_redraw = true;
     }
 
-    fn open_mode_picker(&mut self, ctl: &Controller) {
-        // Ask the host for its real preset roster (plugin mode); seed the
-        // picker with the four stock Web UI modes meanwhile.
-        ctl.send(Cmd::FetchCatalog);
-        let items: Vec<PickerItem> = AGENT_MODES
+    fn reset_session_ui(&mut self) {
+        self.reset_subagent_views();
+        self.transcript.clear();
+        self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+        self.selected_model = None;
+        self.session_title = None;
+        self.show_banner = false;
+        self.queued = 0;
+        self.queued_cells.clear();
+        self.pending_steer_cells.clear();
+        self.prompt_pending = false;
+        self.sel = None;
+        self.state = RunState::Idle;
+        self.run_started = None;
+        self.scroll_up = 0;
+        self.resume_candidates = Vec::new();
+        self.resume_via_acp = false;
+        self.session_bound = self.demo;
+    }
+
+    fn reset_subagent_views(&mut self) {
+        self.subagents.clear();
+        self.active_subagent = None;
+        if matches!(
+            self.picker.as_ref().map(|picker| picker.kind),
+            Some(PickerKind::Subagent)
+        ) {
+            self.picker = None;
+        }
+    }
+
+    fn load_acp_session(&mut self, id: &str, ctl: &Controller) {
+        self.reset_session_ui();
+        self.session_id = id.to_string();
+        self.transcript.set_root_session(id.to_string());
+        ctl.send(Cmd::LoadSession {
+            session_id: id.to_string(),
+        });
+        self.show_tip(format!("session/load {id} …"));
+        self.needs_redraw = true;
+    }
+
+    fn on_acp_session_list(
+        &mut self,
+        sessions: Vec<SessionListItem>,
+        prefix: Option<String>,
+        ctl: &Controller,
+    ) {
+        let skip = self.session_id.clone();
+        let sessions: Vec<SessionListItem> =
+            sessions.into_iter().filter(|s| s.id != skip).collect();
+        if let Some(prefix) = prefix.as_deref().filter(|p| !p.is_empty()) {
+            match unique_session_list_match(&sessions, prefix) {
+                Ok(id) => {
+                    self.load_acp_session(&id, ctl);
+                    return;
+                }
+                Err(msg) => {
+                    self.transcript.push_notice(NoticeLevel::Warn, msg);
+                    if sessions.is_empty() {
+                        return;
+                    }
+                }
+            }
+        }
+        if sessions.is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                "no ACP sessions from session/list — finish a turn and /resume finds it".into(),
+            );
+            return;
+        }
+        let items = sessions
             .iter()
-            .map(|(id, name, desc)| PickerItem {
-                id: id.to_string(),
-                label: name.to_string(),
-                meta: desc.to_string(),
+            .map(|s| PickerItem {
+                id: s.id.clone(),
+                label: s
+                    .title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| s.id.clone()),
+                meta: s.updated_at.clone().unwrap_or_default(),
                 provider: None,
             })
             .collect();
+        self.resume_via_acp = true;
+        self.picker = Some(Picker {
+            kind: PickerKind::Session,
+            title: self
+                .locale
+                .tr(
+                    " resume session · enter select · esc close ",
+                    " 恢复会话 · enter 选择 · esc 关闭 ",
+                )
+                .into(),
+            sel: 0,
+            items,
+        });
+    }
+
+    fn on_acp_session_list_unavailable(
+        &mut self,
+        prefix: Option<String>,
+        error: String,
+        ctl: &Controller,
+    ) {
+        self.show_tip(format!(
+            "session/list unavailable ({error}) — listing local JSONL"
+        ));
+        if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
+            if self.load_session {
+                self.load_acp_session(&prefix, ctl);
+                return;
+            }
+            self.resume_session(&prefix, ctl);
+            return;
+        }
+        self.open_local_resume_picker();
+        if self.load_session {
+            self.resume_via_acp = true;
+        }
+    }
+
+    fn open_mode_picker(&mut self, ctl: &Controller) {
+        ctl.send(Cmd::FetchCatalog);
+        let items: Vec<PickerItem> = if self.demo {
+            AGENT_MODES
+                .iter()
+                .map(|(id, name, desc)| PickerItem {
+                    id: id.to_string(),
+                    label: name.to_string(),
+                    meta: desc.to_string(),
+                    provider: None,
+                })
+                .collect()
+        } else {
+            self.last_presets
+                .iter()
+                .map(|p| PickerItem {
+                    id: p.id.clone(),
+                    label: p.name.clone(),
+                    meta: if p.broken {
+                        format!("⚠ broken · {}", p.description)
+                    } else {
+                        p.description.clone()
+                    },
+                    provider: None,
+                })
+                .collect()
+        };
         let current = self.current_mode();
         let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
         self.picker = Some(Picker {
             kind: PickerKind::Mode,
-            title: " agent mode · enter select · esc close ".into(),
+            title: self
+                .locale
+                .tr(
+                    " agent · enter select · esc close ",
+                    " Agent · enter 选择 · esc 关闭 ",
+                )
+                .into(),
             sel,
             items,
         });
     }
 
-    /// The effective agent mode: the folded `agent-preset/selected` fact, or
-    /// the stock default composition (standard).
+    /// The effective composition id: folded `agent-preset/selected` / ACP
+    /// `config_option_update`, else the demo stock default.
     pub fn current_mode(&self) -> String {
-        self.modes
-            .agent_preset
-            .clone()
-            .unwrap_or_else(|| "standard".into())
+        self.modes.agent_preset.clone().unwrap_or_else(|| {
+            if self.demo {
+                "standard".into()
+            } else {
+                self.last_presets
+                    .first()
+                    .map(|p| p.id.clone())
+                    .unwrap_or_default()
+            }
+        })
+    }
+
+    /// Resolve a protocol preset id through the latest ACP catalog. Demo mode
+    /// uses its local stock catalog; unknown ids remain readable as-is.
+    pub fn agent_label(&self, id: &str) -> String {
+        self.last_presets
+            .iter()
+            .find(|preset| preset.id == id)
+            .map(|preset| preset.name.clone())
+            .or_else(|| {
+                self.demo
+                    .then(|| {
+                        AGENT_MODES
+                            .iter()
+                            .find(|(preset_id, _, _)| *preset_id == id)
+                            .map(|(_, name, _)| (*name).to_string())
+                    })
+                    .flatten()
+            })
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// Pick the agent preset composed on this session's first prompt. The
     /// host locks it once the session agent exists (`/new` for a fresh one).
     fn set_mode(&mut self, preset: String, ctl: &Controller) {
+        let label = self.agent_label(&preset);
         if self.modes.agent_preset.as_deref() == Some(preset.as_str()) {
-            self.show_tip(format!("mode already {preset}"));
+            self.show_tip(format!("agent already {label}"));
             return;
         }
         ctl.send(Cmd::SetPreset {
@@ -1607,7 +3002,33 @@ impl App {
         });
         // Preset scopes can mount their own skill registries.
         ctl.send(Cmd::FetchSkills);
-        self.show_tip(format!("mode → {preset} …"));
+        self.show_tip(format!("agent → {label} …"));
+    }
+
+    /// Ctrl+A cycles the advertised agent presets directly. `/agent` keeps
+    /// the picker for explicit selection; the shortcut mirrors Shift+Tab's
+    /// one-keystroke permission switching.
+    fn cycle_agent(&mut self, ctl: &Controller) {
+        let current = self.current_mode();
+        let choices: Vec<&str> = if self.demo {
+            AGENT_MODES.iter().map(|(id, _, _)| *id).collect()
+        } else {
+            self.last_presets
+                .iter()
+                .map(|preset| preset.id.as_str())
+                .collect()
+        };
+        let Some(next) = choices
+            .iter()
+            .position(|id| *id == current)
+            .map(|index| choices[(index + 1) % choices.len()])
+            .or_else(|| choices.first().copied())
+        else {
+            ctl.send(Cmd::FetchCatalog);
+            self.show_tip("agent presets unavailable");
+            return;
+        };
+        self.set_mode(next.to_string(), ctl);
     }
 
     fn select_model(&mut self, item: PickerItem, ctl: &Controller) {
@@ -1653,13 +3074,24 @@ impl App {
     /// grok: Shift+Tab cycles the permission preset.
     fn cycle_permission(&mut self, ctl: &Controller) {
         let current = self.current_permission().to_string();
-        let idx = PERMISSION_PRESETS
-            .iter()
-            .position(|(p, _)| *p == current)
-            .unwrap_or(0);
-        let next = PERMISSION_PRESETS[(idx + 1) % PERMISSION_PRESETS.len()]
-            .0
-            .to_string();
+        let next = if self.permission_choices.len() >= 2 {
+            let idx = self
+                .permission_choices
+                .iter()
+                .position(|p| p.id == current)
+                .unwrap_or(0);
+            self.permission_choices[(idx + 1) % self.permission_choices.len()]
+                .id
+                .clone()
+        } else {
+            let idx = PERMISSION_PRESETS
+                .iter()
+                .position(|(p, _)| *p == current)
+                .unwrap_or(0);
+            PERMISSION_PRESETS[(idx + 1) % PERMISSION_PRESETS.len()]
+                .0
+                .to_string()
+        };
         self.set_permission(next, ctl);
     }
 
@@ -1693,36 +3125,60 @@ impl App {
     fn open_permission_picker(&mut self) {
         let reported = self.modes.permission.clone();
         let current = self.current_permission().to_string();
-        let items: Vec<PickerItem> = PERMISSION_PRESETS
-            .iter()
-            .map(|(id, desc)| {
-                let mark = if reported.as_deref() == Some(*id) {
-                    " · current"
-                } else if reported.is_none() && *id == current {
-                    " · default"
-                } else {
-                    ""
-                };
-                PickerItem {
-                    id: id.to_string(),
-                    label: permission_label(id),
-                    meta: format!("{desc}{mark}"),
-                    provider: None,
-                }
-            })
-            .collect();
+        let items = if self.permission_choices.is_empty() {
+            PERMISSION_PRESETS
+                .iter()
+                .map(|(id, desc)| {
+                    let mark = if reported.as_deref() == Some(*id) {
+                        " · current"
+                    } else if reported.is_none() && *id == current {
+                        " · default"
+                    } else {
+                        ""
+                    };
+                    PickerItem {
+                        id: id.to_string(),
+                        label: permission_label(id),
+                        meta: format!("{desc}{mark}"),
+                        provider: None,
+                    }
+                })
+                .collect()
+        } else {
+            permission_picker_items(&self.permission_choices, reported.as_deref(), &current)
+        };
         let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
         self.picker = Some(Picker {
             kind: PickerKind::Permission,
-            title: " permission preset · enter apply · esc close ".into(),
+            title: self
+                .locale
+                .tr(
+                    " permission · enter apply · esc close ",
+                    " 权限 · enter 应用 · esc 关闭 ",
+                )
+                .into(),
             sel,
             items,
         });
     }
 
     fn handle_esc(&mut self, ctl: &Controller) {
+        if self.elicitation_ask.is_some() {
+            self.finish_elicitation(crate::elicitation::ElicitationReply::Cancelled);
+            return;
+        }
+        if self.permission_ask.is_some() {
+            self.finish_permission_ask(PermissionAskReply::Cancelled);
+            return;
+        }
         if self.picker.is_some() {
             self.picker = None;
+            return;
+        }
+        if self.active_subagent.take().is_some() {
+            self.scroll_up = 0;
+            self.sel = None;
+            self.needs_redraw = true;
             return;
         }
         // A lingering copy highlight is dismissed first (idle only — while
@@ -1771,7 +3227,9 @@ impl App {
             self.show_tip("draft cleared — ↑ recalls it");
             return;
         }
-        if matches!(self.state, RunState::Running | RunState::Starting) {
+        if matches!(self.state, RunState::Running | RunState::Starting)
+            && self.state_note != "cancelling"
+        {
             if ctl.interrupt_now() {
                 ctl.send(Cmd::Interrupt {
                     session_id: self.session_id.clone(),
@@ -1822,6 +3280,23 @@ impl App {
     }
 
     fn accept_slash(&mut self, entry: &SlashEntry, ctl: &Controller) {
+        if entry.plugin {
+            let line = self.input.buf.clone();
+            let rest = line
+                .strip_prefix('/')
+                .and_then(|s| s.strip_prefix(entry.name.as_str()))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            self.input.history.push(line);
+            self.input.clear();
+            self.slash_sel = 0;
+            ctl.send(Cmd::InvokePluginCommand {
+                name: entry.name.clone(),
+                args: rest,
+            });
+            return;
+        }
         if entry.skill {
             // Web-UI semantics: picking a skill lands the literal "/name "
             // in the composer; enter on the completed line ships it as an
@@ -1852,18 +3327,26 @@ impl App {
         match name {
             "help" => self.push_help(),
             "keys" => self.push_keys(),
+            "lang" => self.set_locale(arg),
             "clear" => {
                 self.transcript.clear();
                 self.sel = None;
-                self.transcript
-                    .push_notice(NoticeLevel::Info, "scrollback cleared".into());
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    self.locale.tr("scrollback cleared", "滚动区已清空").into(),
+                );
             }
             "quit" => self.quit = true,
             "logo" => {
                 self.show_banner = true;
                 self.transcript.push_notice(
                     NoticeLevel::Info,
-                    "🐳 the whale is back — it dives on your next prompt".into(),
+                    self.locale
+                        .tr(
+                            "🐳 the whale is back — it dives on your next prompt",
+                            "🐳 鲸鱼回来了 — 发送下一条消息时它会潜下去",
+                        )
+                        .into(),
                 );
             }
             "liang" => {
@@ -1879,13 +3362,15 @@ impl App {
                 };
                 self.transcript.push_notice(NoticeLevel::Info, msg.into());
             }
-            "theme" => {
-                let next = match arg {
-                    "light" => Theme::light(),
-                    "dark" => Theme::dark(),
-                    _ => self.theme.toggled(),
-                };
-                self.theme = next;
+            "theme" => self.apply_theme_arg(arg, ctl),
+            "plugins" => {
+                ctl.send(Cmd::FetchPlugins {
+                    agent_id: self.session_id.clone(),
+                });
+                self.show_tip(self.locale.tr(
+                    "reading dynamic plugins from Host…",
+                    "正在从 Host 读取动态插件…",
+                ));
             }
             "model" => {
                 if arg.is_empty() {
@@ -1894,7 +3379,7 @@ impl App {
                     self.set_model(arg.to_string(), ctl);
                 }
             }
-            "mode" => {
+            "agent" => {
                 if arg.is_empty() {
                     self.open_mode_picker(ctl);
                 } else {
@@ -1902,30 +3387,44 @@ impl App {
                 }
             }
             "new" => {
-                let id = if arg.is_empty() {
-                    format!("dsh-{}", timestamp())
+                if self.demo {
+                    let id = if arg.is_empty() {
+                        format!("dsh-{}", timestamp())
+                    } else {
+                        arg.to_string()
+                    };
+                    self.reset_subagent_views();
+                    self.session_id = id.clone();
+                    self.transcript.set_root_session(id.clone());
+                    self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+                    self.session_title = None;
+                    ctl.send(Cmd::FetchSkills);
+                    self.transcript.push_notice(
+                        NoticeLevel::Info,
+                        format!("new session · {id} — /agent picks its agent preset"),
+                    );
                 } else {
-                    arg.to_string()
-                };
-                self.session_id = id.clone();
-                self.transcript.set_root_session(id.clone());
-                // Folded per-session facts belong to the old session; start
-                // the new one from the workspace cache (the host echoes its
-                // real facts on compose).
-                self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
-                // The new session may compose a different preset scope —
-                // refresh the skill catalog it serves.
-                ctl.send(Cmd::FetchSkills);
-                self.transcript.push_notice(
-                    NoticeLevel::Info,
-                    format!("new session · {id} — /mode picks its agent preset"),
-                );
+                    self.reset_session_ui();
+                    ctl.send(Cmd::NewSession);
+                    self.show_tip("session/new …");
+                }
             }
             "session" => self.push_session_info(),
+            "auth" => self.start_auth(arg, ctl),
             "resume" => {
                 if arg.is_empty() {
-                    self.open_resume_picker();
+                    self.open_resume_picker(ctl);
+                } else if !self.demo && self.load_session {
+                    ctl.send(Cmd::ListSessions {
+                        prefix: Some(arg.to_string()),
+                    });
+                    self.show_tip("listing ACP sessions…");
                 } else {
+                    if !self.demo {
+                        self.show_tip(
+                            "agent did not advertise loadSession — replaying local JSONL",
+                        );
+                    }
                     self.resume_session(arg, ctl);
                 }
             }
@@ -1957,8 +3456,28 @@ impl App {
                 }
             }
             "plan" => {
-                // Host-command passthrough: dsh-commands parses it when the
-                // profile mounts plan mode; the plan/mode event echoes back.
+                if let Some(action) = self
+                    .skills
+                    .iter()
+                    .find(|command| command.name == "plan")
+                    .and_then(|command| command.config_action.clone())
+                {
+                    let value = match arg {
+                        "" => Some(action.value),
+                        "off" => action.reset_value,
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        ctl.send(Cmd::SetConfigOption {
+                            config_id: action.config_id,
+                            value,
+                        });
+                        return;
+                    }
+                }
+                // Agents without a declared config action keep the ordinary
+                // ACP slash-prompt transport; `/plan message` also belongs to
+                // the command handler rather than the config switch.
                 let text = if arg.is_empty() {
                     "/plan".to_string()
                 } else {
@@ -1971,41 +3490,228 @@ impl App {
             other => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
-                    format!("unknown command /{other} — /help lists commands"),
+                    if self.locale == Locale::Zh {
+                        format!("未知命令 /{other} — 使用 /help 查看命令")
+                    } else {
+                        format!("unknown command /{other} — /help lists commands")
+                    },
                 );
             }
         }
     }
 
+    /// Take a pending Terminal Auth launch so the main loop can leave the TUI.
+    pub fn take_terminal_auth(&mut self) -> Option<crate::acp_auth::TerminalAuthLaunch> {
+        self.pending_terminal_auth.take()
+    }
+
+    fn open_auth_surface(&mut self, ctl: &Controller) {
+        if self.demo {
+            return;
+        }
+        if self.pending_terminal_auth.is_some() {
+            return;
+        }
+        if matches!(self.picker.as_ref().map(|p| p.kind), Some(PickerKind::Auth)) {
+            return;
+        }
+        self.state = RunState::Idle;
+        self.run_started = None;
+        self.state_note.clear();
+        self.show_tip("sign-in needed — /auth to retry");
+        self.start_auth("", ctl);
+    }
+
+    fn open_auth_picker(&mut self) {
+        let items: Vec<PickerItem> = self
+            .auth
+            .methods
+            .iter()
+            .map(|method| PickerItem {
+                id: method.id.clone(),
+                label: method.name.clone().unwrap_or_else(|| method.id.clone()),
+                meta: method.type_name.clone(),
+                provider: None,
+            })
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let current = self.auth.method_id.clone();
+        let sel = current
+            .as_ref()
+            .and_then(|id| items.iter().position(|item| item.id == *id))
+            .unwrap_or(0);
+        self.picker = Some(Picker {
+            kind: PickerKind::Auth,
+            title: self
+                .locale
+                .tr(
+                    " sign in · enter select · esc close ",
+                    " 登录 · enter 选择 · esc 关闭 ",
+                )
+                .into(),
+            sel,
+            items,
+        });
+    }
+
+    fn start_auth(&mut self, arg: &str, ctl: &Controller) {
+        use crate::acp_auth::{
+            authenticate_meta_from_method, select_auth_method, values_from_auth_arg,
+        };
+        if self.demo {
+            self.transcript
+                .push_notice(NoticeLevel::Info, "demo has no ACP authenticate".into());
+            return;
+        }
+        if self.auth.methods.is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.auth
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "this agent did not advertise auth methods".into()),
+            );
+            return;
+        }
+        let arg = arg.trim();
+        if arg.is_empty() && self.auth.methods.len() > 1 {
+            self.open_auth_picker();
+            return;
+        }
+        let (method_id, rest) = {
+            let mut parts = arg.splitn(2, char::is_whitespace);
+            let first = parts.next().unwrap_or("");
+            let rest = parts.next().unwrap_or("").trim();
+            if self.auth.methods.iter().any(|m| m.id == first) {
+                (first.to_string(), rest.to_string())
+            } else {
+                (
+                    self.auth
+                        .method_id
+                        .clone()
+                        .unwrap_or_else(|| self.auth.methods[0].id.clone()),
+                    arg.to_string(),
+                )
+            }
+        };
+        let Some(method) = select_auth_method(&self.auth.methods, Some(&method_id)).cloned() else {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                format!("ACP auth method is unavailable or not supported: {method_id}"),
+            );
+            return;
+        };
+        if method.is_env_prompt() {
+            let vars = method
+                .vars
+                .iter()
+                .map(|v| v.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                if vars.is_empty() {
+                    format!(
+                        "ACP auth method {} requires credential variables and cannot be started as a sign-in flow.",
+                        method.id
+                    )
+                } else {
+                    format!(
+                        "ACP auth method {} requires credential variables ({vars}) and cannot be started as a sign-in flow.",
+                        method.id
+                    )
+                },
+            );
+            return;
+        }
+        let values = values_from_auth_arg(&method, &rest);
+        if method.form && authenticate_meta_from_method(&method, &values).is_none() {
+            self.show_tip("usage: /auth <api-key> · gateway: /auth <base-url> <api-key>");
+            return;
+        }
+        if values.is_empty() {
+            if let Some(launch) = method.terminal_launch.clone() {
+                self.pending_terminal_auth = Some(launch);
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    format!(
+                        "leaving the TUI for {} — return here when it finishes",
+                        method.name.as_deref().unwrap_or(&method.id)
+                    ),
+                );
+                return;
+            }
+        }
+        ctl.send(Cmd::Authenticate {
+            method_id: method.id,
+            values,
+        });
+    }
+
     fn push_help(&mut self) {
+        if self.locale == Locale::Zh {
+            let text = "\
+DeepSeek Build (dsh-tui) — 终端里的 deepseek-harness
+
+  enter        发送；当前轮次运行时将后续消息排队
+  ctrl+x       立即 steer 当前轮次
+  esc          中断（保留草稿）；空闲时清除草稿
+  ctrl+c       清除草稿 · 中断 · 连按两次退出
+  shift+tab    轮换权限预设；/permission 打开选择器
+  ctrl+p       打开模型选择器，然后选择推理强度
+  ctrl+a       直接轮换 Agent 预设
+  /agent       切换 ACP 广告的 Agent 预设
+  /lang        切换界面语言：/lang zh 或 /lang en
+  /auth        ACP 登录；多种方式时打开选择器
+  /effort      推理强度 · /permission 权限预设 · /plan 计划模式
+  /resume      恢复持久会话并继续写入原日志
+  /image       暂存本地图片：/image ./pic.png [说明]
+  /clip        暂存剪贴板图片；ctrl+v 同样可用
+  !cmd         直接运行本地命令，不经过 Agent
+  /<skill>     Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
+  ctrl+o       展开思考和工具输出   ctrl+l 清屏
+  点击工具     展开/折叠；滚轮滚动对话
+  pgup/pgdn    翻页；end 回到最新消息
+  鼠标拖动     选择并复制文本；双击复制单词
+
+每轮会显示：流式思考与回答、工具调用与结果、注入上下文、
+Subagent 生命周期、token 用量（含缓存命中）以及轮次结束原因。";
+            self.transcript.push_notice(NoticeLevel::Info, text.into());
+            return;
+        }
         let text = "\
 DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
 
   enter        send · queues a follow-up while a turn runs
-  ctrl+x       interrupt the turn and send now
+  ctrl+x       steer the active turn immediately
   esc          interrupt (draft survives) · clears the draft when idle
   ctrl+c       clear draft · interrupt · 2× quits
   shift+tab    cycle permission (workspace-write ⇄ full access)
                · /permission opens the preset picker
   ctrl+p       model picker (host catalog) → effort picker
-  /mode        agent mode · standard / code / minimal / creator
-               (picked before a session's first prompt · /new to change)
+  ctrl+a       cycle agent preset directly
+  /agent       switch the agent preset advertised over ACP
+               (live switch via session/set_config_option · /new for a fresh session)
+  /auth        ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
+               · agent's /login stays a prompt when advertised · mid-session auth_required opens this surface
   /effort      reasoning effort · /permission preset · /plan host plan mode
   /resume      pick up a durable session — transcript replays, log continues
-  /image       stage a local image — /image ./pic.png [caption] (plugin mode)
+  /image       stage a local image — /image ./pic.png [caption]
   /clip        stage the clipboard image — /clip [caption] · ctrl+v also works
                up to 8 ride one prompt as inline [image n] chips in the text
                — ⌫ on a chip removes it · hover (or park the cursor on) a
                chip for a preview with dimensions, size, and type
   !cmd         run a local shell command (not the agent)
-  /<skill>     host skills join the / menu (plugin mode) — picking one lands
+  /<skill>     agent commands join the / menu — picking one lands
                `/name ` in the composer; enter ships it and the host injects
                the skill body (works for disable-model-invocation skills too)
   ctrl+o       expand thoughts + tool output   ctrl+l clear
   editing      readline chords + ⌘/⌥ arrows — on macOS the physical ⌘/⌥
                state is read natively, so they work in every terminal;
                ctrl+arrows elsewhere — the full map lives in /keys
-  click tool   expand/collapse that tool · wheel over it scrolls its window
+  click tool   expand/collapse that tool · wheel scrolls the conversation
   pgup/pgdn    scroll · mouse wheel works · end follows the tail
   mouse drag   select text — copied on release · 2×click copies a word
                (hold shift to use the terminal's native selection)
@@ -2017,6 +3723,31 @@ usage (incl. cache hits), and the turn end reason.";
     }
 
     fn push_keys(&mut self) {
+        if self.locale == Locale::Zh {
+            let os = if cfg!(target_os = "macos") {
+                "\
+  macOS：⌘←/⌘→ 行首/行尾 · ⌥←/⌥→ 按词移动 · ⌘⌫ 删除到行首 · ⌥⌫ 删除前一词
+         ⌘↑/⌘↓ 到对话顶部/底部；所有终端均读取物理 ⌘/⌥ 状态"
+            } else {
+                "\
+  Linux/Windows：ctrl+←/→ 按词移动 · ctrl+⌫ 或 alt+⌫ 删除前一词"
+            };
+            let text = format!(
+                "\
+快捷键
+  enter 发送 · ctrl+x 立即发送 · esc / ctrl+c 取消
+  空输入时 ↑ 调历史 · tab 补全 / 命令
+  ctrl+a 切 Agent · ctrl+p 模型 · ctrl+t 主题 · ctrl+o 展开 · ctrl+l 清屏 · ctrl+. 快捷键
+  pgup/pgdn 翻页 · home/end 顶部/底部 · 空输入时 ctrl+u/ctrl+d 半页
+  readline：home/ctrl+e 行首/行尾 · ctrl+b/ctrl+f 移动 · ctrl+k/ctrl+u 删除
+            ctrl+w 删除前一词 · 输入时 ctrl+d 向前删除
+{os}
+  点击工具展开/折叠 · 滚轮滚动对话
+  拖动选择并复制 · 双击复制单词 · shift+拖动使用终端原生选择"
+            );
+            self.transcript.push_notice(NoticeLevel::Info, text);
+            return;
+        }
         let os = if cfg!(target_os = "macos") {
             "\
   macOS: ⌘←/⌘→ line ends · ⌥←/⌥→ word hops · ⌘⌫ kill to start · ⌥⌫ word back
@@ -2031,12 +3762,12 @@ usage (incl. cache hits), and the turn end reason.";
 keys — grok-build homage set
   enter send · ctrl+x send-now · esc / ctrl+c cancel semantics
   ↑ history (empty prompt) · tab completes /commands
-  ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
+  ctrl+a cycle agent · ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
   pgup/pgdn page · home/end top/tail · ctrl+u/ctrl+d half-page (empty prompt)
-  readline: ctrl+a/ctrl+e line ends · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
+  readline: home/ctrl+e line ends · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
             ctrl+w word back · ctrl+d delete forward (while typing)
 {os}
-  click tool expands/collapses · wheel over a tool scrolls its output
+  click tool expands/collapses · wheel scrolls the conversation
   drag select-copies · 2×click word-copies · shift+drag native select"
         );
         self.transcript.push_notice(NoticeLevel::Info, text);
@@ -2045,6 +3776,26 @@ keys — grok-build homage set
     fn push_session_info(&mut self) {
         let creds = if self.demo {
             "demo mode (no API calls)".to_string()
+        } else if self.auth.status == crate::acp_auth::AuthStatus::Configured {
+            match self
+                .auth
+                .method_name
+                .as_deref()
+                .or(self.auth.method_id.as_deref())
+            {
+                Some(name) => format!("ACP authenticate · {name}"),
+                None => "ACP authenticate · configured".into(),
+            }
+        } else if self.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
+            match self
+                .auth
+                .method_name
+                .as_deref()
+                .or(self.auth.method_id.as_deref())
+            {
+                Some(name) => format!("sign-in needed · {name} · /auth"),
+                None => "sign-in needed · /auth".into(),
+            }
         } else if self.cfg.has_credentials() {
             match self.cfg.credential_source() {
                 Some(src) => format!("api key present · {src}"),
@@ -2056,11 +3807,15 @@ keys — grok-build homage set
         let u = self.transcript.usage;
         let total = u.input + u.output + u.cached + u.reasoning;
         let text = format!(
-            "session · {}\nprovider · {} / {}\nmode · {}{}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {}) · Σ{} total",
+            "session · {}{}\nprovider · {} / {}\nagent · {}{}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {}) · Σ{} total",
             self.session_id,
+            self.session_title
+                .as_deref()
+                .map(|t| format!(" · {t}"))
+                .unwrap_or_default(),
             self.cfg.provider,
             self.cfg.model,
-            self.current_mode(),
+            self.agent_label(&self.current_mode()),
             if self.modes.agent_preset.is_none() { " (default)" } else { "" },
             self.cfg.workspace,
             self.cfg.session_root,
@@ -2094,6 +3849,12 @@ keys — grok-build homage set
             // skill line ships as an ordinary prompt — the host's pre-step
             // boundary recognizes the leading /name and injects the body.
             let builtin = SLASH_COMMANDS.iter().any(|c| c.name == name);
+            if !builtin && self.plugin_command_active(&name) {
+                self.input.history.push(text);
+                self.input.clear();
+                ctl.send(Cmd::InvokePluginCommand { name, args: arg });
+                return;
+            }
             if !builtin && self.skills.iter().any(|s| s.name == name) {
                 self.input.history.push(text.clone());
                 self.input.clear();
@@ -2116,12 +3877,12 @@ keys — grok-build homage set
         }
 
         // Inline [image n] chips ride along with the prompt text (or send
-        // alone): tokens strip out of the caption, token order = send order.
+        // alone): chip order = block order (图文交替).
         if !self.pending_images.is_empty() {
             self.input.history.push(self.input.buf.clone());
-            let (caption, batch) = self.take_prompt_and_images();
+            let staged = self.take_staged_blocks();
             self.input.clear();
-            self.send_images(batch, caption, ctl);
+            self.send_staged(staged, ctl);
             return;
         }
 
@@ -2137,12 +3898,15 @@ keys — grok-build homage set
     /// passthroughs like /plan).
     fn send_agent_text(&mut self, text: String, ctl: &Controller) {
         self.show_banner = false;
-        let running = matches!(self.state, RunState::Running | RunState::Starting);
+        let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
+        let cell = self.transcript.cells.len();
         self.transcript.push_user(text.clone(), running);
         if running {
             self.queued += 1;
+            self.queued_cells.push_back(vec![cell]);
             self.show_tip("queued — lands after this turn · ctrl+x would send now");
         } else {
+            self.prompt_pending = true;
             self.state = RunState::Starting;
             self.run_started = Some(Instant::now());
             self.state_note = if self.demo {
@@ -2181,13 +3945,12 @@ keys — grok-build homage set
             }
         };
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
-        self.stage_image(
-            name,
-            path.to_string(),
-            media_type.to_string(),
-            bytes,
-            caption,
-        );
+        let stored_path = std::fs::canonicalize(path)
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+            .to_string_lossy()
+            .into_owned();
+        self.stage_image(name, stored_path, media_type.to_string(), bytes, caption);
     }
 
     /// `/clip [caption]` — stage the clipboard image in the composer.
@@ -2239,96 +4002,101 @@ keys — grok-build homage set
         self.needs_redraw = true;
     }
 
-    /// Strip the inline tokens out of the draft and hand back the caption
-    /// plus the attachments in token (reading) order.
-    fn take_prompt_and_images(&mut self) -> (String, Vec<crate::attachments::Attachment>) {
-        let spans = self.token_spans();
-        let mut caption = self.input.buf.clone();
-        for &(s, e, _) in spans.iter().rev() {
-            let b0 = byte_of(&caption, s);
-            let b1 = byte_of(&caption, e);
-            caption.replace_range(b0..b1, "");
-        }
-        // Collapse the doubled spaces token removal leaves; newlines stay.
-        while caption.contains("  ") {
-            caption = caption.replace("  ", " ");
-        }
-        let caption = caption.trim().to_string();
-
-        let mut slots: Vec<Option<crate::attachments::Attachment>> =
-            self.pending_images.drain().into_iter().map(Some).collect();
-        let batch: Vec<crate::attachments::Attachment> = spans
-            .iter()
-            .filter_map(|&(_, _, i)| slots.get_mut(i).and_then(Option::take))
-            .collect();
-        (caption, batch)
+    /// Drain the tray and split the draft on chip spans, in reading order.
+    fn take_staged_blocks(&mut self) -> Vec<StagedBlock> {
+        self.reconcile_attachments();
+        let buf = self.input.buf.clone();
+        split_draft_into_staged_blocks(&buf, self.pending_images.drain())
     }
 
-    /// Echo a tray batch in the transcript (first image carries the
-    /// caption, thumbnails where possible) and send one prompt whose
-    /// content blocks hold every image.
-    fn emit_images_prompt(
+    fn next_prompt_id(&mut self) -> u64 {
+        let id = self.next_prompt_id;
+        self.next_prompt_id = self.next_prompt_id.wrapping_add(1).max(1);
+        id
+    }
+
+    /// Echo staged blocks in the transcript (text and image thumbnails in
+    /// draft order) and send one prompt whose ACP blocks match that order.
+    fn emit_staged_prompt(
         &mut self,
-        batch: Vec<crate::attachments::Attachment>,
-        text: String,
+        staged: Vec<StagedBlock>,
         queued: bool,
+        steer_message_id: Option<u64>,
         ctl: &Controller,
     ) {
         self.show_banner = false;
-        let mut images = Vec::with_capacity(batch.len());
-        for (i, att) in batch.into_iter().enumerate() {
-            let caption = if i == 0 { text.clone() } else { String::new() };
-            self.transcript.push_image(
-                att.name.clone(),
-                caption,
-                att.path,
-                att.data.clone(),
-                queued,
+        let first_cell = self.transcript.cells.len();
+        for block in &staged {
+            match block {
+                StagedBlock::Text(text) => self.transcript.push_user(text.clone(), queued),
+                StagedBlock::Image(att) => self.transcript.push_image(
+                    att.name.clone(),
+                    String::new(),
+                    att.path.clone(),
+                    att.data.clone(),
+                    queued,
+                ),
+            }
+        }
+        if queued {
+            self.queued_cells
+                .push_back((first_cell..self.transcript.cells.len()).collect());
+        }
+        if let Some(message_id) = steer_message_id {
+            self.pending_steer_cells.insert(
+                message_id,
+                (first_cell..self.transcript.cells.len()).collect(),
             );
-            images.push(crate::bus::ImagePart {
-                data: crate::pet::base64(&att.data),
-                media_type: att.media_type,
-                name: att.name,
-            });
         }
         self.scroll_up = 0;
-        ctl.send(Cmd::PromptImages {
-            session_id: self.session_id.clone(),
-            text,
-            images,
+        let blocks = prompt_blocks_from_staged(staged);
+        ctl.send(if let Some(message_id) = steer_message_id {
+            Cmd::SteerImages {
+                session_id: self.session_id.clone(),
+                message_id,
+                blocks,
+            }
+        } else {
+            Cmd::PromptImages {
+                session_id: self.session_id.clone(),
+                blocks,
+            }
         });
     }
 
     /// Submit path for the staged tray: set run state / queue bookkeeping,
-    /// then emit the batch prompt.
-    fn send_images(
-        &mut self,
-        batch: Vec<crate::attachments::Attachment>,
-        caption: String,
-        ctl: &Controller,
-    ) {
-        let n = batch.len();
-        let running = matches!(self.state, RunState::Running | RunState::Starting);
+    /// then emit the interleaved prompt.
+    fn send_staged(&mut self, staged: Vec<StagedBlock>, ctl: &Controller) {
+        if staged.is_empty() {
+            return;
+        }
+        let n = staged
+            .iter()
+            .filter(|b| matches!(b, StagedBlock::Image(_)))
+            .count();
+        let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
         if running {
             self.queued += 1;
-            self.show_tip(if n == 1 {
+            self.show_tip(if n <= 1 {
                 "image queued — lands after this turn".to_string()
             } else {
                 format!("{n} images queued — land after this turn")
             });
         } else {
+            self.prompt_pending = true;
             self.state = RunState::Starting;
             self.run_started = Some(Instant::now());
-            self.state_note = if n == 1 {
+            self.state_note = if n <= 1 {
                 "sending image".into()
             } else {
                 format!("sending {n} images")
             };
         }
-        self.emit_images_prompt(batch, caption, running, ctl);
+        self.emit_staged_prompt(staged, running, None, ctl);
     }
 
-    /// grok send-now: cancel the current turn and run this message next.
+    /// Send-now is ACP steering: issue another prompt immediately while the
+    /// current turn remains active. Esc is the only cancellation path.
     fn send_now(&mut self, ctl: &Controller) {
         let raw = self.input.buf.trim().to_string();
         if !self.pending_images.is_empty() && (raw.starts_with('/') || raw.starts_with('!')) {
@@ -2337,34 +4105,32 @@ keys — grok-build homage set
             );
             return;
         }
-        let (text, images) = if self.pending_images.is_empty() {
-            (raw, Vec::new())
+        let staged = if self.pending_images.is_empty() {
+            if raw.is_empty() {
+                return;
+            }
+            vec![StagedBlock::Text(raw)]
         } else {
-            self.take_prompt_and_images()
+            self.take_staged_blocks()
         };
-        if text.is_empty() && images.is_empty() {
+        if staged.is_empty() {
             return;
         }
-        let running = matches!(self.state, RunState::Running | RunState::Starting);
-        let mut interrupted = true;
-        if running {
-            interrupted = ctl.interrupt_now();
-            if interrupted {
-                ctl.send(Cmd::Interrupt {
-                    session_id: self.session_id.clone(),
-                });
-            }
-        }
+        let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
         self.input.history.push(self.input.buf.clone());
         self.input.clear();
         self.show_banner = false;
-        let queued = !interrupted && running;
-        if !images.is_empty() {
-            let n = images.len();
-            if queued {
-                self.queued += 1;
-                self.show_tip("cannot interrupt here — images queued for the next turn");
+        let queued = false;
+        let has_images = staged.iter().any(|b| matches!(b, StagedBlock::Image(_)));
+        if has_images {
+            let n = staged
+                .iter()
+                .filter(|b| matches!(b, StagedBlock::Image(_)))
+                .count();
+            if running {
+                self.show_tip("steered with image — lands at the next agent step");
             } else {
+                self.prompt_pending = true;
                 self.state = RunState::Starting;
                 self.run_started = Some(Instant::now());
                 self.state_note = if n == 1 {
@@ -2373,20 +4139,36 @@ keys — grok-build homage set
                     format!("sending {n} images")
                 };
             }
-            self.emit_images_prompt(images, text, queued, ctl);
+            let steer_message_id = running.then(|| self.next_prompt_id());
+            self.emit_staged_prompt(staged, queued, steer_message_id, ctl);
         } else {
+            let text = match staged.into_iter().next() {
+                Some(StagedBlock::Text(t)) => t,
+                _ => return,
+            };
+            let cell = self.transcript.cells.len();
             self.transcript.push_user(text.clone(), queued);
-            if queued {
-                self.queued += 1;
-                self.show_tip("cannot interrupt here — queued for the next turn instead");
+            if running {
+                self.show_tip("steered — lands at the next agent step");
             } else {
+                self.prompt_pending = true;
                 self.state = RunState::Starting;
                 self.run_started = Some(Instant::now());
             }
             self.scroll_up = 0;
-            ctl.send(Cmd::Prompt {
-                session_id: self.session_id.clone(),
-                text,
+            ctl.send(if running {
+                let message_id = self.next_prompt_id();
+                self.pending_steer_cells.insert(message_id, vec![cell]);
+                Cmd::Steer {
+                    session_id: self.session_id.clone(),
+                    message_id,
+                    text,
+                }
+            } else {
+                Cmd::Prompt {
+                    session_id: self.session_id.clone(),
+                    text,
+                }
             });
         }
     }
@@ -2610,6 +4392,43 @@ mod resume_tests {
     }
 
     #[test]
+    fn acp_resume_usage_snapshot_reaches_the_footer_once() {
+        let root = tmp_root("acp-usage");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+
+        app.handle(
+            AppEvent::Rpc {
+                method: "session/update".into(),
+                params: serde_json::json!({
+                    "sessionId": "dsh-loaded",
+                    "update": {
+                        "sessionUpdate": "session_info_update",
+                        "_meta": {
+                            "dsh": {
+                                "event": "prompt/usage",
+                                "usage": {
+                                    "inputTokens": 41,
+                                    "outputTokens": 9,
+                                    "thoughtTokens": 4,
+                                    "cachedReadTokens": 13,
+                                    "cachedWriteTokens": 2
+                                }
+                            }
+                        }
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        assert_eq!(app.transcript.usage.input, 41);
+        assert_eq!(app.transcript.usage.output, 9);
+        assert_eq!(app.transcript.usage.cached, 15);
+        assert_eq!(app.transcript.usage.reasoning, 4);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn resume_picker_lists_sessions_and_prefix_resolves() {
         let root = tmp_root("picker");
         write_fixture_session(&root, "dsh-alpha");
@@ -2753,7 +4572,7 @@ mod selection_tests {
     }
 
     #[test]
-    fn tool_click_toggles_and_wheel_scrolls_the_viewport() {
+    fn tool_click_toggles_output_expansion() {
         let mut app = test_app();
         app.transcript.apply(crate::events::UiEvent::ToolCall {
             session: "dsh-test".into(),
@@ -2779,30 +4598,64 @@ mod selection_tests {
         assert!(app.transcript.cells[0].expanded, "click expands");
         app.toggle_tool(0);
         assert!(!app.transcript.cells[0].expanded, "click collapses");
+    }
 
-        // Wheel over the collapsed tool scrolls the viewport, not the chat.
-        let before = app.scroll_up;
-        assert!(app.scroll_tool(0, -1), "collapsed tool consumes the wheel");
-        assert_ne!(
-            app.transcript.cells[0].scroll,
-            usize::MAX,
-            "scrolled off tail"
-        );
-        assert_eq!(app.scroll_up, before, "chat scroll untouched");
+    #[test]
+    fn wheel_over_collapsed_tool_scrolls_the_transcript() {
+        let mut app = test_app();
+        app.transcript.apply(crate::events::UiEvent::ToolCall {
+            session: "dsh-test".into(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        app.transcript.apply(crate::events::UiEvent::ToolResult {
+            session: "dsh-test".into(),
+            call_id: "c1".into(),
+            is_error: false,
+            text: "a\nb\nc\nd\ne\nf\ng\nh".into(),
+            error: None,
+        });
+        app.chat_view.area = ratatui::layout::Rect::new(1, 0, 40, 10);
+        app.chat_view.top = 0;
+        app.chat_view.lines = vec!["tool line".into()];
+        app.chat_view.owners = vec![Some(0)];
 
-        // Expanded tools defer to the chat scroll path.
-        app.transcript.cells[0].expanded = true;
-        assert!(
-            !app.scroll_tool(0, -1),
-            "expanded tool does not consume wheel"
-        );
+        app.mouse_scroll(3, 2, 0);
+
+        assert_eq!(app.scroll_up, 3, "tool cards must not swallow the wheel");
+    }
+
+    #[test]
+    fn tool_click_in_a_child_view_targets_the_child_transcript() {
+        let mut app = test_app();
+        let mut transcript = Transcript::new("child-1".into());
+        transcript.apply(crate::events::UiEvent::ToolCall {
+            session: "child-1".into(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        app.subagents.push(SubagentView {
+            id: "child-1".into(),
+            parent: "dsh-test".into(),
+            label: "subagent 1".into(),
+            running: true,
+            transcript,
+        });
+        app.active_subagent = Some("child-1".into());
+
+        app.toggle_tool(0);
+
+        assert!(app.subagents[0].transcript.cells[0].expanded);
+        assert!(app.transcript.cells.is_empty());
     }
 }
 
 #[cfg(test)]
 mod mode_tests {
     use super::*;
-    use crate::bus::{CatalogModel, CatalogPreset};
+    use crate::bus::{CatalogModel, CatalogPreset, DynamicPluginItem, SessionListItem};
     use std::sync::mpsc::Receiver;
 
     /// Unique session root per call — keeps the modes cache from leaking
@@ -2899,22 +4752,385 @@ mod mode_tests {
     }
 
     #[test]
-    fn slash_mode_opens_picker_with_the_four_stock_modes() {
+    fn slash_menu_offers_the_dynamic_plugin_manager() {
+        let (mut app, _ctl, _rx) = test_app();
+        app.input.set("/plug".into());
+
+        let matches = app.slash_matches();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "plugins");
+        assert_eq!(matches[0].usage, "/plugins");
+    }
+
+    #[test]
+    fn slash_menu_offers_the_client_language_switch() {
+        let (mut app, _ctl, _rx) = test_app();
+        app.input.set("/lang".into());
+
+        let matches = app.slash_matches();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "lang");
+        assert_eq!(matches[0].usage, "/lang [zh|en]");
+    }
+
+    #[test]
+    fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
+        let cfg = test_cfg();
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let (ctl, _commands) = crate::controller::test_controller();
+        let mut app = App::new(
+            Theme::dark(),
+            cfg.clone(),
+            "s1".into(),
+            true,
+            false,
+            tx.clone(),
+        );
+        app.show_banner = false;
+
+        app.run_slash("lang", "zh", &ctl);
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 24);
+        assert!(
+            frame.replace(' ', "").contains("描述你想构建的内容"),
+            "{frame}"
+        );
+
+        let mut restarted = App::new(Theme::dark(), cfg, "s2".into(), true, false, tx);
+        restarted.show_banner = false;
+        let frame = crate::ui::dump_frame(&mut restarted, 100, 24);
+        assert!(
+            frame.replace(' ', "").contains("描述你想构建的内容"),
+            "{frame}"
+        );
+    }
+
+    #[test]
+    fn plugins_slash_fetches_the_host_inventory() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+
+        app.run_slash("plugins", "", &ctl);
+
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("plugins slash sends a command");
+        assert!(matches!(command, Cmd::FetchPlugins { agent_id } if agent_id == "dsh-test"));
+    }
+
+    #[test]
+    fn host_plugin_inventory_opens_a_running_and_stopped_picker() {
         let (mut app, ctl, _rx) = test_app();
-        app.run_slash("mode", "", &ctl);
-        let picker = app.picker.as_ref().expect("mode picker opens");
+
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Plugins {
+                plugins: vec![
+                    DynamicPluginItem {
+                        id: "panel-1".into(),
+                        name: "Status panel".into(),
+                        package_id: "pkg-1".into(),
+                        running: true,
+                    },
+                    DynamicPluginItem {
+                        id: "theme-1".into(),
+                        name: "Clay theme".into(),
+                        package_id: "pkg-2".into(),
+                        running: false,
+                    },
+                ],
+            }),
+            &ctl,
+        );
+
+        let picker = app.picker.as_ref().expect("plugin picker opens");
+        assert!(matches!(picker.kind, PickerKind::Plugin));
+        assert_eq!(picker.items[0].label, "Status panel");
+        assert_eq!(picker.items[0].meta, "running · enter stop");
+        assert_eq!(picker.items[1].meta, "stopped · enter restore");
+    }
+
+    #[test]
+    fn enter_toggles_a_plugin_and_reopens_the_backend_inventory() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Plugins {
+                plugins: vec![DynamicPluginItem {
+                    id: "panel-1".into(),
+                    name: "Status panel".into(),
+                    package_id: "pkg-1".into(),
+                    running: true,
+                }],
+            }),
+            &ctl,
+        );
+
+        app.handle_picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("plugin picker sends a toggle");
+        assert!(matches!(
+            command,
+            Cmd::SetPluginEnabled { agent_id, plugin_id, enabled }
+                if agent_id == "dsh-test" && plugin_id == "panel-1" && !enabled
+        ));
+    }
+
+    #[test]
+    fn child_session_updates_do_not_enter_the_parent_transcript() {
+        let (mut app, _ctl, _rx) = test_app();
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        app.apply_ui(crate::events::UiEvent::TextDelta {
+            session: "child-1".into(),
+            text: "child-only output".into(),
+        });
+
+        let rendered = app
+            .transcript
+            .lines(&Theme::dark(), 80, '⠋')
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        assert!(
+            !rendered.contains("child-only output"),
+            "child content must stay out of the parent transcript: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_running_subagent_keeps_the_spinner_advancing() {
+        let (mut app, _ctl, _rx) = test_app();
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        let before = app.spinner_idx;
+
+        app.tick();
+
+        assert_ne!(app.spinner_idx, before);
+    }
+
+    #[test]
+    fn down_on_an_empty_prompt_opens_the_agent_switcher() {
+        let (mut app, ctl, _rx) = test_app();
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+
+        let picker = app.picker.as_ref().expect("agent switcher opens");
+        assert!(picker.title.contains("agents"));
+        let ids: Vec<&str> = picker.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["dsh-test", "child-1"]);
+    }
+
+    #[test]
+    fn enter_from_the_agent_switcher_opens_the_child_transcript() {
+        let (mut app, ctl, _rx) = test_app();
+        app.show_banner = false;
+        app.transcript.push_user("main-only text".into(), false);
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        app.apply_ui(crate::events::UiEvent::TextDelta {
+            session: "child-1".into(),
+            text: "child-only output".into(),
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 24);
+        assert!(frame.contains("child-only output"), "{frame}");
+        assert!(!frame.contains("main-only text"), "{frame}");
+    }
+
+    #[test]
+    fn esc_from_a_child_transcript_returns_to_main() {
+        let (mut app, ctl, _rx) = test_app();
+        app.show_banner = false;
+        app.transcript.push_user("main-only text".into(), false);
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        app.apply_ui(crate::events::UiEvent::TextDelta {
+            session: "child-1".into(),
+            text: "child-only output".into(),
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 24);
+        assert!(frame.contains("main-only text"), "{frame}");
+        assert!(!frame.contains("child-only output"), "{frame}");
+    }
+
+    #[test]
+    fn child_transcript_view_does_not_accept_composer_input() {
+        let (mut app, ctl, _rx) = test_app();
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        assert!(
+            app.input.is_empty(),
+            "child view must not edit the main draft"
+        );
+        assert!(
+            app.transcript.cells.iter().all(|cell| !matches!(
+                &cell.kind,
+                crate::transcript::CellKind::User { text, .. } if text == "x"
+            )),
+            "child view must not submit a main-session prompt"
+        );
+    }
+
+    #[test]
+    fn down_from_a_child_view_preselects_the_next_agent() {
+        let (mut app, ctl, _rx) = test_app();
+        for child in ["child-1", "child-2"] {
+            app.apply_ui(crate::events::UiEvent::SubagentStarted {
+                parent: "dsh-test".into(),
+                child: child.into(),
+            });
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+        assert_eq!(app.active_subagent.as_deref(), Some("child-1"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+
+        let picker = app.picker.as_ref().expect("agent switcher reopens");
+        assert_eq!(picker.items[picker.sel].id, "child-2");
+    }
+
+    #[test]
+    fn q_from_a_child_transcript_returns_to_main() {
+        let (mut app, ctl, _rx) = test_app();
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &ctl);
+
+        assert!(app.active_subagent.is_none());
+    }
+
+    #[test]
+    fn a_new_session_clears_the_previous_agent_views() {
+        let (mut app, ctl, _rx) = test_app();
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: "child-1".into(),
+        });
+        assert_eq!(app.subagents.len(), 1);
+
+        app.run_slash("new", "fresh", &ctl);
+
+        assert!(app.subagents.is_empty());
+        assert!(app.active_subagent.is_none());
+    }
+
+    #[test]
+    fn slash_agent_opens_the_agent_preset_picker() {
+        let (mut app, ctl, _rx) = test_app();
+
+        app.run_slash("agent", "", &ctl);
+
+        let picker = app.picker.as_ref().expect("agent picker opens");
         assert!(matches!(picker.kind, PickerKind::Mode));
-        let ids: Vec<&str> = picker.items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["standard", "code", "minimal", "creator"]);
+        let ids: Vec<&str> = picker.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["standard", "code", "minimal", "cordis"]);
         assert_eq!(picker.sel, 0, "defaults to standard");
         assert_eq!(picker.items[0].label, "Standard mode");
+    }
+
+    #[test]
+    fn slash_menu_exposes_agent_instead_of_mode() {
+        let (mut app, _ctl, _rx) = test_app();
+
+        app.input.set("/agent".into());
+        let agent = app.slash_matches();
+        assert_eq!(agent.len(), 1);
+        assert_eq!(agent[0].name, "agent");
+
+        app.input.set("/mode".into());
+        assert!(app.slash_matches().iter().all(|entry| entry.name != "mode"));
+    }
+
+    #[test]
+    fn ctrl_a_cycles_the_agent_directly_without_touching_the_draft() {
+        let (mut app, ctl, rx) = test_app();
+        app.input.set("keep this draft".into());
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            &ctl,
+        );
+
+        assert_eq!(app.input.buf, "keep this draft");
+        assert!(app.picker.is_none(), "the shortcut must not open a form");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.modes.agent_preset.as_deref() != Some("code") {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("ctrl+a switches to the next agent preset");
+            let ev = rx.recv_timeout(remaining).expect("agent preset event");
+            app.handle(ev, &ctl);
+        }
+        assert_eq!(app.current_mode(), "code");
+    }
+
+    #[test]
+    fn live_mode_picker_uses_advertised_composition_not_stock() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Catalog {
+                models: Vec::new(),
+                presets: vec![CatalogPreset {
+                    id: "cordis".into(),
+                    name: "Creator from ACP".into(),
+                    description: "inspect".into(),
+                    broken: false,
+                }],
+            }),
+            &ctl,
+        );
+        app.run_slash("agent", "", &ctl);
+        let picker = app.picker.as_ref().expect("mode picker opens");
+        let ids: Vec<&str> = picker.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["cordis"]);
+        assert_eq!(picker.items[0].label, "Creator from ACP");
     }
 
     #[test]
     fn host_catalog_replaces_mode_picker_items() {
         let (mut app, ctl, _rx) = test_app();
         app.modes.agent_preset = Some("code".into());
-        app.run_slash("mode", "", &ctl);
+        app.run_slash("agent", "", &ctl);
         app.handle(
             AppEvent::Ctl(CtlEvent::Catalog {
                 models: Vec::new(),
@@ -3003,7 +5219,7 @@ mod mode_tests {
     #[test]
     fn demo_mode_selection_round_trips_the_durable_event() {
         let (mut app, ctl, rx) = test_app();
-        app.run_slash("mode", "minimal", &ctl);
+        app.run_slash("agent", "minimal", &ctl);
         // The demo controller synthesizes the agent-preset/selected fact.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while app.modes.agent_preset.is_none() {
@@ -3022,21 +5238,112 @@ mod mode_tests {
         let (mut app, ctl, _rx) = test_app();
         app.handle(
             AppEvent::Ctl(CtlEvent::PresetSet {
-                preset: "creator".into(),
+                preset: "cordis".into(),
             }),
             &ctl,
         );
-        assert_eq!(app.modes.agent_preset.as_deref(), Some("creator"));
+        assert_eq!(app.modes.agent_preset.as_deref(), Some("cordis"));
         app.run_slash("new", "fresh", &ctl);
         assert_eq!(app.session_id, "fresh");
         // The ack was cached for this workspace — /new boots from it (the
         // host echoes the real facts when the session composes).
         assert_eq!(
             app.modes.agent_preset.as_deref(),
-            Some("creator"),
+            Some("cordis"),
             "/new keeps the cached workspace mode"
         );
-        assert_eq!(app.current_mode(), "creator");
+        assert_eq!(app.current_mode(), "cordis");
+    }
+
+    #[test]
+    fn live_acp_new_does_not_invent_a_local_id() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        let before = app.session_id.clone();
+        app.run_slash("new", "fresh", &ctl);
+        assert_eq!(app.session_id, before, "ACP /new waits for session/new");
+        app.handle(
+            AppEvent::Ctl(CtlEvent::SessionBound {
+                session_id: "acp-9".into(),
+                notice: Some("new session · acp-9".into()),
+            }),
+            &ctl,
+        );
+        assert_eq!(app.session_id, "acp-9");
+    }
+
+    #[test]
+    fn agent_preset_event_updates_chrome_without_adding_a_transcript_row() {
+        let (mut app, _ctl, _rx) = test_app();
+        let cells_before = app.transcript.cells.len();
+
+        app.apply_ui(crate::events::UiEvent::AgentPreset {
+            session: app.session_id.clone(),
+            preset: "cordis".into(),
+        });
+
+        assert_eq!(app.modes.agent_preset.as_deref(), Some("cordis"));
+        assert_eq!(app.transcript.cells.len(), cells_before);
+    }
+
+    #[test]
+    fn acp_session_list_opens_picker_and_prefix_loads() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.load_session = true;
+        app.handle(
+            AppEvent::Ctl(CtlEvent::SessionList {
+                sessions: vec![
+                    SessionListItem {
+                        id: "s-old".into(),
+                        title: Some("hello".into()),
+                        updated_at: Some("yesterday".into()),
+                    },
+                    SessionListItem {
+                        id: "s-other".into(),
+                        title: None,
+                        updated_at: None,
+                    },
+                ],
+                prefix: None,
+            }),
+            &ctl,
+        );
+        let picker = app.picker.as_ref().expect("ACP resume picker");
+        assert!(app.resume_via_acp);
+        assert_eq!(picker.items[0].label, "hello");
+        assert_eq!(picker.items[1].label, "s-other");
+
+        app.picker = None;
+        app.handle(
+            AppEvent::Ctl(CtlEvent::SessionList {
+                sessions: vec![SessionListItem {
+                    id: "s-old".into(),
+                    title: None,
+                    updated_at: None,
+                }],
+                prefix: Some("s-old".into()),
+            }),
+            &ctl,
+        );
+        assert_eq!(app.session_id, "s-old");
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn agent_caps_gate_resume_to_session_list() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.handle(
+            AppEvent::Ctl(CtlEvent::AgentCaps { load_session: true }),
+            &ctl,
+        );
+        assert!(app.load_session);
+        app.run_slash("resume", "", &ctl);
+        assert!(
+            app.picker.is_none(),
+            "live ACP /resume waits for session/list"
+        );
     }
 
     #[test]
@@ -3107,7 +5414,7 @@ mod mode_tests {
             "assumed default"
         );
 
-        let mut wait_for = |app: &mut App, target: &str| {
+        let wait_for = |app: &mut App, target: &str| {
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while app.modes.permission.as_deref() != Some(target) {
                 let remaining = deadline
@@ -3227,16 +5534,477 @@ mod mode_tests {
     }
 
     #[test]
+    fn cancel_requested_stops_in_flight_tools() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.transcript.apply(crate::events::UiEvent::ToolCall {
+            session: app.session_id.clone(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"grep"}"#.into(),
+        });
+        app.handle(AppEvent::Ctl(CtlEvent::CancelRequested), &ctl);
+        assert_eq!(app.state_note, "cancelling");
+        assert!(
+            matches!(app.state, RunState::Running),
+            "prompt has not unwound yet"
+        );
+        match &app.transcript.cells.last().unwrap().kind {
+            crate::transcript::CellKind::Tool { ok, error, .. } => {
+                assert_eq!(*ok, Some(false));
+                assert_eq!(error.as_deref(), Some("cancelled"));
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_now_while_running_is_a_steer_not_a_cancelled_queue_item() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.input.set("change course".into());
+
+        app.send_now(&ctl);
+
+        assert!(matches!(app.state, RunState::Running));
+        assert_eq!(app.queued, 0);
+        assert_ne!(app.state_note, "cancelling");
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User { text, queued: false })
+                if text == "change course"
+        ));
+    }
+
+    #[test]
+    fn rejected_send_now_becomes_visible_fifo_without_stopping_the_active_turn() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.input.set("change course".into());
+
+        app.send_now(&ctl);
+        let message_id = *app
+            .pending_steer_cells
+            .keys()
+            .next()
+            .expect("tracked steer command");
+        app.handle(
+            AppEvent::Ctl(CtlEvent::SteerSettled {
+                message_id,
+                deferred: true,
+            }),
+            &ctl,
+        );
+
+        assert!(matches!(app.state, RunState::Running));
+        assert_eq!(app.queued, 1);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User {
+                text,
+                queued: true,
+            }) if text == "change course"
+        ));
+    }
+
+    #[test]
+    fn send_now_with_an_image_keeps_the_active_turn_running() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.stage_image(
+            "shot.png".into(),
+            "clipboard".into(),
+            "image/png".into(),
+            vec![1, 2, 3],
+            String::new(),
+        );
+
+        app.send_now(&ctl);
+
+        assert!(matches!(app.state, RunState::Running));
+        assert_eq!(app.queued, 0);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::Image { queued: false, .. })
+        ));
+    }
+
+    #[test]
+    fn first_prompt_after_agent_ready_is_not_marked_queued() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Starting {
+                runtime: "dsh-acp".into(),
+            }),
+            &ctl,
+        );
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Ready {
+                server: "dsh-acp".into(),
+            }),
+            &ctl,
+        );
+
+        app.send_agent_text("first".into(), &ctl);
+
+        assert_eq!(app.queued, 0);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User { queued: false, .. })
+        ));
+    }
+
+    #[test]
+    fn startup_lifecycle_updates_state_without_adding_transcript_rows() {
+        let (mut app, ctl, _rx) = test_app();
+        let cells_before = app.transcript.cells.len();
+
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Starting {
+                runtime: "/usr/local/bin/dsh-acp".into(),
+            }),
+            &ctl,
+        );
+        assert!(matches!(app.state, RunState::Starting));
+        assert_eq!(app.transcript.cells.len(), cells_before);
+
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Ready {
+                server: "dsh-acp".into(),
+            }),
+            &ctl,
+        );
+        assert!(matches!(app.state, RunState::Idle));
+        assert_eq!(app.server_info.as_deref(), Some("dsh-acp"));
+        assert_eq!(app.transcript.cells.len(), cells_before);
+    }
+
+    #[test]
+    fn first_prompt_during_runtime_start_is_active_and_only_the_second_queues() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Starting {
+                runtime: "dsh-acp".into(),
+            }),
+            &ctl,
+        );
+
+        app.send_agent_text("first".into(), &ctl);
+        app.send_agent_text("second".into(), &ctl);
+
+        assert_eq!(app.queued, 1);
+        let users = app
+            .transcript
+            .cells
+            .iter()
+            .filter_map(|cell| match &cell.kind {
+                crate::transcript::CellKind::User { text, queued } => {
+                    Some((text.as_str(), *queued))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(users, [("first", false), ("second", true)]);
+    }
+
+    #[test]
+    fn terminal_lifecycle_events_release_a_pending_first_prompt() {
+        let events = vec![
+            AppEvent::RuntimeExited(None),
+            AppEvent::Ctl(CtlEvent::Error("failed".into())),
+            AppEvent::Ctl(CtlEvent::Interrupted),
+            AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+                session: "dsh-test".into(),
+                running: false,
+            }),
+        ];
+
+        for event in events {
+            let (mut app, ctl, _rx) = test_app();
+            app.send_agent_text("first".into(), &ctl);
+            app.handle(event, &ctl);
+            app.send_agent_text("retry".into(), &ctl);
+
+            assert_eq!(app.queued, 0);
+            assert!(matches!(
+                app.transcript.cells.last().map(|cell| &cell.kind),
+                Some(crate::transcript::CellKind::User {
+                    text,
+                    queued: false
+                }) if text == "retry"
+            ));
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_wrapped_csi_u_ctrl_c_still_quits() {
+        let (mut app, ctl, _rx) = test_app();
+
+        for _ in 0..2 {
+            app.handle(
+                AppEvent::Term(Event::Paste("\u{1b}[99;5u".to_string())),
+                &ctl,
+            );
+        }
+
+        assert!(app.quit, "two Ctrl+C presses should quit from idle");
+        assert!(
+            app.input.is_empty(),
+            "the CSI-u bytes must never enter the composer"
+        );
+    }
+
+    #[test]
+    fn ordinary_and_mixed_paste_payloads_are_not_treated_as_keys() {
+        let (mut app, ctl, _rx) = test_app();
+
+        app.handle(
+            AppEvent::Term(Event::Paste("hello\nworld".to_string())),
+            &ctl,
+        );
+        app.handle(
+            AppEvent::Term(Event::Paste(" literal \u{1b}[99;5u".to_string())),
+            &ctl,
+        );
+
+        assert_eq!(app.input.buf, "hello world literal \u{1b}[99;5u");
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn resetting_the_session_releases_a_pending_first_prompt() {
+        let (mut app, ctl, _rx) = test_app();
+        app.send_agent_text("old session".into(), &ctl);
+
+        app.reset_session_ui();
+        app.send_agent_text("new session".into(), &ctl);
+
+        assert_eq!(app.queued, 0);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User {
+                text,
+                queued: false
+            }) if text == "new session"
+        ));
+    }
+
+    #[test]
+    fn resetting_the_session_discards_unsettled_steer_bookkeeping() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.input.set("old steer".into());
+        app.send_now(&ctl);
+        let message_id = *app
+            .pending_steer_cells
+            .keys()
+            .next()
+            .expect("steer is awaiting settlement");
+
+        app.reset_session_ui();
+        app.handle(
+            AppEvent::Ctl(CtlEvent::SteerSettled {
+                message_id,
+                deferred: true,
+            }),
+            &ctl,
+        );
+
+        assert!(app.pending_steer_cells.is_empty());
+        assert_eq!(app.queued, 0, "late settlement cannot taint a new session");
+        assert!(app.queued_cells.is_empty());
+    }
+
+    #[test]
+    fn runtime_exit_discards_delivery_state_owned_by_the_dead_actor() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.send_agent_text("queued followup".into(), &ctl);
+        app.input.set("unsettled steer".into());
+        app.send_now(&ctl);
+        assert_eq!(app.queued, 1);
+        assert_eq!(app.pending_steer_cells.len(), 1);
+
+        app.handle(AppEvent::RuntimeExited(Some(1)), &ctl);
+
+        assert_eq!(app.queued, 0);
+        assert!(app.queued_cells.is_empty());
+        assert!(app.pending_steer_cells.is_empty());
+    }
+
+    #[test]
+    fn interrupted_keeps_client_followups_queued() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.state_note = "cancelling".into();
+        app.send_agent_text("first followup".into(), &ctl);
+        app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+        assert!(matches!(app.state, RunState::Idle));
+        assert_eq!(app.queued, 1);
+        assert!(app.state_note.is_empty());
+
+        app.send_agent_text("second followup".into(), &ctl);
+        assert_eq!(
+            app.queued, 2,
+            "new input joins the surviving FIFO while the actor advances it"
+        );
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User { queued: true, .. })
+        ));
+    }
+
+    #[test]
+    fn staged_input_joins_a_surviving_fifo_after_interrupt() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.send_agent_text("first followup".into(), &ctl);
+        app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+
+        app.send_staged(
+            vec![StagedBlock::Image(crate::attachments::Attachment {
+                id: crate::attachments::KITTY_ID_BASE + 1,
+                token: "[image 1]".into(),
+                name: "shot.png".into(),
+                path: "clipboard".into(),
+                media_type: "image/png".into(),
+                data: std::sync::Arc::from([1_u8, 2, 3]),
+            })],
+            &ctl,
+        );
+
+        assert_eq!(app.queued, 2);
+        assert_eq!(app.queued_cells.len(), 2);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::Image { queued: true, .. })
+        ));
+    }
+
+    #[test]
+    fn send_now_can_steer_while_a_surviving_fifo_is_advancing() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.send_agent_text("ordinary followup".into(), &ctl);
+        app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+        app.input.set("urgent correction".into());
+
+        app.send_now(&ctl);
+
+        assert_eq!(app.queued, 1);
+        assert_eq!(app.pending_steer_cells.len(), 1);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User {
+                text,
+                queued: false,
+            }) if text == "urgent correction"
+        ));
+    }
+
+    #[test]
+    fn agent_idle_status_does_not_discard_the_client_owned_fifo() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.send_agent_text("followup".into(), &ctl);
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+                session: "dsh-test".into(),
+                running: false,
+            }),
+            &ctl,
+        );
+
+        assert_eq!(app.queued, 1);
+        assert_eq!(app.queued_cells.len(), 1);
+        assert!(matches!(
+            app.transcript.cells.last().map(|cell| &cell.kind),
+            Some(crate::transcript::CellKind::User { queued: true, .. })
+        ));
+    }
+
+    #[test]
+    fn actor_prompt_acceptance_delivers_only_the_first_queued_prompt_group() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.send_staged(
+            vec![
+                StagedBlock::Text("look".into()),
+                StagedBlock::Image(crate::attachments::Attachment {
+                    id: crate::attachments::KITTY_ID_BASE + 1,
+                    token: "[image 1]".into(),
+                    name: "shot.png".into(),
+                    path: "clipboard".into(),
+                    media_type: "image/png".into(),
+                    data: std::sync::Arc::from([1_u8, 2, 3]),
+                }),
+            ],
+            &ctl,
+        );
+        app.send_agent_text("after".into(), &ctl);
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::TurnStart {
+                session: "dsh-test".into(),
+                turn: 2,
+            }),
+            &ctl,
+        );
+
+        assert_eq!(
+            app.queued, 2,
+            "TurnStart also fires for the active prompt and cannot identify FIFO delivery"
+        );
+        app.handle(
+            AppEvent::Ctl(CtlEvent::PromptQueued {
+                message_id: "dsh-test".into(),
+            }),
+            &ctl,
+        );
+
+        assert_eq!(app.queued, 1);
+        let queued = app
+            .transcript
+            .cells
+            .iter()
+            .filter_map(|cell| match &cell.kind {
+                crate::transcript::CellKind::User { queued, .. }
+                | crate::transcript::CellKind::Image { queued, .. } => Some(*queued),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(queued, [false, false, true]);
+    }
+
+    #[test]
+    fn ctrl_c_while_cancelling_arms_quit() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.state_note = "cancelling".into();
+        app.handle_ctrl_c(&ctl);
+        assert!(
+            app.ctrl_c_armed.is_some(),
+            "already-cancelling ctrl+c must not be eaten as another interrupt"
+        );
+        assert!(!app.quit);
+        app.handle_ctrl_c(&ctl);
+        assert!(app.quit);
+    }
+
+    #[test]
     fn skills_merge_into_slash_menu_and_builtins_shadow() {
         let (mut app, _ctl, _rx) = test_app();
         app.skills = vec![
             crate::bus::SkillInfo {
                 name: "commit-helper".into(),
                 description: "draft a commit".into(),
+                config_action: None,
             },
             crate::bus::SkillInfo {
                 name: "help".into(),
                 description: "shadowed by builtin".into(),
+                config_action: None,
             },
         ];
         app.input.set("/".into());
@@ -3259,11 +6027,408 @@ mod mode_tests {
     }
 
     #[test]
+    fn client_plugin_command_catalog_does_not_interpret_legacy_theme_metadata() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::COMMANDS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "commands": [{
+                        "name": "liang-effort",
+                        "description": "slide the reasoning effort",
+                        "whenTheme": "liang"
+                    }]
+                }),
+            },
+            &ctl,
+        );
+
+        app.input.set("/liang-eff".into());
+        let matches = app.slash_matches();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "liang-effort");
+        assert_eq!(matches[0].desc, "slide the reasoning effort");
+    }
+
+    #[test]
+    fn client_plugin_command_invocation_stays_out_of_the_agent_prompt() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::COMMANDS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "commands": [{
+                        "name": "liang-effort",
+                        "description": "slide the reasoning effort"
+                    }]
+                }),
+            },
+            &ctl,
+        );
+        app.input.set("/liang-effort".into());
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("plugin command is sent to the compositor");
+        assert!(matches!(
+            command,
+            Cmd::InvokePluginCommand { name, args }
+                if name == "liang-effort" && args.is_empty()
+        ));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn plugin_slider_moves_between_effort_marks_for_material_preview() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "slider",
+                        "id": "liang-effort",
+                        "title": "Liang reasoning effort",
+                        "min": 0,
+                        "max": 30,
+                        "step": 1,
+                        "marks": [
+                            { "value": 0, "id": "off", "label": "Off" },
+                            { "value": 15, "id": "high", "label": "High" },
+                            { "value": 30, "id": "max", "label": "Max" }
+                        ],
+                        "value": 15
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
+
+        assert_eq!(
+            app.slider_overlay.as_ref().map(|slider| slider.value),
+            Some(16.0),
+            "the preview axis must have values between effort marks"
+        );
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("slider changes notify the client plugin");
+        assert!(matches!(
+            command,
+            Cmd::PluginOverlayEvent { id, event, value }
+                if id == "liang-effort"
+                    && event == "change"
+                    && value == Some(serde_json::json!(16.0))
+        ));
+    }
+
+    #[test]
+    fn plugin_slider_enter_submits_the_effort_and_closes() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "slider",
+                        "id": "liang-effort",
+                        "title": "Liang reasoning effort",
+                        "min": 0,
+                        "max": 30,
+                        "step": 1,
+                        "marks": [
+                            { "value": 0, "id": "off", "label": "Off" },
+                            { "value": 15, "id": "high", "label": "High" },
+                            { "value": 30, "id": "max", "label": "Max" }
+                        ],
+                        "snapToMarks": true,
+                        "value": 16
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        assert!(app.slider_overlay.is_none());
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("slider submit notifies the client plugin");
+        assert!(matches!(
+            command,
+            Cmd::PluginOverlayEvent { id, event, value }
+                if id == "liang-effort"
+                    && event == "submit"
+                    && value == Some(serde_json::json!(15.0))
+        ));
+    }
+
+    #[test]
+    fn plugin_slider_supports_a_plain_numeric_axis_without_marks() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "slider",
+                        "id": "generic-threshold",
+                        "title": "Threshold",
+                        "min": 0,
+                        "max": 100,
+                        "step": 5,
+                        "value": 40
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
+
+        assert_eq!(
+            app.slider_overlay.as_ref().map(|slider| slider.value),
+            Some(45.0)
+        );
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginOverlayEvent { id, event, value })
+                if id == "generic-threshold"
+                    && event == "change"
+                    && value == Some(serde_json::json!(45.0))
+        ));
+    }
+
+    #[test]
+    fn plugin_slider_left_steps_on_the_numeric_axis() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "slider",
+                        "id": "generic-threshold",
+                        "title": "Threshold",
+                        "min": 0,
+                        "max": 100,
+                        "step": 5,
+                        "value": 40
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &ctl);
+
+        assert_eq!(
+            app.slider_overlay.as_ref().map(|slider| slider.value),
+            Some(35.0)
+        );
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginOverlayEvent { id, event, value })
+                if id == "generic-threshold"
+                    && event == "change"
+                    && value == Some(serde_json::json!(35.0))
+        ));
+    }
+
+    #[test]
+    fn plugin_slider_escape_cancels_and_closes() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "slider",
+                        "id": "generic-threshold",
+                        "title": "Threshold",
+                        "min": 0,
+                        "max": 100,
+                        "step": 5,
+                        "value": 40
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+
+        assert!(app.slider_overlay.is_none());
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginOverlayEvent { id, event, value })
+                if id == "generic-threshold"
+                    && event == "cancel"
+                    && value == Some(serde_json::json!(40.0))
+        ));
+    }
+
+    #[test]
+    fn exact_agent_slash_command_tab_completes() {
+        let (mut app, ctl, _rx) = test_app();
+        app.input.set("/agent".into());
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &ctl);
+
+        assert_eq!(app.input.buf, "/agent ");
+    }
+
+    #[test]
+    fn advertised_plan_config_action_switches_without_starting_a_prompt() {
+        let (mut app, ctl, _rx) = test_app();
+        app.skills = vec![crate::bus::SkillInfo {
+            name: "plan".into(),
+            description: "Enter plan mode".into(),
+            config_action: Some(crate::bus::CommandConfigAction {
+                config_id: "collaboration_mode".into(),
+                value: "plan".into(),
+                reset_value: Some("default".into()),
+            }),
+        }];
+        let cells_before = app.transcript.cells.len();
+
+        app.run_slash("plan", "", &ctl);
+
+        assert!(matches!(app.state, RunState::Idle));
+        assert_eq!(
+            app.transcript.cells.len(),
+            cells_before,
+            "client commands do not create prompt transcript cells"
+        );
+    }
+
+    #[test]
+    fn direct_plan_mode_facts_fold_once_into_client_state() {
+        let (mut app, ctl, _rx) = test_app();
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::PlanMode {
+                session: "dsh-test".into(),
+                active: true,
+            }),
+            &ctl,
+        );
+        assert!(app.modes.plan);
+        let cells_after_first = app.transcript.cells.len();
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::PlanMode {
+                session: "dsh-test".into(),
+                active: true,
+            }),
+            &ctl,
+        );
+        assert_eq!(
+            app.transcript.cells.len(),
+            cells_after_first,
+            "the same config_option_update is idempotent"
+        );
+    }
+
+    #[test]
+    fn initial_default_plan_mode_does_not_add_an_off_notice() {
+        let (mut app, ctl, _rx) = test_app();
+        let cells_before = app.transcript.cells.len();
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::PlanMode {
+                session: "dsh-test".into(),
+                active: false,
+            }),
+            &ctl,
+        );
+
+        assert_eq!(app.transcript.cells.len(), cells_before);
+    }
+
+    #[test]
+    fn direct_ui_turn_facts_update_client_lifecycle() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Running;
+        app.run_started = Some(Instant::now());
+        app.state_note = "working".into();
+        app.queued = 1;
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::TurnStart {
+                session: "dsh-test".into(),
+                turn: 1,
+            }),
+            &ctl,
+        );
+        assert_eq!(app.queued, 1);
+        app.handle(
+            AppEvent::Ctl(CtlEvent::PromptQueued {
+                message_id: "dsh-test".into(),
+            }),
+            &ctl,
+        );
+        assert_eq!(app.queued, 0);
+
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+                session: "dsh-test".into(),
+                running: false,
+            }),
+            &ctl,
+        );
+        assert!(matches!(app.state, RunState::Idle));
+        assert!(app.run_started.is_none());
+        assert!(app.state_note.is_empty());
+    }
+
+    #[test]
+    fn plan_message_keeps_the_slash_prompt_transport() {
+        let (mut app, ctl, _rx) = test_app();
+        app.skills = vec![crate::bus::SkillInfo {
+            name: "plan".into(),
+            description: "Enter plan mode".into(),
+            config_action: Some(crate::bus::CommandConfigAction {
+                config_id: "collaboration_mode".into(),
+                value: "plan".into(),
+                reset_value: Some("default".into()),
+            }),
+        }];
+
+        app.run_slash("plan", "focus on the parser", &ctl);
+
+        assert!(matches!(app.state, RunState::Starting));
+        assert!(matches!(
+            &app.transcript.cells[0].kind,
+            crate::transcript::CellKind::User { text, .. }
+                if text == "/plan focus on the parser"
+        ));
+    }
+
+    #[test]
     fn skill_line_ships_as_prompt_not_unknown_command() {
         let (mut app, ctl, _rx) = test_app();
         app.skills = vec![crate::bus::SkillInfo {
             name: "commit-helper".into(),
             description: "draft a commit".into(),
+            config_action: None,
         }];
         app.input.set("/commit-helper for the last change".into());
         app.submit(&ctl);
@@ -3280,6 +6445,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "commit-helper".into(),
             description: "draft a commit".into(),
+            config_action: None,
         }];
         app.input.set("/commit".into());
         let entry = app.slash_matches()[0].clone();
@@ -3294,6 +6460,213 @@ mod mode_tests {
             matches!(app.state, RunState::Starting),
             "second accept ships the prompt"
         );
+    }
+
+    #[test]
+    fn login_is_not_a_tui_builtin_so_the_agent_slash_ships() {
+        let (mut app, ctl, _rx) = test_app();
+        assert!(
+            !SLASH_COMMANDS.iter().any(|c| c.name == "login"),
+            "/login belongs to the agent, like Backchat's composer"
+        );
+        app.skills = vec![crate::bus::SkillInfo {
+            name: "login".into(),
+            description: "Save a DeepSeek API key into the harness credential store".into(),
+            config_action: None,
+        }];
+        app.input.set("/log".into());
+        assert!(
+            app.slash_matches()
+                .iter()
+                .any(|e| e.skill && e.name == "login"),
+            "agent /login stays in the slash menu"
+        );
+        app.input.set("/login sk-test".into());
+        app.submit(&ctl);
+        assert!(
+            matches!(app.state, RunState::Starting),
+            "agent /login is a prompt"
+        );
+    }
+
+    #[test]
+    fn auth_slash_queues_terminal_launch_like_backchat_sign_in() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        let methods = crate::acp_auth::parse_auth_methods(
+            &serde_json::json!([{
+                "id": "terminal-login",
+                "name": "Log in with a DeepSeek API key",
+                "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+            }]),
+            &["dsh-acp".into()],
+            "/tmp",
+            &Default::default(),
+        );
+        app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+        app.run_slash("auth", "", &ctl);
+        let launch = app.take_terminal_auth().expect("terminal auth");
+        assert_eq!(launch.command, "dsh-acp");
+        assert_eq!(launch.args, ["login"]);
+        assert_eq!(launch.method_id, "terminal-login");
+    }
+
+    #[test]
+    fn auth_in_demo_does_not_leave_the_tui() {
+        let (mut app, ctl, _rx) = test_app();
+        app.run_slash("auth", "", &ctl);
+        assert!(app.take_terminal_auth().is_none());
+    }
+
+    #[test]
+    fn logout_is_hidden_from_the_slash_menu() {
+        let (mut app, _ctl, _rx) = test_app();
+        app.skills = vec![
+            crate::bus::SkillInfo {
+                name: "logout".into(),
+                description: "sign out".into(),
+                config_action: None,
+            },
+            crate::bus::SkillInfo {
+                name: "login".into(),
+                description: "agent login".into(),
+                config_action: None,
+            },
+        ];
+        app.input.set("/".into());
+        let matches = app.slash_matches();
+        let names: Vec<&str> = matches
+            .iter()
+            .filter(|e| e.skill)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, ["login"]);
+        assert!(!SLASH_COMMANDS.iter().any(|c| c.name == "logout"));
+    }
+
+    #[test]
+    fn empty_auth_with_several_methods_opens_the_picker() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        let methods = crate::acp_auth::parse_auth_methods(
+            &serde_json::json!([
+                {
+                    "id": "terminal-login",
+                    "name": "Terminal",
+                    "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+                },
+                {
+                    "id": "api-key",
+                    "name": "API key",
+                    "_meta": { "api-key": { "provider": "openai" } }
+                }
+            ]),
+            &["dsh-acp".into()],
+            "/tmp",
+            &Default::default(),
+        );
+        app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+        app.run_slash("auth", "", &ctl);
+        let picker = app.picker.as_ref().expect("auth picker");
+        assert!(matches!(picker.kind, PickerKind::Auth));
+        assert_eq!(picker.items.len(), 2);
+        assert!(app.take_terminal_auth().is_none());
+    }
+
+    #[test]
+    fn open_auth_preserves_draft_and_pending_fifo() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.state = RunState::Running;
+        app.send_agent_text("queued followup".into(), &ctl);
+        assert_eq!(app.queued, 1);
+        assert_eq!(app.queued_cells.len(), 1);
+        app.input.set("keep this draft".into());
+        let methods = crate::acp_auth::parse_auth_methods(
+            &serde_json::json!([
+                {
+                    "id": "terminal-login",
+                    "name": "Terminal",
+                    "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+                },
+                {
+                    "id": "api-key",
+                    "name": "API key",
+                    "_meta": { "api-key": { "provider": "openai" } }
+                }
+            ]),
+            &["dsh-acp".into()],
+            "/tmp",
+            &Default::default(),
+        );
+        app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+        app.handle(AppEvent::Ctl(CtlEvent::OpenAuth), &ctl);
+        assert_eq!(app.input.buf, "keep this draft");
+        assert!(matches!(app.state, RunState::Idle));
+        assert_eq!(app.queued, 1);
+        assert_eq!(app.queued_cells.len(), 1);
+        assert!(matches!(
+            app.transcript
+                .cells
+                .iter()
+                .find_map(|cell| match &cell.kind {
+                    crate::transcript::CellKind::User { text, queued }
+                        if text == "queued followup" =>
+                    {
+                        Some(*queued)
+                    }
+                    _ => None,
+                }),
+            Some(true)
+        ));
+        assert!(matches!(
+            app.picker.as_ref().map(|p| p.kind),
+            Some(PickerKind::Auth)
+        ));
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(tip.contains("/auth"), "tip: {tip}");
+        assert!(!tip.contains("/login"), "tip: {tip}");
+    }
+
+    #[test]
+    fn auth_retry_does_not_consume_the_followup_fifo_marker() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.state = RunState::Running;
+        app.send_agent_text("queued followup".into(), &ctl);
+
+        app.handle(
+            AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::AuthSnapshot {
+                status: crate::acp_auth::AuthStatus::NeedsAuth,
+                method_id: Some("login".into()),
+                method_name: Some("Login".into()),
+                methods: Vec::new(),
+                message: Some("authentication required".into()),
+            })),
+            &ctl,
+        );
+        app.handle(
+            AppEvent::Ctl(CtlEvent::PromptQueued {
+                message_id: "dsh-test".into(),
+            }),
+            &ctl,
+        );
+
+        assert_eq!(
+            app.queued, 1,
+            "the retry belongs to the original active prompt, not the FIFO"
+        );
+        assert_eq!(app.queued_cells.len(), 1);
+    }
+
+    #[test]
+    fn demo_open_auth_does_not_start_acp_sign_in() {
+        let (mut app, ctl, _rx) = test_app();
+        app.input.set("draft".into());
+        app.handle(AppEvent::Ctl(CtlEvent::OpenAuth), &ctl);
+        assert_eq!(app.input.buf, "draft");
+        assert!(app.picker.is_none());
+        assert!(app.take_terminal_auth().is_none());
     }
 
     #[test]
@@ -3320,6 +6693,672 @@ mod mode_tests {
         assert!(
             matches!(app.state, RunState::Starting),
             "sending starts the turn"
+        );
+    }
+
+    #[test]
+    fn draft_split_keeps_text_and_images_interleaved() {
+        let mut staged = crate::attachments::Staged::default();
+        staged
+            .add(
+                "a.png".into(),
+                "/tmp/a.png".into(),
+                "image/png".into(),
+                vec![1],
+            )
+            .unwrap();
+        staged
+            .add(
+                "b.png".into(),
+                "/tmp/b.png".into(),
+                "image/png".into(),
+                vec![2],
+            )
+            .unwrap();
+        let blocks =
+            split_draft_into_staged_blocks("see [image 1] then [image 2] done", staged.drain());
+        assert_eq!(blocks.len(), 5);
+        assert!(matches!(&blocks[0], StagedBlock::Text(t) if t == "see"));
+        assert!(matches!(&blocks[1], StagedBlock::Image(a) if a.name == "a.png"));
+        assert!(matches!(&blocks[2], StagedBlock::Text(t) if t == " then "));
+        assert!(matches!(&blocks[3], StagedBlock::Image(a) if a.name == "b.png"));
+        assert!(matches!(&blocks[4], StagedBlock::Text(t) if t == "done"));
+        let prompt = prompt_blocks_from_staged(blocks);
+        assert!(matches!(&prompt[0], crate::bus::PromptBlock::Text(t) if t == "see"));
+        assert!(matches!(&prompt[1], crate::bus::PromptBlock::Image(a) if a.path == "/tmp/a.png"));
+        assert!(matches!(&prompt[2], crate::bus::PromptBlock::Text(t) if t == " then "));
+        assert!(matches!(&prompt[3], crate::bus::PromptBlock::Image(a) if a.path == "/tmp/b.png"));
+        assert!(matches!(&prompt[4], crate::bus::PromptBlock::Text(t) if t == "done"));
+    }
+
+    #[test]
+    fn draft_split_does_not_append_chips_missing_from_the_draft() {
+        let mut staged = crate::attachments::Staged::default();
+        staged
+            .add(
+                "kept.png".into(),
+                "/tmp/kept.png".into(),
+                "image/png".into(),
+                vec![1],
+            )
+            .unwrap();
+        staged
+            .add(
+                "orphan.png".into(),
+                "/tmp/orphan.png".into(),
+                "image/png".into(),
+                vec![2],
+            )
+            .unwrap();
+        let blocks = split_draft_into_staged_blocks("hello [image 1]", staged.drain());
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], StagedBlock::Text(t) if t == "hello"));
+        assert!(matches!(&blocks[1], StagedBlock::Image(a) if a.name == "kept.png"));
+    }
+
+    #[test]
+    fn submit_echoes_interleaved_transcript_not_caption_then_images() {
+        let (mut app, ctl, _rx) = test_app();
+        app.stage_image(
+            "a.png".into(),
+            "/tmp/a.png".into(),
+            "image/png".into(),
+            vec![0u8; 4],
+            String::new(),
+        );
+        app.stage_image(
+            "b.png".into(),
+            "/tmp/b.png".into(),
+            "image/png".into(),
+            vec![1u8; 4],
+            String::new(),
+        );
+        app.input.set("see [image 1] then [image 2] done".into());
+        app.submit(&ctl);
+        let kinds: Vec<String> = app
+            .transcript
+            .cells
+            .iter()
+            .map(|c| match &c.kind {
+                crate::transcript::CellKind::User { text, .. } => format!("text:{text}"),
+                crate::transcript::CellKind::Image { name, caption, .. } => {
+                    format!("image:{name}:{caption}")
+                }
+                _ => "other".into(),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "text:see",
+                "image:a.png:",
+                "text: then ",
+                "image:b.png:",
+                "text:done"
+            ]
+        );
+    }
+
+    fn ask_options() -> Vec<crate::bus::PermissionAskOption> {
+        vec![
+            crate::bus::PermissionAskOption {
+                option_id: "reject".into(),
+                kind: "reject_once".into(),
+                name: "Reject".into(),
+            },
+            crate::bus::PermissionAskOption {
+                option_id: "allow".into(),
+                kind: "allow_once".into(),
+                name: "Allow once".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn acp_permission_ask_enter_selects_option_id() {
+        let (mut app, ctl, _rx) = test_app();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.handle(
+            AppEvent::PermissionAsk {
+                title: "bash".into(),
+                options: ask_options(),
+                reply: tx,
+            },
+            &ctl,
+        );
+        let ask = app.permission_ask.as_ref().expect("overlay opens");
+        assert_eq!(ask.title, "bash");
+        assert_eq!(ask.sel, 1, "allow_once is preselected, not auto-chosen");
+        assert_eq!(ask.options[0].name, "Reject");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+        assert!(app.permission_ask.is_none());
+        assert_eq!(
+            rx.blocking_recv().expect("reply"),
+            crate::bus::PermissionAskReply::Selected("allow".into())
+        );
+    }
+
+    #[test]
+    fn acp_permission_ask_esc_cancels() {
+        let (mut app, ctl, _rx) = test_app();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.handle(
+            AppEvent::PermissionAsk {
+                title: "bash".into(),
+                options: ask_options(),
+                reply: tx,
+            },
+            &ctl,
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+        assert!(app.permission_ask.is_none());
+        assert_eq!(
+            rx.blocking_recv().expect("reply"),
+            crate::bus::PermissionAskReply::Cancelled
+        );
+    }
+
+    #[test]
+    fn acp_elicitation_form_opens_and_returns_the_selected_value() {
+        use crate::elicitation::{
+            ElicitationField, ElicitationFieldKind, ElicitationForm, ElicitationOption,
+            ElicitationReply, ElicitationValue,
+        };
+
+        let (mut app, ctl, _rx) = test_app();
+        let draft = app.input.buf.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.handle(
+            AppEvent::ElicitationAsk {
+                form: ElicitationForm {
+                    message: "The agent needs your input.".into(),
+                    fields: vec![ElicitationField {
+                        name: "question_0".into(),
+                        custom_name: None,
+                        title: "Target".into(),
+                        description: Some("Where should this run?".into()),
+                        required: true,
+                        kind: ElicitationFieldKind::Single {
+                            options: vec![
+                                ElicitationOption {
+                                    value: "local".into(),
+                                    label: "Local".into(),
+                                    description: None,
+                                    custom: false,
+                                },
+                                ElicitationOption {
+                                    value: "remote".into(),
+                                    label: "Remote".into(),
+                                    description: None,
+                                    custom: false,
+                                },
+                            ],
+                            default: None,
+                        },
+                    }],
+                },
+                reply: tx,
+            },
+            &ctl,
+        );
+        assert!(app.elicitation_ask.is_some(), "form overlay opens");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        assert!(app.elicitation_ask.is_none());
+        assert_eq!(
+            app.input.buf, draft,
+            "form input never overwrites the composer"
+        );
+        assert_eq!(
+            rx.blocking_recv().expect("reply"),
+            ElicitationReply::Accepted(std::collections::BTreeMap::from([(
+                "question_0".into(),
+                ElicitationValue::String("remote".into()),
+            )]))
+        );
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+    use crate::theme::DEEPSEEK_450;
+    use ratatui::style::Color;
+    use serde_json::json;
+    use std::sync::mpsc::Receiver;
+
+    fn fresh_root() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-tui-palette-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn test_app() -> (App, Controller, Receiver<AppEvent>) {
+        let cfg = RuntimeConfig {
+            bin: "demo".into(),
+            cordis: "demo".into(),
+            workspace: "/tmp".into(),
+            session_root: fresh_root(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
+        let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+        (app, ctl, rx)
+    }
+
+    fn ember_params(activate: bool) -> serde_json::Value {
+        let palette: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/fixtures/demo-skin.v0.json")).unwrap();
+        json!({"protocol": 0, "palette": palette, "activate": activate})
+    }
+
+    #[test]
+    fn starts_on_default_pack() {
+        let (app, _ctl, _rx) = test_app();
+        assert_eq!(app.active_palette_id, "default");
+        assert_eq!(app.theme.brand, DEEPSEEK_450);
+        assert!(app.palettes.iter().any(|p| p.id == "default"));
+    }
+
+    #[test]
+    fn tui_palette_rpc_activates_ember() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(true),
+            },
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "ember");
+        assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "ember");
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(217, 106, 30));
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(
+            tip.contains("ember") && tip.contains("light"),
+            "tip should name the pack, got {tip:?}"
+        );
+    }
+
+    #[test]
+    fn tui_palette_without_activate_registers_but_does_not_switch() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(false),
+            },
+            &ctl,
+        );
+        assert!(app.palettes.iter().any(|p| p.id == "ember"));
+        assert_eq!(app.active_palette_id, "default");
+        assert_eq!(app.theme.brand, DEEPSEEK_450);
+    }
+
+    #[test]
+    fn tui_palette_remove_retracts_the_native_catalog_entry() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(false),
+            },
+            &ctl,
+        );
+        assert!(app.palettes.iter().any(|palette| palette.id == "ember"));
+
+        app.handle(
+            AppEvent::Rpc {
+                method: "_dsh/cordis/tui/theme/remove".into(),
+                params: serde_json::json!({ "protocol": 0, "id": "ember" }),
+            },
+            &ctl,
+        );
+
+        assert!(!app.palettes.iter().any(|palette| palette.id == "ember"));
+    }
+
+    #[test]
+    fn slash_theme_id_covers_mounted_plugin_pack() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(true),
+            },
+            &ctl,
+        );
+        app.run_slash("theme", "default", &ctl);
+        assert_eq!(app.active_palette_id, "default");
+        assert_eq!(app.theme.brand, DEEPSEEK_450);
+        app.run_slash("theme", "ember", &ctl);
+        assert_eq!(app.active_palette_id, "ember");
+        assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+        app.run_slash("theme", "nope", &ctl);
+        assert_eq!(app.active_palette_id, "ember");
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(
+            tip.contains("nope")
+                || app
+                    .transcript
+                    .cells
+                    .iter()
+                    .any(|c| { format!("{:?}", c.kind).contains("nope") }),
+            "unknown id should notice/tip, got tip={tip:?}"
+        );
+    }
+
+    #[test]
+    fn slash_theme_selection_notifies_the_client_theme_registry() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(false),
+            },
+            &ctl,
+        );
+        let (client_ctl, commands) = crate::controller::test_controller();
+
+        app.run_slash("theme", "ember", &client_ctl);
+
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginThemeSelected { agent_id, id })
+                if agent_id == app.session_id && id == "ember"
+        ));
+    }
+
+    #[test]
+    fn stopped_dynamic_theme_stays_selectable_without_painting_until_restored() {
+        let (mut app, ctl, _rx) = test_app();
+        let mut loaded = ember_params(true);
+        loaded["owner"] = json!({ "pluginId": "night-lime-1" });
+        loaded["loaded"] = json!(true);
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: loaded,
+            },
+            &ctl,
+        );
+        let mut stopped = ember_params(false);
+        stopped["owner"] = json!({ "pluginId": "night-lime-1" });
+        stopped["loaded"] = json!(false);
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: stopped,
+            },
+            &ctl,
+        );
+
+        assert_eq!(app.active_palette_id, "default");
+        assert!(app.palettes.iter().any(|palette| palette.id == "ember"));
+        let (client_ctl, commands) = crate::controller::test_controller();
+        app.run_slash("theme", "ember", &client_ctl);
+        assert_eq!(app.active_palette_id, "default");
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginThemeSelected { agent_id, id })
+                if agent_id == app.session_id && id == "ember"
+        ));
+    }
+
+    #[test]
+    fn theme_picker_can_leave_and_return_to_a_dynamic_plugin_pack() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(true),
+            },
+            &ctl,
+        );
+
+        app.run_slash("theme", "", &ctl);
+        let picker = app
+            .picker
+            .as_ref()
+            .expect("/theme opens the palette picker");
+        assert_eq!(
+            picker
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["default", "ember"]
+        );
+        assert_eq!(picker.sel, 1, "the active dynamic pack is preselected");
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+        assert_eq!(app.active_palette_id, "default");
+
+        app.run_slash("theme", "", &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+        assert_eq!(app.active_palette_id, "ember");
+        assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    }
+
+    #[test]
+    fn slash_theme_dark_light_stay_in_active_pack() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(true),
+            },
+            &ctl,
+        );
+        app.run_slash("theme", "light", &ctl);
+        assert_eq!(app.active_palette_id, "ember");
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(217, 106, 30));
+        app.run_slash("theme", "dark", &ctl);
+        assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
+        assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    }
+
+    #[test]
+    fn slash_theme_usage_mentions_pack_ids() {
+        let theme = SLASH_COMMANDS.iter().find(|c| c.name == "theme").unwrap();
+        assert!(
+            theme.usage.contains("id"),
+            "usage should mention pack ids, got {}",
+            theme.usage
+        );
+    }
+
+    #[test]
+    fn duplicate_palette_id_replaces_colors() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: ember_params(true),
+            },
+            &ctl,
+        );
+        let mut palette: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/fixtures/demo-skin.v0.json")).unwrap();
+        palette["dark"]["brand"] = json!("#010203");
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: json!({"protocol": 0, "palette": palette, "activate": true}),
+            },
+            &ctl,
+        );
+        assert_eq!(app.palettes.iter().filter(|p| p.id == "ember").count(), 1);
+        assert_eq!(app.theme.brand, Color::Rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn invalid_palette_keeps_previous_theme() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: json!({"protocol": 0, "palette": {"id": "x"}, "activate": true}),
+            },
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "default");
+        assert_eq!(app.theme.brand, DEEPSEEK_450);
+    }
+}
+
+#[cfg(test)]
+mod right_slot_tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::mpsc::Receiver;
+
+    fn test_app() -> (App, Controller, Receiver<AppEvent>) {
+        let cfg = RuntimeConfig {
+            bin: "demo".into(),
+            cordis: "demo".into(),
+            workspace: "/tmp".into(),
+            session_root: std::env::temp_dir()
+                .join(format!("dsh-tui-right-slot-{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
+        let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+        (app, ctl, rx)
+    }
+
+    fn snapshot(nodes: serde_json::Value, rev: u64) -> AppEvent {
+        AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: json!({
+                "protocol": 0,
+                "slot": "chrome.right",
+                "rev": rev,
+                "nodes": nodes,
+            }),
+        }
+    }
+
+    #[test]
+    fn chrome_right_snapshot_renders_as_an_independent_sidebar() {
+        let (mut app, ctl, _rx) = test_app();
+        app.show_banner = false;
+        app.handle(
+            snapshot(
+                json!([
+                    { "id": "build:title", "kind": "markdown", "text": "# Build monitor" },
+                    {
+                        "id": "build:checks",
+                        "kind": "group",
+                        "title": "Checks",
+                        "children": [
+                            { "id": "build:test", "kind": "generic", "title": "Tests", "body": "97 passed", "status": "ok" },
+                            { "id": "build:log", "kind": "terminal", "title": "Deploy", "body": "$ ship\ncomplete", "exit": 0 }
+                        ]
+                    }
+                ]),
+                1,
+            ),
+            &ctl,
+        );
+
+        let frame = crate::ui::dump_frame(&mut app, 120, 28);
+
+        assert!(frame.contains("Build monitor"), "markdown node:\n{frame}");
+        assert!(frame.contains("Checks"), "group node:\n{frame}");
+        assert!(frame.contains("97 passed"), "generic node:\n{frame}");
+        assert!(frame.contains("complete"), "terminal node:\n{frame}");
+        assert!(
+            app.chat_view.area.width < 90,
+            "the sidebar must own a separate right-hand pane, chat width was {}:\n{frame}",
+            app.chat_view.area.width,
+        );
+    }
+
+    #[test]
+    fn empty_chrome_right_snapshot_gives_the_full_width_back_to_chat() {
+        let (mut app, ctl, _rx) = test_app();
+        app.show_banner = false;
+        app.handle(
+            snapshot(
+                json!([{ "id": "build:title", "kind": "markdown", "text": "Build monitor" }]),
+                1,
+            ),
+            &ctl,
+        );
+        let _ = crate::ui::dump_frame(&mut app, 120, 28);
+        let narrowed = app.chat_view.area.width;
+
+        app.handle(snapshot(json!([]), 2), &ctl);
+        let frame = crate::ui::dump_frame(&mut app, 120, 28);
+
+        assert!(
+            app.chat_view.area.width > narrowed,
+            "empty slot restores width"
+        );
+        assert!(
+            !frame.contains("Build monitor"),
+            "disposed nodes disappear:\n{frame}"
+        );
+    }
+
+    #[test]
+    fn snapshots_without_revision_still_replace_the_previous_view() {
+        let (mut app, ctl, _rx) = test_app();
+        app.show_banner = false;
+        for text in ["first panel", "second panel"] {
+            app.handle(
+                AppEvent::Rpc {
+                    method: crate::cordis::SLOTS_UPDATE.into(),
+                    params: json!({
+                        "protocol": 0,
+                        "slot": "chrome.right",
+                        "nodes": [{ "id": "demo:title", "kind": "markdown", "text": text }],
+                    }),
+                },
+                &ctl,
+            );
+        }
+
+        let frame = crate::ui::dump_frame(&mut app, 120, 28);
+        assert!(
+            frame.contains("second panel"),
+            "latest unversioned snapshot wins:\n{frame}"
+        );
+        assert!(
+            !frame.contains("first panel"),
+            "old snapshot was replaced:\n{frame}"
         );
     }
 }

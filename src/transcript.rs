@@ -16,8 +16,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::events::UiEvent;
 use crate::theme::Theme;
 
-/// Collapsed tool viewport height — every tool renders as a small scrolling
-/// window by default; click toggles full expansion, wheel scrolls inside it.
+/// Collapsed tool preview height; click toggles full expansion. Mouse wheel
+/// always belongs to the outer transcript.
 pub const TOOL_VIEWPORT: usize = 4;
 const COLLAPSED_SHELL_LINES: usize = 12;
 const COLLAPSED_REASONING_PREVIEW: usize = 2;
@@ -78,6 +78,10 @@ pub enum CellKind {
         source: String,
         preview: String,
     },
+    /// Latest standard ACP plan snapshot. Replaced in place as statuses move.
+    Plan {
+        summary: String,
+    },
     Notice {
         level: NoticeLevel,
         text: String,
@@ -87,9 +91,6 @@ pub enum CellKind {
 pub struct Cell {
     pub kind: CellKind,
     pub expanded: bool,
-    /// Tool viewport scroll offset in wrapped body lines; `usize::MAX`
-    /// means follow the tail (the live bottom of the output).
-    pub scroll: usize,
 }
 
 impl Cell {
@@ -97,7 +98,6 @@ impl Cell {
         Cell {
             kind,
             expanded: false,
-            scroll: usize::MAX,
         }
     }
 }
@@ -115,7 +115,7 @@ pub struct ImageShot {
 
 /// A rendered transcript: styled lines plus, for each line, the index of the
 /// transcript cell that owns it (only tool cells report ownership, so mouse
-/// clicks and wheel events can be routed to a specific tool viewport).
+/// clicks can toggle a specific tool preview).
 pub struct TranscriptLayout {
     pub lines: Vec<Line<'static>>,
     pub owners: Vec<Option<usize>>,
@@ -169,6 +169,7 @@ pub struct Transcript {
     agents: HashMap<String, String>,
     agent_seq: usize,
     image_seq: u32,
+    plan_cell: Option<usize>,
     pub usage: UsageTotals,
     pub stats: SessionStats,
     turn_started: Option<Instant>,
@@ -192,6 +193,7 @@ impl Transcript {
             agents: HashMap::new(),
             agent_seq: 0,
             image_seq: 0,
+            plan_cell: None,
             usage: UsageTotals::default(),
             stats: SessionStats::default(),
             turn_started: None,
@@ -209,6 +211,7 @@ impl Transcript {
         self.open_reasoning.clear();
         self.tools.clear();
         self.agents.clear();
+        self.plan_cell = None;
         self.usage = UsageTotals::default();
         self.stats = SessionStats::default();
         self.turn_started = None;
@@ -221,6 +224,7 @@ impl Transcript {
         self.open_assistant.clear();
         self.open_reasoning.clear();
         self.tools.clear();
+        self.plan_cell = None;
         self.last_finish = None;
     }
 
@@ -280,16 +284,70 @@ impl Transcript {
         }
     }
 
-    /// Mark queued user cells as delivered (a turn started consuming input).
-    fn clear_queued_marks(&mut self) {
+    /// Mark one client-owned queued prompt group as delivered.
+    pub fn mark_prompt_delivered(&mut self, cells: &[usize]) {
+        for &index in cells {
+            let Some(cell) = self.cells.get_mut(index) else {
+                continue;
+            };
+            match &mut cell.kind {
+                CellKind::User { queued, .. } | CellKind::Image { queued, .. } => *queued = false,
+                _ => {}
+            }
+        }
+    }
+
+    /// Mark a Send Now bubble as a client-owned FIFO item after the agent
+    /// rejects concurrent `session/prompt` delivery.
+    pub fn mark_prompt_queued(&mut self, cells: &[usize]) {
+        for &index in cells {
+            let Some(cell) = self.cells.get_mut(index) else {
+                continue;
+            };
+            match &mut cell.kind {
+                CellKind::User { queued, .. } | CellKind::Image { queued, .. } => *queued = true,
+                _ => {}
+            }
+        }
+    }
+
+    /// Backchat `session.tool_cancelled` on user stop: in-flight tools and
+    /// streams stop spinning before `session/prompt` unwinds.
+    pub fn cancel_open_work(&mut self) {
         for cell in &mut self.cells {
             match &mut cell.kind {
-                CellKind::User { queued, .. } | CellKind::Image { queued, .. } => {
-                    *queued = false;
+                CellKind::Tool {
+                    ok, result, error, ..
+                } if ok.is_none() => {
+                    *ok = Some(false);
+                    *error = Some("cancelled".into());
+                    if result.is_empty() {
+                        *result = "cancelled".into();
+                    }
+                }
+                CellKind::Reasoning {
+                    done,
+                    started,
+                    seconds,
+                    ..
+                } if !*done => {
+                    *done = true;
+                    *seconds = Some(started.elapsed().as_secs_f32());
+                }
+                CellKind::Assistant { done, .. } if !*done => {
+                    *done = true;
+                }
+                CellKind::Shell { output, .. } if output.is_none() => {
+                    *output = Some((None, "cancelled".into()));
                 }
                 _ => {}
             }
         }
+        self.tools.clear();
+        self.tool_started.clear();
+        self.open_assistant.clear();
+        self.open_reasoning.clear();
+        self.last_finish = Some("cancelled".into());
     }
 
     fn close_open(&mut self, session: &str) {
@@ -353,7 +411,6 @@ impl Transcript {
             }
             UiEvent::TurnStart { session, .. } => {
                 if session == self.root_session {
-                    self.clear_queued_marks();
                     self.stats.turns += 1;
                     self.turn_started = Some(Instant::now());
                     self.ttft_pending = true;
@@ -563,6 +620,29 @@ impl Transcript {
                 self.cells
                     .push(Cell::new(CellKind::Injected { source, preview }));
             }
+            UiEvent::UserMessage { text, .. } => {
+                self.push_user(text, false);
+            }
+            UiEvent::SessionTitle { title, .. } => {
+                self.push_notice(NoticeLevel::Info, format!("session · {title}"));
+            }
+            UiEvent::Plan { summary, .. } => {
+                if let Some(idx) = self.plan_cell {
+                    if let Some(Cell {
+                        kind: CellKind::Plan { summary: current },
+                        ..
+                    }) = self.cells.get_mut(idx)
+                    {
+                        *current = summary.clone();
+                    } else {
+                        self.plan_cell = None;
+                    }
+                }
+                if self.plan_cell.is_none() {
+                    self.cells.push(Cell::new(CellKind::Plan { summary }));
+                    self.plan_cell = Some(self.cells.len() - 1);
+                }
+            }
             UiEvent::SubagentStarted { child, .. } => {
                 self.agent_seq += 1;
                 let label = format!("subagent {}", self.agent_seq);
@@ -610,6 +690,7 @@ impl Transcript {
                 };
                 self.push_notice(level, format!("⚖ approval · {outcome}"));
             }
+            UiEvent::Palette { .. } => {}
         }
     }
 
@@ -625,8 +706,8 @@ impl Transcript {
     }
 
     /// Render every cell to wrapped, styled lines, plus per-line ownership so
-    /// the UI can route mouse clicks and wheel events to a specific tool
-    /// viewport (and only tool lines claim ownership). `thumbs` reserves blank
+    /// the UI can route mouse clicks to a specific tool preview (and only tool
+    /// lines claim ownership). `thumbs` reserves blank
     /// lines for kitty-graphics image thumbnails and reports their placements.
     pub fn layout(
         &self,
@@ -866,8 +947,6 @@ impl Transcript {
                     };
                     let total = all.len();
                     let has_more = total > TOOL_VIEWPORT;
-                    let running = ok.is_none();
-
                     let (glyph, gstyle) = match ok {
                         None => (spinner, Style::default().fg(theme.brand)),
                         Some(true) => ('⏺', Style::default().fg(theme.ok_soft())),
@@ -938,11 +1017,7 @@ impl Transcript {
                                 );
                             }
                         } else {
-                            let offset = if running {
-                                total - TOOL_VIEWPORT
-                            } else {
-                                resolve_scroll(cell.scroll, total, TOOL_VIEWPORT)
-                            };
+                            let offset = total - TOOL_VIEWPORT;
                             for l in &all[offset..offset + TOOL_VIEWPORT] {
                                 emit(
                                     &mut out,
@@ -967,10 +1042,8 @@ impl Transcript {
                                     Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
                                     Span::styled(
                                         format!(
-                                            "{}-{}/{} lines · wheel scrolls · click to expand",
-                                            offset + 1,
-                                            offset + TOOL_VIEWPORT,
-                                            total
+                                            "last {}/{} lines · click to expand",
+                                            TOOL_VIEWPORT, total
                                         ),
                                         Style::default().fg(theme.caption),
                                     ),
@@ -1088,6 +1161,22 @@ impl Transcript {
                         None,
                     );
                 }
+                CellKind::Plan { summary } => {
+                    if summary.is_empty() {
+                        continue;
+                    }
+                    for l in wrap(&format!("plan · {summary}"), width.saturating_sub(2)) {
+                        emit(
+                            &mut out,
+                            &mut owners,
+                            Line::from(vec![
+                                Span::styled("· ".to_string(), Style::default().fg(theme.caption)),
+                                Span::styled(l, Style::default().fg(theme.caption)),
+                            ]),
+                            None,
+                        );
+                    }
+                }
                 CellKind::Notice { level, text } => {
                     let color = match level {
                         NoticeLevel::Info => theme.caption,
@@ -1114,29 +1203,6 @@ impl Transcript {
             images,
         }
     }
-
-    /// Wrapped body-line count for a tool cell at `width` columns — the
-    /// denominator the UI clamps its viewport scroll offset against.
-    pub fn tool_total_lines(&self, ci: usize, width: usize) -> Option<usize> {
-        match self.cells.get(ci) {
-            Some(Cell {
-                kind: CellKind::Tool { result, .. },
-                ..
-            }) => {
-                let body = result.trim_end();
-                if body.is_empty() {
-                    Some(0)
-                } else {
-                    Some(
-                        body.lines()
-                            .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
-                            .count(),
-                    )
-                }
-            }
-            _ => None,
-        }
-    }
 }
 
 fn emit(
@@ -1157,18 +1223,6 @@ fn thumb_rows(cols: usize, w: u32, h: u32) -> usize {
     }
     let rows = (cols as f64 * h as f64 / (2.0 * w as f64)).round() as usize;
     rows.clamp(2, 12)
-}
-
-/// Resolve a tool viewport scroll offset: `usize::MAX` follows the tail.
-fn resolve_scroll(scroll: usize, total: usize, viewport: usize) -> usize {
-    if total <= viewport {
-        return 0;
-    }
-    let max = total - viewport;
-    match scroll {
-        usize::MAX => max,
-        s => s.min(max),
-    }
 }
 
 fn plural(n: usize) -> &'static str {
@@ -1308,6 +1362,26 @@ mod tests {
 
     fn t(session: &str) -> Transcript {
         Transcript::new(session.to_string())
+    }
+
+    #[test]
+    fn cancel_open_work_stops_running_tools() {
+        let mut tr = t("s");
+        tr.apply(UiEvent::ToolCall {
+            session: "s".into(),
+            call_id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        tr.cancel_open_work();
+        match &tr.cells[0].kind {
+            CellKind::Tool { ok, error, .. } => {
+                assert_eq!(*ok, Some(false));
+                assert_eq!(error.as_deref(), Some("cancelled"));
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+        assert_eq!(tr.last_finish.as_deref(), Some("cancelled"));
     }
 
     #[test]
@@ -1487,7 +1561,98 @@ mod tests {
     }
 
     #[test]
-    fn tool_viewport_collapses_by_default_and_expand_all_opens_it() {
+    fn acp_load_replay_paints_user_title_and_plan() {
+        let mut tr = t("s");
+        tr.apply(UiEvent::UserMessage {
+            session: "s".into(),
+            text: "hello from load".into(),
+        });
+        tr.apply(UiEvent::SessionTitle {
+            session: "s".into(),
+            title: "fix the tests".into(),
+        });
+        tr.apply(UiEvent::Plan {
+            session: "s".into(),
+            summary: "locate fn main [completed]".into(),
+        });
+        match &tr.cells[0].kind {
+            CellKind::User { text, queued } => {
+                assert_eq!(text, "hello from load");
+                assert!(!*queued);
+            }
+            other => panic!("expected user cell, got {other:?}"),
+        }
+        let notices: Vec<&str> = tr
+            .cells
+            .iter()
+            .filter_map(|c| match &c.kind {
+                CellKind::Notice { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(notices.iter().any(|n| *n == "session · fix the tests"));
+        let plans: Vec<&str> = tr
+            .cells
+            .iter()
+            .filter_map(|c| match &c.kind {
+                CellKind::Plan { summary } => Some(summary.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plans, ["locate fn main [completed]"]);
+    }
+
+    #[test]
+    fn plan_snapshots_replace_the_existing_plan_in_place() {
+        let mut tr = t("s");
+        tr.apply(UiEvent::Plan {
+            session: "s".into(),
+            summary: "inspect [in_progress]".into(),
+        });
+        let cells_after_first = tr.cells.len();
+
+        tr.apply(UiEvent::Plan {
+            session: "s".into(),
+            summary: "inspect [completed] · test [in_progress]".into(),
+        });
+
+        assert_eq!(
+            tr.cells.len(),
+            cells_after_first,
+            "a full plan snapshot updates one client-side view instead of appending chat history"
+        );
+        let rendered = tr
+            .lines(&Theme::dark(), 80, '⠋')
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        assert!(!rendered.contains("inspect [in_progress]"));
+        assert!(rendered.contains("inspect [completed] · test [in_progress]"));
+    }
+
+    #[test]
+    fn empty_plan_snapshot_hides_the_existing_plan() {
+        let mut tr = t("s");
+        tr.apply(UiEvent::Plan {
+            session: "s".into(),
+            summary: "inspect [in_progress]".into(),
+        });
+        tr.apply(UiEvent::Plan {
+            session: "s".into(),
+            summary: String::new(),
+        });
+
+        let rendered = tr
+            .lines(&Theme::dark(), 80, '⠋')
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        assert!(!rendered.contains("plan ·"));
+        assert!(!rendered.contains("inspect"));
+    }
+
+    #[test]
+    fn tool_preview_shows_a_fixed_tail_and_expand_all_opens_it() {
         let text = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8";
         let mut tr = t("s");
         tr.apply(UiEvent::ToolCall {
@@ -1511,14 +1676,17 @@ mod tests {
                 .collect()
         };
 
-        // Default: a 4-line viewport pinned to the tail (l5..l8) + footer.
+        // Default: a fixed 4-line tail preview (l5..l8) + expand hint.
         let lines = tr.lines(&theme, 40, ' ');
         let p = plain(&lines);
         assert!(
-            p.contains("5-8/8 lines"),
-            "footer shows the window position: {p}"
+            p.contains("last 4/8 lines"),
+            "footer describes the fixed tail preview: {p}"
         );
-        assert!(p.contains("wheel scrolls"), "footer hint: {p}");
+        assert!(
+            !p.contains("wheel"),
+            "tool preview has no inner scroll: {p}"
+        );
         assert!(!p.contains("l4"), "l4 above the tail window is hidden: {p}");
         assert!(p.contains("l8"), "tail line visible: {p}");
 
@@ -1527,7 +1695,10 @@ mod tests {
         let lines = tr.lines(&theme, 40, ' ');
         let p = plain(&lines);
         assert!(p.contains("l1"), "expand_all shows the top: {p}");
-        assert!(!p.contains("wheel scrolls"), "no footer when expanded: {p}");
+        assert!(
+            !p.contains("click to expand"),
+            "no footer when expanded: {p}"
+        );
     }
 
     #[test]
@@ -1619,28 +1790,5 @@ mod tests {
         assert_eq!(tr.stats.steps, 1);
         assert_eq!(tr.stats.ttft_count, 1, "only the first delta samples TTFT");
         assert!(tr.stats.tool_millis <= tr.stats.turn_millis);
-    }
-
-    #[test]
-    fn tool_scroll_offset_clamps_to_the_tail() {
-        let mut tr = t("s");
-        tr.apply(UiEvent::ToolCall {
-            session: "s".into(),
-            call_id: "c1".into(),
-            name: "read".into(),
-            arguments: "{}".into(),
-        });
-        tr.apply(UiEvent::ToolResult {
-            session: "s".into(),
-            call_id: "c1".into(),
-            is_error: false,
-            text: "a\nb\nc\nd\ne\nf".into(),
-            error: None,
-        });
-        assert_eq!(tr.tool_total_lines(0, 40), Some(6));
-        // follow-tail sentinel resolves to the last viewport window.
-        assert_eq!(resolve_scroll(usize::MAX, 6, TOOL_VIEWPORT), 2);
-        assert_eq!(resolve_scroll(0, 6, TOOL_VIEWPORT), 0);
-        assert_eq!(resolve_scroll(99, 6, TOOL_VIEWPORT), 2, "clamped to max");
     }
 }

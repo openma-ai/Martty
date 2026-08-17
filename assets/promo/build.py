@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compose assets/promo/social-preview.png (2560x1280, GitHub 2:1).
 
-Seamless single-terminal narrative: the brand banner and a real plugin-mode
+Seamless single-terminal narrative: the brand banner and a real ACP
 turn share one terminal background, so interior crops pasted on a canvas of
 the same color read as one tall terminal — whale and wordmark above, a live
 turn and the composer bar below. No borders, no re-rendering: the product's
@@ -9,7 +9,7 @@ own pixels.
 
 Sources (committed):
   assets/screenshots/banner.jpg       whale + DEEPSEEK HARNESS + slogan
-  assets/screenshots/plugin-turn.jpg  a real dsh plugin-mode turn (v4-pro)
+  assets/screenshots/plugin-turn.jpg  a real dsh ACP turn (v4-pro)
 """
 
 from PIL import Image, ImageDraw, ImageFont

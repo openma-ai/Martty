@@ -1,0 +1,6 @@
+# Internal bundle used by standalone dsh-tui when it spawns dsh-acp. This is
+# part of @openma/deepseek-harness-tui, not a separately published package.
+
+- insert:
+    - id: tui-creator-overlay
+      name: deepseek-harness-tui-creator-overlay

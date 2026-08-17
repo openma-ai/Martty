@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openma.ai/dsh-tui/tui-palette.v0.schema.json",
+  "title": "dsh-tui palette protocol 0",
+  "$comment": "Plugin ABI for tuiTheme.register. Transport method names are not part of this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "label", "dark", "light"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "label": { "type": "string", "minLength": 1 },
+    "dark": { "$ref": "#/$defs/TokenMap" },
+    "light": { "$ref": "#/$defs/TokenMap" }
+  },
+  "$defs": {
+    "Hex": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "TokenMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bg",
+        "surface",
+        "panel",
+        "fg",
+        "fg_secondary",
+        "fg_tertiary",
+        "caption",
+        "brand",
+        "brand_soft",
+        "bubble_bg",
+        "bubble_fg",
+        "border",
+        "code_bg",
+        "ok",
+        "warn",
+        "err",
+        "hint",
+        "chip_bg"
+      ],
+      "properties": {
+        "bg": { "$ref": "#/$defs/Hex" },
+        "surface": { "$ref": "#/$defs/Hex" },
+        "panel": { "$ref": "#/$defs/Hex" },
+        "fg": { "$ref": "#/$defs/Hex" },
+        "fg_secondary": { "$ref": "#/$defs/Hex" },
+        "fg_tertiary": { "$ref": "#/$defs/Hex" },
+        "caption": { "$ref": "#/$defs/Hex" },
+        "brand": { "$ref": "#/$defs/Hex" },
+        "brand_soft": { "$ref": "#/$defs/Hex" },
+        "bubble_bg": { "$ref": "#/$defs/Hex" },
+        "bubble_fg": { "$ref": "#/$defs/Hex" },
+        "border": { "$ref": "#/$defs/Hex" },
+        "code_bg": { "$ref": "#/$defs/Hex" },
+        "ok": { "$ref": "#/$defs/Hex" },
+        "warn": { "$ref": "#/$defs/Hex" },
+        "err": { "$ref": "#/$defs/Hex" },
+        "hint": { "$ref": "#/$defs/Hex" },
+        "chip_bg": { "$ref": "#/$defs/Hex" }
+      }
+    }
+  }
+}

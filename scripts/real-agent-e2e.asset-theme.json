@@ -1,0 +1,76 @@
+{
+  "name": "tui-opaque-asset-theme",
+  "agentPreset": "cordis",
+  "prompt": "在 Creator mode 直接创建并预览一个名为 Aurora Deck 的 TUI Theme Plugin。/Users/minimax/oos-proj/dsh-liang-skin-assets/assets/portrait-source-v2 中是已准备好的合法 PNG，文件名中的数字就是视觉顺序；不要求内容感知的裁剪或配色，是否看图请按实际收益和当前能力决定。注册本地命令 /aurora-intensity，调用时打开多档原生滑条。滑动要更新当前 Theme Plugin 自己的背景，并映射到当前 ACP Session 的 live thought-level choices；不要硬编码 option id 或 values。Enter 提交，Esc 恢复打开前的背景和配置；切换 /theme 或 stop/update/unload 时所有贡献一起撤销。不要增加侧栏。现在直接实现。",
+  "expected": {
+    "skills": [
+      "cordis-plugin-development",
+      "tui-plugin-development"
+    ],
+    "forbiddenSkills": [],
+    "inspectProviders": [
+      "Theme",
+      "Commands",
+      "Overlay",
+      "ConfigOptions"
+    ],
+    "inspectQueries": [
+      {
+        "platform": "client",
+        "provider": "Theme",
+        "method": "listTokens"
+      },
+      {
+        "platform": "client",
+        "provider": "Commands",
+        "method": "list"
+      },
+      {
+        "platform": "client",
+        "provider": "Overlay",
+        "method": "active"
+      },
+      {
+        "platform": "client",
+        "provider": "ConfigOptions",
+        "method": "list"
+      }
+    ],
+    "forbiddenInspectProviders": [
+      "Slots"
+    ],
+    "maxToolCounts": {
+      "read_image": 1,
+      "bash": 1
+    },
+    "toolCounts": {
+      "cordis_inspect_list": 1,
+      "cordis_define": 1,
+      "cordis_run": 1
+    },
+    "maxToolCalls": 10,
+    "successfulRun": true,
+    "clientCodeMustMatch": [
+      "tuiTheme\\.register\\s*\\(",
+      "activate\\s*:\\s*true",
+      "\\.update\\s*\\(\\s*\\{\\s*background\\s*:",
+      "tuiCommands\\.register\\s*\\(",
+      "tuiOverlay\\.openSlider\\s*\\(",
+      "byCategory\\s*\\(",
+      "['\"]thought_level['\"]",
+      "transaction\\s*\\(\\s*\\{\\s*category\\s*:",
+      "\\.preview\\s*\\(",
+      "\\.commit\\s*\\(",
+      "\\.rollback\\s*\\(",
+      "/Users/minimax/oos-proj/dsh-liang-skin-assets/assets/portrait-source-v2/"
+    ],
+    "clientCodeMustNotMatch": [
+      "chrome\\.right",
+      "\\bwhen\\s*:",
+      "theme\\.subscribe",
+      "tuiTheme\\.subscribe",
+      "acpSessionConfig\\.set\\s*\\(",
+      "host\\.call\\s*\\("
+    ]
+  }
+}

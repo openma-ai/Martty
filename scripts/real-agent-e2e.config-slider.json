@@ -1,0 +1,62 @@
+{
+  "name": "tui-config-slider",
+  "agentPreset": "cordis",
+  "prompt": "在 Creator mode 直接实现一个通用 TUI 插件：注册本地命令 /focus-level，只有调用命令时才打开 9 档原生滑条。运行时从当前 ACP Session 的 live config options 找到标准推理强度配置及其合法 choices；不要硬编码配置项 id 或 values。左右移动即时 preview，Enter commit，Esc 以及插件 stop/update 时 rollback。不要增加侧栏。现在直接定义并运行。",
+  "expected": {
+    "skills": [
+      "cordis-plugin-development",
+      "tui-plugin-development"
+    ],
+    "forbiddenSkills": [],
+    "inspectProviders": [
+      "Commands",
+      "Overlay",
+      "ConfigOptions"
+    ],
+    "inspectQueries": [
+      {
+        "platform": "client",
+        "provider": "Commands",
+        "method": "list"
+      },
+      {
+        "platform": "client",
+        "provider": "Overlay",
+        "method": "active"
+      },
+      {
+        "platform": "client",
+        "provider": "ConfigOptions",
+        "method": "list"
+      }
+    ],
+    "forbiddenInspectProviders": [
+      "Slots",
+      "Theme"
+    ],
+    "toolCounts": {
+      "cordis_inspect_list": 1,
+      "cordis_define": 1,
+      "cordis_run": 1
+    },
+    "maxToolCalls": 8,
+    "directDefineRunAfterInspect": true,
+    "successfulRun": true,
+    "clientCodeMustMatch": [
+      "tuiCommands\\.register\\s*\\(",
+      "tuiOverlay\\.openSlider\\s*\\(",
+      "byCategory\\s*\\(",
+      "['\"]thought_level['\"]",
+      "transaction\\s*\\(\\s*\\{\\s*category\\s*:",
+      "\\.preview\\s*\\(",
+      "\\.commit\\s*\\(",
+      "\\.rollback\\s*\\("
+    ],
+    "clientCodeMustNotMatch": [
+      "chrome\\.right",
+      "\\bwhen\\s*:",
+      "acpSessionConfig\\.set\\s*\\(",
+      "host\\.call\\s*\\("
+    ]
+  }
+}

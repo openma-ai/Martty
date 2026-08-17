@@ -1,8 +1,30 @@
-# @openma/deepseek-harness-tui bundle patch: mounts the native dsh-tui runner over
-# the profile's base bundle under the stable plugin id `tui-runner`. The runner
-# spawns the platform-native TUI binary on the host TTY and serves the compatible
-# SDK JSON-RPC surface over inherited pipe fds.
+# Host-side entries for the TUI profile surface. The ACP plugin mounts on the
+# existing Base Cordis tree. The runner starts a separate TUI Client process;
+# standard stdin/stdout carries ACP between them. Client plugins never mount
+# beside the Harness.
+
+# If this profile already carries an ACP surface bundle, TUI replaces its
+# provider/stdio rows with the same ACP plugin resolved through TUI's declared
+# dependency. The profile transport is replaced because its stdio belongs to
+# the TUI launcher, not an external ACP client. Missing ids are harmless.
+- id: acp-plugin
+  disabled: true
+
+- id: acp-server
+  disabled: true
+
+- id: acp-bridge
+  disabled: true
+
+- id: tui-creator-overlay
+  disabled: true
 
 - insert:
+    - id: tui-acp-host
+      name: '@openma/deepseek-harness-tui/acp-host'
+
+    - id: tui-host-creator
+      name: '@openma/deepseek-harness-tui/creator-overlay'
+
     - id: tui-runner
-      name: '@openma/deepseek-harness-tui'
+      name: '@openma/deepseek-harness-tui/runner'

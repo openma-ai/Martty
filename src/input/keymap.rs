@@ -23,6 +23,7 @@ pub enum Action {
     SendNow,
     AttachClipboard,
     ModelPicker,
+    CycleAgent,
     /// Show the shortcut list (`/keys`).
     ShowKeys,
     CyclePermission,
@@ -83,6 +84,7 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('v') if ctrl => AttachClipboard,
         // ctrl+p (not ctrl+m): terminals send ctrl+m as the Enter byte.
         KeyCode::Char('p') if ctrl => ModelPicker,
+        KeyCode::Char('a') if ctrl => CycleAgent,
         // ctrl+. → the shortcut list; needs a terminal that can encode
         // ctrl+punctuation (kitty protocol) — /keys always works.
         KeyCode::Char('.') if ctrl => ShowKeys,
@@ -100,7 +102,6 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('d') if ctrl => ScrollHalfDown,
         KeyCode::Char('k') if ctrl => KillToEnd,
         KeyCode::Char('w') if ctrl => DeleteWordBack,
-        KeyCode::Char('a') if ctrl => LineStart,
         // ^e = end of line — also what ghostty/iterm send for ⌘→.
         KeyCode::Char('e') if ctrl => LineEnd,
         KeyCode::Char('b') if ctrl => CursorLeft,
@@ -223,11 +224,10 @@ mod tests {
     }
 
     #[test]
-    fn natural_editing_control_codes_map_to_line_motions() {
-        // ghostty/iterm send these for ⌘←/⌘→/⌘⌫.
+    fn ctrl_a_cycles_agents_while_other_editing_codes_keep_their_meaning() {
         assert_eq!(
             classify(&key(KeyCode::Char('a'), CTRL), typing()),
-            Some(Action::LineStart)
+            Some(Action::CycleAgent)
         );
         assert_eq!(
             classify(&key(KeyCode::Char('e'), CTRL), typing()),

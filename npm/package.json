@@ -1,7 +1,7 @@
 {
   "name": "@openma/deepseek-harness-tui",
   "version": "0.2.1",
-  "description": "Terminal-native agent UI for DeepSeek Harness; standalone CLI or dsh profile bundle",
+  "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,7 +14,7 @@
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs ../scripts/plugin-runner.test.mjs ../scripts/jsonrpc-line-transport.test.mjs"
+    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs ../scripts/cargo-guard.test.mjs ../scripts/build-npm.test.mjs ../scripts/client-profile.test.mjs ../scripts/plugin-runner.test.mjs ../scripts/profile-link-resolution.test.mjs ../scripts/jsonrpc-line-transport.test.mjs ../scripts/tui-theme.test.mjs ../scripts/tui-slots.test.mjs ../scripts/tui-commands.test.mjs ../scripts/tui-overlay.test.mjs ../scripts/mux.test.mjs ../scripts/acp-client.test.mjs ../scripts/acp-session-config.test.mjs ../scripts/runner.test.mjs ../scripts/inspect.test.mjs ../scripts/creator-overlay.test.mjs ../scripts/real-agent-e2e.test.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -22,6 +22,18 @@
   },
   "exports": {
     ".": "./lib/index.js",
+    "./ember": "./lib/ember.js",
+    "./theme": "./lib/tui-theme.js",
+    "./slots": "./lib/tui-slots.js",
+    "./commands": "./lib/tui-commands.js",
+    "./overlay": "./lib/tui-overlay.js",
+    "./right-demo": "./lib/right-demo.js",
+    "./acp-client": "./lib/acp-client.js",
+    "./profile-acp-client": "./lib/profile-acp-client.js",
+    "./acp-host": "./lib/acp-host.js",
+    "./creator-overlay": "./lib/creator-overlay.js",
+    "./cordis-client-runner": "./lib/inspect.js",
+    "./runner": "./lib/runner.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -32,6 +44,8 @@
   "files": [
     "bin",
     "lib",
+    "creator",
+    "skills/tui-plugin-development/SKILL.md",
     "vendor",
     "cordis.patch.yml",
     "README.md",
@@ -42,6 +56,10 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@openma/deepseek-harness-acp": "0.4.10-beta.0"
+  },
   "engines": {
     "node": ">=18"
   },
@@ -50,7 +68,7 @@
     "harness",
     "tui",
     "agent",
-    "deepseek-harness",
-    "dsh-plugin"
+    "acp",
+    "agent-client-protocol"
   ]
 }

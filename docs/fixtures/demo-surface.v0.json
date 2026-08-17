@@ -1,0 +1,85 @@
+{
+  "protocol": 0,
+  "slot": "conversation.chat",
+  "rev": 1,
+  "nodes": [
+    {
+      "id": "gallery.root",
+      "kind": "group",
+      "title": "TuiNode gallery",
+      "tone": "brand",
+      "children": [
+        {
+          "id": "gallery.markdown",
+          "kind": "markdown",
+          "text": "# Surface MVP\n\n中英混排 CJK wrapping, a `code` span, and a [link](https://example.com).\n\n```ts\nexport const ok = true;\n```\n"
+        },
+        {
+          "id": "gallery.reasoning",
+          "kind": "reasoning",
+          "text": "Fold the log into a tree, then let plugins concatenate.",
+          "done": true,
+          "seconds": 1.2
+        },
+        {
+          "id": "gallery.terminal",
+          "kind": "terminal",
+          "title": "bash",
+          "body": "$ rg TuiNode src\nsrc/ui.rs: paint snapshot\n",
+          "exit": 0
+        },
+        {
+          "id": "gallery.diff",
+          "kind": "diff",
+          "title": "edit",
+          "path": "docs/plugins.md",
+          "unified": "--- a/docs/plugins.md\n+++ b/docs/plugins.md\n@@ -1,3 +1,4 @@\n+# Plugin API\n \n Third parties see tuiSlots only.\n"
+        },
+        {
+          "id": "gallery.generic.running",
+          "kind": "generic",
+          "title": "web_search",
+          "body": "query: TuiNode protocol 0",
+          "status": "running"
+        },
+        {
+          "id": "gallery.generic.ok",
+          "kind": "generic",
+          "title": "web_search",
+          "body": "3 results",
+          "status": "ok"
+        },
+        {
+          "id": "gallery.image",
+          "kind": "image",
+          "name": "gallery.png",
+          "mime": "image/png"
+        },
+        {
+          "id": "gallery.notice",
+          "kind": "notice",
+          "level": "warn",
+          "text": "unknown kinds must not crash the shell"
+        },
+        {
+          "id": "gallery.unknown",
+          "kind": "unknown",
+          "want": "gallery.sparkline",
+          "title": "sparkline",
+          "detail": "compositor has no sparkline kind in protocol 0"
+        }
+      ]
+    },
+    {
+      "id": "fold.user.1",
+      "kind": "user",
+      "text": "show me the surface tree"
+    },
+    {
+      "id": "fold.assistant.1",
+      "kind": "markdown",
+      "text": "Gallery above is plugin contrib; this turn is the host fold.",
+      "streaming": false
+    }
+  ]
+}

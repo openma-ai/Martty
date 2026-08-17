@@ -14,6 +14,7 @@
 use std::io::{self, Write};
 use std::sync::OnceLock;
 
+use image::ImageEncoder;
 use ratatui::layout::Rect;
 
 /// 192×208 RGBA sprites (transparent background), from the
@@ -146,7 +147,7 @@ impl Thumbnails {
                 if self.shown.remove(&shot.id).is_some() {
                     delete_kitty(out, shot.id)?;
                 }
-                emit_kitty(out, shot.id, shot.data, shot.rect)?;
+                emit_kitty(out, shot.id, shot.data, shot.rect, 0)?;
                 self.shown.insert(shot.id, shot.rect);
             }
         }
@@ -164,7 +165,13 @@ impl Thumbnails {
     }
 }
 
-fn emit_kitty(out: &mut impl Write, id: u32, data: &[u8], cell: Rect) -> io::Result<()> {
+fn emit_kitty(
+    out: &mut impl Write,
+    id: u32,
+    data: &[u8],
+    cell: Rect,
+    z_index: i32,
+) -> io::Result<()> {
     write!(out, "\x1b7\x1b[{};{}H", cell.y + 1, cell.x + 1)?;
     let b64 = base64(data);
     let chunks: Vec<&[u8]> = b64.as_bytes().chunks(CHUNK).collect();
@@ -173,8 +180,8 @@ fn emit_kitty(out: &mut impl Write, id: u32, data: &[u8], cell: Rect) -> io::Res
         if i == 0 {
             write!(
                 out,
-                "\x1b_Ga=T,f=100,i={id},c={},r={},C=1,z=0,q=2,m={more};",
-                cell.width, cell.height
+                "\x1b_Ga=T,f=100,i={id},c={},r={},C=1,z={z_index},q=2,m={more};",
+                cell.width, cell.height,
             )?;
         } else {
             write!(out, "\x1b_Gm={more};")?;
@@ -185,8 +192,186 @@ fn emit_kitty(out: &mut impl Write, id: u32, data: &[u8], cell: Rect) -> io::Res
     write!(out, "\x1b8")
 }
 
+const BACKDROP_ID: u32 = 4210;
+
+/// Reconciles the active Theme's optional PNG image behind terminal text.
+pub struct Backdrop {
+    enabled: bool,
+    shown: Option<(crate::theme::ThemeBackground, Rect)>,
+}
+
+impl Backdrop {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            shown: None,
+        }
+    }
+
+    pub fn sync(
+        &mut self,
+        out: &mut impl Write,
+        want: Option<&crate::theme::ThemeBackground>,
+        screen: Rect,
+    ) -> io::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let desired = want.cloned().map(|background| (background, screen));
+        if self.shown == desired {
+            return Ok(());
+        }
+        if self.shown.take().is_some() {
+            delete_kitty(out, BACKDROP_ID)?;
+        }
+        if let Some((background, rect)) = desired {
+            let data = match &background.source {
+                crate::theme::BackgroundSource::File { path } => std::fs::read(path)?,
+                crate::theme::BackgroundSource::Data { base64 } => decode_base64(base64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid PNG base64")
+                    })?,
+            };
+            let Some(dimensions) = image_dims(&data) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "theme background must be a PNG",
+                ));
+            };
+            let placement = backdrop_rect(&background, dimensions, rect);
+            let data = prepare_background(data, &background, rect)?;
+            emit_kitty(out, BACKDROP_ID, &data, placement, -1)?;
+            self.shown = Some((background, rect));
+        }
+        out.flush()
+    }
+}
+
+fn backdrop_rect(
+    background: &crate::theme::ThemeBackground,
+    dimensions: (u32, u32),
+    screen: Rect,
+) -> Rect {
+    if background.fit != crate::theme::BackgroundFit::Contain
+        || screen.width == 0
+        || screen.height == 0
+        || dimensions.0 == 0
+        || dimensions.1 == 0
+    {
+        return screen;
+    }
+    let image_aspect = f64::from(dimensions.0) / f64::from(dimensions.1);
+    let screen_aspect = f64::from(screen.width) / (f64::from(screen.height) * 2.0);
+    let (width, height) = if image_aspect >= screen_aspect {
+        let height = (f64::from(screen.width) / image_aspect / 2.0)
+            .round()
+            .clamp(1.0, f64::from(screen.height)) as u16;
+        (screen.width, height)
+    } else {
+        let width = (f64::from(screen.height) * 2.0 * image_aspect)
+            .round()
+            .clamp(1.0, f64::from(screen.width)) as u16;
+        (width, screen.height)
+    };
+    let free_x = screen.width.saturating_sub(width);
+    let free_y = screen.height.saturating_sub(height);
+    Rect::new(
+        screen.x + (f64::from(free_x) * background.anchor.0).round() as u16,
+        screen.y + (f64::from(free_y) * background.anchor.1).round() as u16,
+        width,
+        height,
+    )
+}
+
+fn prepare_background(
+    data: Vec<u8>,
+    background: &crate::theme::ThemeBackground,
+    screen: Rect,
+) -> io::Result<Vec<u8>> {
+    let crop_cover = background.fit == crate::theme::BackgroundFit::Cover
+        && screen.width > 0
+        && screen.height > 0;
+    if background.opacity >= 1.0 && !crop_cover {
+        return Ok(data);
+    }
+    let image = image::load_from_memory_with_format(&data, image::ImageFormat::Png)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut rgba = image.to_rgba8();
+    if crop_cover {
+        let width = rgba.width();
+        let height = rgba.height();
+        let image_aspect = f64::from(width) / f64::from(height);
+        let target_aspect = f64::from(screen.width) / (f64::from(screen.height) * 2.0);
+        if image_aspect > target_aspect {
+            let crop_width = (f64::from(height) * target_aspect)
+                .round()
+                .clamp(1.0, f64::from(width)) as u32;
+            let x = (f64::from(width - crop_width) * background.anchor.0).round() as u32;
+            rgba = image::imageops::crop_imm(&rgba, x, 0, crop_width, height).to_image();
+        } else if image_aspect < target_aspect {
+            let crop_height = (f64::from(width) / target_aspect)
+                .round()
+                .clamp(1.0, f64::from(height)) as u32;
+            let y = (f64::from(height - crop_height) * background.anchor.1).round() as u32;
+            rgba = image::imageops::crop_imm(&rgba, 0, y, width, crop_height).to_image();
+        }
+    }
+    if background.opacity < 1.0 {
+        for pixel in rgba.pixels_mut() {
+            pixel.0[3] =
+                ((f64::from(pixel.0[3]) * background.opacity).round()).clamp(0.0, 255.0) as u8;
+        }
+    }
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(encoded)
+}
+
 fn delete_kitty(out: &mut impl Write, id: u32) -> io::Result<()> {
     write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")
+}
+
+/// Decode standard base64 (RFC 4648, with padding). Whitespace is ignored.
+pub(crate) fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let chars: Vec<u8> = input
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace() && *b != b'=')
+        .collect();
+    if chars.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(chars.len() * 3 / 4);
+    for chunk in chars.chunks(4) {
+        let a = val(*chunk.first()?)?;
+        let b = val(*chunk.get(1)?)?;
+        out.push((a << 2) | (b >> 4));
+        if chunk.len() > 2 {
+            let c = val(chunk[2])?;
+            out.push((b << 4) | (c >> 2));
+            if chunk.len() > 3 {
+                let d = val(chunk[3])?;
+                out.push((c << 6) | d);
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Standard base64 (RFC 4648, with padding) — small enough to not need a dep.
@@ -220,6 +405,17 @@ pub(crate) fn base64(data: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn transmitted_png(output: Vec<u8>) -> Vec<u8> {
+        let shown = String::from_utf8(output).unwrap();
+        let payload = shown
+            .split("\x1b_G")
+            .skip(1)
+            .filter_map(|chunk| chunk.split_once(';').map(|(_, payload)| payload))
+            .filter_map(|payload| payload.split("\x1b\\").next())
+            .collect::<String>();
+        decode_base64(&payload).expect("kitty PNG payload")
+    }
+
     #[test]
     fn base64_rfc4648_vectors() {
         for (raw, enc) in [
@@ -232,6 +428,7 @@ mod tests {
             ("foobar", "Zm9vYmFy"),
         ] {
             assert_eq!(base64(raw.as_bytes()), enc);
+            assert_eq!(decode_base64(enc).as_deref().unwrap_or(&[]), raw.as_bytes());
         }
     }
 
@@ -297,5 +494,110 @@ mod tests {
         pet.sync(&mut out, Some((Rect::new(0, 0, 7, 4), true)))
             .unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn theme_background_is_placed_behind_text_and_retracted() {
+        let file = std::env::temp_dir().join(format!(
+            "dsh-tui-background-{}-{}.png",
+            std::process::id(),
+            1
+        ));
+        std::fs::write(&file, LIANG_IDLE_PNG).unwrap();
+        let spec = crate::theme::ThemeBackground {
+            source: crate::theme::BackgroundSource::File {
+                path: file.to_string_lossy().into_owned(),
+            },
+            fit: crate::theme::BackgroundFit::Cover,
+            anchor: (0.75, 0.5),
+            opacity: 0.42,
+        };
+        let mut background = Backdrop::new(true);
+        let mut out = Vec::new();
+
+        background
+            .sync(&mut out, Some(&spec), Rect::new(0, 0, 100, 30))
+            .unwrap();
+        let shown = String::from_utf8(out.clone()).unwrap();
+        assert!(shown.contains("z=-1"), "{shown}");
+        assert!(shown.contains("c=100,r=30"), "{shown}");
+
+        out.clear();
+        background
+            .sync(&mut out, Some(&spec), Rect::new(0, 0, 100, 30))
+            .unwrap();
+        assert!(out.is_empty(), "unchanged background is not retransmitted");
+
+        background.sync(&mut out, None, Rect::default()).unwrap();
+        let removed = String::from_utf8(out).unwrap();
+        assert!(removed.contains("a=d,d=I"), "{removed}");
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn theme_background_opacity_changes_the_transmitted_png() {
+        let encoded = base64(LIANG_IDLE_PNG);
+        let spec = crate::theme::ThemeBackground {
+            source: crate::theme::BackgroundSource::Data {
+                base64: encoded.clone(),
+            },
+            fit: crate::theme::BackgroundFit::Stretch,
+            anchor: (0.5, 0.5),
+            opacity: 0.25,
+        };
+        let mut background = Backdrop::new(true);
+        let mut out = Vec::new();
+
+        background
+            .sync(&mut out, Some(&spec), Rect::new(0, 0, 80, 24))
+            .unwrap();
+
+        let transmitted = base64(&transmitted_png(out));
+        assert_ne!(
+            transmitted, encoded,
+            "opacity must produce a new alpha-adjusted PNG"
+        );
+    }
+
+    #[test]
+    fn contained_theme_background_preserves_aspect_and_anchor() {
+        let spec = crate::theme::ThemeBackground {
+            source: crate::theme::BackgroundSource::Data {
+                base64: base64(LIANG_IDLE_PNG),
+            },
+            fit: crate::theme::BackgroundFit::Contain,
+            anchor: (1.0, 0.5),
+            opacity: 1.0,
+        };
+        let mut background = Backdrop::new(true);
+        let mut out = Vec::new();
+
+        background
+            .sync(&mut out, Some(&spec), Rect::new(0, 0, 100, 30))
+            .unwrap();
+
+        let shown = String::from_utf8(out).unwrap();
+        assert!(shown.contains("\x1b[1;46H"), "right anchored: {shown}");
+        assert!(shown.contains("c=55,r=30"), "aspect preserved: {shown}");
+    }
+
+    #[test]
+    fn covered_theme_background_crops_to_the_terminal_aspect() {
+        let spec = crate::theme::ThemeBackground {
+            source: crate::theme::BackgroundSource::Data {
+                base64: base64(LIANG_IDLE_PNG),
+            },
+            fit: crate::theme::BackgroundFit::Cover,
+            anchor: (0.5, 1.0),
+            opacity: 1.0,
+        };
+        let mut background = Backdrop::new(true);
+        let mut out = Vec::new();
+
+        background
+            .sync(&mut out, Some(&spec), Rect::new(0, 0, 100, 30))
+            .unwrap();
+
+        assert_eq!(image_dims(&transmitted_png(out)), Some((192, 115)));
     }
 }

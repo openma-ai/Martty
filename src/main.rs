@@ -1,14 +1,20 @@
-//! dsh-tui — a terminal-native agent UI for the DeepSeek Harness JSON-RPC
-//! stdio runtime.
+//! dsh-tui — a terminal-native ACP client UI.
 
+mod acp;
+mod acp_auth;
+mod acp_fs;
+mod acp_term;
 mod app;
 mod attachments;
 mod bus;
 mod clipboard;
 mod controller;
+mod cordis;
 mod demo;
+mod elicitation;
 mod events;
 mod input;
+mod locale;
 mod logo;
 mod logo_data;
 mod markdown;
@@ -16,6 +22,7 @@ mod pet;
 mod proto;
 mod runtime;
 mod sessions;
+mod slots;
 mod theme;
 mod transcript;
 mod ui;
@@ -40,7 +47,7 @@ use crate::controller::Controller;
 use crate::runtime::RuntimeConfig;
 
 const HELP: &str = "\
-dsh-tui — terminal-native UI for DeepSeek Harness
+dsh-tui — terminal-native ACP client UI
 
 USAGE:
   dsh-tui [OPTIONS]
@@ -52,16 +59,16 @@ OPTIONS:
       --provider <id>       provider route (default: deepseek-official)
       --model <id>          model id (default: $DSH_MODEL or deepseek-v4-flash)
       --max-tokens <n>      per-request output token cap
-      --base-url <url>      sets DEEPSEEK_BASE_URL for the runtime
-      --api-key <key>       sets DEEPSEEK_API_KEY for the runtime
-      --cordis <file>       cordis composition (default: bundled runtime config)
-      --runtime-bin <file>  dsh-jsonrpc-agent binary (default: auto-discover)
+      --base-url <url>      sets DEEPSEEK_BASE_URL for a spawned agent
+      --api-key <key>       sets DEEPSEEK_API_KEY for a spawned agent
+      --agent <cmd>         ACP agent command (default: dsh-acp or $DSH_TUI_AGENT)
+      --agent-arg <arg>     extra argument for --agent (repeatable)
       --theme <dark|light>  DeepSeek Web UI palette (default: dark)
       --demo                scripted turns, no runtime / API key needed
-      --attach-fds          plugin mode: speak JSON-RPC over inherited fds 3/4
-                            (used by `dsh plugin --profile tui add @openma/deepseek-harness-tui`)
-      --attach-tcp <addr>   plugin mode: authenticated loopback TCP (Windows)
-      --check-runtime       spawn + initialize the runtime, print info, exit
+      --demo-skin           ember gallery palette via the plugin runner (implies --demo)
+      --attach-fds          speak ACP over inherited fds 3/4 (Node mux / demo-skin)
+      --attach-tcp <addr>   authenticated loopback TCP (Windows)
+      --check-runtime       spawn + initialize the ACP agent, print info, exit
       --dump-frame [WxH]    render one demo frame as text (default 100x34)
   -V, --version             print version
   -h, --help                this help
@@ -69,8 +76,8 @@ OPTIONS:
 KEYS (grok-build homage): enter send/queue · ctrl+x send-now ·
 esc interrupt / clear draft · ctrl+c clear/quit · ↑ history · ! shell ·
 / commands · ctrl+p model · ctrl+o expand · ctrl+t theme
-MOUSE: wheel scrolls · click a tool expands/collapses it · wheel over a
-tool scrolls its output · drag selects & copies on release · 2×click
+MOUSE: wheel scrolls the conversation · click a tool expands/collapses it ·
+drag selects & copies on release · 2×click
 copies a word · shift+drag uses the terminal's native selection
 ";
 
@@ -83,10 +90,11 @@ struct Args {
     max_tokens: Option<u64>,
     base_url: Option<String>,
     api_key: Option<String>,
-    cordis: Option<String>,
-    runtime_bin: Option<String>,
+    agent: Option<String>,
+    agent_args: Vec<String>,
     theme: String,
     demo: bool,
+    demo_skin: bool,
     attach_fds: bool,
     attach_tcp: Option<String>,
     check_runtime: bool,
@@ -94,7 +102,11 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args> {
-    let mut args = Args {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
+    let mut args_out = Args {
         workspace: None,
         session_root: None,
         session_id: None,
@@ -103,43 +115,48 @@ fn parse_args() -> Result<Args> {
         max_tokens: None,
         base_url: None,
         api_key: None,
-        cordis: None,
-        runtime_bin: None,
+        agent: None,
+        agent_args: Vec::new(),
         theme: "dark".into(),
         demo: false,
+        demo_skin: false,
         attach_fds: false,
         attach_tcp: None,
         check_runtime: false,
         dump_frame: None,
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         let mut take = |name: &str| -> Result<String> {
             it.next().with_context(|| format!("{name} needs a value"))
         };
         match arg.as_str() {
-            "-w" | "--workspace" => args.workspace = Some(take("--workspace")?),
-            "--session-root" => args.session_root = Some(take("--session-root")?),
-            "--session-id" => args.session_id = Some(take("--session-id")?),
-            "--provider" => args.provider = Some(take("--provider")?),
-            "--model" => args.model = Some(take("--model")?),
-            "--max-tokens" => args.max_tokens = Some(take("--max-tokens")?.parse()?),
-            "--base-url" => args.base_url = Some(take("--base-url")?),
-            "--api-key" => args.api_key = Some(take("--api-key")?),
-            "--cordis" => args.cordis = Some(take("--cordis")?),
-            "--runtime-bin" => args.runtime_bin = Some(take("--runtime-bin")?),
-            "--theme" => args.theme = take("--theme")?,
-            "--demo" => args.demo = true,
-            "--attach-fds" => args.attach_fds = true,
-            "--attach-tcp" => args.attach_tcp = Some(take("--attach-tcp")?),
-            "--check-runtime" => args.check_runtime = true,
+            "-w" | "--workspace" => args_out.workspace = Some(take("--workspace")?),
+            "--session-root" => args_out.session_root = Some(take("--session-root")?),
+            "--session-id" => args_out.session_id = Some(take("--session-id")?),
+            "--provider" => args_out.provider = Some(take("--provider")?),
+            "--model" => args_out.model = Some(take("--model")?),
+            "--max-tokens" => args_out.max_tokens = Some(take("--max-tokens")?.parse()?),
+            "--base-url" => args_out.base_url = Some(take("--base-url")?),
+            "--api-key" => args_out.api_key = Some(take("--api-key")?),
+            "--agent" => args_out.agent = Some(take("--agent")?),
+            "--agent-arg" => args_out.agent_args.push(take("--agent-arg")?),
+            "--theme" => args_out.theme = take("--theme")?,
+            "--demo" => args_out.demo = true,
+            "--demo-skin" => {
+                args_out.demo_skin = true;
+                args_out.demo = true;
+            }
+            "--attach-fds" => args_out.attach_fds = true,
+            "--attach-tcp" => args_out.attach_tcp = Some(take("--attach-tcp")?),
+            "--check-runtime" => args_out.check_runtime = true,
             "--dump-frame" => {
                 let dims = it.next().unwrap_or_else(|| "100x34".into());
                 let (w, h) = dims
                     .split_once('x')
                     .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
                     .unwrap_or((100, 34));
-                args.dump_frame = Some((w, h));
+                args_out.dump_frame = Some((w, h));
             }
             "-V" | "--version" => {
                 println!("dsh-tui {}", env!("CARGO_PKG_VERSION"));
@@ -152,7 +169,22 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument {other} (see --help)"),
         }
     }
-    Ok(args)
+    Ok(args_out)
+}
+
+fn agent_argv(args: &Args) -> Vec<String> {
+    if let Some(cmd) = &args.agent {
+        let mut out = vec![cmd.clone()];
+        out.extend(args.agent_args.iter().cloned());
+        return out;
+    }
+    if let Ok(env) = std::env::var("DSH_TUI_AGENT") {
+        let tokens: Vec<String> = env.split_whitespace().map(str::to_string).collect();
+        if !tokens.is_empty() {
+            return tokens;
+        }
+    }
+    vec!["dsh-acp".into()]
 }
 
 fn build_config(args: &Args) -> Result<RuntimeConfig> {
@@ -174,22 +206,18 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
     std::fs::create_dir_all(&session_root).ok();
 
     let attached = args.attach_fds || args.attach_tcp.is_some();
-    let (bin, sibling_cordis) = if args.demo {
-        (
-            args.runtime_bin.clone().unwrap_or_else(|| "demo".into()),
-            Some("demo".into()),
-        )
-    } else if attached {
-        ("(host dsh)".into(), Some("(host profile)".into()))
+    let agent = agent_argv(args);
+    let bin = if args.demo {
+        "demo".into()
     } else {
-        runtime::discover_runtime(args.runtime_bin.as_deref(), &workspace)?
+        agent.join(" ")
     };
     let cordis = if args.demo {
         "demo".into()
     } else if attached {
-        "(host profile)".into()
+        "(host mux)".into()
     } else {
-        runtime::resolve_cordis(args.cordis.as_deref(), sibling_cordis)?
+        "acp".into()
     };
 
     Ok(RuntimeConfig {
@@ -237,6 +265,10 @@ fn main() -> Result<()> {
         return dump_frame(&args, w, h);
     }
 
+    if args.demo_skin && !args.attach_fds && args.attach_tcp.is_none() {
+        return reexec_demo_skin();
+    }
+
     let cfg = build_config(&args)?;
     let session_id = args
         .session_id
@@ -245,67 +277,71 @@ fn main() -> Result<()> {
 
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
 
-    // Plugin mode: Unix uses inherited pipe fds while Windows connects to an
-    // authenticated loopback socket. The TTY stays on stdio 0/1/2.
-    let attached_rt = if args.attach_fds {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::FromRawFd;
-            let reader = unsafe { std::fs::File::from_raw_fd(3) };
-            let writer = unsafe { std::fs::File::from_raw_fd(4) };
+    // `--demo` / `--demo-skin`: JSON-RPC attach for palette + scripted turns.
+    // Live: official ACP on those fds (Node mux) or a spawned agent.
+    let controller = if args.demo {
+        let attached_rt = if args.attach_fds {
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let reader = unsafe { std::fs::File::from_raw_fd(3) };
+                let writer = unsafe { std::fs::File::from_raw_fd(4) };
+                Some(std::sync::Arc::new(proto::RuntimeProcess::attach(
+                    reader,
+                    writer,
+                    bus_tx.clone(),
+                )))
+            }
+            #[cfg(not(unix))]
+            {
+                bail!("--attach-fds requires a unix platform");
+            }
+        } else if let Some(address) = &args.attach_tcp {
+            let writer = tcp_attach_stream(address)?;
+            let reader = writer.try_clone().context("clone plugin TCP stream")?;
             Some(std::sync::Arc::new(proto::RuntimeProcess::attach(
                 reader,
                 writer,
                 bus_tx.clone(),
             )))
-        }
-        #[cfg(not(unix))]
-        {
-            bail!("--attach-fds requires a unix platform");
-        }
-    } else if let Some(address) = &args.attach_tcp {
-        use std::net::{SocketAddr, TcpStream};
-
-        let address: SocketAddr = address
-            .parse()
-            .with_context(|| format!("invalid --attach-tcp address: {address}"))?;
-        if !address.ip().is_loopback() {
-            bail!("--attach-tcp requires a loopback address");
-        }
-        let token = std::env::var("DSH_TUI_ATTACH_TOKEN")
-            .context("--attach-tcp requires DSH_TUI_ATTACH_TOKEN")?;
-        if token.is_empty() {
-            bail!("DSH_TUI_ATTACH_TOKEN must not be empty");
-        }
-        std::env::remove_var("DSH_TUI_ATTACH_TOKEN");
-        let mut writer = TcpStream::connect_timeout(&address, Duration::from_secs(10))
-            .with_context(|| format!("connect plugin transport at {address}"))?;
-        writeln!(writer, "{token}")?;
-        writer.flush()?;
-        let reader = writer.try_clone().context("clone plugin TCP stream")?;
-        Some(std::sync::Arc::new(proto::RuntimeProcess::attach(
-            reader,
-            writer,
-            bus_tx.clone(),
-        )))
+        } else {
+            None
+        };
+        Controller::start(cfg.clone(), true, attached_rt, bus_tx.clone())
     } else {
-        None
+        let endpoint = if args.attach_fds {
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let incoming = unsafe { std::fs::File::from_raw_fd(3) };
+                let outgoing = unsafe { std::fs::File::from_raw_fd(4) };
+                acp::AcpEndpoint::AttachStdio { incoming, outgoing }
+            }
+            #[cfg(not(unix))]
+            {
+                bail!("--attach-fds requires a unix platform");
+            }
+        } else if let Some(address) = &args.attach_tcp {
+            acp::AcpEndpoint::AttachTcp(tcp_attach_stream(address)?)
+        } else {
+            acp::AcpEndpoint::Spawn(agent_argv(&args))
+        };
+        Controller::start_acp(cfg.clone(), endpoint, bus_tx.clone())
     };
-
-    let controller = Controller::start(cfg.clone(), args.demo, attached_rt, bus_tx.clone());
     let theme = ui::theme_for(&args.theme);
     let mut app = App::new(
         theme,
         cfg,
         session_id,
         args.demo,
-        args.attach_fds || args.attach_tcp.is_some(),
+        args.attach_fds || args.attach_tcp.is_some() || !args.demo,
         bus_tx.clone(),
     );
     // The composer pet: real pixels (kitty graphics) where the terminal can,
     // half-block art (drawn by ui) where it can't.
     app.pet_pixels = pet::kitty_supported();
     let mut pet = pet::Pet::new(app.pet_pixels);
+    let mut backdrop = pet::Backdrop::new(app.pet_pixels);
     // User-image thumbnails in the chat scrollback (kitty graphics, PNG only).
     let mut thumbnails = pet::Thumbnails::new();
 
@@ -328,23 +364,7 @@ fn main() -> Result<()> {
     }
 
     // terminal guard
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
-    // Kitty keyboard protocol, pushed blind: terminals that support it
-    // (ghostty · kitty · wezterm · iterm2 3.5+) start reporting ⌘/⌥ chords
-    // as real SUPER/ALT modifiers and make shift+enter distinguishable;
-    // everything else ignores the sequence. (No capability query — the
-    // input thread already owns the event stream, a query reply would race.)
-    let _ = execute!(
-        stdout,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    );
+    enter_tui()?;
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -359,8 +379,7 @@ fn main() -> Result<()> {
             app.auto_prompt(&auto, &controller);
         }
     }
-    // Host skills for the slash menu (plugin mode; demo serves samples,
-    // standalone answers empty and the menu keeps its builtins).
+    // ACP commands for the slash menu; demo serves samples.
     controller.send(bus::Cmd::FetchSkills);
 
     let run = (|| -> Result<()> {
@@ -372,6 +391,7 @@ fn main() -> Result<()> {
                 // Reconcile the pixel pet (frame + state) with what was drawn.
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                let _ = backdrop.sync(&mut std::io::stdout(), app.active_background(), area);
                 let working = !matches!(app.state, RunState::Idle);
                 let want = ui::pet_rect(area, &app).map(|r| (r, working));
                 let _ = pet.sync(&mut std::io::stdout(), want);
@@ -405,6 +425,30 @@ fn main() -> Result<()> {
                 app.tick();
                 last_tick = std::time::Instant::now();
             }
+            if let Some(launch) = app.take_terminal_auth() {
+                restore_terminal();
+                eprintln!(
+                    "\n{} — finish setup in this terminal, then dsh-tui resumes.\n",
+                    launch.label
+                );
+                let result = crate::acp_auth::run_terminal_auth(&launch);
+                enter_tui()?;
+                app.needs_redraw = true;
+                while let Ok(ev) = bus_rx.try_recv() {
+                    if !matches!(ev, AppEvent::Term(_)) {
+                        app.handle(ev, &controller);
+                    }
+                }
+                match result {
+                    Ok(()) => controller.send(Cmd::Authenticate {
+                        method_id: launch.method_id,
+                        values: Default::default(),
+                    }),
+                    Err(err) => app
+                        .transcript
+                        .push_notice(crate::transcript::NoticeLevel::Error, err),
+                }
+            }
             if app.quit {
                 break;
             }
@@ -415,6 +459,27 @@ fn main() -> Result<()> {
     controller.send(Cmd::Shutdown);
     restore_terminal();
     run
+}
+
+fn enter_tui() -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    // Kitty keyboard protocol, pushed blind: terminals that support it
+    // (ghostty · kitty · wezterm · iterm2 3.5+) start reporting ⌘/⌥ chords
+    // as real SUPER/ALT modifiers and make shift+enter distinguishable;
+    // everything else ignores the sequence. (No capability query — the
+    // input thread already owns the event stream, a query reply would race.)
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
+    Ok(())
 }
 
 fn restore_terminal() {
@@ -434,33 +499,42 @@ fn restore_terminal() {
     let _ = stdout.flush();
 }
 
-/// `--check-runtime`: raw protocol handshake without the TUI.
+/// `--check-runtime`: ACP initialize without the TUI.
 fn check_runtime(args: &Args) -> Result<()> {
-    let cfg = build_config(args)?;
     if args.demo {
-        bail!("--check-runtime is for the real runtime; drop --demo");
+        bail!("--check-runtime is for a real ACP agent; drop --demo");
     }
-    println!("runtime  {}", cfg.bin);
-    println!("cordis   {}", cfg.cordis);
-    println!("cwd      {}", cfg.workspace);
-    let (tx, rx) = mpsc::channel::<AppEvent>();
-    let rt = proto::RuntimeProcess::spawn(&cfg.bin, &cfg.child_env(), &cfg.workspace, tx)?;
-    let params = serde_json::json!({
-        "cwd": cfg.workspace,
-        "provider": cfg.provider,
-        "model": cfg.model,
-    });
+    let argv = agent_argv(args);
+    println!("agent    {}", argv.join(" "));
     let t0 = std::time::Instant::now();
-    let result = rt.request("initialize", Some(params), Duration::from_secs(180))?;
+    let name = acp::check_blocking(argv)?;
     println!(
-        "initialize ok in {:.1}s → {}",
-        t0.elapsed().as_secs_f32(),
-        serde_json::to_string(&result)?
+        "initialize ok in {:.1}s → {name}",
+        t0.elapsed().as_secs_f32()
     );
-    rt.shutdown();
-    drop(rx);
-    println!("shutdown ok");
     Ok(())
+}
+
+fn tcp_attach_stream(address: &str) -> Result<std::net::TcpStream> {
+    use std::net::{SocketAddr, TcpStream};
+
+    let address: SocketAddr = address
+        .parse()
+        .with_context(|| format!("invalid --attach-tcp address: {address}"))?;
+    if !address.ip().is_loopback() {
+        bail!("--attach-tcp requires a loopback address");
+    }
+    let token = std::env::var("DSH_TUI_ATTACH_TOKEN")
+        .context("--attach-tcp requires DSH_TUI_ATTACH_TOKEN")?;
+    if token.is_empty() {
+        bail!("DSH_TUI_ATTACH_TOKEN must not be empty");
+    }
+    std::env::remove_var("DSH_TUI_ATTACH_TOKEN");
+    let mut writer = TcpStream::connect_timeout(&address, Duration::from_secs(10))
+        .with_context(|| format!("connect plugin transport at {address}"))?;
+    writeln!(writer, "{token}")?;
+    writer.flush()?;
+    Ok(writer)
 }
 
 /// `--dump-frame WxH`: render a canned demo conversation to plain text.
@@ -493,6 +567,7 @@ fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
                 );
                 // No controller in dump mode: feed events directly.
                 match ev {
+                    AppEvent::Ui(ui) => app.transcript.apply(ui),
                     AppEvent::Rpc { method, params } => {
                         for ui_ev in events::parse_notification(&method, &params) {
                             app.transcript.apply(ui_ev);
@@ -512,4 +587,143 @@ fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
     app.state = RunState::Idle;
     print!("{}", ui::dump_frame(&mut app, w, h));
     Ok(())
+}
+
+fn argv_without_demo_skin(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    args.into_iter().filter(|a| a != "--demo-skin").collect()
+}
+
+fn demo_skin_script_candidates(
+    manifest_dir: &std::path::Path,
+    exe: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let mut out = vec![manifest_dir.join("npm/lib/demo-skin.js")];
+    if let Some(dir) = exe.parent() {
+        out.push(dir.join("../../lib/demo-skin.js"));
+        out.push(dir.join("../lib/demo-skin.js"));
+    }
+    out
+}
+
+fn find_demo_skin_script(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    demo_skin_script_candidates(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), exe)
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// `--demo-skin` without an attach transport: hand off to the Node plugin
+/// runner so the palette arrives over `_dsh/cordis/tui/theme/update`. Missing node/script
+/// fails loud — never silently paint the built-in default pack.
+fn reexec_demo_skin() -> Result<()> {
+    let exe = std::env::current_exe()
+        .context("dsh-tui --demo-skin: cannot resolve the current executable (DSH_TUI_BIN)")?;
+    let looked =
+        demo_skin_script_candidates(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), &exe);
+    let script = find_demo_skin_script(&exe).ok_or_else(|| {
+        anyhow::anyhow!(
+            "dsh-tui --demo-skin requires npm/lib/demo-skin.js (looked in {}); refusing to fall back to the default palette",
+            looked
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    let child_args = argv_without_demo_skin(std::env::args().skip(1));
+    let status = std::process::Command::new("node")
+        .arg(&script)
+        .args(&child_args)
+        .env("DSH_TUI_BIN", &exe)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .with_context(|| {
+            format!(
+                "dsh-tui --demo-skin failed to spawn node {} (is node on PATH?); refusing to fall back to the default palette",
+                script.display()
+            )
+        })?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+#[cfg(test)]
+mod cli_args_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn agent_flag_and_args() {
+        let args = parse_args_from([
+            "--agent".into(),
+            "dsh".into(),
+            "--agent-arg".into(),
+            "--profile".into(),
+            "--agent-arg".into(),
+            "acp".into(),
+        ])
+        .unwrap();
+        assert_eq!(agent_argv(&args), vec!["dsh", "--profile", "acp"]);
+    }
+
+    #[test]
+    fn help_mentions_agent() {
+        assert!(HELP.contains("--agent"));
+        assert!(HELP.contains("--agent-arg"));
+    }
+
+    #[test]
+    fn help_mentions_demo_skin() {
+        assert!(HELP.contains("--demo-skin"));
+        assert!(HELP.contains("--demo"));
+    }
+
+    #[test]
+    fn removed_runtime_aliases_are_rejected() {
+        for flag in ["--runtime-bin", "--cordis"] {
+            let err = match parse_args_from([flag.into(), "legacy".into()]) {
+                Ok(_) => panic!("{flag} unexpectedly remained accepted"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("unknown argument"),
+                "{flag} must not remain as a hidden legacy option: {err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn demo_skin_implies_demo() {
+        let args = parse_args_from(["--demo-skin".into()]).unwrap();
+        assert!(args.demo_skin);
+        assert!(args.demo);
+        let args = parse_args_from(["--demo".into()]).unwrap();
+        assert!(args.demo);
+        assert!(!args.demo_skin);
+    }
+
+    #[test]
+    fn strip_demo_skin_keeps_other_flags() {
+        let stripped = argv_without_demo_skin([
+            "--workspace".into(),
+            "/tmp".into(),
+            "--demo-skin".into(),
+            "--theme".into(),
+            "light".into(),
+        ]);
+        assert_eq!(stripped, vec!["--workspace", "/tmp", "--theme", "light"]);
+    }
+
+    #[test]
+    fn demo_skin_script_candidates_prefer_source_then_vendor_layout() {
+        let manifest = Path::new("/crate");
+        let exe = Path::new("/crate/npm/vendor/darwin-arm64/dsh-tui");
+        let c = demo_skin_script_candidates(manifest, exe);
+        assert_eq!(c[0], PathBuf::from("/crate/npm/lib/demo-skin.js"));
+        assert!(c.iter().any(|p| p.ends_with("lib/demo-skin.js")));
+        assert!(c
+            .iter()
+            .any(|p| p.components().any(|c| c.as_os_str() == "vendor")
+                || p.to_string_lossy().contains("..")));
+    }
 }

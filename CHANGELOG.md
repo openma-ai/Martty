@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Added an internal Creator Host overlay to the TUI package. It overlays
+  `tui-plugin-development` onto the shipped `cordis` preset's standing scope
+  without copying the preset, publishing another package, or using ACP for
+  skill loading.
+
 ### Documentation
 
 - Reworked the repository and npm README mastheads around the centered

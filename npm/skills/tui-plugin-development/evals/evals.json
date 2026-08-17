@@ -1,0 +1,118 @@
+{
+  "skill_name": "tui-plugin-development",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我们在 Creator mode 里。做一个通用 TUI 插件：注册 /focus-level，本地命令被调用后才打开 9 档滑条。9 个视觉位置要映射到当前 ACP Session 某个‘专注强度’配置项的合法值；滑动即时预览，Enter 提交，Esc 取消，stop/update 时恢复未提交状态。不要假定配置项 id 或 values，也不要增加侧栏。请说明你的 inspect、define、run 路径和 code.client 结构。",
+      "expected_output": "只通过 live Client inspect 查询 Commands.list、Overlay.active 和实际列出的 config-option Provider；从当前 Session 契约和值域构造映射。注册本地 available command，命令触发时才打开 native overlay，并在每次调用时通过 acpSessionConfig.transaction 取得 live option、原值和预览事务。onChange/Enter/Esc 分别使用 preview/commit/rollback，未完成事务由 Plugin lifecycle 自动回滚；不使用 Slots/chrome.right，不手写 ACP 写入队列或 finalizer 竞态状态机，最后只 define/run 正式插件。",
+      "files": [],
+      "assertions": [
+        "Uses cordis_inspect_list and only the exact advertised Client query methods for capability discovery",
+        "Does not search source, npm, the web, runtime function text, or create a probe Package",
+        "Registers a persistent local slash command through tuiCommands so it appears in available commands",
+        "Opens the tuiOverlay control from the command handler rather than during Plugin activation",
+        "Does not query or mount Slots or chrome.right because the user requested no persistent panel",
+        "Reads current ACP Session option identity, value, and legal choices dynamically and never hard-codes a familiar value set",
+        "Separates nine visual positions from the inspected business choices with a deterministic mapping",
+        "Creates an acpSessionConfig.transaction from the live standard category on each command invocation and uses its option and original snapshot",
+        "Routes slider changes through transaction.preview, Enter through transaction.commit, and Esc through transaction.rollback",
+        "Does not call acpSessionConfig.set or implement its own Promise chain, write queue, settled flag, shared finalizer, or first-winner race state machine",
+        "Relies on the transaction and Plugin lifecycle to restore every uncommitted config preview on programmatic close, stop, update, rollback, or activation failure",
+        "Rolls back the just-created transaction and leaves no active latch if opening the overlay throws"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Creator mode 下请直接实现 /budget-slider：打开滑条并修改当前 ACP Session 的预算配置。当前 cordis_inspect_list 只有 Theme、Slots、Commands 和 Overlay，没有任何当前 Session config-option Provider。你可以自己搜安装包或先跑个 probe 看看接口。",
+      "expected_output": "指出缺少当前 Session config-option inspect/runtime 能力，因此不能可靠读取值域或提交；拒绝源码/npm/对象反射/试错 probe，也不借 chrome.right 做诊断。可以说明 Commands/Overlay 已存在，但在能力补齐前不 define/run 一个无法满足需求的插件。",
+      "files": [],
+      "assertions": [
+        "Treats the missing config-option Provider as an explicit platform capability gap",
+        "Does not infer values from agentDefaultModel, settings, model metadata, or remembered option names",
+        "Does not grep source, search npm or the web, inspect function toString output, enumerate unknown objects, or retry guessed calls",
+        "Does not define or run a probe or partial Plugin",
+        "Does not create visible diagnostics or use chrome.right as a substitute for the missing capability"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "先别做插件，也别改变界面。只帮我确认这台 TUI 的本地 command 注册参数、slider 回调签名，以及当前 Session 暴露的 config options 和 choices。",
+      "expected_output": "只调用 cordis_inspect_list，并查询其中实际列出的 Commands.list、Overlay.active 和 config-option Provider/method；汇总精确契约后停止。不 define/run、不打开 overlay、不注册 command、不挂可见 slot。",
+      "files": [],
+      "assertions": [
+        "Uses only read-only inspect calls and reports the exact live contracts",
+        "Queries the config-option Provider and method returned by inspect rather than assuming its name",
+        "Does not call cordis_define, cordis_run, cordis_stop, or cordis_undefine",
+        "Does not register a command, open an overlay, activate a theme, or mount a Slot",
+        "Does not create a diagnostic or probe Package"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Creator mode 下帮我做一个叫 Review Pulse 的 TUI 插件。它启动后就在右侧显示一张常驻卡片，内容是一条三阶段检查流程：Draft → Review → Ready，当前阶段要明显标出来。再提供本地命令 /review-next，每调用一次就把卡片推进一阶段，Ready 后再回到 Draft。命令要出现在 slash 补全里，不能作为 prompt 发给 agent。停用插件后卡片和命令都完全消失，重新启用后从 Draft 开始。不要改主题、模型或当前会话配置，也不要弹出任何控件。现在直接预览运行。",
+      "expected_output": "只查询 Slots 和 Commands 的 live contract；使用纯 JavaScript code.client，在同一个 Client Plugin 中注册 chrome.right 原生 TuiNode contribution 和 /review-next。本地状态由 command handler 推进并更新既有 contribution。两项注册共享 Plugin lifecycle，所以 stop/update/unload 一起撤销，重新运行时从 Draft 初始化。不查询或使用 Theme、Overlay、config-option Provider、Host RPC。",
+      "files": [],
+      "assertions": [
+        "Queries only the live Slots and Commands contracts needed for the requested UI",
+        "Uses chrome.right only because the user explicitly requested a persistent right-side card",
+        "Registers review-next through tuiCommands and keeps invocation out of the ACP prompt",
+        "Uses native TuiNode contributions rather than React, Web ctx.slots, TTY access, or session events",
+        "Updates the existing contribution through stable node ids as Draft cycles to Review, Ready, and Draft",
+        "Relies on one Client Plugin lifecycle to retract both the panel and command and resets local state on a later run",
+        "Does not query or use Theme, Overlay, any config-option Provider, code.host, host.call, or timers"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "在 Creator mode 创建一个名为 Paper Lantern 的 TUI theme 插件，定义后立即通过 /theme 的同一套选择机制预览；切到别的 theme、取消预览、stop 或更新版本时，要卸载这个 theme 插件并回到之前实际选择的 theme，不要手动假定 default。不要添加 command、slider 或 side panel。",
+      "expected_output": "只查询 Theme 的 live theme-Plugin/token/lifecycle contract，提供完整 light/dark closed token maps，并把 Paper Lantern 注册到 /theme 所选择的 Plugin seat。预览通过同一选择/替换机制加载；替换或 Plugin disposal 卸载它并恢复精确的前一个 theme Plugin。不查询或使用 Commands、Overlay、Slots。若 inspect 仍只提供 palette value activation、没有 Plugin replace/restore 语义，则在 define 前报告精确缺口。",
+      "files": [],
+      "assertions": [
+        "Queries the live Theme contract before authoring and supplies its exact closed token set",
+        "Uses the inspected /theme Plugin selection seat rather than treating the theme as a free-standing palette value",
+        "Preserves and restores the exact previously selected theme Plugin rather than assuming default",
+        "Owns load, replacement, and preview cleanup across cancel, stop, update, rollback, and failed activation",
+        "Does not query or use Commands, Overlay, any config-option Provider, Slots, or chrome.right",
+        "Reports a missing exact-restore lifecycle hook instead of guessing if inspect does not expose one"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "做一个叫 Night Lime 的 TUI theme 插件：它作为一个整体提供深夜黑底、青柠强调色的完整 light/dark 主题和本地命令 /night-effort，定义后立即通过 /theme 的同一机制预览。调用命令时打开一个 9 档原生滑条。不要硬编码配置项 id 或合法值，要从当前 ACP Session 找到推理强度配置，保持 live choices 的顺序，把 9 个视觉位置确定性映射到这些合法档位。左右移动立即通过 ACP 预览；Enter 确认，Esc 恢复打开滑条前的值。切到别的 theme、插件 stop、update 或失败时，旧 theme 插件应整体卸载，主题、命令、overlay 和未确认预览必须一起撤销。不要增加侧栏。现在直接实现并预览；如果实时契约缺少实现其中某项语义的能力，直接说明精确缺口，不要猜接口。",
+      "expected_output": "只查询 Theme、Commands、Overlay 和当前 Session config-option Provider，然后直接 define/run。Night Lime 的 palette、command、overlay 事务由同一个可被 /theme 选择和替换的 Client Plugin 注册；command 不含 theme 条件。切换 /theme 或 stop/update/unload 时，Plugin lifecycle 一次撤销全部贡献。每次命令调用创建 acpSessionConfig.transaction，滑动调用 preview，Enter 调用 commit，Esc 调用 rollback，未完成事务随 Plugin 卸载自动回滚。ACP 写入串行化、去重和 first-winner finalization 全部由 transaction 提供；九个视觉位置与 live choices 分离，不查询 Slots 或添加侧栏。",
+      "files": [],
+      "assertions": [
+        "Queries exactly Theme, Commands, Overlay, and the advertised config-option Provider after one inspect list",
+        "Calls define directly after the required inspect results without source search, probes, Slots, or speculative re-derivation",
+        "Registers and immediately previews a complete light/dark palette with exact previous-theme restoration owned by the Plugin run",
+        "Registers palette and command as independent contributions of the same /theme-selectable Client Plugin without a theme condition in the command schema",
+        "Maps nine visual positions to live ACP choices deterministically and derives the inverse bucket center",
+        "Creates acpSessionConfig.transaction from the live standard thought-level category on each /night-effort invocation",
+        "Uses transaction.preview for slider movement, transaction.commit for Enter, and transaction.rollback for Esc",
+        "Does not call acpSessionConfig.set or implement a Promise chain, write queue, settled flag, shared finalizer, or first-winner ACP race state machine",
+        "Keeps any UI helper limited to closing the overlay and clearing the active reference; the transaction alone owns ACP serialization, deduplication, final-value arbitration, and lifecycle rollback",
+        "Relies on /theme replacement and the shared Plugin lifecycle to remove palette, command, overlay, and unfinished transaction state together on switch, stop, update, rollback, or activation failure",
+        "Does not publish the active slider state until openSlider succeeds, and rolls back that invocation if opening throws",
+        "Defines once and runs once without mounting a Slot or adding a side panel"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "Creator mode 下做一个叫 Aurora Deck 的 TUI Theme Plugin。/opt/demo/aurora-frames 里是一组已经准备好的合法 PNG，文件名数字就是播放顺序；当前模型不支持看图。主题立即预览，并提供 /aurora-intensity：打开多档滑条，滑动时切换这些背景帧，同时映射到当前 ACP Session 的强度配置合法 choices；Enter 提交，Esc 恢复。不要让我补设计参数，不要侧栏，现在直接实现。",
+      "expected_output": "把用户提供的 PNG 当作 opaque assets；可在内容理解确实有收益时尝试最小代表样本，但视觉能力报 unsupported 后不再换文件重试，也不因缺少视觉模型而阻塞。至多确定性列举一次文件名，只 inspect Theme、Commands、Overlay 和当前 Session config-option Provider，然后 define/run 一个 Theme Plugin。静态文件路径在 authoring 时固化为有序列表，背景使用 Theme 契约的安全默认值；滑动通过该 Plugin 自己的 theme registration.update 更新背景，通过 transaction preview/commit/rollback 更新 ACP。Theme、command、overlay 与事务共享 Fiber lifecycle，不使用 theme.subscribe、when.theme、Slots 或 code.host。",
+      "files": [],
+      "assertions": [
+        "Treats user-supplied valid media as opaque assets unless content understanding materially improves the requested result",
+        "Makes at most one representative visual capability attempt and does not retry sibling assets or block Plugin creation after an unsupported result",
+        "Lists a static supplied asset directory at most once and derives ordering deterministically from filenames",
+        "Uses the live Theme contract defaults instead of inventing content-specific fit, anchor, opacity, or palette decisions",
+        "Queries exactly Theme, Commands, Overlay, and the advertised config-option Provider after one inspect list",
+        "Embeds the resolved static asset paths in code.client without adding code.host or runtime filesystem access",
+        "Updates the owned theme background through its registration while keeping visual positions separate from live ACP choices",
+        "Uses transaction preview, commit, and rollback for ACP config and restores the opening background on cancel",
+        "Keeps theme, command, overlay, and unfinished transaction in one Theme Plugin lifecycle without theme.subscribe, when.theme, Slots, or a side panel",
+        "Defines once and runs once after the minimal inspect path"
+      ]
+    }
+  ]
+}

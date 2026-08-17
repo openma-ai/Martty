@@ -20,29 +20,46 @@
 
 ---
 
-`dsh-tui` 是 DeepSeek Harness 的终端原生 agent UI：在一个 Rust/ratatui
-界面里查看流式推理、工具调用、subagent、token 用量和持久化会话。它既可以
-作为官方 `dsh` profile 插件运行，也可以直接连接 SDK JSON-RPC runtime。
+`dsh-tui` 是终端原生 ACP client，也是一套运行在 Cordis **client 树**上的
+可扩展终端。它在 Rust/ratatui 界面里呈现流式推理、工具调用、subagent、token
+用量和持久化会话。推荐 profile 路径把 ACP plugin 挂在 dsh Base Host 树上，并
+启动独立 TUI Client 进程；standalone 入口也可 spawn 或接入任意 ACP agent。长期目标
+不是把功能不断焊进 TUI 本体，而是让主题、视图、命令和交互都由插件组合，最终
+让 Creator 能检查、创建、运行、诊断并迭代自己的终端能力。
 
 ![dsh-tui 0.2 的 DeepSeek Harness 首页](assets/screenshots/banner-v020.png)
 
 ## 快速开始
 
-### 推荐：作为 dsh profile 插件运行
+### 推荐：作为 dsh 的 TUI surface plugin
 
-需要已安装并配置好的 `dsh`（当前集成基线为 `0.1.0-rc.6`）、Node.js 18+ 和
-pnpm 10+。官方包覆盖 macOS Apple Silicon、macOS Intel、Linux x64 和 Windows x64。
+需要 Node.js 18+。同一条安装命令会创建缺失的 profile，也可幂等更新已有 profile：
 
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
-安装命令不需要 `-w`。可用下面的命令确认 bundle 已挂载为 `tui-runner`：
+Host 进程的 Base Cordis 树挂 ACP plugin；独立 TUI Client 进程通过标准
+stdin/stdout 与它通信。TUI Client 不 spawn 第二个 ACP agent。
+
+### Standalone：接任意 ACP agent
 
 ```sh
-dsh --profile tui --dump-config
+dsh-tui --agent dsh-acp
+dsh-tui --agent dsh --agent-arg --profile --agent-arg acp
 ```
+
+本地 checkout（需已 `cargo build --release` 或 `scripts/build-npm.sh`，并把二进制放到 `npm/vendor/<platform>/`，或设置 `DSH_TUI_BIN`）：
+
+```sh
+DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
+```
+
+第三方能力是 client 树上的普通 Cordis 插件：声明所需 service，在 `apply` 中
+注册贡献，并随 fiber 卸载自动撤销。当前已经开放主题和根级右栏；完整方向见
+[完全插件化与自进化](#完全插件化与自进化)。`--demo-skin` 只挂载 gallery 包
+`ember`，不代表主题逻辑写进了本体。
 
 ### 先看 Demo
 
@@ -59,15 +76,15 @@ dsh-tui --demo
 
 - **完整的 agent 时间线**：实时呈现推理、回复、工具参数与结果、plugin 上下文、
   subagent 生命周期和 token/cache 指标；最新消息下方持续显示阶段、耗时与队列深度。
-- **宿主能力原生接入**：在 plugin 模式读取 dsh 的模型、agent preset、权限、
-  provider、凭据和可调用 skills；skills 与内置命令共享可搜索、可滚动的斜杠菜单。
+- **ACP 能力原生接入**：读取 agent 广告的模型、composition、权限、认证方式和
+  可用命令；skills 与内置命令共享可搜索、可滚动的斜杠菜单。
 - **多图 prompt**：从文件、剪贴板或粘贴操作暂存最多 8 张图片，图片以可编辑的
   `[image n]` chip 内联在草稿中，并支持名称、尺寸、大小和类型预览。
 - **终端友好的 Markdown**：渲染标题、列表、引用、代码块、行内代码、强调、
   删除线、链接和图片标记，同时保留 CJK/Latin 混排与软换行样式。
-- **高密度工具视图**：工具调用清晰呈现进行中、成功和失败状态，结果可折叠，
-  长输出拥有独立滚动视窗，不会挤占整段对话。
-- **适合长对话的控制**：回合中可排队 follow-up、打断并立即发送；持久化 JSONL
+- **高密度工具视图**：工具调用清晰呈现进行中、成功和失败状态；长输出默认保留
+  末四行，点击后在对话内完整展开，滚轮始终滚动整个对话。
+- **适合长对话的控制**：回合中可排队 follow-up，或立即 steer 当前回合；持久化 JSONL
   会话通过 `/new`、`/resume` 和 `--session-id` 管理，workspace 模式信息也会缓存。
 - **跨平台输入体验**：readline 编辑、上下文快捷键，以及 macOS 的物理 ⌘/⌥
   修复和 Linux/Windows 的 ctrl 组合键，让常用移动与删除在不同终端保持一致。
@@ -79,56 +96,110 @@ dsh-tui --demo
        alt="plugin 模式中的 Markdown 回复、工具视图和运行状态" />
 </p>
 
-## 两种运行模式
+## 完全插件化与自进化
 
-| | dsh plugin（推荐） | Standalone |
+目标是让 TUI 成为一个小内核加一组可组合插件，而不是一个不断积累特判的终端
+应用。内核只负责 ACP 会话、TTY 所有权、输入调度、布局约束和语义节点绘制；
+产品能力通过 Cordis service、slot 和插件生命周期进入 client 树。
+
+- **一个生命周期：** 静态包与 Creator 生成的动态包都走 Cordis Loader、fiber、
+  `inject` 和 disposer。挂载后立即生效，停止或切换后完整撤销，不另造一套“动态
+  插件”运行时。
+- **一个插件可以贡献多个表面：** 同一包可同时注册 theme、slot、command 和
+  overlay，并让它们共享状态或通过包内 Host/Client RPC 联动。核心不为 Liang、
+  effort 或某个具体插件增加分支。
+- **只开放语义能力：** 插件提交 `TuiNode` 和 slider、form 等通用交互语义，由
+  Rust renderer 适配终端。插件拿不到 TTY、raw mode、Ratatui、kitty 转义或绝对
+  坐标；替换 renderer 不应改变插件 ABI。
+- **动态预览与持久组合分开：** `define/run` 负责即时预览，`stop/update/rollback`
+  负责运行期生命周期；确认后的 Package 可以持久化。`AgentPreset` 继续只组合
+  agent 侧能力，未来由独立的 `ViewPreset` 组合 client/UI 插件。两者可以一起选择，
+  但分别存储、分别切换。
+- **Creator 闭环：** Creator 先 inspect 当前 Host/Client 的真实 service、slot、
+  token 和 schema，再生成 `code.host`、`code.client` 或两者，运行后观察装载错误和
+  渲染错误，继续修复、更新、回滚或保存。这才是“自进化”，不是让模型直接操作
+  终端底层。
+
+### 当前完成度
+
+现在已经落地的是 ACP client 分层、`tuiTheme` 主题 registry、`chrome.right` +
+`TuiNode` 根级右栏、Client inspect/run，以及只在 Creator preset 中可见的 TUI
+开发 skill。它们证明了静态插件和动态 `code.client` 可以共享同一条生命周期。
+
+仍在迁移的是更多 shell/conversation slot、插件命令、overlay、slider/form 等通用
+输入组件、完整的运行期诊断和 `ViewPreset`。因此“完全插件化”是目标架构，不是对
+当前版本完成度的夸张描述；逐阶段状态以 [迁移计划](docs/migration.md) 为准。
+
+### 与 Web 插件平台对照
+
+| 维度 | Web 当前能力 | TUI 当前基础与目标 |
 |---|---|---|
-| Agent、工具与 provider | 来自 dsh profile | 来自独立 SDK runtime |
-| 模型与 agent preset | 使用宿主真实目录，可在 TUI 中切换 | 使用启动参数或 runtime 配置 |
-| 会话存储 | `~/.dsh/sessions` | `~/.dsh-tui/sessions`，可用 `--session-root` 修改 |
-| 回合中断 | 宿主持有回合，不做硬中断 | `esc` 停止 runtime；会话日志保留 |
-| Runtime 安装 | bundle 自带兼容层 | 需要 `dsh-jsonrpc-agent` |
+| Client runtime | 成熟的 React Cordis tree | Node Cordis client tree 已落地；Rust 只做语义 renderer，不成为第三棵树 |
+| UI 扩展 | 类型化 slot tree，覆盖会话、设置、工具卡等大量页面区域 | 当前开放 `chrome.right`；目标是用 `tuiSlots` 覆盖 shell 与 conversation，而不暴露终端坐标 |
+| Theme | `ThemeRuntime` 注册主题、叠加 token、运行时切换并持久化内置偏好 | `/theme` 作为单选 Plugin 开关，整体加载/替换贡献 palette 与其他能力的 Theme Plugin |
+| 交互组件 | 插件可贡献 React component | 当前使用受 schema 约束的 `TuiNode`；目标补齐 command、overlay、slider、form 等通用终端语义组件 |
+| 动态插件 | `code.host` + `code.client` 双半 Package，共用 Loader/fiber，支持 run、stop、update、rollback | inspect/run 与主题、右栏 POC 已通；目标通过统一的 DSH Cordis ACP 扩展获得同等生命周期和包内 RPC |
+| 诊断与修复 | Client 装载和 React 渲染失败可回传 Creator，继续生成新版本 | 目标对齐相同闭环：装载、schema、绘制错误可观察且能更新或回滚 |
+| Preset | `AgentPreset` 组合 agent；Client 插件另行持久化 | 保持 AgentPreset 边界，新增独立 `ViewPreset` 管理终端视图组合 |
 
-Plugin runner 在宿主 TTY 上启动原生二进制，并通过 Unix fd 3/4 或 Windows
-认证 loopback TCP 提供一套与官方 SDK server 兼容的 JSON-RPC 接口。它不是对
-`@deepseek-ai/dsh-sdk-jsonrpc-server` 的直接挂载；agent、工具、provider 和持久化
-仍由外围 dsh profile 提供。
+Web 今天的插件面更广、实现也更成熟。TUI 要对齐的是 Cordis 的组合方式、生命周期
+和 Creator 创造闭环，而不是把 React 或浏览器 DOM 搬进终端。
 
-### Standalone runtime
+## 运行架构
 
-全局安装只提供 TUI 二进制。Standalone 模式还需要在工作区附近的 `.venv` 中
-安装 DeepSeek Harness SDK，或显式指定 runtime：
+主路径 `dsh --profile tui` 在 Host 进程的 Base Cordis 树挂 ACP plugin，再启动
+独立进程中的 Node Cordis Client 树：`tui-theme` 提供主题目录，
+`tui-cordis-client-runner` 承接 `dsh-tool-cordis` 的 Client inspect/run，
+`acp-client` 接 Host 的标准 stdin/stdout，`dsh-tui-shell` 启动 Rust painter 并做消息分流。
+两棵 Cordis 树位于不同进程，只讲 ACP。Standalone `dsh-tui` 才按参数 spawn/attach
+任意 ACP agent。
+Rust painter 不是第三棵 Cordis 树，它只占 TTY、处理输入并绘制声明式状态。
 
-```sh
-python -m venv .venv
-.venv/bin/pip install deepseek-harness-sdk
-dsh-tui --workspace .
-```
+两棵 Cordis 树不会同步 plugin id、`inject` 或 fiber。标准 ACP 继续承载会话、
+prompt、认证、配置与 `session/update`；自进化所需的 Client 能力发现、动态 Package
+运行和包内 RPC 则使用协商后的 ACP 扩展。目标扩展统一放在 `_dsh/cordis/*`
+命名空间，并通过 `initialize` 的 `_meta.dsh.cordis` 声明能力；不支持该扩展的 ACP
+agent 仍可作为普通 agent 使用。
 
-也可以设置 `DSH_RUNTIME_BIN`，或传入 `--runtime-bin <path>`。凭据优先使用
-`--api-key`、`DEEPSEEK_API_KEY`，随后尝试读取本机 `~/.dsh` 配置。
+Creator 的教学能力是 TUI 包内部导出的独立 Host overlay；ACP 是 TUI 的运行时
+依赖。用户只需安装 TUI；bundle 把 ACP plugin 和 Creator overlay 挂到 Base Host tree，
+runner 只启动 TUI Client 进程。Creator 会在上游 `cordis` preset 的 standing scope 上增加
+`tui-plugin-development` skill；不复制 preset、不改上游文件，也不靠 ACP
+发现或注入 skill。Web 和 TUI 因此使用同一个 Creator preset。
+ACP 与 Creator overlay 都不会挂进 Client tree；完整 Harness 只在 Host 进程启动一次。
+
+Host↔TUI Client 的 ACP 使用 Client 子进程的标准 stdin/stdout。Client 进程的 fd 3/4
+只继承用户 TTY 并映射为 Rust 的 stdin/stdout；Rust 自己的 fd 3/4 才是 Node↔painter
+compositor 通道。
+
+Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopback TCP。
+这条私有 compositor 通道只投影主题和 `TuiNode` 等语义绘制状态，不是插件 API，
+也不承载 agent 业务。Cordis 通用 inspect/run/lifecycle 使用 `_dsh/cordis/*`；
+主题、槽位、命令和 overlay 等 painter 能力使用其子域 `_dsh/cordis/tui/*`。
+这些都是带下划线前缀的 ACP Extension Request/Notification，不进入 prompt 或历史。
 
 ## 常用交互
 
 | 按键 / 命令 | 行为 |
 |---|---|
 | `enter` | 发送；回合运行时排队 follow-up |
-| `ctrl+x` | 打断当前回合并立即发送下一条（plugin 转发 host 中断；standalone 硬中断） |
+| `ctrl+x` | 不取消当前回合，立即 steer 当前 agent |
 | `esc` | 打断当前回合（保留草稿）；空闲时清空草稿 |
 | `ctrl+c` | 先清草稿，再中断；连按两次退出 |
-| `/` | 打开命令菜单并按前缀过滤；host 的 skills 也在其中（plugin 模式，选中落入 `/name `，回车作为 prompt 发送由 host 注入 skill） |
-| `/model` · `/mode` | 选择模型和 agent preset；完整目录需要 plugin 模式 |
-| `/permission` · `shift+tab` | 选择或轮换权限 preset；需要 plugin 模式 |
+| `/` | 打开命令菜单并按前缀过滤；agent 广告的 skills 也在其中，选中后仍以 `/name ` prompt 发送 |
+| `/model` · `/agent` | 选择 agent 广告的模型和 agent preset；`ctrl+a` 不弹表单，直接轮换 agent |
+| `/auth` | ACP 登录（多种方法时弹出选择；否则 Terminal Auth 或 `authenticate` `_meta`）；会话中途 `auth_required` 也会打开同一界面；agent 的 `/login` 仍当 prompt |
+| `/permission` · `shift+tab` | 选择或轮换 agent 广告的权限模式 |
 | `/effort` · `/plan` | 设置推理力度或把 plan 模式传给宿主 |
-| `/image <path> [text]` | 发送本地图片（png/jpeg/webp/gif）；需要 plugin 模式 |
+| `/image <path> [text]` | 发送本地图片（png/jpeg/webp/gif）；agent 若声明 `promptCapabilities.image` 则走 ACP Image 块，否则退回 `resource_link` |
 | `/clip [text]` · `ctrl+v` | 暂存剪切板图片（可多次，最多 8 张同行）；macOS/Linux |
 | 图片 chip | 以 `[image n]` 内联在草稿文字里（无 icon）；退格整个删除，hover 或光标停在上面弹出预览（kitty 缩略图 + 尺寸/大小/类型） |
 | `ctrl+o` · `ctrl+t` | 展开输出 · 切换主题 |
 | `pgup/pgdn` · `ctrl+u/d`（空输入） | 滚动；`end` 回到实时尾部 |
-| readline 编辑 | `ctrl+a/e` 行首尾 · `ctrl+k/u` 删至尾/首 · `ctrl+w` 删词 |
+| readline 编辑 | `home/ctrl+e` 行首尾 · `ctrl+k/u` 删至尾/首 · `ctrl+w` 删词 |
 | macOS | `⌘←/→` 行首尾 · `⌥←/→` 跳词 · `⌘⌫` 删至行首 · `⌥⌫` 删词（直接读物理键状态，任意终端可用） |
 | Linux/Windows | `ctrl+←/→` 跳词 · `ctrl+⌫` 删词 |
-| 点击工具 · 滚轮悬停 | 点击工具展开/折叠输出；滚轮在工具上滚动其内部视窗 |
+| 点击工具 · 滚轮 | 点击工具展开/折叠输出；滚轮始终滚动整个对话 |
 | 鼠标拖选 | 松手复制；双击复制单词；`shift+拖选` 使用终端原生选择 |
 | `!cmd` | 在客户端本地执行 shell 命令，不经过 agent |
 
@@ -165,10 +236,20 @@ Ghostty、Kitty 和 WezTerm 等支持 kitty graphics protocol 的终端会显示
 需要 Rust stable 和 Node.js 18+：
 
 ```sh
-cargo test --locked
+make rust-test
 node --test scripts/package-native.test.mjs
 bash scripts/build-npm.sh
 ```
+
+`make rust-build` / `make rust-test` / `bash scripts/build-npm.sh` 统一经过
+`scripts/cargo-guard.sh`：本仓库 `target` 超过 20 GiB，或磁盘余量低于
+10 GiB 时会先执行 scoped `cargo clean`。
+`make rust-cache-status` 只读查看，`make rust-cache-prune` 显式清理；阈值可通过
+`RUST_CACHE_MAX_GIB` / `RUST_DISK_MIN_GIB` 覆盖。
+
+真实开发 profile 统一用 `make tui-test` 启动。它先重编
+`target/debug/dsh-tui`，再设置 `DSH_TUI_BIN` 启动 `tui-test`，避免 Node HMR
+已更新而 Rust painter 仍是旧进程映像。
 
 本地脚本只编译当前平台，并将 tarball 写入 `dist/`。GitHub Actions 工作流
 `Package and publish npm` 会分别构建以下目录，再汇总为一个 npm 包：
@@ -188,26 +269,23 @@ npm/vendor/win32-x64/dsh-tui.exe
 
 - **`no native binary for ...`**：当前安装包不包含你的平台。确认安装的是
   最新版本，并查看上方支持矩阵。
-- **`cannot find ... dsh-jsonrpc-agent`**：这是 standalone runtime 缺失；安装
-  SDK、设置 `DSH_RUNTIME_BIN`，或改用 dsh plugin 模式。
-- **pnpm workspace root 错误**：升级到 pnpm 10+，然后重新运行不带 `-w` 的
-  安装命令。
-- **`ERR_REQUIRE_ESM_RACE_CONDITION`**：0.1.0 及更早的 runner 是 CJS，会和
-  dsh 并行加载的 ESM 插件抢同一份模块。升级到 `0.1.1` 以上，或从本仓库安装
-  `npm/` 目录。
+- **`spawn dsh-acp ENOENT`**：安装 `dsh-acp`，或用 `--agent <cmd>` 指向其它
+  ACP server。
 - **像素宠物不显示**：终端可能不支持 kitty graphics protocol；主界面功能
   不受影响。
 
 ## 项目结构
 
 - `src/`：TUI 状态机、绘制、协议、runtime 生命周期和会话目录。
-- `npm/`：dsh bundle runner、CLI shim、manifest 与原生二进制。
+- `npm/`：Cordis client boot、ACP/compositor mux、CLI shim 与原生二进制。
 - `scripts/`：本地构建、跨平台打包校验、协议集成测试与资源生成。
 - `assets/`：截图、主题资源和可选宠物精灵。
+- `docs/`：分层架构、插件 API、`TuiNode` schema 与迁移计划（[索引](docs/README.md)）。
 
-协议是 stdio 上的 NDJSON JSON-RPC 2.0。实现细节可从
-[`src/proto.rs`](src/proto.rs)、[`src/controller.rs`](src/controller.rs) 和
-[`npm/lib/index.js`](npm/lib/index.js) 开始阅读。
+Agent 通信是 stdio 上的 ACP；Node 与 Rust 之间另有私有 compositor 通道。
+实现细节可从 [`src/acp.rs`](src/acp.rs)、[`npm/lib/boot.js`](npm/lib/boot.js) 和
+[`npm/lib/mux.js`](npm/lib/mux.js) 开始阅读。插件不要依赖这些传输细节；扩展点见
+[docs/plugins.md](docs/plugins.md)。
 
 ## License
 

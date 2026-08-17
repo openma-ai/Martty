@@ -108,7 +108,10 @@ jobs:
       - name: Restore executable permissions
         run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui
       - run: node scripts/package-native.mjs verify --vendor-root npm/vendor
-      - run: mkdir -p dist && npm pack ./npm --pack-destination dist
+      - name: Pack npm packages
+        run: |
+          mkdir -p dist
+          npm pack ./npm --pack-destination dist
       - uses: actions/upload-artifact@v7
         with:
           name: openma-deepseek-harness-tui-npm
@@ -136,7 +139,15 @@ jobs:
         with:
           name: openma-deepseek-harness-tui-npm
           path: dist
-      - run: npm publish ./dist/*.tgz --access public --tag latest
+      - name: Publish npm packages
+        shell: bash
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-alpha.*|*-beta.*|*-rc.*) DIST_TAG=beta ;;
+            *) DIST_TAG=latest ;;
+          esac
+          echo "publishing with dist-tag: $DIST_TAG"
+          npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG"
 
   release:
     name: Create GitHub release
@@ -151,6 +162,11 @@ jobs:
         with:
           name: openma-deepseek-harness-tui-npm
           path: dist
-      - run: gh release create "$GITHUB_REF_NAME" ./dist/*.tgz --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" ./dist/*.tgz --verify-tag --generate-notes --title "$GITHUB_REF_NAME" $PRERELEASE
         env:
           GH_TOKEN: ${{ github.token }}

@@ -3,35 +3,43 @@
 </p>
 
 <p align="center">
-  Terminal-native DeepSeek Harness UI, distributed as a dsh profile bundle and the standalone <code>dsh-tui</code> command.
+  Terminal-native ACP client UI with a Cordis client plugin tree.
 </p>
 
 ---
 
 Native binaries are packaged for macOS arm64, macOS x64, Linux x64, and Windows
-x64. Requires Node.js 18+; plugin installation requires pnpm 10+ and is tested
-with `dsh 0.1.0-rc.6`.
+x64. Requires Node.js 18+.
 
-## Recommended: dsh profile plugin
+## Recommended
 
 ```sh
+npm install --global @openma/deepseek-harness-tui
 dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
-The install command does not need `-w`. The profile supplies agents, tools,
-providers, credentials, and durable sessions; the package supplies the native
-TUI and its JSON-RPC bridge. Harness packages are resolved from the running
-`dsh`, not reinstalled into the profile.
+The profile Host mounts the ACP plugin on Base, then starts a separate TUI
+Client process over standard ACP stdin/stdout. For standalone use, run
+`dsh-tui` and use `--agent <cmd>` plus repeated `--agent-arg <arg>` for another
+ACP server. The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
+`tui-cordis-client-runner` publishes TUI Client capabilities and evaluates
+approved `code.client` packages from `dsh-tool-cordis` against that client tree.
 
-The bridge uses inherited pipes on Unix and an authenticated loopback TCP
-socket on Windows, so the profile plugin works on every packaged platform.
+The package carries ACP as a runtime dependency and exports its Creator Host
+overlay internally. The profile bundle mounts both on the Host Base tree;
+neither enters the Client tree. Creator adds TUI plugin guidance to the
+existing `cordis` preset and does not use ACP for skill registration.
 
-## Demo and standalone CLI
+Node and Rust use inherited pipes on Unix and an authenticated loopback TCP
+socket on Windows. This compositor channel carries theme/render data only;
+agent traffic remains ACP.
+
+## Demo
 
 ```sh
-npm install --global @openma/deepseek-harness-tui
 dsh-tui --demo
+dsh-tui --demo-skin
 ```
 
 `dsh-tui` is the primary command. `dsb` is a compatibility alias.
@@ -40,29 +48,21 @@ dsh-tui --demo
 
 - Streamed reasoning, replies, tool activity, subagents, run state, and
   token/cache metrics in one terminal timeline.
-- Host models, agent presets, permissions, providers, and invocable skills in
-  plugin mode, including a unified searchable slash menu.
+- Agent-advertised models, compositions, permissions, authentication methods,
+  and invocable skills in one searchable slash menu.
 - Up to eight editable image chips per prompt, with clipboard/file staging and
   metadata previews on kitty-capable terminals.
 - Terminal-aware Markdown for headings, lists, quotes, code, emphasis, links,
   and mixed CJK/Latin text.
-- Durable sessions, queued follow-ups, interrupt-and-send, readline editing,
-  platform-native modifier bindings, mouse selection, and scrollable tools.
+- Durable sessions, queued follow-ups, immediate steering, readline editing,
+  platform-native modifier bindings, mouse selection, and inline-expanded tools.
 - Dark/light themes, clipboard routing for local, tmux, and SSH sessions, plus
   the optional `/liang` pixel companion.
+- A root `chrome.right` plugin rail for validated TuiNode trees, with live
+  update/unload and Client inspect support for Creator-authored plugins.
 
-The demo needs no API key or runtime. Normal standalone sessions additionally
-need `dsh-jsonrpc-agent`, discovered from a nearby SDK virtual environment,
-`DSH_RUNTIME_BIN`, `--runtime-bin`, or `PATH`:
-
-```sh
-python -m venv .venv
-.venv/bin/pip install deepseek-harness-sdk
-dsh-tui --workspace .
-```
-
-Run `dsh-tui --help` for runtime, model, credential, session, theme, and demo
-options.
+The demo needs no API key or agent. Run `dsh-tui --help` for agent, model,
+credential, session, theme, and demo options.
 
 ## Supported platforms
 

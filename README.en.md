@@ -20,32 +20,52 @@
 
 ---
 
-`dsh-tui` is a terminal-native agent UI for DeepSeek Harness. Follow streamed
-reasoning, tool calls, subagents, token usage, and durable sessions in one
-Rust/ratatui interface. Run it as an official `dsh` profile plugin or connect
-it directly to the SDK JSON-RPC runtime.
+`dsh-tui` is a terminal-native ACP client and an extensible terminal on a
+Cordis **client** tree. It presents streamed reasoning, tool calls, subagents,
+token usage, and durable sessions in a Rust/ratatui interface. The recommended
+profile path mounts the ACP plugin on the dsh Base Host tree and starts an
+independent TUI Client process; standalone may spawn or attach any ACP agent.
+Its long-term direction is not to
+hard-wire more features into the TUI, but to compose themes, views, commands,
+and interactions as plugins until Creator can inspect, create, run, diagnose,
+and iterate on its own terminal capabilities.
 
 ![The DeepSeek Harness home screen in dsh-tui 0.2](assets/screenshots/banner-v020.png)
 
 ## Quick start
 
-### Recommended: run as a dsh profile plugin
+### Recommended: dsh TUI surface plugin
 
-Requires a configured `dsh` installation (current integration baseline:
-`0.1.0-rc.6`), Node.js 18+, and pnpm 10+. Official packages cover macOS on
-Apple Silicon and Intel, Linux x64, and Windows x64.
+Needs Node.js 18+. The same idempotent command creates a missing profile or updates an existing one:
 
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
-The install command does not need `-w`. Confirm that the bundle is mounted as
-`tui-runner` with:
+The Host process mounts the ACP plugin on its Base Cordis tree. A separate TUI
+Client process speaks ACP to it on standard stdin/stdout and never spawns a
+second ACP agent.
+
+### Standalone: any ACP agent
 
 ```sh
-dsh --profile tui --dump-config
+dsh-tui --agent dsh-acp
+dsh-tui --agent dsh --agent-arg --profile --agent-arg acp
 ```
+
+From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, binary in `npm/vendor/<platform>/`, or `DSH_TUI_BIN`):
+
+```sh
+DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
+```
+
+Third-party capabilities are ordinary Cordis plugins on the client tree: they
+declare the services they need, register contributions in `apply`, and retract
+them with the owning fiber. Themes and the root right rail are open today; see
+[Fully pluggable and self-evolving](#fully-pluggable-and-self-evolving) for the
+complete direction. `--demo-skin` merely mounts the gallery pack `ember`; it
+does not put theme-specific behavior in core.
 
 ### Try the demo first
 
@@ -63,8 +83,8 @@ dsh-tui --demo
 - **A complete agent timeline:** stream reasoning, replies, tool arguments and
   results, plugin context, subagent lifecycles, and token/cache metrics. A live
   status line keeps the current phase, elapsed time, and queue depth visible.
-- **Native host capabilities:** plugin mode reads dsh models, agent presets,
-  permissions, providers, credentials, and invocable skills. Host skills join
+- **Native ACP capabilities:** read the agent's models, compositions,
+  permissions, authentication methods, and available commands. Skills join
   built-in commands in one searchable, scrolling slash menu.
 - **Multi-image prompts:** stage up to eight images from files, the clipboard,
   or paste. Editable `[image n]` chips live inline with the draft and expose a
@@ -73,9 +93,9 @@ dsh-tui --demo
   code, emphasis, strikethrough, links, and image markers while preserving
   styling across CJK/Latin text and soft wraps.
 - **Dense tool views:** tool calls expose running, success, and failure states;
-  results collapse cleanly and long output gets its own scrollable viewport
-  instead of taking over the conversation.
-- **Long-turn control:** queue follow-ups or interrupt and send immediately;
+  results collapse to the last four lines and expand inline while the wheel
+  always scrolls the conversation.
+- **Long-turn control:** queue follow-ups or steer the active turn immediately;
   manage durable JSONL sessions with `/new`, `/resume`, and `--session-id`, with
   workspace mode facts cached across launches.
 - **Cross-platform editing:** readline commands, contextual shortcuts, physical
@@ -87,61 +107,134 @@ dsh-tui --demo
 
 <p align="center">
   <img src="assets/screenshots/agent-turn.png" width="720"
-       alt="Markdown output, tool views, and live run state in plugin mode" />
+       alt="Markdown output, tool views, and live ACP run state" />
 </p>
 
-## Two runtime modes
+## Fully pluggable and self-evolving
 
-| | dsh plugin (recommended) | Standalone |
+The goal is a small TUI kernel plus composable plugins, not a terminal app that
+accumulates product-specific branches. Core owns ACP sessions, the TTY, input
+dispatch, layout constraints, and semantic-node rendering. Product capabilities
+enter the client tree through Cordis services, slots, and plugin lifecycles.
+
+- **One lifecycle:** static packages and Creator-generated dynamic packages use
+  the same Cordis Loader, fibers, `inject`, and disposers. Mounting takes effect
+  immediately, while stopping or switching retracts every contribution; there
+  is no second "dynamic plugin" runtime.
+- **One plugin, several surfaces:** a package may contribute a theme, slots,
+  commands, and overlays together, sharing state or coordinating through
+  package-private Host/Client RPC. Core adds no Liang-, effort-, or plugin-specific
+  branches.
+- **Semantic capabilities only:** plugins submit `TuiNode` trees and general
+  interaction semantics such as sliders and forms; the Rust renderer adapts them
+  to the terminal. Plugins never receive the TTY, raw mode, Ratatui, kitty escape
+  sequences, or absolute coordinates. Replacing the renderer must not change the
+  plugin ABI.
+- **Dynamic preview and durable composition stay separate:** `define/run` drives
+  immediate preview, while `stop/update/rollback` owns the live lifecycle; an
+  approved Package can then be persisted. `AgentPreset` continues to compose
+  agent-side capabilities. A separate future `ViewPreset` will compose Client/UI
+  plugins. They may be selected together, but are stored and switched separately.
+- **The Creator loop:** Creator inspects the real Host/Client services, slots,
+  tokens, and schemas before generating `code.host`, `code.client`, or both. It
+  then observes activation and render failures and can repair, update, roll back,
+  or save the Package. That loop is "self-evolution"; it is not direct model
+  access to terminal internals.
+
+### Current boundary
+
+What exists today is the ACP client split, the `tuiTheme` registry,
+`chrome.right` plus the `TuiNode` root right rail, Client inspect/run, and a TUI
+development skill visible only in the Creator preset. Together they prove that
+static plugins and dynamic `code.client` packages can share one lifecycle.
+
+More shell and conversation slots, plugin commands, overlays, general slider/form
+inputs, complete runtime diagnostics, and `ViewPreset` are still being migrated.
+"Fully pluggable" is therefore the target architecture, not an inflated claim
+about the current release. See the [migration plan](docs/migration.en.md) for the
+phase-by-phase status.
+
+### Compared with the Web plugin platform
+
+| Dimension | Web today | TUI foundation and direction |
 |---|---|---|
-| Agent, tools, providers | Supplied by the dsh profile | Supplied by a separate SDK runtime |
-| Models and agent presets | Uses the live host catalog and switches from the TUI | Uses launch flags or runtime configuration |
-| Session storage | `~/.dsh/sessions` | `~/.dsh-tui/sessions`, configurable with `--session-root` |
-| Mid-turn interrupt | The host owns the turn; no hard interrupt | `esc` stops the runtime while preserving the session log |
-| Runtime installation | The bundle includes its compatibility layer | Requires `dsh-jsonrpc-agent` |
+| Client runtime | Mature React Cordis tree | Node Cordis client tree is in place; Rust remains a semantic renderer, not a third tree |
+| UI extension | Typed slot tree across conversations, settings, tool cards, and many other surfaces | `chrome.right` is open today; `tuiSlots` will cover shell and conversation surfaces without exposing terminal coordinates |
+| Theme | `ThemeRuntime` registers themes, stacks token overrides, switches at runtime, and persists built-in preferences | `/theme` is a single-select Plugin switch that loads/replaces a Theme Plugin and all of its contributions together |
+| Interaction components | Plugins contribute React components | Schema-validated `TuiNode` is available now; commands, overlays, sliders, forms, and other general terminal semantics are next |
+| Dynamic plugins | Two-half `code.host` + `code.client` Packages share Loader/fiber and support run, stop, update, and rollback | Inspect/run plus theme and right-rail proofs work; the target is the same lifecycle and package-private RPC over one DSH Cordis ACP extension |
+| Diagnosis and repair | Client activation and React render failures return to Creator for another revision | The target is the same loop for activation, schema, and paint failures, with update and rollback |
+| Presets | `AgentPreset` composes agents; Client plugins persist separately | Keep the AgentPreset boundary and add an independent `ViewPreset` for terminal view composition |
 
-The plugin runner launches the native binary on the host TTY and serves an SDK
-server-compatible JSON-RPC interface over fds 3/4 on Unix or an authenticated
-loopback TCP socket on Windows. It does not mount
-`@deepseek-ai/dsh-sdk-jsonrpc-server` directly; the surrounding dsh profile
-still supplies agents, tools, providers, and persistence.
+The Web plugin surface is broader and more mature today. TUI aligns with its
+Cordis composition, lifecycle, and Creator loop; it does not move React or the
+browser DOM into the terminal.
 
-### Standalone runtime
+## Runtime architecture
 
-The global npm install provides the TUI binary. Standalone mode also needs the
-DeepSeek Harness SDK in a nearby `.venv`, or an explicitly configured runtime:
+The primary `dsh --profile tui` path mounts the ACP plugin on the Host Base
+Cordis tree, then starts a Node Cordis Client tree in a separate process:
+`tui-theme` provides the palette
+registry, `tui-cordis-client-runner` serves Client inspect/run requests from
+`dsh-tool-cordis`, `acp-client` attaches the Host's standard stdin/stdout, and
+`dsh-tui-shell` starts the Rust painter and multiplexes messages. The agent (default
+Harness) stays on the Host tree; the two Cordis trees only speak ACP. Standalone
+`dsh-tui` instead spawns or attaches the configured ACP agent. The Rust painter
+is not a third Cordis tree: it owns the TTY, input, and rendering only.
 
-```sh
-python -m venv .venv
-.venv/bin/pip install deepseek-harness-sdk
-dsh-tui --workspace .
-```
+The two Cordis trees do not synchronize plugin ids, `inject`, or fibers.
+Standard ACP continues to carry sessions, prompts, authentication,
+configuration, and `session/update`. Client capability discovery, dynamic
+Package execution, and package-private RPC for self-evolution use a negotiated
+ACP extension instead. The target extension is unified under `_dsh/cordis/*`
+and advertised through `initialize` `_meta.dsh.cordis`; an ACP agent without
+that extension remains fully usable as a regular agent.
 
-Alternatively, set `DSH_RUNTIME_BIN` or pass `--runtime-bin <path>`. Credentials
-come from `--api-key`, `DEEPSEEK_API_KEY`, or the local `~/.dsh` configuration,
-in that order.
+Creator guidance remains a separate Host overlay exported by the TUI package;
+ACP is its runtime dependency. Users install only the TUI; its bundle mounts
+the ACP plugin and Creator overlay on the Base Host tree, while the runner
+only starts the TUI Client process. Creator adds `tui-plugin-development` to
+the upstream `cordis` preset's standing
+scope. It neither copies the preset nor edits upstream files, and skill
+discovery and registration do not depend on ACP. Web and TUI therefore use the
+same Creator preset.
+ACP and the Creator overlay never enter the Client tree, so the full Harness boots only once
+in the Host process.
+
+Host↔TUI Client ACP uses the Client child's standard stdin/stdout. Client fd 3/4
+only inherits the user TTY and becomes the Rust painter's stdin/stdout; the
+Rust child's own fd 3/4 is the Node↔painter compositor channel.
+
+Node and Rust use fds 3/4 on Unix and a token-authenticated loopback TCP socket
+on Windows. This private compositor channel only projects semantic paint state,
+including themes and `TuiNode` trees. It is neither a plugin API nor an agent
+business channel. Generic Cordis inspect/run/lifecycle uses `_dsh/cordis/*`;
+painter capabilities such as themes, slots, commands, and overlays use the
+`_dsh/cordis/tui/*` child domain. These are underscore-prefixed ACP Extension
+Requests/Notifications and never enter prompts or conversation history.
 
 ## Essential interactions
 
 | Key / command | Behavior |
 |---|---|
 | `enter` | Send; queue a follow-up while a turn is running |
-| `ctrl+x` | Interrupt the current turn and send next (plugin forwards to host; standalone kills runtime) |
+| `ctrl+x` | Steer the active turn immediately without cancelling it |
 | `esc` | Interrupt the current turn (draft survives); clears the draft when idle |
 | `ctrl+c` | Clear the draft, then interrupt; press twice to quit |
-| `/` | Open the command menu and filter by prefix; host skills join it in plugin mode (picking one lands `/name `, enter ships it as a prompt the host expands) |
-| `/model` · `/mode` | Pick a model or agent preset; the full host catalog needs plugin mode |
-| `/permission` · `shift+tab` | Pick or cycle permission presets; plugin mode only |
+| `/` | Open the command menu and filter by prefix; agent-advertised skills join it and still ship as `/name ` prompts |
+| `/model` · `/agent` | Pick an agent-advertised model or agent preset; `ctrl+a` cycles agents directly without a picker |
+| `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
+| `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
 | `/effort` · `/plan` | Set reasoning effort or pass plan mode to the host |
-| `/image <path> [text]` | Send a local image (png/jpeg/webp/gif); plugin mode only |
+| `/image <path> [text]` | Send a local image (png/jpeg/webp/gif); ACP Image blocks when the agent advertises `promptCapabilities.image`, otherwise `resource_link` |
 | `/clip [text]` · `ctrl+v` | Stage the clipboard image (repeatable; up to 8 ride one prompt); macOS/Linux |
 | Image chips | Live inline in the draft as `[image n]` tokens (no icon); backspace cuts the whole chip, hover (or park the cursor on) one for a preview popup — kitty thumbnail + dimensions/size/type |
 | `ctrl+o` · `ctrl+t` | Expand output · toggle the theme |
 | `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
-| Readline editing | `ctrl+a/e` line ends · `ctrl+k/u` kill to end/start · `ctrl+w` word back |
+| Readline editing | `home/ctrl+e` line ends · `ctrl+k/u` kill to end/start · `ctrl+w` word back |
 | macOS | `⌘←/→` line ends · `⌥←/→` word hops · `⌘⌫` kill to start · `⌥⌫` word back (physical key state read natively — works in every terminal) |
 | Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
-| Click tool · wheel over it | Click a tool to expand/collapse it; wheel scrolls its inner window |
+| Click tool · wheel | Click a tool to expand/collapse it; wheel always scrolls the conversation |
 | Mouse drag | Copy on release; double-click a word; `shift+drag` uses native selection |
 | `!cmd` | Run a local shell command on the client, outside the agent |
 
@@ -179,10 +272,21 @@ Use `/liang on` or `/liang off` to control it explicitly.
 Requires Rust stable and Node.js 18+:
 
 ```sh
-cargo test --locked
+make rust-test
 node --test scripts/package-native.test.mjs
 bash scripts/build-npm.sh
 ```
+
+`make rust-build` / `make rust-test` / `bash scripts/build-npm.sh` go through
+`scripts/cargo-guard.sh`. It runs a scoped `cargo clean` first when this
+repository's `target` exceeds 20 GiB or free disk falls below 10 GiB.
+`make rust-cache-status` is read-only and `make rust-cache-prune` cleans
+explicitly; override the thresholds with `RUST_CACHE_MAX_GIB` /
+`RUST_DISK_MIN_GIB`.
+
+Use `make tui-test` for the real development profile. It rebuilds
+`target/debug/dsh-tui` first, then launches `tui-test` with `DSH_TUI_BIN`, so
+Node HMR cannot leave the Rust painter on an older process image.
 
 The local script builds only the current platform and writes a tarball to
 `dist/`. The `Package and publish npm` GitHub Actions workflow builds and then
@@ -205,27 +309,26 @@ publishing.
 - **`no native binary for ...`**: the installed package does not contain your
   platform. Confirm that you installed the latest version and check the support
   matrix.
-- **`cannot find ... dsh-jsonrpc-agent`**: the standalone runtime is missing.
-  Install the SDK, set `DSH_RUNTIME_BIN`, or use dsh plugin mode.
-- **pnpm workspace root error**: upgrade to pnpm 10+ and rerun the install
-  command without `-w`.
-- **`ERR_REQUIRE_ESM_RACE_CONDITION`**: 0.1.0 and earlier shipped a CommonJS
-  runner that raced Cordis's parallel ESM `import()`. Upgrade to `0.1.1` or
-  install this repo's `npm/` directory.
+- **`spawn dsh-acp ENOENT`**: install `dsh-acp`, or point `--agent <cmd>` at a
+  different ACP server.
 - **No pixel pet**: the terminal may not support kitty graphics protocol; the
   rest of the UI is unaffected.
 
 ## Repository map
 
 - `src/`: TUI state, rendering, protocol, runtime lifecycle, and session catalog.
-- `npm/`: dsh bundle runner, CLI shim, manifest, and native binaries.
+- `npm/`: Cordis client boot, ACP/compositor mux, CLI shim, and native binaries.
 - `scripts/`: local builds, cross-platform package checks, protocol integration
   tests, and asset generation.
 - `assets/`: screenshots, visual assets, and optional pet sprites.
+- `docs/`: architecture, plugin API, `TuiNode` schema, and the migration plan
+  ([index](docs/README.md)).
 
-The wire protocol is NDJSON JSON-RPC 2.0 over stdio. Start with
-[`src/proto.rs`](src/proto.rs), [`src/controller.rs`](src/controller.rs), and
-[`npm/lib/index.js`](npm/lib/index.js) for implementation details.
+Agent communication is ACP over stdio; Node and Rust use a separate private
+compositor channel. Start with [`src/acp.rs`](src/acp.rs),
+[`npm/lib/boot.js`](npm/lib/boot.js), and [`npm/lib/mux.js`](npm/lib/mux.js).
+Plugins must not depend on those transports; extension points are in
+[docs/plugins.en.md](docs/plugins.en.md).
 
 ## License
 
