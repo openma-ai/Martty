@@ -43,6 +43,11 @@ dsh --profile tui
 Host 进程的 Base Cordis 树挂 ACP plugin；独立 TUI Client 进程通过标准
 stdin/stdout 与它通信。TUI Client 不 spawn 第二个 ACP agent。
 
+TUI 把 ACP 声明为自身运行时依赖。若目标 profile 已通过标准 ACP bundle 装过另一
+版本，包管理器可以保留两份依赖，但 TUI bundle 会停用该 surface 的旧
+transport/provider 行，并只挂载从 TUI 自身依赖图解析出的 ACP plugin；因此受支持的
+profile 组合不会同时启动两套 ACP，也不要求用户先手工整理已有 ACP profile。
+
 ### Standalone：接任意 ACP agent
 
 ```sh
@@ -57,7 +62,9 @@ DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
 ```
 
 第三方能力是 client 树上的普通 Cordis 插件：声明所需 service，在 `apply` 中
-注册贡献，并随 fiber 卸载自动撤销。当前已经开放主题和根级右栏；完整方向见
+注册贡献，并随 fiber 卸载自动撤销。当前已经开放主题、根级右栏、本地命令、
+slider overlay、当前 ACP Session 配置事务和包内 Host/Client RPC；完整契约见
+[插件 API](docs/plugins.md)，完整方向见
 [完全插件化与自进化](#完全插件化与自进化)。`--demo-skin` 只挂载 gallery 包
 `ember`，不代表主题逻辑写进了本体。
 
@@ -122,13 +129,19 @@ dsh-tui --demo
 
 ### 当前完成度
 
-现在已经落地的是 ACP client 分层、`tuiTheme` 主题 registry、`chrome.right` +
-`TuiNode` 根级右栏、Client inspect/run，以及只在 Creator preset 中可见的 TUI
-开发 skill。它们证明了静态插件和动态 `code.client` 可以共享同一条生命周期。
+现在已经落地的是 ACP client 分层，以及同一条动态 Package 生命周期上的这些原语：
 
-仍在迁移的是更多 shell/conversation slot、插件命令、overlay、slider/form 等通用
-输入组件、完整的运行期诊断和 `ViewPreset`。因此“完全插件化”是目标架构，不是对
-当前版本完成度的夸张描述；逐阶段状态以 [迁移计划](docs/migration.md) 为准。
+- `tuiTheme` 与 `/theme` 单选 Plugin 席位；
+- `tuiSlots`、`chrome.right` 和 schema 校验后的 `TuiNode`；
+- 生命周期归属的本地 slash command 与原生 slider overlay；
+- 从标准 ACP `configOptions` 投影出的当前 Session 配置目录和事务；
+- Client inspect/run、Package stop/start/retract，以及包内 Host/Client RPC；
+- 只在 Creator preset 中可见、但不依赖 ACP 注入的 TUI 开发 skill。
+
+这些能力同时服务静态插件与动态 `code.client`，不是为某个 demo 单独开的通道。
+仍在迁移的是更多 shell/conversation slot、form 等其他通用输入组件、完整的运行期
+诊断和 `ViewPreset`。因此“完全插件化”仍是目标架构；逐阶段状态以
+[迁移计划](docs/migration.md) 为准。
 
 ### 与 Web 插件平台对照
 
@@ -137,8 +150,8 @@ dsh-tui --demo
 | Client runtime | 成熟的 React Cordis tree | Node Cordis client tree 已落地；Rust 只做语义 renderer，不成为第三棵树 |
 | UI 扩展 | 类型化 slot tree，覆盖会话、设置、工具卡等大量页面区域 | 当前开放 `chrome.right`；目标是用 `tuiSlots` 覆盖 shell 与 conversation，而不暴露终端坐标 |
 | Theme | `ThemeRuntime` 注册主题、叠加 token、运行时切换并持久化内置偏好 | `/theme` 作为单选 Plugin 开关，整体加载/替换贡献 palette 与其他能力的 Theme Plugin |
-| 交互组件 | 插件可贡献 React component | 当前使用受 schema 约束的 `TuiNode`；目标补齐 command、overlay、slider、form 等通用终端语义组件 |
-| 动态插件 | `code.host` + `code.client` 双半 Package，共用 Loader/fiber，支持 run、stop、update、rollback | inspect/run 与主题、右栏 POC 已通；目标通过统一的 DSH Cordis ACP 扩展获得同等生命周期和包内 RPC |
+| 交互组件 | 插件可贡献 React component | 已开放受 schema 约束的 `TuiNode`、本地 command 和 slider overlay；form 等继续按通用终端语义补齐 |
+| 动态插件 | `code.host` + `code.client` 双半 Package，共用 Loader/fiber，支持 run、stop、update、rollback | inspect/run、主题、右栏、命令、overlay、配置事务与包内 RPC 已走统一 DSH Cordis ACP 扩展；继续补齐诊断与持久组合 |
 | 诊断与修复 | Client 装载和 React 渲染失败可回传 Creator，继续生成新版本 | 目标对齐相同闭环：装载、schema、绘制错误可观察且能更新或回滚 |
 | Preset | `AgentPreset` 组合 agent；Client 插件另行持久化 | 保持 AgentPreset 边界，新增独立 `ViewPreset` 管理终端视图组合 |
 

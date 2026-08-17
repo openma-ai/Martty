@@ -47,6 +47,13 @@ The Host process mounts the ACP plugin on its Base Cordis tree. A separate TUI
 Client process speaks ACP to it on standard stdin/stdout and never spawns a
 second ACP agent.
 
+TUI declares ACP as its own runtime dependency. If the target profile already
+contains another version through the standard ACP bundle, the package manager
+may retain both dependency copies, but the TUI bundle disables that surface's
+old provider/transport rows and mounts only the ACP plugin resolved from TUI's
+dependency graph. Supported profile compositions therefore do not start two
+ACP surfaces, and users do not have to normalize an existing ACP profile first.
+
 ### Standalone: any ACP agent
 
 ```sh
@@ -62,7 +69,9 @@ DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
 
 Third-party capabilities are ordinary Cordis plugins on the client tree: they
 declare the services they need, register contributions in `apply`, and retract
-them with the owning fiber. Themes and the root right rail are open today; see
+them with the owning fiber. Themes, the root right rail, local commands, slider
+overlays, current ACP Session config transactions, and package-private
+Host/Client RPC are open today. See the [plugin API](docs/plugins.en.md) and
 [Fully pluggable and self-evolving](#fully-pluggable-and-self-evolving) for the
 complete direction. `--demo-skin` merely mounts the gallery pack `ember`; it
 does not put theme-specific behavior in core.
@@ -143,16 +152,24 @@ enter the client tree through Cordis services, slots, and plugin lifecycles.
 
 ### Current boundary
 
-What exists today is the ACP client split, the `tuiTheme` registry,
-`chrome.right` plus the `TuiNode` root right rail, Client inspect/run, and a TUI
-development skill visible only in the Creator preset. Together they prove that
-static plugins and dynamic `code.client` packages can share one lifecycle.
+The ACP client split is in place, together with these primitives on one dynamic
+Package lifecycle:
 
-More shell and conversation slots, plugin commands, overlays, general slider/form
-inputs, complete runtime diagnostics, and `ViewPreset` are still being migrated.
-"Fully pluggable" is therefore the target architecture, not an inflated claim
-about the current release. See the [migration plan](docs/migration.en.md) for the
-phase-by-phase status.
+- `tuiTheme` and the single-select `/theme` Plugin seat;
+- `tuiSlots`, `chrome.right`, and schema-validated `TuiNode` trees;
+- lifecycle-owned local slash commands and native slider overlays;
+- a current-Session config directory and transactions projected from standard
+  ACP `configOptions`;
+- Client inspect/run, Package stop/start/retract, and package-private
+  Host/Client RPC;
+- a TUI development skill visible only in the Creator preset and registered
+  independently of ACP.
+
+Static plugins and dynamic `code.client` packages use the same primitives;
+none is a demo-specific side channel. More shell and conversation slots, other
+general inputs such as forms, complete runtime diagnostics, and `ViewPreset`
+are still being migrated. "Fully pluggable" remains the target architecture.
+See the [migration plan](docs/migration.en.md) for phase-by-phase status.
 
 ### Compared with the Web plugin platform
 
@@ -161,8 +178,8 @@ phase-by-phase status.
 | Client runtime | Mature React Cordis tree | Node Cordis client tree is in place; Rust remains a semantic renderer, not a third tree |
 | UI extension | Typed slot tree across conversations, settings, tool cards, and many other surfaces | `chrome.right` is open today; `tuiSlots` will cover shell and conversation surfaces without exposing terminal coordinates |
 | Theme | `ThemeRuntime` registers themes, stacks token overrides, switches at runtime, and persists built-in preferences | `/theme` is a single-select Plugin switch that loads/replaces a Theme Plugin and all of its contributions together |
-| Interaction components | Plugins contribute React components | Schema-validated `TuiNode` is available now; commands, overlays, sliders, forms, and other general terminal semantics are next |
-| Dynamic plugins | Two-half `code.host` + `code.client` Packages share Loader/fiber and support run, stop, update, and rollback | Inspect/run plus theme and right-rail proofs work; the target is the same lifecycle and package-private RPC over one DSH Cordis ACP extension |
+| Interaction components | Plugins contribute React components | Schema-validated `TuiNode`, local commands, and slider overlays are open; forms and other inputs continue as general terminal semantics |
+| Dynamic plugins | Two-half `code.host` + `code.client` Packages share Loader/fiber and support run, stop, update, and rollback | Inspect/run, themes, right rail, commands, overlays, config transactions, and package-private RPC share one DSH Cordis ACP extension; diagnostics and durable composition continue |
 | Diagnosis and repair | Client activation and React render failures return to Creator for another revision | The target is the same loop for activation, schema, and paint failures, with update and rollback |
 | Presets | `AgentPreset` composes agents; Client plugins persist separately | Keep the AgentPreset boundary and add an independent `ViewPreset` for terminal view composition |
 

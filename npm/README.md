@@ -26,6 +26,12 @@ ACP server. The Node Client process owns a Cordis tree and starts the Rust paint
 `tui-cordis-client-runner` publishes TUI Client capabilities and evaluates
 approved `code.client` packages from `dsh-tool-cordis` against that client tree.
 
+ACP is a runtime dependency of this package. On a profile that already carries
+a different version through the standard ACP bundle, the package manager may
+retain both copies, but the TUI bundle replaces that surface's rows and mounts
+only the plugin resolved from TUI's own dependency graph. The supported profile
+shape never runs two ACP surfaces for one TUI.
+
 The package carries ACP as a runtime dependency and exports its Creator Host
 overlay internally. The profile bundle mounts both on the Host Base tree;
 neither enters the Client tree. Creator adds TUI plugin guidance to the
@@ -60,6 +66,23 @@ dsh-tui --demo-skin
   the optional `/liang` pixel companion.
 - A root `chrome.right` plugin rail for validated TuiNode trees, with live
   update/unload and Client inspect support for Creator-authored plugins.
+- Lifecycle-owned local commands and native slider overlays, plus transactions
+  over the current Session's standard ACP `configOptions`.
+- Dynamic `code.host` + `code.client` Packages with inspect/run lifecycle and
+  package-private Host/Client RPC over a negotiated `_dsh/cordis/*` ACP
+  extension. Ordinary ACP agents remain usable when they do not advertise it.
+
+## Plugin surface
+
+TUI extensions are ordinary Cordis plugins on the Node Client tree. A single
+plugin may register a theme, `chrome.right` nodes, slash commands, overlays,
+timers, Session config transactions, and Host/Client RPC; all contributions
+leave together when its fiber stops or `/theme` replaces the selected Theme
+Plugin. Plugins submit semantic data and never receive the TTY, Ratatui,
+absolute coordinates, compositor fds, or private transport methods.
+
+The versioned contract and examples live in the repository's
+[plugin API](https://github.com/openma-ai/deepseek-harness-tui/blob/main/docs/plugins.en.md).
 
 The demo needs no API key or agent. Run `dsh-tui --help` for agent, model,
 credential, session, theme, and demo options.
