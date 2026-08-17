@@ -36,11 +36,19 @@ and iterate on its own terminal capabilities.
 
 ### Recommended: dsh TUI surface plugin
 
-Needs Node.js 18+. The same idempotent command creates a missing profile or updates an existing one:
+Needs Node.js 18+. The initial install also creates a missing profile:
 
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
+```
+
+A profile is a pnpm project. Upgrade with pnpm's `update --latest` semantics;
+the ACP runtime version declared by the new TUI package updates with its
+dependency graph:
+
+```sh
+dsh plugin --profile tui update @openma/deepseek-harness-tui --latest
 ```
 
 The Host process mounts the ACP plugin on its Base Cordis tree. A separate TUI

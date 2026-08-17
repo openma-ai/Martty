@@ -19,6 +19,13 @@ dsh plugin --profile tui add @openma/deepseek-harness-tui
 dsh --profile tui
 ```
 
+Upgrade an existing profile with pnpm's update verb (the `dsh plugin` command
+is a thin profile-scoped pnpm forwarder):
+
+```sh
+dsh plugin --profile tui update @openma/deepseek-harness-tui --latest
+```
+
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
 `dsh-tui` and use `--agent <cmd>` plus repeated `--agent-arg <arg>` for another
