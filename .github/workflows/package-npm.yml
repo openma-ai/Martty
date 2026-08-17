@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: runner.os != 'Windows'
         with:
           version: "10.2.0"
