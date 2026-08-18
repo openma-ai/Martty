@@ -171,7 +171,10 @@ jobs:
 
   publish:
     name: Publish npm
-    if: startsWith(github.ref, 'refs/tags/')
+    # Only the canonical repo may publish: the fork shares the same npm
+    # package name, and a v* tag pushed there would otherwise ship the
+    # fork's build as @latest on npm.
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'openma-ai/deepseek-harness-tui'
     needs: package
     runs-on: ubuntu-24.04
     environment: npm
@@ -197,11 +200,11 @@ jobs:
             *) DIST_TAG=latest ;;
           esac
           echo "publishing with dist-tag: $DIST_TAG"
-          npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG"
+          npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
 
   release:
     name: Create GitHub release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'openma-ai/deepseek-harness-tui'
     needs: publish
     runs-on: ubuntu-24.04
     permissions:
