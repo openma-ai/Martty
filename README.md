@@ -20,6 +20,11 @@
 
 ---
 
+## 简洁且强悍的DSH-TUI
+
+* Rust/ratatui 编写的高性能程序界面.
+* 100% 基于Deepseek Harness官方AI能力.
+
 `dsh-tui` 是终端原生 ACP client，也是一套运行在 Cordis **client 树**上的
 可扩展终端。它在 Rust/ratatui 界面里呈现流式推理、工具调用、subagent、token
 用量和持久化会话。推荐 profile 路径把 ACP plugin 挂在 dsh Base Host 树上，并
@@ -33,22 +38,30 @@
 
 ### 推荐：作为 dsh 的 TUI surface plugin
 
-需要 Node.js 18+。同一条命令用于首次安装和以后升级；缺失的 profile 会自动创建，
-已有 profile 会显式按 npm 的 `latest` 标签重新解析 TUI 及其依赖图：
+需要 Node.js 18+。 如果你的系统没有Node.js,那么请访问: [Node.js 官网](https://nodejs.org/) 按指导安装;
 
-首先安装官方的 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)：
+Node.js就绪后; 首先安装官方的 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)：
 ```sh
 npm install -g @deepseek-ai/dsh
 ```
 
-再安装本项目作为它的 TUI surface plugin：
+然后安装pnpm：
+```sh
+npm install -g pnpm
+```
+
+再安装本项目作为它的TUI界面插件：
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+```
+上面这条命令今后同样可以用于更新项目到最新版; 可以定期运行;
+
+安装完成后, 运行就可以开始了:
+```sh
 dsh --profile tui
 ```
 
-Host 进程的 Base Cordis 树挂 ACP plugin；独立 TUI Client 进程通过标准
-stdin/stdout 与它通信。TUI Client 不 spawn 第二个 ACP agent。
+这是给 AI agent 阅读的安装说明：[docs/agent-setup.md](docs/agent-setup.md)
 
 TUI 把 ACP 声明为自身运行时依赖。若目标 profile 已通过标准 ACP bundle 装过另一
 版本，包管理器可以保留两份依赖，但 TUI bundle 会停用该 surface 的旧
@@ -300,7 +313,7 @@ npm/vendor/win32-x64/dsh-tui.exe
 - `npm/`：Cordis client boot、ACP/compositor mux、CLI shim 与原生二进制。
 - `scripts/`：本地构建、跨平台打包校验、协议集成测试与资源生成。
 - `assets/`：截图、主题资源和可选宠物精灵。
-- `docs/`：分层架构、插件 API、`TuiNode` schema 与迁移计划（[索引](docs/README.md)）。
+- `docs/`：分层架构、插件 API、`TuiNode` schema、迁移计划与 AI agent 安装说明（[索引](docs/README.md)）。
 
 Agent 通信是 stdio 上的 ACP；Node 与 Rust 之间另有私有 compositor 通道。
 实现细节可从 [`src/acp.rs`](src/acp.rs)、[`npm/lib/boot.js`](npm/lib/boot.js) 和

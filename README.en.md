@@ -20,6 +20,11 @@
 
 ---
 
+## Sleek and powerful DSH-TUI
+
+- A high-performance interface written in Rust/ratatui.
+- 100% built on official DeepSeek Harness AI capabilities.
+
 `dsh-tui` is a terminal-native ACP client and an extensible terminal on a
 Cordis **client** tree. It presents streamed reasoning, tool calls, subagents,
 token usage, and durable sessions in a Rust/ratatui interface. The recommended
@@ -36,24 +41,33 @@ and iterate on its own terminal capabilities.
 
 ### Recommended: dsh TUI surface plugin
 
-Needs Node.js 18+. The same command installs or upgrades: it creates a missing
-profile, while an existing profile explicitly re-resolves TUI and its dependency
-graph from npm's `latest` tag:
+Needs Node.js 18+. If your system does not have Node.js, visit the
+[Node.js website](https://nodejs.org/) and follow its instructions to install it.
 
-First install the official [DeepSeek Harness](https://github.com/deepseek-ai/dsh):
+Once Node.js is ready, first install the official
+[DeepSeek Harness](https://github.com/deepseek-ai/dsh):
 ```sh
 npm install -g @deepseek-ai/dsh
+```
+
+Then install pnpm:
+```sh
+npm install -g pnpm
 ```
 
 Then install this project as its TUI surface plugin:
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+```
+This command also upgrades the project to the latest version later on; you may
+run it periodically.
+
+Once installed, start by running:
+```sh
 dsh --profile tui
 ```
 
-The Host process mounts the ACP plugin on its Base Cordis tree. A separate TUI
-Client process speaks ACP to it on standard stdin/stdout and never spawns a
-second ACP agent.
+An install guide for AI agents: [docs/agent-setup.md](docs/agent-setup.md)
 
 TUI declares ACP as its own runtime dependency. If the target profile already
 contains another version through the standard ACP bundle, the package manager
@@ -346,8 +360,8 @@ publishing.
 - `scripts/`: local builds, cross-platform package checks, protocol integration
   tests, and asset generation.
 - `assets/`: screenshots, visual assets, and optional pet sprites.
-- `docs/`: architecture, plugin API, `TuiNode` schema, and the migration plan
-  ([index](docs/README.md)).
+- `docs/`: architecture, plugin API, `TuiNode` schema, the migration plan, and
+  the AI-agent install guide ([index](docs/README.md)).
 
 Agent communication is ACP over stdio; Node and Rust use a separate private
 compositor channel. Start with [`src/acp.rs`](src/acp.rs),
