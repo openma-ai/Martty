@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/tui-lockup.svg" width="520" alt="DeepSeek Harness TUI" />
+  <img src="assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
 </p>
+
+<h1 align="center">DeepSeek Harness TUI</h1>
 
 <p align="center">
   DeepSeek Harness in your terminal: streamed reasoning, tools, skills, multi-image prompts, and durable sessions.
@@ -41,31 +43,19 @@ and iterate on its own terminal capabilities.
 
 ### Recommended: dsh TUI surface plugin
 
-Needs Node.js 18+. If your system does not have Node.js, visit the
-[Node.js website](https://nodejs.org/) and follow its instructions to install it.
+Requires Node.js 18+. Install the official
+[DeepSeek Harness](https://github.com/deepseek-ai/dsh), then add the TUI
+directly to the `tui` profile:
 
-Once Node.js is ready, first install the official
-[DeepSeek Harness](https://github.com/deepseek-ai/dsh):
 ```sh
 npm install -g @deepseek-ai/dsh
-```
-
-Then install pnpm:
-```sh
-npm install -g pnpm
-```
-
-Then install this project as its TUI surface plugin:
-```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
-```
-This command also upgrades the project to the latest version later on; you may
-run it periodically.
-
-Once installed, start by running:
-```sh
 dsh --profile tui
 ```
+
+`dsh plugin ... add` is the recommended installation and upgrade entry point.
+It creates the profile and installs the TUI plus its ACP dependency; no global
+`dsh-tui` or separate pnpm installation is required.
 
 An install guide for AI agents: [docs/agent-setup.md](docs/agent-setup.md)
 

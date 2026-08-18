@@ -19,18 +19,16 @@
 # 1) 官方 DeepSeek Harness（提供 dsh 命令）
 npm install -g @deepseek-ai/dsh
 
-# 2) pnpm（README 要求的安装项）
-npm install -g pnpm
-
-# 3) 把 dsh-tui 作为 TUI surface plugin 装入 profile `tui`
+# 2) 把 dsh-tui 作为 TUI surface plugin 装入 profile `tui`
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 ```
 
 注意：
 
-- 第 3 步在 profile `tui` 不存在时会自动创建；
-- 第 3 步会把 TUI 及其依赖图按 npm `latest` 标签重新解析，因此同一命令也可
+- 第 2 步在 profile `tui` 不存在时会自动创建；
+- 第 2 步会把 TUI 及其依赖图按 npm `latest` 标签重新解析，因此同一命令也可
   用于以后升级（见第 4 节）；
+- 不需要全局安装 `dsh-tui`，也不需要另装 pnpm；
 - 不需要手工整理已有的 ACP profile：TUI bundle 会停用目标 profile 中旧的
   ACP transport/provider 行，只挂载从 TUI 自身依赖图解析出的 ACP plugin。
 

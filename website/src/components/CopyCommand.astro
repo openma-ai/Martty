@@ -1,0 +1,41 @@
+---
+interface Props {
+  lines: readonly string[];
+  label: string;
+}
+
+const { lines, label } = Astro.props;
+const text = lines.join("\n");
+---
+
+<div class="term-block" role="group" aria-label={label} data-copy-command>
+  <pre class="term-block__code"><code>{lines.map((line, index) => (
+    <span class="term-block__line" data-prompt={index === 0 ? "$" : "›"}>{line}</span>
+  ))}</code></pre>
+  <button type="button" class="term-block__copy" data-copy-text={text}>Copy</button>
+  <span class="sr-only" role="status" aria-live="polite"></span>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-copy-command]").forEach((block) => {
+    const button = block.querySelector<HTMLButtonElement>("[data-copy-text]");
+    const status = block.querySelector<HTMLElement>("[role='status']");
+    if (!button || button.dataset.bound === "true") return;
+    button.dataset.bound = "true";
+    let resetTimer: ReturnType<typeof setTimeout> | undefined;
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copyText ?? "");
+        button.textContent = "Copied";
+        if (status) status.textContent = "Command copied to clipboard";
+        if (resetTimer) clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          button.textContent = "Copy";
+          if (status) status.textContent = "";
+        }, 2000);
+      } catch {
+        // The command remains selectable if clipboard access is unavailable.
+      }
+    });
+  });
+</script>

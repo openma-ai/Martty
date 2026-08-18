@@ -1,0 +1,234 @@
+---
+import CopyCommand from "../components/CopyCommand.astro";
+import { SignalField } from "../components/SignalField";
+import { WHALE_DENSITY } from "../data/whale-density";
+import {
+  ACP_GITHUB_URL,
+  ACP_NPM_URL,
+  ACP_PACKAGE,
+  DEMO_STEPS,
+  FEATURES,
+  PROFILE_STEPS,
+  TUI_GITHUB_URL,
+  TUI_NPM_URL,
+} from "../data/content";
+import "../styles/global.css";
+
+const title = "DeepSeek Harness TUI — A terminal-native agent interface";
+const description =
+  "Run DeepSeek Harness in a fast Rust terminal with streamed reasoning, tool calls, subagents, multi-image prompts, durable sessions, and composable Cordis plugins.";
+const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url.origin);
+const socialImage = new URL("/social-preview.png", Astro.site ?? Astro.url.origin);
+const year = new Date().getFullYear();
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "DeepSeek Harness TUI",
+  alternateName: "dsh-tui",
+  description,
+  applicationCategory: "DeveloperApplication",
+  applicationSubCategory: "Terminal user interface for AI agents",
+  operatingSystem: "macOS, Linux, Windows",
+  softwareRequirements: "Node.js 18 or newer",
+  downloadUrl: TUI_NPM_URL,
+  codeRepository: TUI_GITHUB_URL,
+  license: "https://opensource.org/license/mit",
+  offers: {
+    "@type": "Offer",
+    price: "0",
+    priceCurrency: "USD",
+  },
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="theme-color" content="#05070a" />
+    <meta name="description" content={description} />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.ico?v=3" sizes="any" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png?v=3" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="DeepSeek Harness TUI" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:alt" content="DeepSeek Harness TUI — Abyssal Signal whale artwork" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImage} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <div class="shell">
+      <header class="site-header">
+        <div class="wrap site-header__row">
+          <a class="brand" href="#main" aria-label="DeepSeek Harness TUI home">
+            <img class="brand__mark" src="/tui-whale.svg?v=3" width="48" height="36" alt="" />
+            <span class="brand__name">DeepSeek Harness TUI</span>
+            <span class="brand__tag">Terminal-native agent interface</span>
+          </a>
+          <nav class="site-nav" aria-label="Primary">
+            <a href="#features">Features</a>
+            <a href="#profile">Install</a>
+            <a href="#other-products">Other products</a>
+            <a href={TUI_GITHUB_URL} class="site-nav__accent">GitHub</a>
+          </nav>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="hero" aria-label="DeepSeek Harness TUI">
+          <span class="hero__corner hero__corner--tl" aria-hidden="true"></span>
+          <span class="hero__corner hero__corner--tr" aria-hidden="true"></span>
+          <span class="hero__corner hero__corner--bl" aria-hidden="true"></span>
+          <span class="hero__corner hero__corner--br" aria-hidden="true"></span>
+          <div class="wrap hero__inner">
+            <div class="hero__copy">
+              <div class="hero__rail" aria-hidden="true"><span></span><b>∞</b><span></span></div>
+              <p class="hero__eyebrow">
+                <span class="hero__eyebrow-dot" aria-hidden="true"></span>
+                dsh-tui · terminal-native ACP client
+              </p>
+              <h1 class="hero__title">
+                The DeepSeek Harness terminal, <span class="hero__title-accent">reimagined</span>
+              </h1>
+              <p class="hero__lede">
+                A fast Rust terminal on a Cordis client tree: streamed reasoning, tool calls,
+                subagents, token usage, and durable sessions — with themes, commands, and views
+                composed as plugins instead of welded into the shell.
+              </p>
+              <div class="hero__dotline" aria-hidden="true">
+                {Array.from({ length: 36 }).map(() => <i></i>)}
+              </div>
+              <div class="hero__ctas">
+                <a class="btn btn--accent" href="#profile">Install with dsh</a>
+                <a class="btn" href={TUI_GITHUB_URL}>View on GitHub</a>
+                <a class="btn" href={TUI_NPM_URL}>View on npm</a>
+              </div>
+              <CopyCommand lines={PROFILE_STEPS} label="Recommended dsh profile install command" />
+              <div class="hero__notation" aria-hidden="true">
+                <span>∞</span><i></i><span>DSH.TUI / CLIENT.SURFACE</span>
+              </div>
+            </div>
+
+            <div class="hero__visual-card" aria-label="Animated whale signal">
+              <SignalField client:only="react" />
+              <div class="hero__status-pill">
+                <span class="hero__status-dot"><i></i></span>
+                STREAM READY
+              </div>
+              <div class="hero__ascii-stage" aria-hidden="true">
+                <div class="hero__whale-glyphs">
+                  <pre class="hero__density-art">{WHALE_DENSITY.join("\n")}</pre>
+                  <pre class="hero__density-art hero__density-art--signal">{WHALE_DENSITY.join("\n")}</pre>
+                </div>
+                <span class="hero__scanline"></span>
+              </div>
+              <div class="hero__card-readout" aria-hidden="true">
+                <span>◐ RENDERING</span>
+                <span>FRAME ∞</span>
+                <span>ASCII 76×31</span>
+              </div>
+            </div>
+          </div>
+          <div class="hero__bottom-bar" aria-hidden="true">
+            <div class="wrap">
+              <span>SYSTEM.ACTIVE</span><i></i><span>LATENCY 12MS</span>
+              <span class="hero__bottom-right">ABYSSAL SIGNAL / 01</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="features" aria-labelledby="features-heading">
+          <div class="wrap">
+            <div class="section__head">
+              <h2 class="section__title" id="features-heading">What dsh-tui does</h2>
+              <span class="section__index">01 / 06 — 06 / 06</span>
+            </div>
+            <div class="feature-log">
+              {FEATURES.map((feature) => (
+                <div class="feature-row">
+                  <span class="feature-row__index" aria-hidden="true">{feature.index}</span>
+                  <span class="feature-row__title">{feature.title}</span>
+                  <span class="feature-row__body">{feature.body}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="profile" aria-labelledby="profile-heading">
+          <div class="wrap">
+            <div class="section__head">
+              <h2 class="section__title" id="profile-heading">Two ways to run it</h2>
+            </div>
+            <p class="section__lede">
+              Install dsh-tui as a profile plugin for normal use. The standalone demo is available
+              only when you want to preview the interface without a runtime or API key.
+            </p>
+            <div class="flow">
+              <div>
+                <h3 class="flow__title">Recommended: dsh profile plugin</h3>
+                <CopyCommand lines={PROFILE_STEPS} label="Recommended dsh profile install command, repeated" />
+              </div>
+              <div>
+                <h3 class="flow__title">Optional: standalone demo</h3>
+                <CopyCommand lines={DEMO_STEPS} label="Demo install command" />
+              </div>
+            </div>
+            <p class="flow__note">
+              The Host process mounts the ACP plugin on its Base Cordis tree; a separate TUI Client
+              process speaks ACP over standard stdin/stdout and never spawns a second agent. The
+              standalone entry point can instead attach directly to any ACP agent, for example
+              <code>dsh-tui --agent dsh-acp</code>.
+            </p>
+          </div>
+        </section>
+
+        <section class="section other-products" id="other-products" aria-label="Other products">
+          <div class="wrap">
+            <div class="section__head">
+              <h2 class="section__title">Other products</h2>
+              <span class="section__index">secondary</span>
+            </div>
+            <p class="section__lede">
+              dsh-tui is the terminal. This protocol adapter is useful when building another ACP
+              client or agent, but it stays secondary to the TUI here.
+            </p>
+            <div class="product-row">
+              <span class="product-row__name">DeepSeek Harness ACP</span>
+              <span class="product-row__body">
+                {ACP_PACKAGE} adapts DeepSeek Harness to Agent Client Protocol: session lifecycle,
+                permissions, and authentication, independent of any one terminal.
+              </span>
+              <span class="product-row__links">
+                <a href={ACP_NPM_URL}>npm</a>
+                <a href={ACP_GITHUB_URL}>GitHub</a>
+              </span>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <div class="wrap site-footer__row">
+          <span>© {year} DeepSeek Harness TUI · MIT</span>
+          <nav class="site-footer__links" aria-label="Footer">
+            <a href={TUI_NPM_URL}>npm</a>
+            <a href={TUI_GITHUB_URL}>GitHub</a>
+            <a href="#other-products">Other products</a>
+          </nav>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

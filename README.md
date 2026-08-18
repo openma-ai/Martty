@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/tui-lockup.svg" width="520" alt="DeepSeek Harness TUI" />
+  <img src="assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
 </p>
+
+<h1 align="center">DeepSeek Harness TUI</h1>
 
 <p align="center">
   在终端里运行 DeepSeek Harness：流式推理、工具调用、Skills、多图 prompt 与持久会话。
@@ -38,28 +40,17 @@
 
 ### 推荐：作为 dsh 的 TUI surface plugin
 
-需要 Node.js 18+。 如果你的系统没有Node.js,那么请访问: [Node.js 官网](https://nodejs.org/) 按指导安装;
+需要 Node.js 18+。安装官方 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)，
+再把 TUI 直接装进 `tui` profile：
 
-Node.js就绪后; 首先安装官方的 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)：
 ```sh
 npm install -g @deepseek-ai/dsh
-```
-
-然后安装pnpm：
-```sh
-npm install -g pnpm
-```
-
-再安装本项目作为它的TUI界面插件：
-```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
-```
-上面这条命令今后同样可以用于更新项目到最新版; 可以定期运行;
-
-安装完成后, 运行就可以开始了:
-```sh
 dsh --profile tui
 ```
+
+`dsh plugin ... add` 是推荐的安装与升级入口：它会自动创建 profile、安装
+TUI 及其 ACP 依赖，不需要全局安装 `dsh-tui`，也不需要另装 pnpm。
 
 这是给 AI agent 阅读的安装说明：[docs/agent-setup.md](docs/agent-setup.md)
 

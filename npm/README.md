@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/openma-ai/deepseek-harness-tui/main/assets/tui-lockup.svg" width="520" alt="DeepSeek Harness TUI" />
+  <img src="https://raw.githubusercontent.com/openma-ai/deepseek-harness-tui/main/assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
 </p>
+
+<h1 align="center">DeepSeek Harness TUI</h1>
 
 <p align="center">
   Terminal-native ACP client UI with a Cordis client plugin tree.
@@ -14,13 +16,14 @@ x64. Requires Node.js 18+.
 ## Recommended
 
 ```sh
-npm install --global @openma/deepseek-harness-tui
+npm install --global @deepseek-ai/dsh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 dsh --profile tui
 ```
 
-The same profile command installs or upgrades. It creates a missing profile and
-explicitly re-resolves an existing profile from npm's `latest` tag.
+The profile command is the recommended install and upgrade path. It creates a
+missing profile and installs the TUI plus its ACP dependency; no global
+`dsh-tui` installation is required.
 
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run

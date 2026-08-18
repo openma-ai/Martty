@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "project": {
+    "name": "@openma/deepseek-harness-tui-website",
+    "productType": null,
+    "stack": [
+      "astro",
+      "react",
+      "tailwind-v4",
+      "vite"
+    ]
+  },
+  "sources": {
+    "tokens": [],
+    "components": [],
+    "assets": [],
+    "instructions": []
+  },
+  "design": {
+    "colorMode": "unknown",
+    "colors": {},
+    "typography": {},
+    "spacing": {},
+    "radius": {},
+    "shadows": {},
+    "motion": {},
+    "density": "unknown"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": [],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [],
+    "avoid": []
+  },
+  "decisions": [
+    {
+      "decision": "Use a 76×31 density-mapped whale as the hero's primary ASCII signal, with a restrained blue scan band, subtle swim deformation, the Hero ASCII One technical frame, and the Hero Dithering Card signal surface.",
+      "reason": "The selected direction makes the real project whale recognizable while visibly fusing both chosen 21st references in the dark terminal-native design.",
+      "source": "maintainer feedback, 2026-08-18"
+    }
+  ],
+  "evidence": [
+    {
+      "fact": "project.stack:astro",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:react",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:tailwind-v4",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:vite",
+      "source": "package.json"
+    }
+  ],
+  "generatedAt": "2026-08-18T10:07:05.154Z"
+}
