@@ -200,7 +200,7 @@ jobs:
             *) DIST_TAG=latest ;;
           esac
           echo "publishing with dist-tag: $DIST_TAG"
-          npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG"
+          npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
 
   release:
     name: Create GitHub release
