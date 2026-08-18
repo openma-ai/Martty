@@ -14,7 +14,8 @@ All notable changes to this project are documented here. The project follows
 - Every picker (`/resume`, model, mode, theme, permission, subagent, auth,
   plugin) now scrolls when the rows overflow the terminal: the visible
   window follows the selection instead of clipping the tail out of reach,
-  and a scrollbar appears on the popup's right edge. `page up`/`page down`
+  and an inline scrollbar appears in a gutter column inside the popup's
+  right edge, leaving the rounded border intact. `page up`/`page down`
   jump a screenful and `home`/`end` pin to the first/last row; `↑`/`↓`
   keep wrapping. The selected row is now highlighted across its full width
   (soft chip background behind marker, label, meta and the row tail — the

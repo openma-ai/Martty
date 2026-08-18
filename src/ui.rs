@@ -1,9 +1,11 @@
 //! Rendering: banner, scrollback, tips row, status bar, prompt, hints, overlays.
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 use tui_widget_list::{ListBuilder, ListState, ListView};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -1555,12 +1557,18 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         .max()
         .unwrap_or(0) as u16;
     let cap = screen.width.saturating_sub(4).max(24);
-    let w = (needed + 2).max(58).min(cap);
+    let overflow = items.len() as u16 + 2 > h;
+    // The scrollbar gets its own column inside the popup when rows overflow,
+    // so the rounded border never has glyphs drawn over its corners.
+    let w = if overflow {
+        ((needed + 2).max(58) + 1).min(cap)
+    } else {
+        (needed + 2).max(58).min(cap)
+    };
     let x = screen.x + (screen.width - w) / 2;
     let y = screen.y + (screen.height - h) / 3;
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
-    let overflow = items.len() as u16 + 2 > h;
     let item_count = items.len();
     let mut list_state = ListState::new_with_index(Some(sel.min(items.len().saturating_sub(1))));
     let builder = ListBuilder::new(move |ctx| {
@@ -1605,9 +1613,10 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             spans.push(Span::styled(item.meta.clone(), meta_style));
         }
         // Pad the remaining row width so the selection background reaches
-        // the right edge (gap after the label, tail after the meta).
+        // the right edge (gap after the label, tail after the meta). When
+        // the scrollbar is shown, its gutter column stays free.
         let width: usize = spans.iter().map(|s| s.width()).sum();
-        let fill = ctx.cross_axis_size as usize;
+        let fill = (ctx.cross_axis_size as usize).saturating_sub(if overflow { 1 } else { 0 });
         if width < fill {
             let fill_style = if selected {
                 Style::default().bg(theme.chip_bg)
@@ -1627,19 +1636,27 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             Style::default().fg(theme.caption),
         ))
         .style(Style::default().bg(theme.panel));
-    let mut list = ListView::new(builder, item_count)
+    let list = ListView::new(builder, item_count)
         .block(block)
         // Keep the picker's wrap-around ↑/↓ semantics.
         .infinite_scrolling(true);
+    // The list keeps the full popup area, so the rounded border stays at
+    // the popup's real edges; the scrollbar renders into the rightmost
+    // inner column, which the rows leave free when overflowing.
+    f.render_stateful_widget(list, area, &mut list_state);
     if overflow {
-        // The scrollbar's ▲/▼ replace the right border corners, so the
-        // popup keeps its rounded frame while showing position.
-        list = list.scrollbar(
+        let inner = area.inner(Margin::new(1, 1));
+        let mut sb_state =
+            ScrollbarState::new(item_count).position(list_state.scroll_offset_index());
+        f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
                 .style(Style::default().fg(theme.border)),
+            inner,
+            &mut sb_state,
         );
     }
-    f.render_stateful_widget(list, area, &mut list_state);
     // The viewport is the source of truth for what is visible; selection
     // moves (mouse later, programmatic now) land back in the picker.
     if let Some(picker) = &mut app.picker {
@@ -2664,7 +2681,15 @@ mod tests {
         let top = dump_frame(&mut app, 100, 24);
         assert!(top.contains("session 00"), "head row visible:\n{top}");
         assert!(!top.contains("session 39"), "tail not visible yet:\n{top}");
-        assert!(top.contains("▲"), "scroll affordance shown:\n{top}");
+        // The rounded border stays intact: the scrollbar lives in its own
+        // column inside the popup, between the rows and the right border.
+        assert!(top.contains("╮"), "top-right corner intact:\n{top}");
+        assert!(top.contains("║"), "scrollbar track shown:\n{top}");
+        assert!(
+            top.lines()
+                .any(|l| l.contains("session 00") && l.trim_end().ends_with('│')),
+            "right border column intact next to the scrollbar:\n{top}"
+        );
 
         // Jump to the tail: the window follows, so the last row is
         // reachable instead of being clipped out of the paragraph.
@@ -2672,7 +2697,8 @@ mod tests {
         let tail = dump_frame(&mut app, 100, 24);
         assert!(tail.contains("session 39"), "tail row visible:\n{tail}");
         assert!(!tail.contains("session 00"), "head scrolled away:\n{tail}");
-        assert!(tail.contains("▼"), "scroll affordance shown:\n{tail}");
+        assert!(tail.contains("█"), "scrollbar thumb shown:\n{tail}");
+        assert!(tail.contains("╰"), "bottom corners intact:\n{tail}");
         assert_eq!(app.picker_page_rows, 20, "page size = visible rows");
     }
 
