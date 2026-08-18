@@ -7,6 +7,7 @@ const supported = [
   { platform: 'darwin', arch: 'arm64', file: 'dsh-tui' },
   { platform: 'darwin', arch: 'x64', file: 'dsh-tui' },
   { platform: 'linux', arch: 'x64', file: 'dsh-tui' },
+  { platform: 'linux', arch: 'arm64', file: 'dsh-tui' },
   { platform: 'win32', arch: 'x64', file: 'dsh-tui.exe' },
 ]
 

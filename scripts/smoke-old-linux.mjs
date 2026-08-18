@@ -5,6 +5,7 @@ import path from 'node:path'
 
 const binary = process.argv[2]
 const runtime = process.env.DSH_TUI_CONTAINER_BIN || 'docker'
+const platform = process.env.DSH_TUI_SMOKE_PLATFORM || 'linux/amd64'
 
 try {
   if (!binary) throw new Error('usage: smoke-old-linux.mjs <binary>')
@@ -14,7 +15,7 @@ try {
     'run',
     '--rm',
     '--platform',
-    'linux/amd64',
+    platform,
     '--network',
     'none',
     '--volume',

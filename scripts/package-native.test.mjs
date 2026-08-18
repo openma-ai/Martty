@@ -25,6 +25,7 @@ test('stages native binaries under npm platform keys', () => {
     ['darwin', 'arm64', 'darwin-arm64/dsh-tui'],
     ['darwin', 'x64', 'darwin-x64/dsh-tui'],
     ['linux', 'x64', 'linux-x64/dsh-tui'],
+    ['linux', 'arm64', 'linux-arm64/dsh-tui'],
     ['win32', 'x64', 'win32-x64/dsh-tui.exe'],
   ]
 
@@ -54,6 +55,7 @@ test('verifies that a release contains every supported platform', () => {
     ['darwin', 'arm64'],
     ['darwin', 'x64'],
     ['linux', 'x64'],
+    ['linux', 'arm64'],
     ['win32', 'x64'],
   ]) {
     const staged = run([

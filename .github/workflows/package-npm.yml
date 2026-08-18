@@ -74,7 +74,15 @@ jobs:
             rust-target: x86_64-unknown-linux-musl
             platform: linux
             arch: x64
+            smoke-platform: linux/amd64
             binary: target/x86_64-unknown-linux-musl/release/dsh-tui
+          - name: linux-arm64
+            runner: ubuntu-24.04
+            rust-target: aarch64-unknown-linux-musl
+            platform: linux
+            arch: arm64
+            smoke-platform: linux/arm64
+            binary: target/aarch64-unknown-linux-musl/release/dsh-tui
           - name: win32-x64
             runner: windows-2025
             rust-target: x86_64-pc-windows-msvc
@@ -93,12 +101,31 @@ jobs:
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - run: rustup target add ${{ matrix.rust-target }}
-      - run: cargo build --release --locked --target ${{ matrix.rust-target }}
+      - name: Build
+        # The aarch64 musl target links fully self-contained from the rust
+        # sysroot (bundled crt objects + musl libc.a), and the only cc
+        # dependency (iana-time-zone-haiku) is Haiku-only, so no external
+        # C toolchain is needed: point the arm64 link at the toolchain's
+        # bundled rust-lld. Other matrix entries build their own targets.
+        # shell: bash keeps the POSIX script valid on the Windows runner.
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "linux" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+            HOST="$(rustc -vV | sed -n 's/^host: //p')"
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/rust-lld"
+          fi
+          cargo build --release --locked --target "${{ matrix.rust-target }}"
       - name: Verify Linux binary is statically linked
         if: matrix.platform == 'linux'
         run: node scripts/check-static-elf.mjs "${{ matrix.binary }}"
+      - uses: docker/setup-qemu-action@v3
+        # GitHub-hosted runners have no arm64 binfmt by default; QEMU
+        # emulation is required to run the linux/arm64 smoke container.
+        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
       - name: Smoke test Linux binary on Ubuntu 20.04
         if: matrix.platform == 'linux'
+        env:
+          DSH_TUI_SMOKE_PLATFORM: ${{ matrix.smoke-platform }}
         run: node scripts/smoke-old-linux.mjs "${{ matrix.binary }}"
       - name: Stage native binary
         run: >-
@@ -129,7 +156,7 @@ jobs:
           path: npm/vendor
           merge-multiple: true
       - name: Restore executable permissions
-        run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui
+        run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui npm/vendor/linux-arm64/dsh-tui
       - run: node scripts/package-native.mjs verify --vendor-root npm/vendor
       - name: Pack npm packages
         run: |
