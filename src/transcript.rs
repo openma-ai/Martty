@@ -1266,7 +1266,7 @@ fn one_line(s: &str) -> String {
     clamp_str(&s.replace('\n', " ⏎ "), 120)
 }
 
-fn clamp_str(s: &str, max: usize) -> String {
+pub(crate) fn clamp_str(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }

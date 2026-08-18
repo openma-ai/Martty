@@ -25,7 +25,7 @@ use crate::input::Action;
 use crate::locale::{Locale, LocaleSettings};
 use crate::runtime::RuntimeConfig;
 use crate::theme::Theme;
-use crate::transcript::{NoticeLevel, Transcript};
+use crate::transcript::{clamp_str, NoticeLevel, Transcript};
 
 pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -501,6 +501,11 @@ pub struct PickerItem {
     pub provider: Option<String>,
 }
 
+/// Fixed display width of the picker label column — rows pad/truncate to
+/// this so the meta column lines up (char-based padding would misalign
+/// CJK labels).
+pub(crate) const PICKER_LABEL_COL: usize = 30;
+
 /// One `/` menu entry: a builtin [`SlashCommand`] or a host skill (plugin
 /// mode). Builtins win a name collision — the command namespace is closed
 /// and resolved client-side before a line ever becomes a prompt; skill
@@ -797,6 +802,54 @@ fn token_spans_in(
     }
     spans.sort_unstable();
     spans
+}
+
+/// 8-char id prefix — unique enough in the picker while staying readable;
+/// `/resume <prefix>` still matches against the full id.
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+/// One `/resume` row. The label is the session's human handle — the
+/// harness title, else the first real prompt; the meta line carries the id
+/// prefix plus age · turns (local logs) or the updated date (ACP rows with
+/// no local log).
+fn session_picker_row(
+    id: &str,
+    title: Option<&str>,
+    local: Option<&crate::sessions::SessionSummary>,
+    updated_at: Option<&str>,
+) -> PickerItem {
+    let short = short_id(id);
+    let label = title
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| local.map(|s| s.preview.clone()))
+        .filter(|s| !s.is_empty())
+        .map(|s| clamp_str(&s, PICKER_LABEL_COL))
+        .unwrap_or_else(|| short.clone());
+    let meta = match local {
+        Some(s) => format!(
+            "{short:<8} · {} · {} turn{}",
+            crate::sessions::age_label(s.modified),
+            s.turns,
+            if s.turns == 1 { "" } else { "s" },
+        ),
+        None => format!(
+            "{short:<8} · {}",
+            updated_at
+                .and_then(|u| u.get(..10))
+                .filter(|d| !d.is_empty())
+                .unwrap_or("?"),
+        ),
+    };
+    PickerItem {
+        id: id.to_string(),
+        label,
+        meta,
+        provider: None,
+    }
 }
 
 fn unique_session_list_match(sessions: &[SessionListItem], prefix: &str) -> Result<String, String> {
@@ -2778,20 +2831,9 @@ impl App {
             );
             return;
         }
-        let items = sessions
+        let items: Vec<PickerItem> = sessions
             .iter()
-            .map(|s| PickerItem {
-                id: s.id.clone(),
-                label: s.id.clone(),
-                meta: format!(
-                    "{} · {} turn{} · {}",
-                    crate::sessions::age_label(s.modified),
-                    s.turns,
-                    if s.turns == 1 { "" } else { "s" },
-                    s.preview
-                ),
-                provider: None,
-            })
+            .map(|s| session_picker_row(&s.id, s.title.as_deref(), Some(s), None))
             .collect();
         self.resume_candidates = sessions;
         self.picker = Some(Picker {
@@ -2799,9 +2841,10 @@ impl App {
             title: self
                 .locale
                 .tr(
-                    " resume session · enter select · esc close ",
-                    " 恢复会话 · enter 选择 · esc 关闭 ",
+                    " resume session · {n} sessions · enter select · esc close ",
+                    " 恢复会话 · {n} 个会话 · enter 选择 · esc 关闭 ",
                 )
+                .replace("{n}", &items.len().to_string())
                 .into(),
             sel: 0,
             items,
@@ -2982,17 +3025,27 @@ impl App {
             );
             return;
         }
-        let items = sessions
+        // Local JSONL summaries (turns, age, prompt preview) for the same
+        // workspace; the local log is the only source for those fields.
+        let local_by_id: std::collections::HashMap<String, crate::sessions::SessionSummary> =
+            crate::sessions::list_sessions(
+                &self.cfg.session_root,
+                &self.cfg.workspace,
+                &self.session_id,
+            )
+            .into_iter()
+            .map(|s| (s.id.clone(), s))
+            .collect();
+        let items: Vec<PickerItem> = sessions
             .iter()
-            .map(|s| PickerItem {
-                id: s.id.clone(),
-                label: s
+            .map(|s| {
+                let local = local_by_id.get(&s.id);
+                let title = s
                     .title
                     .clone()
                     .filter(|t| !t.is_empty())
-                    .unwrap_or_else(|| s.id.clone()),
-                meta: s.updated_at.clone().unwrap_or_default(),
-                provider: None,
+                    .or_else(|| local.and_then(|l| l.title.clone()));
+                session_picker_row(&s.id, title.as_deref(), local, s.updated_at.as_deref())
             })
             .collect();
         self.resume_via_acp = true;
@@ -3001,9 +3054,10 @@ impl App {
             title: self
                 .locale
                 .tr(
-                    " resume session · enter select · esc close ",
-                    " 恢复会话 · enter 选择 · esc 关闭 ",
+                    " resume session · {n} sessions · enter select · esc close ",
+                    " 恢复会话 · {n} 个会话 · enter 选择 · esc 关闭 ",
                 )
+                .replace("{n}", &items.len().to_string())
                 .into(),
             sel: 0,
             items,
@@ -4474,9 +4528,10 @@ mod resume_tests {
             r#"{"type":"permission/preset","seq":0,"data":{"preset":"workspace-write"}}"#.into(),
             r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#.into(),
             r#"{"type":"user/message","seq":2,"data":{"content":[{"text":"修复失败的测试","type":"text"}],"source":{"kind":"user"},"role":"user","id":"m1"}}"#.into(),
-            r#"{"type":"assistant/chunk","seq":3,"data":{"chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":5}}}}"#.into(),
-            r#"{"type":"assistant/message","seq":4,"data":{"message":{"content":[{"type":"text","text":"tests are green now"}],"source":{"model":"deepseek-v4-flash"}}}}"#.into(),
-            r#"{"type":"turn/end","seq":5,"data":{"reason":"completed"}}"#.into(),
+            r#"{"type":"session/title","seq":3,"data":{"title":"fix failing tests","source":{"kind":"provider","provider":"session-title-first-prompt-llm"}}}"#.into(),
+            r#"{"type":"assistant/chunk","seq":4,"data":{"chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":5}}}}"#.into(),
+            r#"{"type":"assistant/message","seq":5,"data":{"message":{"content":[{"type":"text","text":"tests are green now"}],"source":{"model":"deepseek-v4-flash"}}}}"#.into(),
+            r#"{"type":"turn/end","seq":6,"data":{"reason":"completed"}}"#.into(),
         ];
         std::fs::write(dir.join("session.jsonl"), lines.join("\n")).unwrap();
     }
@@ -4569,12 +4624,28 @@ mod resume_tests {
         let picker = app.picker.as_ref().expect("picker opens");
         assert!(matches!(picker.kind, PickerKind::Session));
         assert_eq!(picker.items[0].id, "dsh-alpha");
+        // The human handle is the label; the meta carries short id, age, turns.
+        assert_eq!(picker.items[0].label, "fix failing tests", "title as label");
         assert!(
             picker.items[0].meta.contains("1 turn"),
             "{}",
             picker.items[0].meta
         );
-        assert!(picker.items[0].meta.contains("修复失败的测试"));
+        assert!(
+            picker.items[0].meta.contains("dsh-alp"),
+            "short id in meta: {}",
+            picker.items[0].meta
+        );
+        assert!(
+            !picker.items[0].meta.contains("修复失败的测试"),
+            "preview moved out of meta: {}",
+            picker.items[0].meta
+        );
+        assert!(
+            picker.title.contains('1'),
+            "picker title counts sessions: {}",
+            picker.title
+        );
         app.picker = None;
 
         // unique prefix resolves; unknown id warns and keeps the session
@@ -5485,6 +5556,57 @@ mod mode_tests {
         );
         assert_eq!(app.session_id, "s-old");
         assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn acp_session_list_enriches_rows_with_local_summaries() {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.load_session = true;
+        // A local JSONL log for the same workspace (slug of "/tmp").
+        let slug = crate::sessions::workspace_slug("/tmp");
+        let dir = std::path::Path::new(&app.cfg.session_root)
+            .join(&slug)
+            .join("s-local");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("session.jsonl"),
+            [
+                r#"{"type":"session","version":0,"id":"s-local","createdAt":1,"cwd":"/tmp"}"#,
+                r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#,
+                r#"{"type":"user/message","seq":2,"data":{"content":[{"text":"local prompt","type":"text"}],"source":{"kind":"user"},"role":"user","id":"m1"}}"#,
+                r#"{"type":"turn/start","seq":3,"data":{"turn":2}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        app.handle(
+            AppEvent::Ctl(CtlEvent::SessionList {
+                sessions: vec![SessionListItem {
+                    id: "s-local".into(),
+                    title: None,
+                    updated_at: None,
+                }],
+                prefix: None,
+            }),
+            &ctl,
+        );
+        let picker = app.picker.as_ref().expect("picker");
+        assert_eq!(
+            picker.items[0].label, "local prompt",
+            "local preview becomes the label"
+        );
+        assert!(
+            picker.items[0].meta.contains("2 turns"),
+            "{}",
+            picker.items[0].meta
+        );
+        assert!(
+            picker.items[0].meta.contains("s-local"),
+            "short id in meta: {}",
+            picker.items[0].meta
+        );
     }
 
     #[test]

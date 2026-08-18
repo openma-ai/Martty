@@ -14,6 +14,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Changed
 
+- `/resume` picker rows now lead with the session's human handle — the
+  harness-generated `session/title` (falling back to the first real prompt)
+  — instead of the full UUID; the meta column carries the 8-char id prefix,
+  relative age and turn count, and the picker title shows how many sessions
+  are listed. Label and id columns use fixed display widths (CJK-aware) so
+  rows align vertically. ACP `session/list` rows are enriched with the same
+  local summaries (turns, age, prompt) when the session log is on disk.
 - Markdown rendering now runs on `tui-markdown` (pulldown-cmark) instead of a
   hand-rolled line scanner: proper CommonMark + GFM parsing (nested lists,
   reference links, footnotes, task lists, definition lists, math delimiters)
