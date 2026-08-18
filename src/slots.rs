@@ -22,6 +22,16 @@ pub struct SlotSnapshot {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum TuiAction {
+    Command {
+        name: String,
+        #[serde(default)]
+        args: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum TuiNode {
     Group {
         id: String,
@@ -56,6 +66,8 @@ pub enum TuiNode {
         body: String,
         #[serde(default)]
         status: Option<String>,
+        #[serde(default)]
+        action: Option<TuiAction>,
     },
     Terminal {
         id: String,
@@ -108,6 +120,13 @@ impl TuiNode {
             | Self::Unknown { id, .. } => id,
         }
     }
+
+    pub fn action(&self) -> Option<&TuiAction> {
+        match self {
+            Self::Generic { action, .. } => action.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), String> {
@@ -128,12 +147,17 @@ fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), St
                 }
                 validate_nodes(children, ids)?;
             }
-            TuiNode::Generic { status, .. } => {
+            TuiNode::Generic { status, action, .. } => {
                 if status
                     .as_deref()
                     .is_some_and(|status| !matches!(status, "running" | "ok" | "err"))
                 {
                     return Err("tui generic status must be running, ok, or err".into());
+                }
+                if action.as_ref().is_some_and(|action| match action {
+                    TuiAction::Command { name, .. } => name.is_empty(),
+                }) {
+                    return Err("tui command action name must not be empty".into());
                 }
             }
             TuiNode::Notice { level, .. }
@@ -145,6 +169,10 @@ fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), St
         }
     }
     Ok(())
+}
+
+pub fn validate_node_tree(nodes: &[TuiNode]) -> Result<(), String> {
+    validate_nodes(nodes, &mut HashSet::new())
 }
 
 fn theme_color_name_invalid(name: &str) -> bool {
@@ -176,10 +204,13 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
     if snapshot.protocol != 0 {
         return Ok(None);
     }
-    if snapshot.slot != "chrome.right" {
+    if !matches!(
+        snapshot.slot.as_str(),
+        "chrome.right" | "conversation.input.dock" | "conversation.composer.dock"
+    ) {
         return Ok(None);
     }
-    validate_nodes(&snapshot.nodes, &mut HashSet::new())?;
+    validate_node_tree(&snapshot.nodes)?;
     Ok(Some(snapshot))
 }
 
@@ -459,13 +490,17 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
     }
 }
 
-pub fn render(snapshot: &SlotSnapshot, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+pub fn render_nodes(nodes: &[TuiNode], theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for (index, node) in snapshot.nodes.iter().enumerate() {
+    for (index, node) in nodes.iter().enumerate() {
         if index > 0 {
             lines.push(Line::default());
         }
         lines.extend(render_node(node, theme, width));
     }
     lines
+}
+
+pub fn render(snapshot: &SlotSnapshot, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    render_nodes(&snapshot.nodes, theme, width)
 }

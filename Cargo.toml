@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 libc = "0.2"
+signal-hook = "0.3"
 crossterm = "0.29"
 ratatui = "0.30.2"
 serde = { version = "1", features = ["derive"] }

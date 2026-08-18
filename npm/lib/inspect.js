@@ -10,6 +10,7 @@ import { CORDIS_METHODS } from './cordis-protocol.js'
 export const name = 'tui-cordis-client-runner'
 export const inject = [
   'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay', 'acpSessionConfig',
+  'acpSessionPlan', 'acpSessionStats',
 ]
 
 const EMPTY_INPUT = Object.freeze({ type: 'object', properties: {}, additionalProperties: false })
@@ -161,13 +162,15 @@ export function slotInspectProvider(tuiSlots) {
         nodeKinds: [...TUI_NODE_KINDS],
         apply: {
           inject: ['tuiSlots'],
-          wait: "ctx.tuiSlots.inject('chrome.right', () => { ... })",
+          wait: "ctx.tuiSlots.inject(slotName, () => { ... })",
           register:
-            "ctx.tuiSlots.register({ name: 'chrome.right', id, order? }, TuiNode[])",
+            'ctx.tuiSlots.register({ name: slotName, id, order? }, TuiNode[])',
           update: 'const panel = register(...); panel.update(nextNodes)',
           dispose: 'Return panel.dispose from inject; plugin unload removes the pane immediately.',
           note:
-            'chrome.right is a root list slot. Node ids are stable inside one contribution; '
+            'chrome.right is a root list slot; conversation.input.dock is the additive row above '
+            + 'the composer; conversation.composer.dock is the additive compact row below it. '
+            + 'Node ids are stable inside one contribution; '
             + 'the compositor namespaces them by contribution id. Compose group/markdown/reasoning/'
             + 'user/generic/terminal/diff/image/notice/unknown nodes. Colors use theme tokens only.',
         },
@@ -358,18 +361,41 @@ export function overlayInspectProvider(tuiOverlay) {
               },
             },
           },
+          openView: {
+            call: 'ctx.tuiOverlay.openView(options, handlers?)',
+            options: {
+              type: 'object',
+              required: ['id', 'title', 'nodes'],
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', minLength: 1 },
+                title: { type: 'string', minLength: 1 },
+                nodes: { type: 'array', items: 'TuiNode' },
+              },
+            },
+            handlers: {
+              onSubmit: { optional: true, async: true, arguments: [] },
+              onCancel: { optional: true, async: true, arguments: [] },
+            },
+            returns: {
+              type: 'ViewController',
+              properties: {
+                close: { type: 'function', role: 'close', idempotent: true },
+              },
+            },
+          },
           active: {
             call: 'ctx.tuiOverlay.active()',
-            returns: 'Slider | null',
+            returns: 'Slider | View | null',
           },
           lifecycle: {
-            concurrency: 'Only one slider may be active at a time.',
+            concurrency: 'Only one overlay may be active at a time.',
             ownership:
-              'The slider belongs to the Client Plugin run and closes automatically when that run stops, '
+              'The overlay belongs to the Client Plugin run and closes automatically when that run stops, '
               + 'even if the returned controller is ignored.',
           },
         },
-        referencedTypes: ['Slider', 'SliderMark', 'SliderController'],
+        referencedTypes: ['Slider', 'SliderMark', 'SliderController', 'View', 'ViewController', 'TuiNode'],
       }
     },
   }
@@ -482,6 +508,87 @@ export function configOptionsInspectProvider(acpSessionConfig) {
   }
 }
 
+/** Describe structured Plan snapshots folded from standard ACP Session updates. */
+export function planInspectProvider(acpSessionPlan) {
+  return {
+    manifest: {
+      id: 'Plans',
+      description:
+        'Current structured ACP Session plans. Client halves can render or react to plan updates '
+        + 'without parsing raw ACP messages.',
+      methods: [{
+        name: 'current',
+        description: 'Return the active plan and the read/subscribe contract.',
+        inputSchema: EMPTY_INPUT,
+        outputSchema: ANY_OUTPUT,
+      }],
+    },
+    query(method) {
+      if (method !== 'current') throw new Error(`unknown Plans inspect method "${method}"`)
+      return {
+        current: acpSessionPlan.current(),
+        plans: acpSessionPlan.list(),
+        api: {
+          service: 'acpSessionPlan',
+          inject: ['acpSessionPlan'],
+          current: { call: 'ctx.acpSessionPlan.current()', returns: 'Plan | null' },
+          list: { call: 'ctx.acpSessionPlan.list()', returns: 'Plan[]' },
+          subscribe: {
+            call: 'ctx.acpSessionPlan.subscribe((snapshot) => { ... })',
+            listener: {
+              arguments: [{
+                name: 'snapshot',
+                type: '{ sessionId?: string, plans: Plan[] }',
+              }],
+            },
+            returns: { type: 'function', role: 'dispose', idempotent: true },
+          },
+          transport: 'standard ACP session/update plan, plan_update, and plan_removed',
+        },
+        referencedTypes: ['Plan'],
+      }
+    },
+  }
+}
+
+/** Describe token totals and live prompt timings folded from standard ACP. */
+export function statsInspectProvider(acpSessionStats) {
+  return {
+    manifest: {
+      id: 'Stats',
+      description:
+        'Current standard ACP token usage and client-observed prompt timings. '
+        + 'Client halves can render stats without parsing raw ACP messages.',
+      methods: [{
+        name: 'current',
+        description: 'Return the current stats snapshot and the read/subscribe contract.',
+        inputSchema: EMPTY_INPUT,
+        outputSchema: ANY_OUTPUT,
+      }],
+    },
+    query(method) {
+      if (method !== 'current') throw new Error(`unknown Stats inspect method "${method}"`)
+      return {
+        current: acpSessionStats.current(),
+        api: {
+          service: 'acpSessionStats',
+          inject: ['acpSessionStats'],
+          current: {
+            call: 'ctx.acpSessionStats.current()',
+            returns: 'SessionStatsSnapshot',
+          },
+          subscribe: {
+            call: 'ctx.acpSessionStats.subscribe((snapshot) => { ... })',
+            returns: { type: 'function', role: 'dispose', idempotent: true },
+          },
+          transport: 'standard ACP prompt responses and session/update notifications',
+        },
+        referencedTypes: ['SessionStatsSnapshot'],
+      }
+    },
+  }
+}
+
 async function mountClientHalf(
   ctx,
   pluginId,
@@ -491,13 +598,16 @@ async function mountClientHalf(
   tuiCommands,
   tuiOverlay,
   acpSessionConfig,
+  acpSessionPlan,
+  acpSessionStats,
   timer,
   invoke,
 ) {
   if (typeof ctx.plugin !== 'function') {
     return applyClientHalf(clientCode, {
       pluginId,
-      tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, timer, invoke,
+      tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+      acpSessionStats, timer, invoke,
     })
   }
 
@@ -508,7 +618,8 @@ async function mountClientHalf(
     apply: async () => {
       applied = await applyClientHalf(clientCode, {
         pluginId,
-        tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, timer, invoke,
+        tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+        acpSessionStats, timer, invoke,
       })
       return applied.dispose
     },
@@ -537,13 +648,17 @@ async function mountClientHalf(
  *   tuiCommands?: object,
  *   tuiOverlay?: object,
  *   acpSessionConfig?: object,
+ *   acpSessionPlan?: object,
+ *   acpSessionStats?: object,
  *   requestAgent: (method: string, params?: object) => Promise<unknown>,
  * }} opts
  * @returns {{ onHost: (message: object) => void }}
  */
 export function attachTuiClient(opts) {
   const {
-    ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, requestAgent,
+    ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+    acpSessionStats,
+    requestAgent,
   } = opts
   const providers = [
     themeInspectProvider(tuiTheme),
@@ -551,6 +666,8 @@ export function attachTuiClient(opts) {
     ...(tuiCommands === undefined ? [] : [commandInspectProvider(tuiCommands)]),
     ...(tuiOverlay === undefined ? [] : [overlayInspectProvider(tuiOverlay)]),
     ...(acpSessionConfig === undefined ? [] : [configOptionsInspectProvider(acpSessionConfig)]),
+    ...(acpSessionPlan === undefined ? [] : [planInspectProvider(acpSessionPlan)]),
+    ...(acpSessionStats === undefined ? [] : [statsInspectProvider(acpSessionStats)]),
   ]
   const timer = createClientTimer()
   /** @type {Map<string, () => void>} */
@@ -646,6 +763,8 @@ export function attachTuiClient(opts) {
         tuiCommands,
         tuiOverlay,
         acpSessionConfig,
+        acpSessionPlan,
+        acpSessionStats,
         timer,
         async (method, args) => {
           const answered = await requestAgent(CORDIS_METHODS.pluginInvoke, {
@@ -812,12 +931,16 @@ export function apply(ctx) {
   const tuiCommands = ctx.tuiCommands ?? ctx.get?.('tuiCommands')
   const tuiOverlay = ctx.tuiOverlay ?? ctx.get?.('tuiOverlay')
   const acpSessionConfig = ctx.acpSessionConfig ?? ctx.get?.('acpSessionConfig')
+  const acpSessionPlan = ctx.acpSessionPlan ?? ctx.get?.('acpSessionPlan')
+  const acpSessionStats = ctx.acpSessionStats ?? ctx.get?.('acpSessionStats')
   let client
   const service = {
     bindTransport(requestAgent) {
       client?.dispose()
       client = attachTuiClient({
-        ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, requestAgent,
+        ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+        acpSessionStats,
+        requestAgent,
       })
       const attached = client
       return () => {

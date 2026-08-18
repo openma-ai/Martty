@@ -101,6 +101,46 @@ test('slots reject undeclared seats and invalid node trees before painting', () 
   )
 })
 
+test('conversation docks are additive slots with independent live snapshots', () => {
+  assert.equal(typeof slotsPlugin.installTuiSlots, 'function')
+  if (typeof slotsPlugin.installTuiSlots !== 'function') return
+
+  const sent = []
+  const ctx = makeCtx()
+  slotsPlugin.installTuiSlots(ctx, {
+    notify(method, params) {
+      sent.push({ method, params })
+    },
+  })
+
+  const plan = ctx.tuiSlots.register(
+    { name: 'conversation.input.dock', id: 'plan' },
+    [{ id: 'summary', kind: 'generic', title: 'Plan · 1/2', body: '', status: 'running' }],
+  )
+  const goal = ctx.tuiSlots.register(
+    { name: 'conversation.input.dock', id: 'goal', order: 10 },
+    [{ id: 'summary', kind: 'generic', title: 'Goal · ship it', body: '' }],
+  )
+  const stats = ctx.tuiSlots.register(
+    { name: 'conversation.composer.dock', id: 'stats' },
+    [{ id: 'summary', kind: 'generic', title: '1 turn · 2 steps', body: '' }],
+  )
+
+  const inputSnapshot = sent.findLast((entry) => entry.params.slot === 'conversation.input.dock').params
+  assert.deepEqual(inputSnapshot.nodes.map((node) => node.id), ['plan:summary', 'goal:summary'])
+  assert.equal(
+    ctx.tuiSlots.list().find((slot) => slot.name === 'conversation.input.dock').kind,
+    'list',
+  )
+  assert.equal(sent.at(-1).params.slot, 'conversation.composer.dock')
+  assert.equal(sent.at(-1).params.nodes[0].id, 'stats:summary')
+
+  plan.dispose()
+  goal.dispose()
+  stats.dispose()
+  assert.deepEqual(sent.at(-1).params.nodes, [])
+})
+
 test('the gallery is a real sibling plugin whose whole view unloads with its fiber', async () => {
   assert.deepEqual(demoPlugin.inject, ['tuiSlots'])
   assert.equal(typeof demoPlugin.apply, 'function')

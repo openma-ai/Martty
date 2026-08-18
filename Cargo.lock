@@ -535,6 +535,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "signal-hook",
  "tokio",
  "tokio-util",
  "tui-markdown",

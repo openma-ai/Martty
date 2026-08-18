@@ -4,6 +4,8 @@ use serde_json::Value;
 
 /// Everything the app loop can receive.
 pub enum AppEvent {
+    /// Process termination signal; settle through the normal terminal guard.
+    Terminate,
     /// Terminal input.
     Term(crossterm::event::Event),
     /// A protocol fact already decoded into the TUI's semantic event model.
@@ -183,6 +185,8 @@ pub struct SkillInfo {
     pub name: String,
     pub description: String,
     pub config_action: Option<CommandConfigAction>,
+    /// ACP advertised this as a command handled by the local Client plane.
+    pub client_command: bool,
 }
 
 /// One staged image on its way to the host (base64 payload).

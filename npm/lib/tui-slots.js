@@ -9,7 +9,17 @@ import { CORDIS_METHODS } from './cordis-protocol.js'
 export const name = 'tui-slots'
 export const inject = []
 
-export const SLOT_NAMES = Object.freeze(['chrome.right'])
+export const SLOT_NAMES = Object.freeze([
+  'chrome.right',
+  'conversation.input.dock',
+  'conversation.composer.dock',
+])
+
+const SLOT_DEFINITIONS = Object.freeze({
+  'chrome.right': Object.freeze({ kind: 'list', scope: 'root' }),
+  'conversation.input.dock': Object.freeze({ kind: 'list', scope: 'session' }),
+  'conversation.composer.dock': Object.freeze({ kind: 'list', scope: 'session' }),
+})
 
 class TuiSlotsService extends Service {
   constructor(ctx, core) {
@@ -46,7 +56,7 @@ const NODE_FIELDS = Object.freeze({
   markdown: { required: ['id', 'kind', 'text'], optional: ['streaming'] },
   reasoning: { required: ['id', 'kind', 'text', 'done'], optional: ['seconds'] },
   user: { required: ['id', 'kind', 'text'], optional: ['queued'] },
-  generic: { required: ['id', 'kind', 'title', 'body'], optional: ['status'] },
+  generic: { required: ['id', 'kind', 'title', 'body'], optional: ['status', 'action'] },
   terminal: { required: ['id', 'kind', 'title', 'body'], optional: ['exit'] },
   diff: { required: ['id', 'kind', 'title', 'unified'], optional: ['path'] },
   image: { required: ['id', 'kind', 'name', 'mime'], optional: ['dataBase64'] },
@@ -75,6 +85,16 @@ function optionalBoolean(value, path) {
   if (value !== undefined && typeof value !== 'boolean') {
     throw new Error(`tuiSlots: ${path} must be a boolean`)
   }
+}
+
+function optionalAction(value, path) {
+  if (value === undefined) return
+  object(value, path)
+  const extras = Object.keys(value).filter((key) => !['kind', 'name', 'args'].includes(key))
+  if (extras.length > 0) throw new Error(`tuiSlots: ${path} has unknown field(s) ${extras.join(', ')}`)
+  if (value.kind !== 'command') throw new Error(`tuiSlots: ${path}.kind must be command`)
+  string(value.name, `${path}.name`, false)
+  optionalString(value.args, `${path}.args`)
 }
 
 function validateNode(node, path, ids) {
@@ -121,6 +141,7 @@ function validateNode(node, path, ids) {
       if (node.status !== undefined && !['running', 'ok', 'err'].includes(node.status)) {
         throw new Error(`tuiSlots: ${path}.status must be running, ok, or err`)
       }
+      optionalAction(node.action, `${path}.action`)
       break
     case 'terminal':
       string(node.title, `${path}.title`)
@@ -155,7 +176,7 @@ function validateNode(node, path, ids) {
   return { ...node }
 }
 
-function validateNodes(nodes, path = 'nodes', ids = new Set()) {
+export function validateNodes(nodes, path = 'nodes', ids = new Set()) {
   if (!Array.isArray(nodes)) throw new Error(`tuiSlots: ${path} must be an array`)
   return nodes.map((node, index) => validateNode(structuredClone(node), `${path}[${index}]`, ids))
 }
@@ -176,42 +197,48 @@ function disposerOf(value) {
   return () => {}
 }
 
-/** Install the declared `chrome.right` registry on a Cordis client context. */
+/** Install the declared root-slot registry on a Cordis client context. */
 export function installTuiSlots(ctx, options = {}) {
   const contributions = new Map()
   let nextSequence = 0
-  let revision = 0
+  const revisions = new Map(SLOT_NAMES.map((slot) => [slot, 0]))
   let send = typeof options.notify === 'function' ? options.notify : undefined
-  let queued
+  const queued = new Map()
 
-  function snapshot() {
+  function snapshot(slot) {
     const nodes = [...contributions.values()]
+      .filter((entry) => entry.slot === slot)
       .sort((left, right) => left.order - right.order || left.sequence - right.sequence)
       .flatMap((entry) => entry.nodes.map((node) => namespaceNode(node, entry.id)))
-    revision += 1
-    return { protocol: PROTOCOL, slot: 'chrome.right', rev: revision, nodes }
+    const revision = (revisions.get(slot) ?? 0) + 1
+    revisions.set(slot, revision)
+    return { protocol: PROTOCOL, slot, rev: revision, nodes }
   }
 
-  function publish() {
-    const params = snapshot()
+  function publish(slot) {
+    const params = snapshot(slot)
     if (typeof send === 'function') send(CORDIS_METHODS.slotsUpdate, params)
-    else queued = params
+    else queued.set(slot, params)
   }
 
   function bindNotify(notify) {
     if (typeof notify !== 'function') throw new Error('tuiSlots.bindNotify: notify must be a function')
     send = notify
-    if (queued !== undefined) {
-      const params = queued
-      queued = undefined
+    for (const slot of SLOT_NAMES) {
+      const params = queued.get(slot)
+      if (params === undefined) continue
+      queued.delete(slot)
       send(CORDIS_METHODS.slotsUpdate, params)
     }
   }
 
   function register(effectCtx, options, nodes) {
     object(options, 'register options')
-    if (options.name !== 'chrome.right') {
-      throw new Error(`tuiSlots.register: slot "${String(options.name)}" is not declared; use chrome.right`)
+    const definition = SLOT_DEFINITIONS[options.name]
+    if (definition === undefined) {
+      throw new Error(
+        `tuiSlots.register: slot "${String(options.name)}" is not declared; use ${SLOT_NAMES.join(' or ')}`,
+      )
     }
     string(options.id, 'register options.id', false)
     const extras = Object.keys(options).filter((key) => !['name', 'id', 'order'].includes(key))
@@ -220,10 +247,19 @@ export function installTuiSlots(ctx, options = {}) {
     if (typeof order !== 'number' || !Number.isFinite(order)) {
       throw new Error('tuiSlots.register: order must be a finite number')
     }
-    if (contributions.has(options.id)) {
-      throw new Error(`tuiSlots.register: contribution "${options.id}" is already registered`)
+    const key = `${options.name}\u0000${options.id}`
+    if (contributions.has(key)) {
+      throw new Error(
+        `tuiSlots.register: contribution "${options.id}" is already registered in ${options.name}`,
+      )
+    }
+    if (definition.kind === 'single'
+      && [...contributions.values()].some((entry) => entry.slot === options.name)) {
+      throw new Error(`tuiSlots.register: single slot "${options.name}" is already occupied`)
     }
     const entry = {
+      key,
+      slot: options.name,
       id: options.id,
       order,
       sequence: nextSequence++,
@@ -231,14 +267,18 @@ export function installTuiSlots(ctx, options = {}) {
       active: false,
     }
     const setup = () => {
+      if (definition.kind === 'single'
+        && [...contributions.values()].some((candidate) => candidate.slot === entry.slot)) {
+        throw new Error(`tuiSlots.register: single slot "${entry.slot}" is already occupied`)
+      }
       entry.active = true
-      contributions.set(entry.id, entry)
-      publish()
+      contributions.set(entry.key, entry)
+      publish(entry.slot)
       return () => {
         if (!entry.active) return
         entry.active = false
-        if (contributions.get(entry.id) === entry) contributions.delete(entry.id)
-        publish()
+        if (contributions.get(entry.key) === entry) contributions.delete(entry.key)
+        publish(entry.slot)
       }
     }
     const releaseEffect = typeof effectCtx.effect === 'function'
@@ -249,7 +289,7 @@ export function installTuiSlots(ctx, options = {}) {
       update(nextNodes) {
         if (disposed || !entry.active) throw new Error(`tuiSlots: contribution "${entry.id}" is disposed`)
         entry.nodes = validateNodes(nextNodes)
-        publish()
+        publish(entry.slot)
       },
       dispose() {
         if (disposed) return
@@ -261,8 +301,10 @@ export function installTuiSlots(ctx, options = {}) {
   }
 
   function inject(effectCtx, slot, callback) {
-    if (slot !== 'chrome.right') {
-      throw new Error(`tuiSlots.inject: slot "${String(slot)}" is not declared; use chrome.right`)
+    if (SLOT_DEFINITIONS[slot] === undefined) {
+      throw new Error(
+        `tuiSlots.inject: slot "${String(slot)}" is not declared; use ${SLOT_NAMES.join(' or ')}`,
+      )
     }
     if (typeof callback !== 'function') throw new Error('tuiSlots.inject: callback must be a function')
     const setup = () => disposerOf(callback())
@@ -280,9 +322,10 @@ export function installTuiSlots(ctx, options = {}) {
   function list() {
     return SLOT_NAMES.map((slot) => ({
       name: slot,
-      kind: 'list',
-      scope: 'root',
-      occupants: [...contributions.values()].map(({ id, order }) => ({ id, order })),
+      ...SLOT_DEFINITIONS[slot],
+      occupants: [...contributions.values()]
+        .filter((entry) => entry.slot === slot)
+        .map(({ id, order }) => ({ id, order })),
     }))
   }
 

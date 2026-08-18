@@ -384,11 +384,13 @@ fn controller_loop(
                                 name: "commit-helper".into(),
                                 description: "draft a conventional commit from the diff".into(),
                                 config_action: None,
+                                client_command: false,
                             },
                             SkillInfo {
                                 name: "code-review".into(),
                                 description: "structured review of the working tree".into(),
                                 config_action: None,
+                                client_command: false,
                             },
                         ],
                     }));
@@ -859,6 +861,7 @@ fn parse_skills(value: &Value) -> Vec<SkillInfo> {
                 name: name.to_string(),
                 description,
                 config_action: None,
+                client_command: false,
             });
         }
     }

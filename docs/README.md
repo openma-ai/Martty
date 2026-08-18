@@ -8,7 +8,7 @@
 | [agent-setup.md](agent-setup.md) | 面向 AI agent / 自动化脚本的安装、验证与升级步骤 |
 | [tui-palette.v0.schema.json](tui-palette.v0.schema.json) | `tuiTheme.register` protocol `0` |
 | [fixtures/demo-skin.v0.json](fixtures/demo-skin.v0.json) | 阶段 1 gallery 配色 `ember` |
-| [tui-node.v0.schema.json](tui-node.v0.schema.json) | `tuiSlots` 节点协议；`chrome.right` 已开放 |
+| [tui-node.v0.schema.json](tui-node.v0.schema.json) | `tuiSlots` 节点协议；右栏与 composer 上/下两个 dock 已开放 |
 | [fixtures/demo-surface.v0.json](fixtures/demo-surface.v0.json) | TuiNode gallery 快照 |
 
 实现必须服从 [plugins.md](plugins.md) 与已开放的 schema。换 compositor（Rust 或 JS）不得改插件字节。

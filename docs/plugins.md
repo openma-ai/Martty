@@ -2,8 +2,10 @@
 
 第三方只通过这一页上的 API 扩展 TUI。没有列出的对象、fd、方法，宿主不提供。实现时做成调不到，而不是写在注释里请人别碰。
 
-**当前开放：** 配色包、根级右栏 `chrome.right`、本地命令/语义 overlay，以及
-标准 ACP 当前 Session 的配置目录。右栏接收结构化 `TuiNode` 树，不进入会话日志。
+**当前开放：** 配色包、根级右栏 `chrome.right`、composer 上方的
+`conversation.input.dock`、composer 下方的 `conversation.composer.dock`、本地命令/
+语义 overlay，以及标准 ACP 当前 Session 的配置、Plan 与统计目录。三个 Slot 都是
+可叠加的 list seat，接收结构化 `TuiNode` 树，不进入会话日志。
 
 ## 当前可调用：`acpSessionConfig`
 
@@ -31,6 +33,25 @@ export function apply(ctx) {
 
 这是任意 ACP option 的目录/状态服务，不认识 effort、模型或具体皮肤；插件从
 `list()` 中选择它需要联动的 option id。
+
+## 当前可调用：`acpSessionPlan`
+
+`acpSessionPlan` 从标准 ACP `session/update` 的 `plan`、`plan_update` 与
+`plan_removed` 折叠结构化状态，提供 `list()`、`current()` 和
+`subscribe(listener)`。插件无需解析 raw ACP，也不依赖 DSH 私有 Plan 消息。
+
+内置 `plan-view` Client Plugin 正是普通消费者：它占用
+`conversation.input.dock` 显示当前
+进度摘要，并注册本地 `/plan-view`，通过 `tuiOverlay.openView()` 打开完整清单。
+`/plan` 仍由 agent 的标准 command / mode 语义处理，两者不冲突。
+
+## 当前可调用：`acpSessionStats`
+
+`acpSessionStats` 从标准 ACP prompt response usage、文本/思考首 token、tool call 与
+resume usage 更新折叠当前 Session 的 token、cache、turn、step、LLM、tool、TTFT 与
+吞吐统计，提供 `current()` 和 `subscribe(listener)`。内置 `stats-view` Client Plugin
+只是它的默认消费者，向 `conversation.composer.dock` 注入紧凑统计行；Rust 壳不再
+直接拥有这块业务 UI。动态插件也可以注入同一服务并选择自己的呈现方式。
 
 ## 当前可调用：`tuiTheme`
 
@@ -94,9 +115,12 @@ ctx.tuiTheme.register(palette, { activate: true })
 
 不需要监听主题或手写回切；`/theme` 管理整个 Plugin 的替换。
 
-## 当前可调用：`tuiSlots` / `chrome.right`
+## 当前可调用：`tuiSlots`
 
-宿主声明根级 list slot `chrome.right`。插件先 `inject` 等待槽位，再用稳定的
+宿主声明三个 list slot：根级独立右栏 `chrome.right`、位于 composer 上方的
+`conversation.input.dock`，以及紧贴 composer 下方的
+`conversation.composer.dock`。插件先
+`inject` 等待槽位，再用稳定的
 contribution id `register` 任意 `TuiNode[]` 组合：`group`、`markdown`、
 `reasoning`、`user`、`generic`、`terminal`、`diff`、`image`、`notice`、
 `unknown`。完整字段见 [tui-node.v0.schema.json](tui-node.v0.schema.json)。
@@ -122,6 +146,17 @@ export function apply(ctx) {
 卸载插件会撤销 contribution，最后一个 contribution 消失时右栏立刻收起。
 终端过窄时宿主暂时隐藏右栏但保留状态，变宽后自动恢复。节点 id 在一个
 contribution 内稳定即可，聚合器会用 contribution id 做命名空间。
+
+两个 composer dock 使用相同 API，只需把 `name` 改为对应 slot。需要独立一行或可能
+换行的 Plan、任务、Goal 放 `conversation.input.dock`；环境统计等紧凑读数放
+`conversation.composer.dock`。完整内容应由本地 command 打开 overlay，而不是把
+多行内容塞进紧凑统计席。
+
+## 当前可调用：`tuiOverlay`
+
+`openSlider(options, handlers)` 提供数值滑条；`openView({ id, title, nodes })` 提供
+只读 `TuiNode[]` 弹窗。两者共享一个 modal 席位，返回的 `close()` 和插件 Fiber 同
+生命周期。View 支持上下翻阅，Enter 提交、Esc 取消；它是通用节点视图，不认识 Plan。
 
 ### Host 数据与轮询
 

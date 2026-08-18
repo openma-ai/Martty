@@ -58,16 +58,11 @@ function validateCommand(options) {
  */
 export function installTuiCommands(ctx, options = {}) {
   const entries = new Map()
-  const queue = []
   let send = typeof options.notify === 'function' ? options.notify : undefined
 
-  function emit(method, params) {
-    if (typeof send === 'function') send(method, params)
-    else queue.push({ method, params })
-  }
-
   function publish() {
-    emit(CORDIS_METHODS.commandsUpdate, {
+    if (typeof send !== 'function') return
+    send(CORDIS_METHODS.commandsUpdate, {
       protocol: PROTOCOL,
       commands: [...entries.values()].map((entry) => ({ ...entry.command })),
     })
@@ -76,7 +71,7 @@ export function installTuiCommands(ctx, options = {}) {
   function bindNotify(notify) {
     if (typeof notify !== 'function') throw new Error('tuiCommands.bindNotify: notify must be a function')
     send = notify
-    for (const item of queue.splice(0)) send(item.method, item.params)
+    publish()
   }
 
   function register(effectCtx, options, handler) {

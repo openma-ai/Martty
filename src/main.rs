@@ -276,6 +276,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| format!("dsh-{}", app::timestamp()));
 
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
+    install_termination_handler(bus_tx.clone())?;
 
     // `--demo` / `--demo-skin`: JSON-RPC attach for palette + scripted turns.
     // Live: official ACP on those fds (Node mux) or a spawned agent.
@@ -488,6 +489,29 @@ fn enter_tui() -> Result<()> {
         stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn install_termination_handler(tx: mpsc::Sender<AppEvent>) -> Result<()> {
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGHUP,
+    ])?;
+    std::thread::Builder::new()
+        .name("termination-signal".into())
+        .spawn(move || {
+            if signals.forever().next().is_some() {
+                let _ = tx.send(AppEvent::Terminate);
+            }
+        })
+        .context("spawn termination signal handler")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn install_termination_handler(_tx: mpsc::Sender<AppEvent>) -> Result<()> {
     Ok(())
 }
 
