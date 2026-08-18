@@ -100,23 +100,19 @@ jobs:
       - name: Install musl linker
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
-      - name: Install aarch64 musl cross toolchain
-        # Ubuntu musl-tools only ships the host (x86_64) musl-gcc wrapper, so
-        # the aarch64 linker must come from the musl.cc prebuilt toolchain.
-        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/aarch64-linux-musl-cross.tgz" https://musl.cc/aarch64-linux-musl-cross.tgz
-          tar xzf "$RUNNER_TEMP/aarch64-linux-musl-cross.tgz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
       - run: rustup target add ${{ matrix.rust-target }}
       - name: Build
-        # -fno-use-linker-plugin: the musl.cc ld cannot dlopen the LTO plugin
-        # that gcc passes for the project's fat-LTO (lto = true) objects. The
-        # flag only affects this musl target; other matrix entries ignore it.
-        env:
-          CC_aarch64_unknown_linux_musl: aarch64-linux-musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C link-arg=-fno-use-linker-plugin
-        run: cargo build --release --locked --target ${{ matrix.rust-target }}
+        # The aarch64 musl target links fully self-contained from the rust
+        # sysroot (bundled crt objects + musl libc.a), and the only cc
+        # dependency (iana-time-zone-haiku) is Haiku-only, so no external
+        # C toolchain is needed: point the arm64 link at the toolchain's
+        # bundled rust-lld. Other matrix entries build their own targets.
+        run: |
+          if [ "${{ matrix.platform }}" = "linux" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+            HOST="$(rustc -vV | sed -n 's/^host: //p')"
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/rust-lld"
+          fi
+          cargo build --release --locked --target "${{ matrix.rust-target }}"
       - name: Verify Linux binary is statically linked
         if: matrix.platform == 'linux'
         run: node scripts/check-static-elf.mjs "${{ matrix.binary }}"
