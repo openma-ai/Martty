@@ -52,6 +52,36 @@ test('runs the packaged binary in an Ubuntu 20.04 amd64 container', (t) => {
   ])
 })
 
+test('runs the packaged binary in an Ubuntu 20.04 arm64 container', (t) => {
+  const item = fixture()
+  t.after(() => rmSync(item.root, { recursive: true, force: true }))
+
+  const result = spawnSync(process.execPath, [smoke, item.binary], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DSH_TUI_CONTAINER_BIN: item.runtime,
+      DSH_TUI_TEST_CONTAINER_ARGS: item.argsLog,
+      DSH_TUI_SMOKE_PLATFORM: 'linux/arm64',
+    },
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(readFileSync(item.argsLog, 'utf8').trim().split('\n'), [
+    'run',
+    '--rm',
+    '--platform',
+    'linux/arm64',
+    '--network',
+    'none',
+    '--volume',
+    `${path.resolve(item.binary)}:/usr/local/bin/dsh-tui:ro`,
+    'ubuntu:20.04',
+    '/usr/local/bin/dsh-tui',
+    '--help',
+  ])
+})
+
 test('fails when the packaged binary cannot run in old Linux', (t) => {
   const item = fixture()
   t.after(() => rmSync(item.root, { recursive: true, force: true }))

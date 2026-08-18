@@ -74,7 +74,15 @@ jobs:
             rust-target: x86_64-unknown-linux-musl
             platform: linux
             arch: x64
+            smoke-platform: linux/amd64
             binary: target/x86_64-unknown-linux-musl/release/dsh-tui
+          - name: linux-arm64
+            runner: ubuntu-24.04
+            rust-target: aarch64-unknown-linux-musl
+            platform: linux
+            arch: arm64
+            smoke-platform: linux/arm64
+            binary: target/aarch64-unknown-linux-musl/release/dsh-tui
           - name: win32-x64
             runner: windows-2025
             rust-target: x86_64-pc-windows-msvc
@@ -99,6 +107,8 @@ jobs:
         run: node scripts/check-static-elf.mjs "${{ matrix.binary }}"
       - name: Smoke test Linux binary on Ubuntu 20.04
         if: matrix.platform == 'linux'
+        env:
+          DSH_TUI_SMOKE_PLATFORM: ${{ matrix.smoke-platform }}
         run: node scripts/smoke-old-linux.mjs "${{ matrix.binary }}"
       - name: Stage native binary
         run: >-
@@ -129,7 +139,7 @@ jobs:
           path: npm/vendor
           merge-multiple: true
       - name: Restore executable permissions
-        run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui
+        run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui npm/vendor/linux-arm64/dsh-tui
       - run: node scripts/package-native.mjs verify --vendor-root npm/vendor
       - name: Pack npm packages
         run: |

@@ -97,6 +97,7 @@ credential, session, theme, and demo options.
 | `darwin-arm64` | `vendor/darwin-arm64/dsh-tui` |
 | `darwin-x64` | `vendor/darwin-x64/dsh-tui` |
 | `linux-x64` | `vendor/linux-x64/dsh-tui` |
+| `linux-arm64` | `vendor/linux-arm64/dsh-tui` |
 | `win32-x64` | `vendor/win32-x64/dsh-tui.exe` |
 
 If installation succeeds but launch reports `no native binary for ...`, confirm
