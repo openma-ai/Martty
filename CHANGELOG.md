@@ -14,6 +14,19 @@ All notable changes to this project are documented here. The project follows
 
 ### Changed
 
+- `/keys` is no longer a hand-written text wall: the shortcut map is now
+  derived from the keymap table (`src/input/keymap.rs`) and rendered as
+  markdown through the transcript's markdown pipeline — one GFM
+  box-drawing table per group (`send · interrupt`, `scroll · navigate`,
+  `edit · readline`, `app shortcuts`, `mouse`) with `[empty]`/`[typing]`
+  context tags for dual-use keys and platform-appropriate chord spellings
+  (⌘/⌥ vs ctrl). Notices gained a markdown render path (`/keys` is the
+  first consumer); tables truncate with an ellipsis on narrow terminals
+  instead of breaking mid-line. Anti-drift tests assert every `Action` is
+  documented and that every displayed chord resolves back to its action
+  through `classify()`; previously undocumented bindings (`ctrl+q`,
+  `shift+enter`, `shift+tab`, `ctrl+v`, …) are now listed. `/help` stays
+  the command overview; `/keys` is the complete key map.
 - `/resume` picker rows now lead with the session's human handle — the
   harness-generated `session/title` (falling back to the first real prompt)
   — instead of the full UUID; the meta column carries the 8-char id prefix,

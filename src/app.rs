@@ -3904,54 +3904,11 @@ usage (incl. cache hits), and the turn end reason.";
     }
 
     fn push_keys(&mut self) {
-        if self.locale == Locale::Zh {
-            let os = if cfg!(target_os = "macos") {
-                "\
-  macOS：⌘←/⌘→ 行首/行尾 · ⌥←/⌥→ 按词移动 · ⌘⌫ 删除到行首 · ⌥⌫ 删除前一词
-         ⌘↑/⌘↓ 到对话顶部/底部；所有终端均读取物理 ⌘/⌥ 状态"
-            } else {
-                "\
-  Linux/Windows：ctrl+←/→ 按词移动 · ctrl+⌫ 或 alt+⌫ 删除前一词"
-            };
-            let text = format!(
-                "\
-快捷键
-  enter 发送 · ctrl+x 立即发送 · esc 取消 · ctrl+c 清草稿/连按退出
-  空输入时 ↑ 调历史 · tab 补全 / 命令
-  option+a 切 Agent · ctrl+p 模型 · ctrl+t 主题 · ctrl+o 展开 · ctrl+l 清屏 · ctrl+. 快捷键
-  pgup/pgdn 翻页 · home/end 顶部/底部 · 空输入时 ctrl+u/ctrl+d 半页
-  readline：home/ctrl+a 行首 · end/ctrl+e 行尾 · ctrl+b/ctrl+f 移动 · ctrl+k/ctrl+u 删除
-            ctrl+w 删除前一词 · 输入时 ctrl+d 向前删除
-{os}
-  点击工具展开/折叠 · 滚轮滚动对话
-  拖动选择并复制 · 双击复制单词 · shift+拖动使用终端原生选择"
-            );
-            self.transcript.push_notice(NoticeLevel::Info, text);
-            return;
-        }
-        let os = if cfg!(target_os = "macos") {
-            "\
-  macOS: ⌘←/⌘→ line ends · ⌥←/⌥→ word hops · ⌘⌫ kill to start · ⌥⌫ word back
-         ⌘↑/⌘↓ transcript top/tail — physical ⌘/⌥ are read natively (CG probe),
-         so these work in every terminal; kitty-keyboard · esc-b/f also mapped"
-        } else {
-            "\
-  linux/windows: ctrl+←/→ word hops · ctrl+⌫ or alt+⌫ deletes a word back"
-        };
-        let text = format!(
-            "\
-keys — grok-build homage set
-  enter send · ctrl+x send-now · esc interrupts · ctrl+c clears / 2× quits
-  ↑ history (empty prompt) · tab completes /commands
-  option+a cycle agent · ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
-  pgup/pgdn page · home/end top/tail · ctrl+u/ctrl+d half-page (empty prompt)
-  readline: home/ctrl+a line start · end/ctrl+e line end · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
-            ctrl+w word back · ctrl+d delete forward (while typing)
-{os}
-  click tool expands/collapses · wheel scrolls the conversation
-  drag select-copies · 2×click word-copies · shift+drag native select"
+        let text = crate::input::keymap::keys_markdown(
+            self.locale == Locale::Zh,
+            cfg!(target_os = "macos"),
         );
-        self.transcript.push_notice(NoticeLevel::Info, text);
+        self.transcript.push_markdown(text);
     }
 
     fn push_session_info(&mut self) {
@@ -4573,6 +4530,34 @@ mod resume_tests {
         assert!(
             text.contains("resumed dsh-past"),
             "resume notice shown:\n{text}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keys_slash_pushes_the_markdown_shortcut_table() {
+        let root = tmp_root("keys");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+
+        app.run_slash("keys", "", &ctl);
+
+        let text = app
+            .transcript
+            .lines(&Theme::dark(), 80, ' ')
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<String>();
+        assert!(text.contains("keys — shortcut map"), "/keys title:\n{text}");
+        assert!(text.contains("ctrl+q"), "quit binding missing:\n{text}");
+        assert!(
+            text.contains("shift+tab") && text.contains("permission"),
+            "permission binding missing:\n{text}"
+        );
+        // Markdown tables paint box-drawing frames through the transcript.
+        assert!(text.contains('┌') && text.contains('│'), "no table frame:\n{text}");
+        assert!(
+            !text.contains("· keys —"),
+            "keys must not render as a plain notice:\n{text}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
