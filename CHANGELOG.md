@@ -9,7 +9,8 @@ All notable changes to this project are documented here. The project follows
 
 - Linux x64 packages now ship a statically linked musl binary instead of a
   binary tied to the Ubuntu 24.04 glibc version. Release CI verifies the ELF
-  artifact has no dynamic program interpreter before packaging it.
+  artifact has no dynamic program interpreter and runs it on Ubuntu 20.04
+  before packaging it.
 
 ### Changed
 
