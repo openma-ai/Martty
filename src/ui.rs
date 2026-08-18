@@ -3,8 +3,9 @@
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation};
 use ratatui::Frame;
+use tui_widget_list::{ListBuilder, ListState, ListView};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, RunState};
@@ -1506,35 +1507,46 @@ fn pad_to_width(s: &str, width: usize) -> String {
     }
 }
 
-fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
+fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
+    let theme = app.theme;
     let Some(picker) = &app.picker else {
         return;
     };
-    let theme = app.theme;
     // The active model is identified by provider + id because multiple
     // coding plans can expose the same upstream model id.
+    let kind = picker.kind;
+    let title = picker.title.clone();
+    let sel = picker.sel;
+    let items = picker.items.clone();
+    // Current-identity ids, precomputed so the row builder below never
+    // borrows `app` (the ListView render needs a mutable picker).
+    let current_model = app.cfg.model.clone();
+    let current_provider = app.cfg.provider.clone();
     let current_mode = app.current_mode();
-    let is_current = |item: &crate::app::PickerItem| match picker.kind {
+    let current_palette = app.active_palette_id.clone();
+    let current_permission = app.current_permission().to_string();
+    let is_current = move |item: &crate::app::PickerItem| match kind {
         crate::app::PickerKind::Model => {
-            item.id == app.cfg.model
+            item.id == current_model
                 && item
                     .provider
                     .as_deref()
-                    .is_none_or(|provider| provider == app.cfg.provider)
+                    .is_none_or(|provider| provider == current_provider)
         }
         crate::app::PickerKind::Mode => item.id == current_mode,
-        crate::app::PickerKind::Theme => item.id == app.active_palette_id,
-        crate::app::PickerKind::Permission => item.id == app.current_permission(),
+        crate::app::PickerKind::Theme => item.id == current_palette,
+        crate::app::PickerKind::Permission => item.id == current_permission,
         crate::app::PickerKind::Effort
         | crate::app::PickerKind::Session
         | crate::app::PickerKind::Subagent
         | crate::app::PickerKind::Auth
         | crate::app::PickerKind::Plugin => false,
     };
-    let h = (picker.items.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    // The popup caps at the screen; `ListView` scrolls the overflow instead
+    // of clipping it out of reach.
+    let h = (items.len() as u16 + 2).min(screen.height.saturating_sub(2));
     // Fit the widest row (marker + padded label + ✓ + meta); cap to the screen.
-    let needed = picker
-        .items
+    let needed = items
         .iter()
         .map(|item| {
             let label_w = item.label.width() + if is_current(item) { 2 } else { 0 };
@@ -1548,17 +1560,29 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
     let y = screen.y + (screen.height - h) / 3;
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
-    let mut lines = Vec::new();
-    for (i, item) in picker.items.iter().enumerate() {
-        let selected = i == picker.sel;
-        let marker = if selected { "▸ " } else { "  " };
-        let style = if selected {
+    let overflow = items.len() as u16 + 2 > h;
+    let item_count = items.len();
+    let mut list_state = ListState::new_with_index(Some(sel.min(items.len().saturating_sub(1))));
+    let builder = ListBuilder::new(move |ctx| {
+        let item = &items[ctx.index];
+        let selected = ctx.is_selected;
+        // Full-row selection: the soft chip background spans the whole line
+        // (marker, label, meta, and the tail), so the highlight reads as one
+        // row — not just the label column.
+        let base = if selected {
             Style::default()
                 .fg(theme.brand)
+                .bg(theme.chip_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
+        let marker_style = if selected {
+            Style::default().fg(theme.brand).bg(theme.chip_bg)
+        } else {
+            Style::default().fg(theme.brand)
+        };
+        let marker = if selected { "▸ " } else { "  " };
         // The current model/mode gets a ✓ pinned to its label — it survives
         // narrow terminals, unlike a right-edge tag.
         let label = if is_current(item) {
@@ -1567,27 +1591,64 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
             item.label.clone()
         };
         let mut spans = vec![
-            Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(pad_to_width(&label, crate::app::PICKER_LABEL_COL), style),
+            Span::styled(marker.to_string(), marker_style),
+            Span::styled(pad_to_width(&label, crate::app::PICKER_LABEL_COL), base),
         ];
         if !item.meta.is_empty() {
-            spans.push(Span::styled(
-                item.meta.clone(),
-                Style::default().fg(theme.caption),
-            ));
+            // On the highlighted row the meta steps up from caption gray so
+            // the whole row reads selected.
+            let meta_style = if selected {
+                Style::default().fg(theme.fg).bg(theme.chip_bg)
+            } else {
+                Style::default().fg(theme.caption)
+            };
+            spans.push(Span::styled(item.meta.clone(), meta_style));
         }
-        lines.push(Line::from(spans));
-    }
+        // Pad the remaining row width so the selection background reaches
+        // the right edge (gap after the label, tail after the meta).
+        let width: usize = spans.iter().map(|s| s.width()).sum();
+        let fill = ctx.cross_axis_size as usize;
+        if width < fill {
+            let fill_style = if selected {
+                Style::default().bg(theme.chip_bg)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(" ".repeat(fill - width), fill_style));
+        }
+        (Line::from(spans), 1)
+    });
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(
-            picker.title.clone(),
+            title,
             Style::default().fg(theme.caption),
         ))
         .style(Style::default().bg(theme.panel));
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    let mut list = ListView::new(builder, item_count)
+        .block(block)
+        // Keep the picker's wrap-around ↑/↓ semantics.
+        .infinite_scrolling(true);
+    if overflow {
+        // The scrollbar's ▲/▼ replace the right border corners, so the
+        // popup keeps its rounded frame while showing position.
+        list = list.scrollbar(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(theme.border)),
+        );
+    }
+    f.render_stateful_widget(list, area, &mut list_state);
+    // The viewport is the source of truth for what is visible; selection
+    // moves (mouse later, programmatic now) land back in the picker.
+    if let Some(picker) = &mut app.picker {
+        if let Some(selected) = list_state.selected {
+            picker.sel = selected;
+        }
+        // Page keys jump a screenful: the rows the popup actually shows.
+        app.picker_page_rows = h.saturating_sub(2) as usize;
+    }
 }
 
 fn draw_permission_ask(f: &mut Frame, app: &App, screen: Rect) {
@@ -2577,6 +2638,114 @@ mod tests {
             ascii_row.chars().count() >= 2 + PICKER_LABEL_COL + 8,
             "label column padded to {PICKER_LABEL_COL}"
         );
+    }
+
+    #[test]
+    fn picker_window_follows_the_selection_and_shows_a_scrollbar() {
+        use crate::app::{Picker, PickerItem, PickerKind};
+        let mut app = test_app();
+        app.show_banner = false;
+        let items: Vec<PickerItem> = (0..40)
+            .map(|i| PickerItem {
+                id: format!("sess-{i:02}"),
+                label: format!("session {i:02}"),
+                meta: format!("meta {i:02}"),
+                provider: None,
+            })
+            .collect();
+        app.picker = Some(Picker {
+            kind: PickerKind::Session,
+            title: " resume session · 40 sessions · enter select · esc close ".into(),
+            sel: 0,
+            items,
+        });
+
+        // 24-row terminal: the popup caps at 22 rows and must scroll.
+        let top = dump_frame(&mut app, 100, 24);
+        assert!(top.contains("session 00"), "head row visible:\n{top}");
+        assert!(!top.contains("session 39"), "tail not visible yet:\n{top}");
+        assert!(top.contains("▲"), "scroll affordance shown:\n{top}");
+
+        // Jump to the tail: the window follows, so the last row is
+        // reachable instead of being clipped out of the paragraph.
+        app.picker.as_mut().unwrap().sel = 39;
+        let tail = dump_frame(&mut app, 100, 24);
+        assert!(tail.contains("session 39"), "tail row visible:\n{tail}");
+        assert!(!tail.contains("session 00"), "head scrolled away:\n{tail}");
+        assert!(tail.contains("▼"), "scroll affordance shown:\n{tail}");
+        assert_eq!(app.picker_page_rows, 20, "page size = visible rows");
+    }
+
+    #[test]
+    fn picker_selection_highlights_the_whole_row() {
+        use crate::app::{Picker, PickerItem, PickerKind};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = test_app();
+        app.show_banner = false;
+        app.picker = Some(Picker {
+            kind: PickerKind::Session,
+            title: " resume session · 2 sessions ".into(),
+            sel: 0,
+            items: vec![
+                PickerItem {
+                    id: "a".into(),
+                    label: "first".into(),
+                    meta: "meta a".into(),
+                    provider: None,
+                },
+                PickerItem {
+                    id: "b".into(),
+                    label: "second".into(),
+                    meta: "meta b".into(),
+                    provider: None,
+                },
+            ],
+        });
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let buf = terminal.backend().buffer();
+        let chip = app.theme.chip_bg;
+        // Cells hold single symbols, so search rows by joining them first.
+        let row_of = |needle: &str| {
+            (0..20u16)
+                .find(|&r| {
+                    (0..80u16)
+                        .map(|c| buf[(c, r)].symbol())
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap_or_else(|| panic!("row with {needle:?} not found"))
+        };
+        // The selected row: marker, label, meta and the tail padding all
+        // carry the chip background — the highlight spans the whole line.
+        let sel_row = row_of("first");
+        let marker_col = (0..80u16)
+            .find(|&c| buf[(c, sel_row)].symbol() == "▸")
+            .expect("selection marker");
+        let right_border = (marker_col..80u16)
+            .find(|&c| buf[(c, sel_row)].symbol() == "│")
+            .expect("popup right border");
+        for c in marker_col..right_border {
+            assert_eq!(
+                buf[(c, sel_row)].style().bg,
+                Some(chip),
+                "selected row cell {c} carries the highlight bg"
+            );
+        }
+        // The unselected row keeps the panel background.
+        let other_row = row_of("second");
+        for c in 0..80u16 {
+            let cell = &buf[(c, other_row)];
+            if !cell.symbol().trim().is_empty() {
+                assert_ne!(
+                    cell.style().bg,
+                    Some(chip),
+                    "unselected row cell {c} must not carry the highlight bg"
+                );
+            }
+        }
     }
 
     #[test]
