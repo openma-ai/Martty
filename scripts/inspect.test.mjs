@@ -11,15 +11,21 @@ import * as themePlugin from '../npm/lib/tui-theme.js'
 import * as commandsPlugin from '../npm/lib/tui-commands.js'
 import * as overlayPlugin from '../npm/lib/tui-overlay.js'
 import * as configPlugin from '../npm/lib/acp-session-config.js'
+import * as planPlugin from '../npm/lib/acp-session-plan.js'
+import * as statsPlugin from '../npm/lib/acp-session-stats.js'
 
 const { installAcpSessionConfig } = configPlugin
+const { installAcpSessionPlan } = planPlugin
+const { installAcpSessionStats } = statsPlugin
 
 const {
   attachTuiClient,
   commandInspectProvider,
   configOptionsInspectProvider,
   overlayInspectProvider,
+  planInspectProvider,
   slotInspectProvider,
+  statsInspectProvider,
   themeInspectProvider,
 } = inspectPlugin
 const { installTuiSlots } = slotsPlugin
@@ -116,21 +122,21 @@ test('dynamic Theme Plugins can update their owned background through the regist
   assert.equal(theme.active(), 'default')
 })
 
-test('Slots.list reports the chrome.right contract for dynamic Client plugins', () => {
+test('Slots.list reports root shell contracts for dynamic Client plugins', () => {
   assert.equal(typeof slotInspectProvider, 'function')
   if (typeof slotInspectProvider !== 'function') return
   const slots = installTuiSlots(makeCtx())
 
   const listed = slotInspectProvider(slots).query('list')
 
-  assert.deepEqual(listed.slots, [{
-    name: 'chrome.right',
-    kind: 'list',
-    scope: 'root',
-    occupants: [],
-  }])
+  assert.deepEqual(listed.slots, [
+    { name: 'chrome.right', kind: 'list', scope: 'root', occupants: [] },
+    { name: 'conversation.input.dock', kind: 'list', scope: 'session', occupants: [] },
+    { name: 'conversation.composer.dock', kind: 'list', scope: 'session', occupants: [] },
+  ])
   assert.deepEqual(listed.apply.inject, ['tuiSlots'])
-  assert.match(listed.apply.register, /chrome\.right/)
+  assert.match(listed.apply.register, /slotName/)
+  assert.match(listed.apply.note, /conversation\.input\.dock/)
   assert.deepEqual(listed.runtime.inject, ['timer'])
   assert.match(listed.runtime.poll, /ctx\.interval/)
   assert.match(listed.runtime.callHost, /host\.call/)
@@ -199,7 +205,43 @@ test('Overlay.active reports the slider options, handlers, and ownership contrac
     'value', 'mark', 'controller',
   ])
   assert.equal(described.api.openSlider.returns.properties.close.role, 'close')
-  assert.equal(described.api.active.returns, 'Slider | null')
+  assert.deepEqual(described.api.openView.options.required, ['id', 'title', 'nodes'])
+  assert.equal(described.api.active.returns, 'Slider | View | null')
+})
+
+test('Plans.current reports standard ACP structured plans to Client plugins', () => {
+  assert.equal(typeof planInspectProvider, 'function')
+  if (typeof planInspectProvider !== 'function') return
+  const plans = installAcpSessionPlan(makeCtx())
+  plans.observeClient({ jsonrpc: '2.0', id: 41, method: 'session/new', params: {} })
+  plans.observeAgent({ jsonrpc: '2.0', id: 41, result: { sessionId: 's-41' } })
+  plans.observeAgent({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: 's-41',
+      update: {
+        sessionUpdate: 'plan',
+        entries: [{ content: 'Ship', status: 'in_progress' }],
+      },
+    },
+  })
+
+  const described = planInspectProvider(plans).query('current')
+  assert.equal(described.current.entries[0].content, 'Ship')
+  assert.deepEqual(described.api.inject, ['acpSessionPlan'])
+  assert.equal(described.api.subscribe.returns.role, 'dispose')
+})
+
+test('Stats.current reports the standard ACP usage and timing projection', () => {
+  assert.equal(typeof statsInspectProvider, 'function')
+  if (typeof statsInspectProvider !== 'function') return
+  const stats = installAcpSessionStats(makeCtx(), { now: () => 0 })
+  const described = statsInspectProvider(stats).query('current')
+  assert.equal(described.current.usage.input, 0)
+  assert.deepEqual(described.api.inject, ['acpSessionStats'])
+  assert.equal(described.api.current.call, 'ctx.acpSessionStats.current()')
+  assert.match(described.api.subscribe.call, /subscribe/)
 })
 
 test('ConfigOptions.list reports the live ACP Session options and mutation contract', () => {
@@ -317,6 +359,67 @@ test('dynamic Client commands and overlays share the Plugin lifecycle', async ()
   applied.dispose()
   assert.deepEqual(commands.list(), [])
   assert.equal(overlay.active(), null)
+})
+
+test('dynamic Client halves can read ACP plans and open a generic node view', async () => {
+  const plans = installAcpSessionPlan(makeCtx())
+  const overlay = installTuiOverlay(makeCtx())
+  plans.observeClient({ jsonrpc: '2.0', id: 51, method: 'session/new', params: {} })
+  plans.observeAgent({ jsonrpc: '2.0', id: 51, result: { sessionId: 's-51' } })
+  plans.observeAgent({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: 's-51',
+      update: { sessionUpdate: 'plan', entries: [{ content: 'Inspect', status: 'pending' }] },
+    },
+  })
+
+  const applied = await applyClientHalf(
+    `return {
+      inject: ['acpSessionPlan', 'tuiOverlay'],
+      apply(ctx) {
+        const plan = ctx.acpSessionPlan.current()
+        ctx.tuiOverlay.openView({
+          id: 'plan', title: 'Plan',
+          nodes: plan.entries.map((entry, index) => ({
+            id: String(index), kind: 'generic', title: entry.content, body: '',
+          })),
+        })
+      },
+    }`,
+    { acpSessionPlan: plans, tuiOverlay: overlay },
+  )
+
+  assert.equal(overlay.active().kind, 'view')
+  assert.equal(overlay.active().nodes[0].title, 'Inspect')
+  applied.dispose()
+  assert.equal(overlay.active(), null)
+})
+
+test('dynamic Client halves can subscribe to ACP session stats', async () => {
+  const stats = installAcpSessionStats(makeCtx(), { now: () => 0 })
+  let observed
+  const applied = await applyClientHalf(
+    `return {
+      inject: ['acpSessionStats'],
+      apply(ctx) {
+        globalThis.__dshStatsCurrent = ctx.acpSessionStats.current()
+        ctx.acpSessionStats.subscribe((snapshot) => {
+          globalThis.__dshStatsLatest = snapshot
+        })
+      },
+    }`,
+    { acpSessionStats: stats },
+  )
+  observed = globalThis.__dshStatsCurrent
+  assert.equal(observed.usage.input, 0)
+  stats.observeClient({ jsonrpc: '2.0', id: 1, method: 'session/new', params: {} })
+  stats.observeAgent({ jsonrpc: '2.0', id: 1, result: { sessionId: 's-1' } })
+  assert.equal(globalThis.__dshStatsLatest.sessionId, 's-1')
+  applied.dispose()
+  delete globalThis.__dshStatsCurrent
+  delete globalThis.__dshStatsLatest
 })
 
 test('/theme replaces one dynamic Client Plugin with another as a single lifecycle', async () => {
@@ -917,6 +1020,8 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   await ctx.plugin(commandsPlugin)
   await ctx.plugin(overlayPlugin)
   await ctx.plugin(configPlugin)
+  await ctx.plugin(planPlugin)
+  await ctx.plugin(statsPlugin)
   await ctx.plugin(inspectPlugin)
 
   const runner = ctx.get('tuiCordisClientRunner')
@@ -935,7 +1040,7 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(calls[0].method, '_dsh/cordis/inspect/sync')
   assert.deepEqual(calls[0].params.providers.map((provider) => provider.id), [
-    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions',
+    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats',
   ])
 
   await runner.onHost({
@@ -947,7 +1052,7 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   assert.equal(resolved.params.resolution.data.tokens.length, TOKEN_NAMES.length)
 })
 
-test('runner waits for sibling ACP Session config and opens it to dynamic Client halves', async () => {
+test('runner waits for sibling ACP Session services and opens them to dynamic Client halves', async () => {
   const ctx = new Context()
   await ctx.plugin(themePlugin)
   await ctx.plugin(slotsPlugin)
@@ -961,6 +1066,18 @@ test('runner waits for sibling ACP Session config and opens it to dynamic Client
     'the inspect runner must not start before the sibling ACP Session service exists',
   )
   await ctx.plugin(configPlugin)
+  assert.equal(
+    ctx.get('tuiCordisClientRunner'),
+    undefined,
+    'the inspect runner must also wait for standard ACP Plan state',
+  )
+  await ctx.plugin(planPlugin)
+  assert.equal(
+    ctx.get('tuiCordisClientRunner'),
+    undefined,
+    'the inspect runner must also wait for standard ACP Session statistics',
+  )
+  await ctx.plugin(statsPlugin)
   await inspectFiber
   const config = ctx.get('acpSessionConfig')
   config.observeClient({ jsonrpc: '2.0', id: 71, method: 'session/new', params: {} })
@@ -1008,7 +1125,7 @@ test('runner waits for sibling ACP Session config and opens it to dynamic Client
   await new Promise((resolve) => setTimeout(resolve, 0))
 
   assert.deepEqual(calls[0].params.providers.map((provider) => provider.id), [
-    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions',
+    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats',
   ])
 
   await runner.onHost({
@@ -1055,6 +1172,8 @@ test('disposing the sibling runner unloads its running Client halves', async () 
   await ctx.plugin(commandsPlugin)
   await ctx.plugin(overlayPlugin)
   await ctx.plugin(configPlugin)
+  await ctx.plugin(planPlugin)
+  await ctx.plugin(statsPlugin)
   const fiber = ctx.plugin(inspectPlugin)
   await fiber
   const runner = ctx.get('tuiCordisClientRunner')
@@ -1109,6 +1228,8 @@ test('approved code.client mounts as a child Cordis fiber', async () => {
   await ctx.plugin(commandsPlugin)
   await ctx.plugin(overlayPlugin)
   await ctx.plugin(configPlugin)
+  await ctx.plugin(planPlugin)
+  await ctx.plugin(statsPlugin)
   await ctx.plugin(inspectPlugin)
   const mounted = []
   ctx.on('internal/plugin', (fiber) => mounted.push(fiber.name))

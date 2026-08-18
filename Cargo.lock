@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-tui"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -535,6 +535,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "signal-hook",
  "tokio",
  "tokio-util",
  "tui-markdown",

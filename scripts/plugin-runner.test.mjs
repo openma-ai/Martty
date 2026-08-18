@@ -48,6 +48,12 @@ const { installTuiOverlay } = await import(
 const { installAcpSessionConfig } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'acp-session-config.js')).href
 )
+const { installAcpClientEvents } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'acp-client-events.js')).href
+)
+const { installAcpSessionPlan } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'acp-session-plan.js')).href
+)
 const { selectNativeBinary } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'spawn-tui.js')).href
 )
@@ -120,6 +126,21 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
     assert.equal(typeof ctx.get('tuiSlots')?.register, 'function')
     assert.equal(typeof ctx.get('tuiCommands')?.register, 'function')
     assert.equal(typeof ctx.get('tuiOverlay')?.openSlider, 'function')
+    assert.equal(typeof ctx.get('tuiOverlay')?.openView, 'function')
+    assert.equal(typeof ctx.get('acpSessionPlan')?.current, 'function')
+    assert.equal(typeof ctx.get('acpSessionStats')?.current, 'function')
+    assert.equal(
+      ctx.get('tuiCommands')?.list().some((command) => command.name === 'plan-view'),
+      true,
+    )
+    assert.deepEqual(
+      ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.input.dock')?.occupants,
+      [{ id: 'plan-view', order: 0 }],
+    )
+    assert.deepEqual(
+      ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.composer.dock')?.occupants,
+      [{ id: 'stats', order: 0 }],
+    )
   } finally {
     restore()
   }
@@ -229,6 +250,8 @@ function makeCtx({ cordisClientRunner } = {}) {
       if (name === 'tuiCommands') return this.tuiCommands
       if (name === 'tuiOverlay') return this.tuiOverlay
       if (name === 'acpSessionConfig') return this.acpSessionConfig
+      if (name === 'acpSessionPlan') return this.acpSessionPlan
+      if (name === 'acpClientEvents') return this.acpClientEvents
       return undefined
     },
     on() {
@@ -243,7 +266,9 @@ function makeCtx({ cordisClientRunner } = {}) {
   installTuiSlots(ctx)
   installTuiCommands(ctx)
   installTuiOverlay(ctx)
+  installAcpClientEvents(ctx)
   installAcpSessionConfig(ctx)
+  installAcpSessionPlan(ctx)
   return ctx
 }
 

@@ -73,6 +73,7 @@ pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme;
+    app.slot_actions.clear();
     f.render_widget(
         Block::default().style(
             Style::default()
@@ -94,15 +95,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Composer card: input well on top, one meta row (run state + mode /
     // permission chips + model) at the bottom — the old shortcut-hints row
-    // is gone (the tip banner and /keys carry that). A one-row usage footer
-    // (token flow + cache hit rate) sits below on tall enough screens.
+    // is gone (the tip banner and /keys carry that). Client plugins own the
+    // additive docks immediately above and below this native input surface.
     let child_view = app.active_subagent.is_some();
     let composer_h = if child_view {
         1
     } else {
         resolved_composer_height(main, app)
     };
-    let usage_h = if main.height >= 20 { 1 } else { 0 };
+    let input_dock_h =
+        if !child_view && main.height >= 16 && slot_has_nodes(app, "conversation.input.dock") {
+            1
+        } else {
+            0
+        };
+    let composer_dock_h =
+        if !child_view && main.height >= 20 && slot_has_nodes(app, "conversation.composer.dock") {
+            1
+        } else {
+            0
+        };
     let agents_h = if app.subagents.is_empty() { 0 } else { 1 };
     // Keep the conversation visually detached from the composer chrome.
     // This row is intentionally left untouched so the canvas/background
@@ -115,28 +127,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         0
     };
+    let cap_h = input_dock_h + tips_h;
     let chat_h = main
         .height
-        .saturating_sub(composer_h + tips_h + usage_h + agents_h + gap_h);
+        .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + gap_h);
 
     let chat = Rect::new(main.x, main.y, main.width, chat_h);
     let chrome_y = main.y + chat_h + gap_h;
     let agents = Rect::new(main.x, chrome_y, main.width, agents_h);
-    let tips = Rect::new(main.x, chrome_y + agents_h, main.width, tips_h);
-    let composer = Rect::new(main.x, chrome_y + agents_h + tips_h, main.width, composer_h);
-    let usage = Rect::new(
+    let cap = Rect::new(main.x, chrome_y + agents_h, main.width, cap_h);
+    let composer = Rect::new(main.x, chrome_y + agents_h + cap_h, main.width, composer_h);
+    let composer_dock = Rect::new(
         main.x,
-        chrome_y + agents_h + tips_h + composer_h,
+        chrome_y + agents_h + cap_h + composer_h,
         main.width,
-        usage_h,
+        composer_dock_h,
     );
 
     draw_chat(f, app, chat);
     if agents_h > 0 {
         draw_agent_rail(f, app, agents);
     }
-    if tips_h > 0 {
-        draw_tips(f, app, tips);
+    if cap_h > 0 {
+        draw_composer_cap(f, app, cap, input_dock_h > 0);
     }
     // The pet floats on the composer surface's right end; composer text
     // keeps clear of it.
@@ -151,8 +164,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         draw_composer(f, app, composer, pet_pad);
     }
-    if usage_h > 0 {
-        draw_usage_bar(f, app, usage, pet_pad);
+    if composer_dock_h > 0 {
+        draw_composer_dock(f, app, composer_dock, pet_pad);
     }
     if let Some(right) = right {
         draw_right_slot(f, app, right);
@@ -172,6 +185,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_model_picker(f, app, area);
     draw_plugin_slider(f, app, area);
+    draw_plugin_view(f, app, area);
     draw_permission_ask(f, app, area);
     draw_elicitation_form(f, app, area);
 }
@@ -270,14 +284,46 @@ fn draw_plugin_slider(f: &mut Frame, app: &App, screen: Rect) {
     );
 }
 
+fn draw_plugin_view(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(view) = &app.view_overlay else {
+        return;
+    };
+    let theme = app.theme;
+    let width = screen.width.saturating_sub(4).min(84).max(24);
+    let inner_width = width.saturating_sub(2) as usize;
+    let lines = crate::slots::render_nodes(&view.nodes, &theme, inner_width);
+    let height = (lines.len() as u16 + 2)
+        .min(screen.height.saturating_sub(2))
+        .max(4);
+    let area = Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.brand))
+        .title(Span::styled(
+            format!(" {} · esc close ", view.title),
+            Style::default().fg(theme.fg),
+        ))
+        .style(Style::default().bg(theme.panel).fg(theme.fg));
+    f.render_widget(
+        Paragraph::new(lines)
+            .scroll((view.scroll.min(u16::MAX as usize) as u16, 0))
+            .block(block),
+        area,
+    );
+}
+
 /// Reserve a root-level right rail only while a plugin has content. Narrow
 /// terminals keep the original full-width shell and reveal the rail again
 /// automatically when enough columns are available.
 fn shell_areas(area: Rect, app: &App) -> (Rect, Option<Rect>) {
-    let has_nodes = app
-        .right_slot
-        .as_ref()
-        .is_some_and(|snapshot| !snapshot.nodes.is_empty());
+    let has_nodes = slot_has_nodes(app, "chrome.right");
     if !has_nodes || area.width < 88 {
         return (area, None);
     }
@@ -288,7 +334,7 @@ fn shell_areas(area: Rect, app: &App) -> (Rect, Option<Rect>) {
 }
 
 fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
-    let Some(snapshot) = &app.right_slot else {
+    let Some(snapshot) = app.slot_snapshots.get("chrome.right") else {
         return;
     };
     let theme = app.theme;
@@ -691,10 +737,10 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
-/// Usage footer below the composer: input/output token flow, cache hit rate,
-/// and reasoning tokens. Rendered on the base background so it reads as a
-/// status strip distinct from the composer panel above it.
-fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
+/// Additive Client-plugin dock below the native composer. Contributions are
+/// compact sections in registration order; low-priority tail sections simply
+/// do not fit on narrow terminals, matching the Web composer's stats dock.
+fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
     f.render_widget(
         Block::default().style(Style::default().bg(app.canvas_background_color())),
@@ -709,139 +755,106 @@ fn draw_usage_bar(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
     if inner.width < 12 {
         return;
     }
-    let u = app.displayed_transcript().usage;
-    let s = app.displayed_transcript().stats;
-
-    let lbl = Style::default().fg(theme.caption);
-    let val = Style::default().fg(theme.fg_secondary);
-    let sep = Style::default().fg(theme.border);
-
-    // Sections are built in display order with a priority; at narrow widths
-    // the lowest-priority sections are dropped so the bar never clips.
-    let mut sections: Vec<(u32, Vec<Span>)> = Vec::new();
-
-    if u.input > 0 || u.output > 0 {
-        let mut sp = Vec::new();
-        sp.push(Span::styled(
-            app.locale.tr("Input ", "输入 ").to_string(),
-            lbl,
-        ));
-        sp.push(Span::styled(format!("{} tok", fmt_tokens(u.input)), val));
-        sp.push(Span::styled(
-            app.locale.tr(" • Output ", " • 输出 ").to_string(),
-            lbl,
-        ));
-        sp.push(Span::styled(format!("{} tok", fmt_tokens(u.output)), val));
-        sections.push((0, sp));
-    }
-
-    if s.turns > 0 || s.steps > 0 {
-        let mut sp = Vec::new();
-        sp.push(Span::styled(
-            if app.locale == crate::locale::Locale::Zh {
-                format!("{} 轮", s.turns)
-            } else {
-                format!("{} turn{}", s.turns, if s.turns == 1 { "" } else { "s" })
-            },
-            val,
-        ));
-        sp.push(Span::styled(
-            if app.locale == crate::locale::Locale::Zh {
-                format!(" • {} 步", s.steps)
-            } else {
-                format!(" • {} step{}", s.steps, if s.steps == 1 { "" } else { "s" })
-            },
-            val,
-        ));
-        sections.push((1, sp));
-    }
-
-    if u.input > 0 {
-        let rate = (u.cached as f64 / u.input as f64).min(1.0);
-        let mut sp = Vec::new();
-        sp.push(Span::styled(
-            app.locale.tr("Cache hit ", "缓存命中 ").to_string(),
-            lbl,
-        ));
-        sp.push(Span::styled(
-            format!("{:.0}%", rate * 100.0),
-            Style::default()
-                .fg(theme.brand_soft)
-                .add_modifier(Modifier::BOLD),
-        ));
-        sections.push((2, sp));
-    }
-
-    if s.turn_millis > 0 {
-        let mut sp = Vec::new();
-        sp.push(Span::styled("LLM ".to_string(), lbl));
-        sp.push(Span::styled(fmt_duration_ms(s.llm_millis()), val));
-        sp.push(Span::styled(
-            app.locale.tr(" • Tool call ", " • 工具调用 ").to_string(),
-            lbl,
-        ));
-        sp.push(Span::styled(fmt_duration_ms(s.tool_millis), val));
-        sections.push((3, sp));
-    }
-
-    if s.ttft_count > 0 || u.output > 0 {
-        let tps = tok_per_sec(u.output, s.llm_millis());
-        let mut sp = Vec::new();
-        sp.push(Span::styled(
-            app.locale.tr("TTFT avg ", "平均 TTFT ").to_string(),
-            lbl,
-        ));
-        sp.push(Span::styled(fmt_ttft(s.ttft_avg_millis()), val));
-        if tps > 0 {
-            sp.push(Span::styled(" • ".to_string(), lbl));
-            sp.push(Span::styled(format!("{tps} tok/s"), val));
-        }
-        sections.push((4, sp));
-    }
-
-    // Drop the least-important sections until everything fits the pane.
-    const SEP_W: usize = 3; // " | "
-    while sections.len() > 1 {
-        let total: usize = sections
-            .iter()
-            .map(|(_, sp)| span_widths(sp))
-            .sum::<usize>()
-            + (sections.len() - 1) * SEP_W;
-        if total <= inner.width as usize {
-            break;
-        }
-        let max_pri = sections.iter().map(|(p, _)| *p).max().unwrap_or(0);
-        if let Some(idx) = sections.iter().position(|(p, _)| *p == max_pri) {
-            sections.remove(idx);
-        }
-    }
-
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
-    if sections.is_empty() {
-        spans.push(Span::styled(
-            if app.active_subagent.is_some() {
-                app.locale.tr("no stats yet", "暂无统计").to_string()
-            } else {
-                app.locale
-                    .tr("no stats yet — send a prompt", "暂无统计 — 发送一条消息")
-                    .to_string()
-            },
-            lbl,
-        ));
-    } else {
-        for (i, (_, mut sp)) in sections.into_iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(" | ".to_string(), sep));
-            }
-            spans.append(&mut sp);
-        }
-    }
-    spans.push(Span::raw(" "));
-    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+    let Some(snapshot) = app.slot_snapshots.get("conversation.composer.dock") else {
+        return;
+    };
+    f.render_widget(
+        Paragraph::new(compact_slot_line(snapshot, &theme, inner.width as usize)),
+        inner,
+    );
 }
 
 fn span_widths(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
+}
+
+fn slot_has_nodes(app: &App, name: &str) -> bool {
+    app.slot_snapshots
+        .get(name)
+        .is_some_and(|snapshot| !snapshot.nodes.is_empty())
+}
+
+fn compact_slot_line(
+    snapshot: &crate::slots::SlotSnapshot,
+    theme: &Theme,
+    width: usize,
+) -> Line<'static> {
+    let sections = compact_slot_sections(snapshot, theme, width);
+    compact_slot_sections_line(&sections, theme)
+}
+
+struct CompactSlotSection {
+    spans: Vec<Span<'static>>,
+    action: Option<crate::slots::TuiAction>,
+}
+
+fn compact_slot_sections(
+    snapshot: &crate::slots::SlotSnapshot,
+    theme: &Theme,
+    width: usize,
+) -> Vec<CompactSlotSection> {
+    let mut sections = snapshot
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            compact_node_spans(node, theme, width).map(|spans| CompactSlotSection {
+                spans,
+                action: node.action().cloned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    while sections.len() > 1 {
+        let total = sections
+            .iter()
+            .map(|section| span_widths(&section.spans))
+            .sum::<usize>()
+            + (sections.len() - 1) * 3;
+        if total <= width.saturating_sub(2) {
+            break;
+        }
+        sections.pop();
+    }
+    sections
+}
+
+fn compact_slot_sections_line(sections: &[CompactSlotSection], theme: &Theme) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(theme.border)));
+        }
+        spans.extend(section.spans.iter().cloned());
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+fn compact_node_spans(
+    node: &crate::slots::TuiNode,
+    theme: &Theme,
+    width: usize,
+) -> Option<Vec<Span<'static>>> {
+    if let crate::slots::TuiNode::Generic { title, status, .. } = node {
+        let mut spans = Vec::new();
+        if let Some(status) = status.as_deref() {
+            let (icon, color) = match status {
+                "running" => ("●", theme.brand),
+                "ok" => ("✓", theme.ok),
+                "err" => ("×", theme.err),
+                _ => ("◇", theme.caption),
+            };
+            spans.push(Span::styled(format!("{icon} "), Style::default().fg(color)));
+        }
+        spans.push(Span::styled(
+            title.clone(),
+            Style::default().fg(theme.fg_secondary),
+        ));
+        return Some(spans);
+    }
+    crate::slots::render_nodes(std::slice::from_ref(node), theme, width)
+        .into_iter()
+        .next()
+        .map(|line| line.spans)
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
@@ -960,7 +973,7 @@ fn draw_selection_overlay(f: &mut Frame, app: &App, inner: Rect, start: usize) {
     }
 }
 
-fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
+fn tip_line(app: &App) -> Line<'static> {
     let theme = app.theme;
     let transient = app.tip.is_some();
     let text = match &app.tip {
@@ -988,16 +1001,130 @@ fn draw_tips(f: &mut Frame, app: &App, area: Rect) {
     }
     spans.push(Span::raw(" "));
 
-    // The cap and the text share one row: the styled tip line rides as a
-    // title inside the rounded top border, corners at both ends, and the
-    // side borders of the composer shape start right below.
+    Line::from(spans)
+}
+
+fn compact_workspace(path: &str, max_width: usize) -> String {
+    let path = shorten_home(path);
+    if path.width() <= max_width {
+        return path;
+    }
+    let leaf = path
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or(path.as_str());
+    let leaf_path = format!("…/{leaf}");
+    if leaf_path.width() <= max_width {
+        return leaf_path;
+    }
+    if max_width <= 1 {
+        return "…".into();
+    }
+    let mut suffix = String::new();
+    let mut used = 0;
+    for ch in leaf.chars().rev() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > max_width - 1 {
+            break;
+        }
+        suffix.insert(0, ch);
+        used += width;
+    }
+    format!("…{suffix}")
+}
+
+fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {
+    let title_width = (area_width / 2).clamp(8, 64);
+    let path_width = title_width.saturating_sub(4);
+    Line::from(Span::styled(
+        format!(" ⌂ {} ", compact_workspace(&app.cfg.workspace, path_width)),
+        Style::default().fg(app.theme.caption),
+    ))
+    .right_aligned()
+}
+
+fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'static> {
+    if span_widths(&line.spans) <= max_width {
+        return line;
+    }
+    if max_width == 0 {
+        return Line::default();
+    }
+    let mut spans = Vec::new();
+    let mut remaining = max_width - 1;
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width > remaining {
+                break;
+            }
+            text.push(ch);
+            remaining -= width;
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(text, span.style));
+        }
+    }
+    spans.push(Span::styled("…", style));
+    Line::from(spans)
+}
+
+fn draw_composer_cap(f: &mut Frame, app: &mut App, area: Rect, has_input_dock: bool) {
+    let theme = app.theme;
+    let workspace = workspace_cap_title(app, area.width as usize);
+    let workspace_width = span_widths(&workspace.spans);
+    let title_budget = (area.width as usize).saturating_sub(2 + workspace_width + 1);
+    let dock_sections = has_input_dock
+        .then(|| app.slot_snapshots.get("conversation.input.dock"))
+        .flatten()
+        .map(|snapshot| compact_slot_sections(snapshot, &theme, title_budget));
+    let dock_line = dock_sections
+        .as_ref()
+        .map(|sections| compact_slot_sections_line(sections, &theme));
+    let title = ellipsize_line(
+        dock_line.clone().unwrap_or_else(|| tip_line(app)),
+        title_budget,
+        Style::default().fg(theme.caption),
+    );
+    let title_width = span_widths(&title.spans) as u16;
     let block = Block::default()
         .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
-        .title(Line::from(spans))
+        .title(title)
+        .title(workspace)
         .style(Style::default().bg(app.canvas_background_color()));
+    let inner = block.inner(area);
     f.render_widget(block, area);
+
+    if let Some(sections) = dock_sections {
+        let mut x = area.x.saturating_add(2);
+        let visible_right = area
+            .x
+            .saturating_add(1)
+            .saturating_add(title_width.min(area.width.saturating_sub(2)));
+        for (index, section) in sections.into_iter().enumerate() {
+            if index > 0 {
+                x = x.saturating_add(3);
+            }
+            let section_width = span_widths(&section.spans) as u16;
+            if let Some(action) = section.action {
+                let action_width = visible_right.saturating_sub(x).min(section_width);
+                if action_width > 0 {
+                    app.slot_actions
+                        .push((Rect::new(x, area.y, action_width, 1), action));
+                }
+            }
+            x = x.saturating_add(section_width);
+        }
+    }
+    if dock_line.is_some() && inner.height > 0 {
+        f.render_widget(Paragraph::new(tip_line(app)), inner);
+    }
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -1795,46 +1922,6 @@ fn shorten_home(path: &str) -> String {
     }
 }
 
-fn fmt_tokens(n: u64) -> String {
-    let (v, suffix) = if n >= 1_000_000 {
-        (n as f64 / 1_000_000.0, "M")
-    } else if n >= 1_000 {
-        (n as f64 / 1_000.0, "K")
-    } else {
-        return n.to_string();
-    };
-    if v >= 100.0 || v.fract() < 0.05 {
-        format!("{v:.0}{suffix}")
-    } else {
-        format!("{v:.1}{suffix}")
-    }
-}
-
-fn fmt_duration_ms(ms: u64) -> String {
-    let secs = ms / 1000;
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    if h > 0 {
-        format!("{h}h{m}m{s}s")
-    } else if m > 0 {
-        format!("{m}m{s}s")
-    } else {
-        format!("{s}s")
-    }
-}
-
-fn fmt_ttft(ms: u64) -> String {
-    format!("{:.1}s", ms as f64 / 1000.0)
-}
-
-fn tok_per_sec(output: u64, llm_ms: u64) -> u64 {
-    if llm_ms == 0 {
-        return 0;
-    }
-    (output as f64 / (llm_ms as f64 / 1000.0)).round() as u64
-}
-
 /// Render one frame into a plain string (used by `--dump-frame` and tests).
 pub fn dump_frame(app: &mut App, width: u16, height: u16) -> String {
     use ratatui::backend::TestBackend;
@@ -1926,17 +2013,55 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
         let buf = terminal.backend().buffer().clone();
         let theme = app.theme;
-        // height 20 → usage footer (1 row) + composer rows 15..18
-        // (3-row well on top / bottom meta row), tip cap at 14, chat above.
+        // With no composer-dock contribution, height 20 gives the tip cap row
+        // 15 and composer rows 16..19 (3-row well + bottom meta row). No empty
+        // native stats/footer row is reserved.
         assert_eq!(
-            buf[(40, 15)].bg,
+            buf[(40, 16)].bg,
             theme.panel,
             "input well top on panel surface"
         );
-        assert_eq!(buf[(40, 16)].bg, theme.panel, "input well on panel surface");
-        assert_eq!(buf[(4, 18)].bg, theme.panel, "meta row on panel surface");
-        assert_eq!(buf[(4, 19)].bg, theme.bg, "usage footer on base background");
+        assert_eq!(buf[(40, 17)].bg, theme.panel, "input well on panel surface");
+        assert_eq!(buf[(4, 19)].bg, theme.panel, "meta row on panel surface");
+        assert_eq!(
+            buf[(4, 15)].bg,
+            theme.bg,
+            "tip cap uses the base background"
+        );
         assert_eq!(buf[(4, 10)].bg, theme.bg, "chat keeps the base background");
+    }
+
+    #[test]
+    fn composer_cap_persistently_shows_the_workspace() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.cfg.workspace = "/work/acme/projects/deepseek-harness-tui-plan-view".into();
+
+        let frame = dump_frame(&mut app, 120, 20);
+        let cap = frame
+            .lines()
+            .find(|line| line.contains("Tip"))
+            .expect("composer cap");
+
+        assert!(
+            cap.contains("⌂ /work/acme/projects/deepseek-harness-tui-plan-view"),
+            "{cap}"
+        );
+    }
+
+    #[test]
+    fn composer_cap_preserves_the_workspace_tail_on_narrow_terminals() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.cfg.workspace = "/work/acme/very-long-directory-name/deepseek-harness".into();
+
+        let frame = dump_frame(&mut app, 60, 20);
+        let cap = frame
+            .lines()
+            .find(|line| line.contains("Tip"))
+            .expect("composer cap");
+
+        assert!(cap.contains("⌂ …/deepseek-harness"), "{cap}");
     }
 
     #[test]
@@ -1979,12 +2104,12 @@ mod tests {
             "chat reveals the image layer"
         );
         assert_eq!(
-            buf[(4, 19)].bg,
+            buf[(4, 15)].bg,
             Color::Reset,
-            "footer reveals the image layer"
+            "tip cap reveals the image layer"
         );
         assert_eq!(
-            buf[(40, 15)].bg,
+            buf[(40, 16)].bg,
             app.theme.panel,
             "composer remains readable"
         );
@@ -2115,11 +2240,19 @@ mod tests {
     fn usage_footer_shows_turn_stats_and_cache() {
         let mut app = test_app();
         app.show_banner = false;
-        app.transcript.usage.input = 1834;
-        app.transcript.usage.output = 412;
-        app.transcript.usage.cached = 1200;
-        app.transcript.stats.turns = 1;
-        app.transcript.stats.steps = 67;
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:tokens", "kind": "generic", "title": "Input 1.8K tok · Output 412 tok", "body": "" },
+                    { "id": "stats:counts", "kind": "generic", "title": "1 turn · 67 steps", "body": "" },
+                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" }
+                ]
+            })).expect("slot snapshot"),
+        );
         let frame = dump_frame(&mut app, 100, 20);
         let footer = frame.lines().last().expect("footer row");
         assert!(footer.contains("1 turn"), "{footer}");
@@ -2205,14 +2338,21 @@ mod tests {
     fn usage_footer_drops_sections_on_narrow_screens() {
         let mut app = test_app();
         app.show_banner = false;
-        app.transcript.usage.input = 1834;
-        app.transcript.usage.output = 412;
-        app.transcript.usage.cached = 1200;
-        app.transcript.stats.turns = 1;
-        app.transcript.stats.steps = 67;
-        app.transcript.stats.turn_millis = 909_000;
-        app.transcript.stats.ttft_count = 1;
-        app.transcript.stats.ttft_total_millis = 1500;
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:tokens", "kind": "generic", "title": "Input 1.8K tok · Output 412 tok", "body": "" },
+                    { "id": "stats:counts", "kind": "generic", "title": "1 turn · 67 steps", "body": "" },
+                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" },
+                    { "id": "stats:time", "kind": "generic", "title": "LLM 15m9s · Tool call 0s", "body": "" },
+                    { "id": "stats:speed", "kind": "generic", "title": "TTFT avg 1.5s · 0.5 tok/s", "body": "" }
+                ]
+            })).expect("slot snapshot"),
+        );
 
         // Narrow: low-priority timing sections are dropped, tokens survive.
         let footer = dump_frame(&mut app, 40, 20);

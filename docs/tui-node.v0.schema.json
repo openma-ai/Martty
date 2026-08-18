@@ -8,7 +8,13 @@
   "required": ["protocol", "slot", "nodes"],
   "properties": {
     "protocol": { "const": 0 },
-    "slot": { "enum": ["chrome.right", "conversation.chat"] },
+    "slot": {
+      "enum": [
+        "chrome.right",
+        "conversation.input.dock",
+        "conversation.composer.dock"
+      ]
+    },
     "rev": {
       "type": "integer",
       "minimum": 0,
@@ -60,6 +66,16 @@
       "type": "string",
       "minLength": 1,
       "description": "Stable across snapshots; keys compositor expand/scroll."
+    },
+    "Action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "const": "command" },
+        "name": { "type": "string", "minLength": 1 },
+        "args": { "type": "string" }
+      }
     },
     "Group": {
       "type": "object",
@@ -119,7 +135,8 @@
         "kind": { "const": "generic" },
         "title": { "type": "string" },
         "body": { "type": "string" },
-        "status": { "enum": ["running", "ok", "err"] }
+        "status": { "enum": ["running", "ok", "err"] },
+        "action": { "$ref": "#/$defs/Action" }
       }
     },
     "Terminal": {

@@ -3,7 +3,7 @@
  *
  * Same closure convention as the web runner: the source is an async function
  * body that returns a plugin. Open services include `tuiTheme`, `tuiSlots`,
- * `acpSessionConfig`, and lifecycle-owned `timer`; `host.call` reaches this
+ * `acpSessionConfig`, `acpSessionPlan`, `acpSessionStats`, and lifecycle-owned `timer`; `host.call` reaches this
  * Package's Host half.
  * No React, browser slots, TTY, or raw Host service names.
  */
@@ -14,6 +14,8 @@ const ALLOWED_INJECT = new Set([
   'tuiCommands',
   'tuiOverlay',
   'acpSessionConfig',
+  'acpSessionPlan',
+  'acpSessionStats',
   'timer',
 ])
 
@@ -25,12 +27,12 @@ const THEME_TEACHING =
 
 const SLOT_TEACHING =
   'TUI shell slots are ctx.tuiSlots, not browser ctx.slots. '
-  + 'Use tuiSlots.inject(\'chrome.right\', () => tuiSlots.register('
-  + '{ name: \'chrome.right\', id }, nodes)).'
+  + 'Inspect tuiSlots.list(), then use tuiSlots.inject(name, () => tuiSlots.register('
+  + '{ name, id }, nodes)).'
 
 /**
  * @param {string} clientCode
- * @param {{ pluginId?: string, tuiTheme?: object, tuiSlots?: object, tuiCommands?: object, tuiOverlay?: object, acpSessionConfig?: object, timer?: object, invoke?: Function }} env
+ * @param {{ pluginId?: string, tuiTheme?: object, tuiSlots?: object, tuiCommands?: object, tuiOverlay?: object, acpSessionConfig?: object, acpSessionPlan?: object, acpSessionStats?: object, timer?: object, invoke?: Function }} env
  * @returns {Promise<{ waitingFor: string[], dispose: () => void }>}
  */
 export async function applyClientHalf(clientCode, env) {
@@ -82,7 +84,7 @@ export async function applyClientHalf(clientCode, env) {
     }
     if (!ALLOWED_INJECT.has(name)) {
       throw new Error(
-        `TUI Client inject "${name}" is not open. Open services: tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, timer.`,
+        `TUI Client inject "${name}" is not open. Open services: tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan, acpSessionStats, timer.`,
       )
     }
   }
@@ -133,6 +135,8 @@ function restrictedCtx(env, own, inject) {
   const sourceCommands = env.tuiCommands
   const sourceOverlay = env.tuiOverlay
   const sourceSessionConfig = env.acpSessionConfig
+  const sourceSessionPlan = env.acpSessionPlan
+  const sourceSessionStats = env.acpSessionStats
   const sourceTimer = env.timer
   const tuiTheme = sourceTheme === undefined
     ? undefined
@@ -194,6 +198,11 @@ function restrictedCtx(env, own, inject) {
           const close = own(() => controller.close())
           return { close }
         },
+        openView(options, handlers) {
+          const controller = sourceOverlay.openView(options, handlers)
+          const close = own(() => controller.close())
+          return { close }
+        },
         active() {
           return sourceOverlay.active()
         },
@@ -222,6 +231,29 @@ function restrictedCtx(env, own, inject) {
           return own(sourceSessionConfig.subscribe(listener))
         },
       }
+  const acpSessionPlan = sourceSessionPlan === undefined
+    ? undefined
+    : {
+        list() {
+          return sourceSessionPlan.list()
+        },
+        current() {
+          return sourceSessionPlan.current()
+        },
+        subscribe(listener) {
+          return own(sourceSessionPlan.subscribe(listener))
+        },
+      }
+  const acpSessionStats = sourceSessionStats === undefined
+    ? undefined
+    : {
+        current() {
+          return sourceSessionStats.current()
+        },
+        subscribe(listener) {
+          return own(sourceSessionStats.subscribe(listener))
+        },
+      }
   const timer = sourceTimer === undefined || !inject.has('timer')
     ? undefined
     : {
@@ -238,6 +270,8 @@ function restrictedCtx(env, own, inject) {
     tuiCommands,
     tuiOverlay,
     acpSessionConfig,
+    acpSessionPlan,
+    acpSessionStats,
     timer,
     interval: timer?.interval,
     timeout: timer?.timeout,
@@ -247,6 +281,8 @@ function restrictedCtx(env, own, inject) {
       if (name === 'tuiCommands') return tuiCommands
       if (name === 'tuiOverlay') return tuiOverlay
       if (name === 'acpSessionConfig') return acpSessionConfig
+      if (name === 'acpSessionPlan') return acpSessionPlan
+      if (name === 'acpSessionStats') return acpSessionStats
       if (name === 'timer') return timer
       return undefined
     },

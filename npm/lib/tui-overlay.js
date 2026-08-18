@@ -2,6 +2,7 @@
 
 import { Service } from '@deepseek-ai/cordis'
 import { CORDIS_METHODS } from './cordis-protocol.js'
+import { validateNodes } from './tui-slots.js'
 
 export const name = 'tui-overlay'
 export const inject = []
@@ -16,6 +17,10 @@ class TuiOverlayService extends Service {
 
   openSlider(options, handlers) {
     return this.core.openSlider(options, handlers)
+  }
+
+  openView(options, handlers) {
+    return this.core.openView(options, handlers)
   }
 
   dispatch(params) {
@@ -93,6 +98,24 @@ function validateSlider(input) {
   }
 }
 
+function validateView(input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('tuiOverlay.openView: options must be an object')
+  }
+  if (typeof input.id !== 'string' || input.id.length === 0) {
+    throw new Error('tuiOverlay.openView: id must be a non-empty string')
+  }
+  if (typeof input.title !== 'string' || input.title.length === 0) {
+    throw new Error('tuiOverlay.openView: title must be a non-empty string')
+  }
+  return {
+    kind: 'view',
+    id: input.id,
+    title: input.title,
+    nodes: validateNodes(input.nodes, 'view.nodes'),
+  }
+}
+
 /**
  * @param {object} ctx
  * @param {{ notify?: (method: string, params: object) => void }} [options]
@@ -117,24 +140,45 @@ export function installTuiOverlay(ctx, options = {}) {
     emit(CORDIS_METHODS.overlayUpdate, { protocol: PROTOCOL, overlay })
   }
 
+  function controllerFor(entry) {
+    return {
+      close() {
+        if (entry.closed) return
+        entry.closed = true
+        if (current === entry) {
+          current = null
+          publish(null)
+        }
+      },
+    }
+  }
+
   function openSlider(options, handlers = {}) {
     if (current !== null) {
-      throw new Error(`tuiOverlay.openSlider: overlay "${current.slider.id}" is already open`)
+      throw new Error(`tuiOverlay.openSlider: overlay "${current.overlay.id}" is already open`)
     }
     const slider = validateSlider(options)
-    const entry = { slider, handlers, closed: false }
+    const entry = { overlay: slider, handlers, closed: false }
     current = entry
     publish({ ...slider, marks: slider.marks.map((mark) => ({ ...mark })) })
+    return controllerFor(entry)
+  }
 
-    const close = () => {
-      if (entry.closed) return
-      entry.closed = true
-      if (current === entry) {
-        current = null
-        publish(null)
+  function openView(options, handlers = {}) {
+    const view = validateView(options)
+    if (current !== null) {
+      if (current.overlay.kind === 'view' && current.overlay.id === view.id) {
+        current.overlay = view
+        current.handlers = handlers
+        publish(structuredClone(view))
+        return controllerFor(current)
       }
+      throw new Error(`tuiOverlay.openView: overlay "${current.overlay.id}" is already open`)
     }
-    return { close }
+    const entry = { overlay: view, handlers, closed: false }
+    current = entry
+    publish(structuredClone(view))
+    return controllerFor(entry)
   }
 
   async function dispatch(params) {
@@ -142,21 +186,38 @@ export function installTuiOverlay(ctx, options = {}) {
       throw new Error('tuiOverlay.dispatch: unsupported overlay event')
     }
     const entry = current
-    if (entry === null || entry.closed || params.id !== entry.slider.id) {
+    if (entry === null || entry.closed || params.id !== entry.overlay.id) {
       throw new Error(`tuiOverlay.dispatch: overlay "${String(params.id)}" is not active`)
     }
+
+    if (entry.overlay.kind === 'view') {
+      if (params.event !== 'cancel' && params.event !== 'submit') {
+        throw new Error(`tuiOverlay.dispatch: unknown view event "${String(params.event)}"`)
+      }
+      const handler = params.event === 'submit'
+        ? entry.handlers.onSubmit
+        : entry.handlers.onCancel
+      entry.closed = true
+      if (current === entry) {
+        current = null
+        publish(null)
+      }
+      return handler?.()
+    }
+
+    const slider = entry.overlay
     const value = finite(params.value, 'event.value')
-    if (value < entry.slider.min || value > entry.slider.max) {
+    if (value < slider.min || value > slider.max) {
       throw new Error('tuiOverlay.dispatch: event.value is outside the slider range')
     }
-    entry.slider.value = value
+    slider.value = value
     if (params.event === 'change') {
       return entry.handlers.onChange?.(value)
     }
     if (params.event !== 'submit' && params.event !== 'cancel') {
       throw new Error(`tuiOverlay.dispatch: unknown event "${String(params.event)}"`)
     }
-    const mark = entry.slider.marks.reduce((nearest, candidate) => {
+    const mark = slider.marks.reduce((nearest, candidate) => {
       if (nearest === undefined) return candidate
       return Math.abs(candidate.value - value) < Math.abs(nearest.value - value)
         ? candidate
@@ -175,15 +236,13 @@ export function installTuiOverlay(ctx, options = {}) {
   }
 
   function active() {
-    return current === null
-      ? null
-      : { ...current.slider, marks: current.slider.marks.map((mark) => ({ ...mark })) }
+    return current === null ? null : structuredClone(current.overlay)
   }
 
-  const core = { openSlider, dispatch, active, bindNotify }
+  const core = { openSlider, openView, dispatch, active, bindNotify }
   const service = typeof ctx.provide === 'function'
     ? new TuiOverlayService(ctx, core)
-    : { openSlider, dispatch, active, bindNotify }
+    : { openSlider, openView, dispatch, active, bindNotify }
   if (typeof ctx.provide !== 'function') ctx.tuiOverlay = service
   return service
 }

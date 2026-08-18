@@ -105,3 +105,67 @@ test('plain sliders need no marks and close cleanly with their owner', () => {
   assert.equal(overlay.active(), null)
   assert.deepEqual(sent.at(-1).params.overlay, null)
 })
+
+test('a plugin can open a read-only node view and escape closes it', async () => {
+  assert.equal(typeof overlayPlugin.installTuiOverlay, 'function')
+  if (typeof overlayPlugin.installTuiOverlay !== 'function') return
+
+  const sent = []
+  const overlay = overlayPlugin.installTuiOverlay(makeCtx(), {
+    notify(method, params) {
+      sent.push({ method, params })
+    },
+  })
+  overlay.openView({
+    id: 'plan-view',
+    title: 'Plan',
+    nodes: [{ id: 'step-1', kind: 'generic', title: 'Inspect', body: '', status: 'running' }],
+  })
+
+  assert.deepEqual(sent.at(-1).params.overlay, {
+    kind: 'view',
+    id: 'plan-view',
+    title: 'Plan',
+    nodes: [{ id: 'step-1', kind: 'generic', title: 'Inspect', body: '', status: 'running' }],
+  })
+  await overlay.dispatch({ protocol: 0, id: 'plan-view', event: 'cancel' })
+  assert.equal(overlay.active(), null)
+  assert.equal(sent.at(-1).params.overlay, null)
+})
+
+test('opening the same view refreshes its snapshot and handlers idempotently', async () => {
+  assert.equal(typeof overlayPlugin.installTuiOverlay, 'function')
+  if (typeof overlayPlugin.installTuiOverlay !== 'function') return
+
+  const sent = []
+  const overlay = overlayPlugin.installTuiOverlay(makeCtx(), {
+    notify(method, params) {
+      sent.push({ method, params })
+    },
+  })
+  const cancelled = []
+  const first = overlay.openView({
+    id: 'plan-view',
+    title: 'Plan',
+    nodes: [{ id: 'step-1', kind: 'generic', title: 'Inspect', body: '' }],
+  }, {
+    onCancel() { cancelled.push('old') },
+  })
+  const second = overlay.openView({
+    id: 'plan-view',
+    title: 'Plan',
+    nodes: [{ id: 'step-1', kind: 'generic', title: 'Implement', body: '' }],
+  }, {
+    onCancel() { cancelled.push('new') },
+  })
+
+  assert.equal(sent.length, 2, 'the replacement snapshot must reach the TUI')
+  assert.equal(overlay.active().nodes[0].title, 'Implement')
+  await overlay.dispatch({ protocol: 0, id: 'plan-view', event: 'cancel' })
+  assert.equal(overlay.active(), null)
+  assert.deepEqual(cancelled, ['new'])
+  assert.equal(sent.length, 3)
+  first.close()
+  second.close()
+  assert.equal(sent.length, 3, 'both handles close the same overlay idempotently')
+})

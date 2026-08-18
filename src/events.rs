@@ -722,9 +722,18 @@ pub fn skills_from_available_commands(commands: &Value) -> Vec<crate::bus::Skill
                 .unwrap_or("")
                 .to_string(),
             config_action: command_config_action(command),
+            client_command: command_client_action(command),
         });
     }
     out
+}
+
+fn command_client_action(command: &Value) -> bool {
+    [command.get("metadata"), command.get("_meta")]
+        .into_iter()
+        .flatten()
+        .filter_map(|carrier| carrier.get("commandAction"))
+        .any(|action| action.get("kind").and_then(Value::as_str) == Some("clientCommand"))
 }
 
 fn command_config_action(command: &Value) -> Option<crate::bus::CommandConfigAction> {

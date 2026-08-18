@@ -35,9 +35,12 @@ Host process: Base Cordis + ACP plugin
         │ TUI Client child stdin/stdout (ACP)
 Client process: independent Cordis root
   client plugins  sibling insert + inject ['tuiTheme' / 'tuiSlots']
-  Client runner   inject ['tuiTheme', 'tuiSlots'], runs dsh-tool-cordis code.client
-  TUI shell       inject ['acpClient', 'tuiTheme', 'tuiSlots', 'tuiCordisClientRunner'], owns only the TTY
-  tui-slots       provides tuiSlots; declares chrome.right
+  Client runner   injects Client services and runs dsh-tool-cordis code.client
+  TUI shell       injects acpClient plus Client services; owns only the TTY
+  plan-view       injects acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
+  stats-view      injects acpSessionStats + tuiSlots
+  tui-slots       provides tuiSlots; declares chrome.right /
+                  conversation.input.dock / conversation.composer.dock
   tui-theme       provides tuiTheme
   acp-client      attaches Host stdio, provides acpClient
         │ Client fd 3/4 carries only the inherited TTY
@@ -74,12 +77,16 @@ Client inspect/run channel.
 
 ```text
 Third-party plugins   sibling insert + inject ['tuiTheme'] → palette register
-                      sibling insert + inject ['tuiSlots'] → chrome.right register
+                      sibling insert + inject ['tuiSlots'] → slot register
 tui-theme             palette → Theme registry
-tui-slots             TuiNode trees → chrome.right snapshot registry
+tui-slots             TuiNode trees → chrome.right / input dock / composer dock registry
+plan-view             standard ACP Plan projection → input dock + /plan-view overlay
+stats-view            standard ACP usage/timing projection → composer dock stats line
 Client runner         Client inspect + code.client mount/stop
-TUI shell             consumes Theme and chrome.right snapshot trees
+TUI shell             consumes Theme, slot, and generic overlay snapshot trees
 acp-client            session/new · authenticate · prompt · cancel · config · commands
+                      provides acpSessionConfig / acpSessionPlan / acpSessionStats
+                      plus a generic effect-scoped ACP observer registry
                       `_dsh/cordis/*` is negotiated at initialize
                       `_dsh/cordis/tui/*` is the mux-isolated painter child domain
 Rust painter          input, keymap, existing widgets reading Theme, kitty, clipboard
@@ -91,7 +98,7 @@ Rust painter          input, keymap, existing widgets reading Theme, kitty, clip
 | acp-client | ACP session control; root or insert | Composing dsh, the UI model |
 | tui-theme / tui-slots | The `tuiTheme` / `tuiSlots` registries | The TTY, any agent dependency |
 | Client runner | Publishes TUI Client capabilities to `dsh-tool-cordis` and mounts `code.client` | Owning the TTY, running Web React plugins |
-| TUI shell | The TTY; consumes `acpClient` / `tuiTheme` / `tuiSlots` / runner | Interpreting `SessionEvent`, npm depending on dsh |
+| TUI shell | TTY, input, and compositor; consumes structured slot/overlay snapshots | Owning Plan/stats domain projections or interpreting harness `SessionEvent` |
 | Rust | Painting Theme through existing widgets | Interpreting colors in JS |
 
 The `tui-theme` service starts with builtin `default`. A dynamic Theme Plugin

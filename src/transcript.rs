@@ -130,8 +130,8 @@ pub struct UsageTotals {
     pub reasoning: u64,
 }
 
-/// Aggregate session timing/step stats for the footer. Timings are wall-clock
-/// deltas measured by the TUI as events stream in (no timestamps on the wire).
+/// Native transcript timing/step facts used by session state and tests. The
+/// visible stats row is owned by the Client-side `stats-view` plugin.
 #[derive(Default, Clone, Copy)]
 pub struct SessionStats {
     pub turns: u64,
@@ -143,21 +143,6 @@ pub struct SessionStats {
     /// Sum of per-turn time-to-first-token, plus how many turns were sampled.
     pub ttft_total_millis: u64,
     pub ttft_count: u64,
-}
-
-impl SessionStats {
-    /// Model time: turn time minus tool time (saturating).
-    pub fn llm_millis(&self) -> u64 {
-        self.turn_millis.saturating_sub(self.tool_millis)
-    }
-
-    pub fn ttft_avg_millis(&self) -> u64 {
-        if self.ttft_count == 0 {
-            0
-        } else {
-            self.ttft_total_millis / self.ttft_count
-        }
-    }
 }
 
 pub struct Transcript {
@@ -423,7 +408,7 @@ impl Transcript {
                     if let Some(t0) = self.turn_started.take() {
                         self.stats.turn_millis += t0.elapsed().as_millis() as u64;
                     }
-                    if kind != "completed" {
+                    if kind != "completed" && kind != "interrupted" {
                         let level = if kind == "error" {
                             NoticeLevel::Error
                         } else {

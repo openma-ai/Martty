@@ -176,8 +176,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "plan",
-        usage: "/plan [off]",
-        desc: "host plan mode (command passthrough)",
+        usage: "/plan [on|off]",
+        desc: "toggle host plan mode",
     },
     SlashCommand {
         name: "image",
@@ -536,6 +536,7 @@ struct PluginOverlaySnapshot {
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum PluginOverlay {
     Slider(SliderOverlay),
+    View(ViewOverlay),
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -558,6 +559,15 @@ pub struct SliderMark {
     #[serde(default)]
     pub id: Option<String>,
     pub label: String,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct ViewOverlay {
+    pub id: String,
+    pub title: String,
+    pub nodes: Vec<crate::slots::TuiNode>,
+    #[serde(skip)]
+    pub scroll: usize,
 }
 
 pub struct Picker {
@@ -626,8 +636,8 @@ pub struct App {
     pub locale: Locale,
     pub palettes: Vec<crate::theme::PalettePack>,
     pub active_palette_id: String,
-    /// Latest compositor-private root slot snapshot. Empty means no sidebar.
-    pub right_slot: Option<crate::slots::SlotSnapshot>,
+    /// Latest compositor-private snapshots, keyed by declared Client slot.
+    pub slot_snapshots: HashMap<String, crate::slots::SlotSnapshot>,
     pub transcript: Transcript,
     pub subagents: Vec<SubagentView>,
     pub active_subagent: Option<String>,
@@ -669,12 +679,16 @@ pub struct App {
     pub elicitation_ask: Option<ElicitationAskOverlay>,
     /// Client Plugin modal rendered and driven by the native compositor.
     pub slider_overlay: Option<SliderOverlay>,
+    /// Read-only Client Plugin modal rendered from the same semantic TuiNode tree.
+    pub view_overlay: Option<ViewOverlay>,
     /// Images staged in the composer as inline `[image N]` chips living in
     /// the draft text; editing a token away un-stages its image.
     pub pending_images: crate::attachments::Staged,
     /// Screen rects of the inline chips this frame (hover/cursor preview
     /// hit-testing; recorded by `ui::draw_input`).
     pub att_chips: Vec<(ratatui::layout::Rect, usize)>,
+    /// Clickable semantic actions contributed by the current slot frame.
+    pub(crate) slot_actions: Vec<(ratatui::layout::Rect, crate::slots::TuiAction)>,
     /// Kitty-graphics placement for the hover-preview popup this frame.
     pub att_thumbs: Vec<ThumbPlacement>,
     /// Chip index under the mouse pointer (grok-style hover preview).
@@ -905,7 +919,7 @@ impl App {
             locale,
             palettes,
             active_palette_id: "default".into(),
-            right_slot: None,
+            slot_snapshots: HashMap::new(),
             transcript: Transcript::new(session_id.clone()),
             subagents: Vec::new(),
             active_subagent: None,
@@ -932,8 +946,10 @@ impl App {
             permission_ask: None,
             elicitation_ask: None,
             slider_overlay: None,
+            view_overlay: None,
             pending_images: crate::attachments::Staged::default(),
             att_chips: Vec::new(),
+            slot_actions: Vec::new(),
             att_thumbs: Vec::new(),
             hover_att: None,
             modes: Self::load_modes_cache(&cfg).unwrap_or_default(),
@@ -1249,8 +1265,8 @@ impl App {
                     name: s.name.clone(),
                     usage: format!("/{}", s.name),
                     desc: s.description.clone(),
-                    skill: true,
-                    plugin: false,
+                    skill: !s.client_command,
+                    plugin: s.client_command,
                 });
             }
         }
@@ -1277,6 +1293,9 @@ impl App {
 
     fn handle_inner(&mut self, ev: AppEvent, ctl: &Controller) {
         match ev {
+            AppEvent::Terminate => {
+                self.quit = true;
+            }
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Ui(ui) => self.apply_ui(ui),
             AppEvent::Rpc { method, params } => {
@@ -1301,34 +1320,50 @@ impl App {
                 }
                 if method == crate::cordis::OVERLAY_UPDATE {
                     match serde_json::from_value::<PluginOverlaySnapshot>(params) {
-                        Ok(snapshot) if snapshot.protocol == 0 => {
-                            self.slider_overlay = match snapshot.overlay {
-                                Some(PluginOverlay::Slider(mut slider))
-                                    if !slider.id.is_empty()
-                                        && slider.min.is_finite()
-                                        && slider.max.is_finite()
-                                        && slider.step.is_finite()
-                                        && slider.value.is_finite()
-                                        && slider.min < slider.max
-                                        && slider.step > 0.0
-                                        && (!slider.snap_to_marks || !slider.marks.is_empty())
-                                        && slider.marks.iter().all(|mark| {
-                                            mark.value.is_finite()
-                                                && mark.value >= slider.min
-                                                && mark.value <= slider.max
-                                                && !mark.label.is_empty()
-                                        }) =>
-                                {
-                                    slider.value = slider.value.clamp(slider.min, slider.max);
-                                    Some(slider)
-                                }
-                                Some(_) => {
-                                    self.show_tip("overlay ignored: invalid slider");
-                                    None
-                                }
-                                None => None,
-                            };
-                        }
+                        Ok(snapshot) if snapshot.protocol == 0 => match snapshot.overlay {
+                            Some(PluginOverlay::Slider(mut slider))
+                                if !slider.id.is_empty()
+                                    && slider.min.is_finite()
+                                    && slider.max.is_finite()
+                                    && slider.step.is_finite()
+                                    && slider.value.is_finite()
+                                    && slider.min < slider.max
+                                    && slider.step > 0.0
+                                    && (!slider.snap_to_marks || !slider.marks.is_empty())
+                                    && slider.marks.iter().all(|mark| {
+                                        mark.value.is_finite()
+                                            && mark.value >= slider.min
+                                            && mark.value <= slider.max
+                                            && !mark.label.is_empty()
+                                    }) =>
+                            {
+                                slider.value = slider.value.clamp(slider.min, slider.max);
+                                self.view_overlay = None;
+                                self.slider_overlay = Some(slider);
+                            }
+                            Some(PluginOverlay::Slider(_)) => {
+                                self.show_tip("overlay ignored: invalid slider");
+                                self.slider_overlay = None;
+                                self.view_overlay = None;
+                            }
+                            Some(PluginOverlay::View(view))
+                                if !view.id.is_empty()
+                                    && !view.title.is_empty()
+                                    && crate::slots::validate_node_tree(&view.nodes).is_ok() =>
+                            {
+                                self.slider_overlay = None;
+                                self.view_overlay = Some(view);
+                            }
+                            Some(PluginOverlay::View(_)) => {
+                                self.show_tip("overlay ignored: invalid view");
+                                self.slider_overlay = None;
+                                self.view_overlay = None;
+                            }
+                            None => {
+                                self.slider_overlay = None;
+                                self.view_overlay = None;
+                            }
+                        },
                         Ok(_) => {}
                         Err(err) => self.show_tip(format!("overlay ignored: {err}")),
                     }
@@ -1338,11 +1373,11 @@ impl App {
                 if method == crate::cordis::SLOTS_UPDATE {
                     match crate::slots::parse_snapshot(&params) {
                         Ok(Some(snapshot)) => {
-                            let stale = self.right_slot.as_ref().is_some_and(|current| {
+                            let stale = self.slot_snapshots.get(&snapshot.slot).is_some_and(|current| {
                                 matches!((snapshot.rev, current.rev), (Some(next), Some(previous)) if next <= previous)
                             });
                             if !stale {
-                                self.right_slot = Some(snapshot);
+                                self.slot_snapshots.insert(snapshot.slot.clone(), snapshot);
                             }
                         }
                         Ok(None) => {}
@@ -1738,7 +1773,7 @@ impl App {
                 // gets its modifier restored (macOS terminals drop them).
                 self.handle_key(crate::input::rescue_key(key), ctl)
             }
-            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::Mouse(mouse) => self.handle_mouse(mouse, ctl),
             Event::Resize(..) => self.needs_redraw = true,
             Event::Paste(text) => {
                 if let Some(keys) = decode_leaked_csi_u_keys(&text) {
@@ -1766,12 +1801,33 @@ impl App {
     /// selects with a live highlight (auto-scrolling at the pane edges) and
     /// copies on release; double-click selects & copies a word. Shift+drag
     /// bypasses capture in most terminals → native selection still works.
-    fn handle_mouse(&mut self, mouse: MouseEvent) {
+    fn handle_mouse(&mut self, mouse: MouseEvent, ctl: &Controller) {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.mouse_scroll(3, mouse.column, mouse.row),
             MouseEventKind::ScrollDown => self.mouse_scroll(-3, mouse.column, mouse.row),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
+                if let Some(action) = self
+                    .slot_actions
+                    .iter()
+                    .find(|(rect, _)| {
+                        mouse.column >= rect.x
+                            && mouse.column < rect.right()
+                            && mouse.row >= rect.y
+                            && mouse.row < rect.bottom()
+                    })
+                    .map(|(_, action)| action.clone())
+                {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    match action {
+                        crate::slots::TuiAction::Command { name, args } => {
+                            ctl.send(Cmd::InvokePluginCommand { name, args });
+                        }
+                    }
+                    return;
+                }
                 // Clicking a tool block toggles its expand/collapse instead of
                 // starting a text selection.
                 if let Some(ci) = self.tool_at(mouse.column, mouse.row) {
@@ -2122,6 +2178,38 @@ impl App {
         self.needs_redraw = true;
     }
 
+    fn handle_view_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+        let event = match key.code {
+            KeyCode::Esc => Some("cancel"),
+            KeyCode::Enter => Some("submit"),
+            _ => None,
+        };
+        if let Some(event) = event {
+            if let Some(view) = self.view_overlay.take() {
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: view.id,
+                    event: event.into(),
+                    value: None,
+                });
+            }
+            return;
+        }
+        let Some(view) = self.view_overlay.as_mut() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Up => view.scroll = view.scroll.saturating_sub(1),
+            KeyCode::Down => view.scroll = view.scroll.saturating_add(1),
+            KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(5),
+            KeyCode::PageDown => view.scroll = view.scroll.saturating_add(5),
+            KeyCode::Home => view.scroll = 0,
+            _ => {}
+        }
+    }
+
     fn handle_slider_key(&mut self, key: KeyEvent, ctl: &Controller) {
         if key.modifiers != KeyModifiers::NONE {
             return;
@@ -2192,6 +2280,11 @@ impl App {
         // ACP tool permission sits above session pickers (Backchat ask panel).
         if self.permission_ask.is_some() {
             self.handle_permission_ask_key(key);
+            return;
+        }
+
+        if self.view_overlay.is_some() {
+            self.handle_view_key(key, ctl);
             return;
         }
 
@@ -3259,11 +3352,7 @@ impl App {
             self.show_tip("draft cleared — ↑ recalls it");
             return;
         }
-        let required = if matches!(self.state, RunState::Running | RunState::Starting) {
-            5
-        } else {
-            2
-        };
+        let required = 2;
         let mut chord = self.ctrl_c_armed.take().unwrap_or(CtrlCQuitChord {
             started: Instant::now(),
             presses: 0,
@@ -3500,8 +3589,9 @@ impl App {
                     .and_then(|command| command.config_action.clone())
                 {
                     let value = match arg {
-                        "" => Some(action.value),
-                        "off" => action.reset_value,
+                        "" if self.modes.plan => action.reset_value.clone(),
+                        "" | "on" => Some(action.value.clone()),
+                        "off" => action.reset_value.clone(),
                         _ => None,
                     };
                     if let Some(value) = value {
@@ -3695,7 +3785,7 @@ DeepSeek Build (dsh-tui) — 终端里的 deepseek-harness
   enter        发送；当前轮次运行时将后续消息排队
   ctrl+x       立即 steer 当前轮次
   esc          中断（保留草稿）；空闲时清除草稿
-  ctrl+c       有草稿先清除；空闲连按 2 次、运行中连按 5 次退出（不中断）
+  ctrl+c       有草稿先清除；无草稿时连按 2 次退出（不中断）
   shift+tab    轮换权限预设；/permission 打开选择器
   ctrl+p       打开模型选择器，然后选择推理强度
   option+a     直接轮换 Agent 预设
@@ -3724,7 +3814,7 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
   enter        send · queues a follow-up while a turn runs
   ctrl+x       steer the active turn immediately
   esc          interrupt (draft survives) · clears the draft when idle
-  ctrl+c       clear a draft; 2× quits idle, 5× while running (never interrupts)
+  ctrl+c       clear a draft; 2× quits with no draft (never interrupts)
   shift+tab    cycle permission (workspace-write ⇄ full access)
                · /permission opens the preset picker
   ctrl+p       model picker (host catalog) → effort picker
@@ -3886,7 +3976,11 @@ keys — grok-build homage set
             // skill line ships as an ordinary prompt — the host's pre-step
             // boundary recognizes the leading /name and injects the body.
             let builtin = SLASH_COMMANDS.iter().any(|c| c.name == name);
-            if !builtin && self.plugin_command_active(&name) {
+            let acp_client_command = self
+                .skills
+                .iter()
+                .any(|command| command.name == name && command.client_command);
+            if !builtin && (self.plugin_command_active(&name) || acp_client_command) {
                 self.input.history.push(text);
                 self.input.clear();
                 ctl.send(Cmd::InvokePluginCommand { name, args: arg });
@@ -5918,6 +6012,32 @@ mod mode_tests {
     }
 
     #[test]
+    fn interrupted_turn_renders_one_specific_terminal_notice() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Ui(crate::events::UiEvent::TurnEnd {
+                session: app.session_id.clone(),
+                kind: "interrupted".into(),
+            }),
+            &ctl,
+        );
+        app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+
+        let notices = app
+            .transcript
+            .cells
+            .iter()
+            .filter_map(|cell| match &cell.kind {
+                crate::transcript::CellKind::Notice { text, .. } if text.contains("interrupt") => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(notices, ["interrupted — turn cancelled"]);
+    }
+
+    #[test]
     fn staged_input_joins_a_surviving_fifo_after_interrupt() {
         let (mut app, ctl, _rx) = test_app();
         app.state = RunState::Running;
@@ -6067,7 +6187,22 @@ mod mode_tests {
     }
 
     #[test]
-    fn ctrl_c_while_running_never_interrupts_and_five_empty_presses_quit() {
+    fn ctrl_c_while_starting_without_a_prompt_quits_after_two_empty_presses() {
+        let (mut app, ctl, _rx) = test_app();
+        app.state = RunState::Starting;
+
+        app.handle_ctrl_c(&ctl);
+        assert!(!app.quit, "the first empty Ctrl+C arms the idle quit chord");
+
+        app.handle_ctrl_c(&ctl);
+        assert!(
+            app.quit,
+            "startup without an active turn uses the two-press chord"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_while_running_never_interrupts_and_two_empty_presses_quit() {
         let (mut app, _demo_ctl, _rx) = test_app();
         let (ctl, commands) = crate::controller::test_interruptible_controller();
         app.state = RunState::Running;
@@ -6088,15 +6223,6 @@ mod mode_tests {
         );
 
         app.handle_ctrl_c(&ctl);
-        assert!(!app.quit);
-
-        app.handle_ctrl_c(&ctl);
-        assert!(!app.quit);
-
-        app.handle_ctrl_c(&ctl);
-        assert!(!app.quit);
-
-        app.handle_ctrl_c(&ctl);
         assert!(app.quit);
     }
 
@@ -6108,11 +6234,13 @@ mod mode_tests {
                 name: "commit-helper".into(),
                 description: "draft a commit".into(),
                 config_action: None,
+                client_command: false,
             },
             crate::bus::SkillInfo {
                 name: "help".into(),
                 description: "shadowed by builtin".into(),
                 config_action: None,
+                client_command: false,
             },
         ];
         app.input.set("/".into());
@@ -6132,6 +6260,45 @@ mod mode_tests {
         assert_eq!(menu.len(), 1);
         assert!(menu[0].skill);
         assert_eq!(menu[0].usage, "/commit-helper");
+    }
+
+    #[test]
+    fn acp_client_command_is_listed_and_invoked_locally() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.skills = crate::events::skills_from_available_commands(&serde_json::json!([{
+            "name": "plan-view",
+            "description": "Open the current ACP plan",
+            "_meta": {
+                "commandAction": {
+                    "kind": "clientCommand",
+                    "presentation": "view"
+                }
+            }
+        }]));
+        app.input.set("/plan-view".into());
+
+        let menu = app.slash_matches();
+        assert_eq!(menu.len(), 1);
+        assert!(
+            menu[0].plugin,
+            "ACP client command stays on the Client plane"
+        );
+        assert!(
+            !menu[0].skill,
+            "ACP client command must not be presented as a host skill"
+        );
+
+        app.submit(&ctl);
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::InvokePluginCommand { name, args })
+                if name == "plan-view" && args.is_empty()
+        ));
+        assert!(
+            app.transcript.cells.is_empty(),
+            "no agent prompt cell is created"
+        );
     }
 
     #[test]
@@ -6394,6 +6561,47 @@ mod mode_tests {
     }
 
     #[test]
+    fn plugin_view_escape_closes_the_generic_node_modal() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "view",
+                        "id": "plan-view",
+                        "title": "Plan",
+                        "nodes": [{
+                            "id": "step-1",
+                            "kind": "generic",
+                            "title": "Inspect",
+                            "body": "priority · high",
+                            "status": "running"
+                        }]
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        assert!(app.view_overlay.is_some());
+        let frame = crate::ui::dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("Plan"), "view title:\n{frame}");
+        assert!(frame.contains("Inspect"), "view node:\n{frame}");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+
+        assert!(app.view_overlay.is_none());
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginOverlayEvent { id, event, value })
+                if id == "plan-view" && event == "cancel" && value.is_none()
+        ));
+    }
+
+    #[test]
     fn exact_agent_slash_command_tab_completes() {
         let (mut app, ctl, _rx) = test_app();
         app.input.set("/agent".into());
@@ -6414,6 +6622,7 @@ mod mode_tests {
                 value: "plan".into(),
                 reset_value: Some("default".into()),
             }),
+            client_command: false,
         }];
         let cells_before = app.transcript.cells.len();
 
@@ -6425,6 +6634,31 @@ mod mode_tests {
             cells_before,
             "client commands do not create prompt transcript cells"
         );
+    }
+
+    #[test]
+    fn advertised_plan_command_toggles_off_when_plan_is_active() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.skills = vec![crate::bus::SkillInfo {
+            name: "plan".into(),
+            description: "Enter plan mode".into(),
+            config_action: Some(crate::bus::CommandConfigAction {
+                config_id: "collaboration_mode".into(),
+                value: "plan".into(),
+                reset_value: Some("default".into()),
+            }),
+            client_command: false,
+        }];
+        app.modes.plan = true;
+
+        app.run_slash("plan", "", &ctl);
+
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::SetConfigOption { config_id, value })
+                if config_id == "collaboration_mode" && value == "default"
+        ));
     }
 
     #[test]
@@ -6518,6 +6752,7 @@ mod mode_tests {
                 value: "plan".into(),
                 reset_value: Some("default".into()),
             }),
+            client_command: false,
         }];
 
         app.run_slash("plan", "focus on the parser", &ctl);
@@ -6537,6 +6772,7 @@ mod mode_tests {
             name: "commit-helper".into(),
             description: "draft a commit".into(),
             config_action: None,
+            client_command: false,
         }];
         app.input.set("/commit-helper for the last change".into());
         app.submit(&ctl);
@@ -6554,6 +6790,7 @@ mod mode_tests {
             name: "commit-helper".into(),
             description: "draft a commit".into(),
             config_action: None,
+            client_command: false,
         }];
         app.input.set("/commit".into());
         let entry = app.slash_matches()[0].clone();
@@ -6581,6 +6818,7 @@ mod mode_tests {
             name: "login".into(),
             description: "Save a DeepSeek API key into the harness credential store".into(),
             config_action: None,
+            client_command: false,
         }];
         app.input.set("/log".into());
         assert!(
@@ -6634,11 +6872,13 @@ mod mode_tests {
                 name: "logout".into(),
                 description: "sign out".into(),
                 config_action: None,
+                client_command: false,
             },
             crate::bus::SkillInfo {
                 name: "login".into(),
                 description: "agent login".into(),
                 config_action: None,
+                client_command: false,
             },
         ];
         app.input.set("/".into());
@@ -7468,5 +7708,153 @@ mod right_slot_tests {
             !frame.contains("first panel"),
             "old snapshot was replaced:\n{frame}"
         );
+    }
+
+    #[test]
+    fn conversation_input_dock_is_compact_and_does_not_claim_the_sidebar() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.show_banner = false;
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: json!({
+                    "protocol": 0,
+                    "slot": "conversation.input.dock",
+                    "rev": 1,
+                    "nodes": [{
+                        "id": "plan-view:summary",
+                        "kind": "generic",
+                        "title": "Plan · 1/2 · Implement",
+                        "body": "",
+                        "status": "running",
+                        "action": { "kind": "command", "name": "plan-view", "args": "" }
+                    }]
+                }),
+            },
+            &ctl,
+        );
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 24);
+
+        assert!(
+            frame.contains("Plan · 1/2 · Implement"),
+            "dock row:\n{frame}"
+        );
+        let lines = frame.lines().collect::<Vec<_>>();
+        let plan_y = lines
+            .iter()
+            .position(|line| line.contains("Plan · 1/2 · Implement"))
+            .expect("Plan row") as u16;
+        let tip_y = lines
+            .iter()
+            .position(|line| line.contains("Tip ·"))
+            .expect("Tip row") as u16;
+        assert_eq!(
+            tip_y,
+            plan_y + 1,
+            "Tip extends the same two-row cap:\n{frame}"
+        );
+        assert!(
+            lines[plan_y as usize].starts_with('╭'),
+            "one top edge:\n{frame}"
+        );
+        assert!(
+            lines[tip_y as usize].starts_with('│'),
+            "Tip has no second top edge:\n{frame}"
+        );
+
+        app.handle(
+            AppEvent::Term(crossterm::event::Event::Mouse(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: 5,
+                    row: plan_y,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+            )),
+            &ctl,
+        );
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::InvokePluginCommand { name, args })
+                if name == "plan-view" && args.is_empty()
+        ));
+        assert!(app.slot_snapshots.contains_key("conversation.input.dock"));
+        assert!(
+            !app.slot_snapshots.contains_key("chrome.right"),
+            "composer dock must not claim chrome.right"
+        );
+        let (mut baseline, _baseline_ctl, _baseline_rx) = test_app();
+        baseline.show_banner = false;
+        let _ = crate::ui::dump_frame(&mut baseline, 100, 24);
+        assert_eq!(
+            app.chat_view.area.width, baseline.chat_view.area.width,
+            "dock must keep the full-width shell",
+        );
+    }
+
+    #[test]
+    fn conversation_input_dock_routes_each_visible_action() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.show_banner = false;
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: json!({
+                    "protocol": 0,
+                    "slot": "conversation.input.dock",
+                    "rev": 1,
+                    "nodes": [
+                        {
+                            "id": "plan-view:summary",
+                            "kind": "generic",
+                            "title": "Plan",
+                            "body": "",
+                            "action": { "kind": "command", "name": "plan-view", "args": "" }
+                        },
+                        {
+                            "id": "goal-view:summary",
+                            "kind": "generic",
+                            "title": "Goal",
+                            "body": "",
+                            "action": { "kind": "command", "name": "goal-view", "args": "active" }
+                        }
+                    ]
+                }),
+            },
+            &ctl,
+        );
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 24);
+        let lines = frame.lines().collect::<Vec<_>>();
+        let dock_y = lines
+            .iter()
+            .position(|line| line.contains("Plan | Goal"))
+            .expect("combined dock row") as u16;
+        let goal_x = lines[dock_y as usize].find("Goal").expect("Goal title") as u16;
+
+        app.handle(
+            AppEvent::Term(crossterm::event::Event::Mouse(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: goal_x,
+                    row: dock_y,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+            )),
+            &ctl,
+        );
+
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::InvokePluginCommand { name, args })
+                if name == "goal-view" && args == "active"
+        ));
     }
 }

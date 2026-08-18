@@ -7,9 +7,15 @@
  */
 
 import { spawn } from 'node:child_process'
+import { installAcpClientEvents } from './acp-client-events.js'
 import { installAcpSessionConfig } from './acp-session-config.js'
+import { installAcpSessionPlan } from './acp-session-plan.js'
+import { installAcpSessionStats } from './acp-session-stats.js'
 
 export { installAcpSessionConfig } from './acp-session-config.js'
+export { installAcpSessionPlan } from './acp-session-plan.js'
+export { installAcpSessionStats } from './acp-session-stats.js'
+export { installAcpClientEvents } from './acp-client-events.js'
 
 export const name = 'acp-client'
 export const inject = []
@@ -47,7 +53,13 @@ export function resolveAgent(config = {}) {
  * @param {object} [config]
  */
 export function apply(ctx, config = {}) {
-  installAcpSessionConfig(ctx)
+  const events = installAcpClientEvents(ctx)
+  const sessionConfig = installAcpSessionConfig(ctx)
+  const sessionPlan = installAcpSessionPlan(ctx)
+  const sessionStats = installAcpSessionStats(ctx)
+  events.register(sessionConfig)
+  events.register(sessionPlan)
+  events.register(sessionStats)
   if (config.stream !== undefined && config.stream !== null) {
     const service = {
       kind: 'stream',

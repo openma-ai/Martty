@@ -17,7 +17,7 @@ import { muxAcpAndCompositor } from './mux.js'
 export const name = 'dsh-tui-shell'
 export const inject = [
   'acpClient', 'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
-  'acpSessionConfig', 'tuiCordisClientRunner',
+  'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
 ]
 
 const shellStateKey = Symbol.for('@openma/deepseek-harness-tui/shell-state')
@@ -122,6 +122,13 @@ export async function applyShell(ctx, options = {}) {
       'dsh-tui-shell: ctx.acpSessionConfig must expose bindTransport and ACP observers',
     )
   }
+  const clientEvents = ctx.acpClientEvents ?? ctx.get?.('acpClientEvents')
+  if (clientEvents === undefined || typeof clientEvents.observeClient !== 'function'
+    || typeof clientEvents.observeAgent !== 'function') {
+    throw new Error(
+      'dsh-tui-shell: ctx.acpClientEvents must expose ACP observers',
+    )
+  }
 
   // Config-watch recomposes the tree at boot and disposes this fiber. Keep
   // one painter; do not kill it from ctx.effect or the screen never appears.
@@ -187,8 +194,11 @@ export async function applyShell(ctx, options = {}) {
         clientRunner.sync()
       },
       onAcp(direction, message) {
-        if (direction === 'client') sessionConfig.observeClient(message)
-        else sessionConfig.observeAgent(message)
+        if (direction === 'client') {
+          clientEvents.observeClient(message)
+        } else {
+          clientEvents.observeAgent(message)
+        }
       },
       onCompositor(message) {
         if (message.method === CORDIS_METHODS.themeSelected) {

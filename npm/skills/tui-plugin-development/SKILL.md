@@ -1,6 +1,6 @@
 ---
 name: tui-plugin-development
-description: Companion guidance for dynamic Cordis Plugins that touch the TUI: terminal themes, slots, local slash commands, native overlays or sliders, and current ACP Session config options. Load `cordis-plugin-development` first for the common Plugin model, then load this skill for the TUI half.
+description: Companion guidance for dynamic Cordis Plugins that touch the TUI: terminal themes, slots, local slash commands, native overlays, and current ACP Session config or Plan state. Load `cordis-plugin-development` first for the common Plugin model, then load this skill for the TUI half.
 ---
 
 # Develop TUI Client Plugins
@@ -58,8 +58,10 @@ Use the narrowest capability:
 | Palette registration/activation | `Theme` | `tuiTheme` |
 | Persistent terminal content | `Slots` | `tuiSlots` |
 | Local slash command | `Commands` | `tuiCommands` |
-| Transient slider/control | `Overlay` | `tuiOverlay` |
+| Transient slider or node view | `Overlay` | `tuiOverlay` |
 | Current ACP Session option | advertised config-option Provider | `acpSessionConfig` |
+| Current structured ACP Plan | `Plans` | `acpSessionPlan` |
+| Current ACP Session statistics | `Stats` | `acpSessionStats` |
 
 A transient control is not a side panel. When the user did not request
 persistent content, do not query Slots or mount `chrome.right`.
@@ -88,7 +90,10 @@ compose only in the Plugin code. The services do not imply one another:
   config categories, or Slots.
 - **Slots:** register persistent native `TuiNode` content only when the user
   asked for persistent shell UI. Use stable node ids and update the existing
-  contribution instead of creating parallel panels.
+  contribution instead of creating parallel panels. Select the live seat from
+  `Slots.list`: all current seats aggregate contributors. Use
+  `conversation.input.dock` for content needing its own line and keep
+  `conversation.composer.dock` contributions compact.
 - **Overlays:** open a transient native control only in response to the
   interaction that needs it. A command is one possible trigger, not part of
   the Overlay contract. Do not use a persistent Slot as a transient control.
@@ -97,6 +102,14 @@ compose only in the Plugin code. The services do not imply one another:
   agent-specific. Use the inspected transaction when an interaction needs
   preview/commit/rollback; it owns write ordering, deduplication, first-winner
   finalization, and rollback of unfinished previews with the Plugin run.
+- **ACP Session Plan:** consume `current()` / `subscribe()` when the requested UI
+  reflects agent Plan state. This is already folded from standard ACP updates;
+  do not parse raw messages or add a Host RPC. A persistent summary and a
+  command-opened full view remain independent Slot, Command, and Overlay contributions.
+- **ACP Session statistics:** consume `current()` / `subscribe()` for token,
+  cache, turn, step, latency, or throughput UI. The builtin stats line is an
+  ordinary Client Plugin in `conversation.composer.dock`; do not scrape the
+  transcript or recreate raw ACP event folding in another plugin.
 - **Host-backed behavior:** add a Host half only for Host-owned data. Use the
   Package-private JSON call surface exactly as inspected. ACP Session config is
   already Client-owned and needs no Host RPC.

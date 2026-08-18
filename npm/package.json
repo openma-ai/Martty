@@ -1,6 +1,6 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
@@ -14,7 +14,7 @@
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs ../scripts/check-static-elf.test.mjs ../scripts/smoke-old-linux.test.mjs ../scripts/cargo-guard.test.mjs ../scripts/build-npm.test.mjs ../scripts/client-profile.test.mjs ../scripts/plugin-runner.test.mjs ../scripts/profile-link-resolution.test.mjs ../scripts/jsonrpc-line-transport.test.mjs ../scripts/tui-theme.test.mjs ../scripts/tui-slots.test.mjs ../scripts/tui-commands.test.mjs ../scripts/tui-overlay.test.mjs ../scripts/mux.test.mjs ../scripts/acp-client.test.mjs ../scripts/acp-session-config.test.mjs ../scripts/runner.test.mjs ../scripts/inspect.test.mjs ../scripts/creator-overlay.test.mjs ../scripts/real-agent-e2e.test.mjs"
+    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs ../scripts/check-static-elf.test.mjs ../scripts/smoke-old-linux.test.mjs ../scripts/cargo-guard.test.mjs ../scripts/build-npm.test.mjs ../scripts/client-profile.test.mjs ../scripts/plugin-runner.test.mjs ../scripts/profile-link-resolution.test.mjs ../scripts/jsonrpc-line-transport.test.mjs ../scripts/tui-theme.test.mjs ../scripts/tui-slots.test.mjs ../scripts/tui-commands.test.mjs ../scripts/tui-overlay.test.mjs ../scripts/mux.test.mjs ../scripts/acp-client.test.mjs ../scripts/acp-client-events.test.mjs ../scripts/acp-session-config.test.mjs ../scripts/acp-session-plan.test.mjs ../scripts/acp-session-stats.test.mjs ../scripts/plan-view.test.mjs ../scripts/stats-view.test.mjs ../scripts/runner.test.mjs ../scripts/inspect.test.mjs ../scripts/creator-overlay.test.mjs ../scripts/real-agent-e2e.test.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -27,8 +27,13 @@
     "./slots": "./lib/tui-slots.js",
     "./commands": "./lib/tui-commands.js",
     "./overlay": "./lib/tui-overlay.js",
+    "./session-plan": "./lib/acp-session-plan.js",
+    "./session-stats": "./lib/acp-session-stats.js",
+    "./plan-view": "./lib/plan-view.js",
+    "./stats-view": "./lib/stats-view.js",
     "./right-demo": "./lib/right-demo.js",
     "./acp-client": "./lib/acp-client.js",
+    "./acp-client-events": "./lib/acp-client-events.js",
     "./profile-acp-client": "./lib/profile-acp-client.js",
     "./acp-host": "./lib/acp-host.js",
     "./creator-overlay": "./lib/creator-overlay.js",
@@ -58,7 +63,7 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@openma/deepseek-harness-acp": "0.4.12"
+    "@openma/deepseek-harness-acp": "0.4.13"
   },
   "engines": {
     "node": ">=18"

@@ -92,3 +92,24 @@ test('command options stay orthogonal and command names are generic slash identi
     /unknown.*when/i,
   )
 })
+
+test('late transport binding publishes one authoritative current catalog', () => {
+  assert.equal(typeof commandsPlugin.installTuiCommands, 'function')
+  if (typeof commandsPlugin.installTuiCommands !== 'function') return
+
+  const commands = commandsPlugin.installTuiCommands(makeCtx())
+  commands.register({ name: 'plan-view', description: 'Open the current ACP plan' }, () => {})
+  const disposeTemporary = commands.register({ name: 'temporary', description: 'Temporary' }, () => {})
+  disposeTemporary()
+
+  const sent = []
+  commands.bindNotify((method, params) => sent.push({ method, params }))
+
+  assert.deepEqual(sent, [{
+    method: '_dsh/cordis/tui/commands/update',
+    params: {
+      protocol: 0,
+      commands: [{ name: 'plan-view', description: 'Open the current ACP plan' }],
+    },
+  }])
+})

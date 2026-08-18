@@ -35,9 +35,12 @@ Host 进程：Base Cordis + ACP plugin
         │ TUI Client 子进程的标准 stdin/stdout（ACP）
 Client 进程：独立 Cordis root
   第三方插件   sibling insert + inject ['tuiTheme' / 'tuiSlots']
-  Client runner inject ['tuiTheme', 'tuiSlots']，执行 dsh-tool-cordis 的 code.client
-  TUI 壳       inject ['acpClient', 'tuiTheme', 'tuiSlots', 'tuiCordisClientRunner']，只占 TTY
-  tui-slots    提供 tuiSlots，声明 chrome.right
+  Client runner inject ['tuiTheme', 'tuiSlots', ...]，执行 dsh-tool-cordis 的 code.client
+  TUI 壳       注入 acpClient 与 Client services，只占 TTY
+  plan-view    注入 acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
+  stats-view   注入 acpSessionStats + tuiSlots
+  tui-slots    提供 tuiSlots，声明 chrome.right / conversation.input.dock /
+               conversation.composer.dock
   tui-theme    提供 tuiTheme
   acp-client   attach Host stdio，提供 acpClient
         │ Client 进程 fd 3/4 仅传 TTY
@@ -73,13 +76,17 @@ Client inspect/run 通道。
 
 ```text
 第三方插件    sibling insert + inject ['tuiTheme'] → 配色 register
-              sibling insert + inject ['tuiSlots'] → chrome.right register
+              sibling insert + inject ['tuiSlots'] → slot register
 tui-theme     配色表 → Theme registry
-tui-slots     TuiNode 树 → chrome.right snapshot registry
+tui-slots     TuiNode 树 → chrome.right / input dock / composer dock snapshot registry
+plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
+stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 Client runner Client inspect + code.client 挂载/停止
-TUI 壳        消费 Theme 与 chrome.right 快照树
+TUI 壳        消费 Theme、slot 与通用 overlay 快照树
 acp-client    session/new · authenticate · prompt · cancel · config · commands
               提供 acpSessionConfig（观察标准快照；set 仍由 Rust 发标准 ACP）
+              提供 acpSessionPlan（观察标准 plan update；内置 Plan 插件只是消费者）
+              提供 acpSessionStats 与通用、随 effect 回收的 ACP observer registry
               `_dsh/cordis/*` 是 initialize 协商后的 Cordis 扩展
               `_dsh/cordis/tui/*` 是 mux 隔离的 painter 子域
 Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
@@ -91,7 +98,7 @@ Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
 | acp-client | ACP 会话控制；作根或作 insert | 组合 dsh、当 UI 内模 |
 | tui-theme / tui-slots | 提供 `tuiTheme` / `tuiSlots` registry | 占 TTY、依赖 agent |
 | Client runner | 向 `dsh-tool-cordis` 发布 TUI Client 能力并挂载 `code.client` | 占 TTY、运行 Web React 插件 |
-| TUI 壳 | 占 TTY、消费 `acpClient` / `tuiTheme` / `tuiSlots` / runner | 解释 `SessionEvent`、npm 依赖 dsh |
+| TUI 壳 | TTY、输入、compositor；消费插件提供的结构化 slot/overlay snapshot | 拥有 Plan/统计等业务投影，或解释 harness `SessionEvent` |
 | Rust | 把 Theme 画进现有 widget | 在 JS 里解释颜色 |
 
 本体只有内置 `default`。动态 Theme Plugin 用 `tuiTheme.register` 声明 palette；
