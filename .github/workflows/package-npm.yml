@@ -97,6 +97,9 @@ jobs:
       - name: Verify Linux binary is statically linked
         if: matrix.platform == 'linux'
         run: node scripts/check-static-elf.mjs "${{ matrix.binary }}"
+      - name: Smoke test Linux binary on Ubuntu 20.04
+        if: matrix.platform == 'linux'
+        run: node scripts/smoke-old-linux.mjs "${{ matrix.binary }}"
       - name: Stage native binary
         run: >-
           node scripts/package-native.mjs stage
