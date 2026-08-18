@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- Markdown rendering now runs on `tui-markdown` (pulldown-cmark) instead of a
+  hand-rolled line scanner: proper CommonMark + GFM parsing (nested lists,
+  reference links, footnotes, task lists, definition lists, math delimiters)
+  with the DeepSeek palette mapped through a custom `StyleSheet`. The CJK /
+  Latin two-tone body coloring, hanging list/quote indents, full-width rules,
+  and box-drawing tables are kept, now with a `├─┼─┤` junction between every
+  pair of table body rows; tables wider than the viewport now
+  truncate with an ellipsis instead of re-wrapping cells, fenced code blocks
+  render as framed boxes with a language label on the top edge, all code
+  (blocks and inline spans) uses upright light gray on a lighter panel
+  background, and image syntax renders as `[img] alt (url)`.
+
 ### Added
 
 - Added an internal Creator Host overlay to the TUI package. It overlays
