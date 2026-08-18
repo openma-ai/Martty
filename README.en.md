@@ -40,6 +40,12 @@ Needs Node.js 18+. The same command installs or upgrades: it creates a missing
 profile, while an existing profile explicitly re-resolves TUI and its dependency
 graph from npm's `latest` tag:
 
+First install the official [DeepSeek Harness](https://github.com/deepseek-ai/dsh):
+```sh
+npm install -g @deepseek-ai/dsh
+```
+
+Then install this project as its TUI surface plugin:
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 dsh --profile tui
@@ -239,9 +245,9 @@ Requests/Notifications and never enter prompts or conversation history.
 | `enter` | Send; queue a follow-up while a turn is running |
 | `ctrl+x` | Steer the active turn immediately without cancelling it |
 | `esc` | Interrupt the current turn (draft survives); clears the draft when idle |
-| `ctrl+c` | Clear the draft, then interrupt; press twice to quit |
+| `ctrl+c` | Clear the draft first; press twice when idle, five times while a turn runs, to quit; never interrupts the current turn |
 | `/` | Open the command menu and filter by prefix; agent-advertised skills join it and still ship as `/name ` prompts |
-| `/model` · `/agent` | Pick an agent-advertised model or agent preset; `ctrl+a` cycles agents directly without a picker |
+| `/model` · `/agent` | Pick an agent-advertised model or agent preset; `option+a` cycles agents directly without a picker |
 | `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
 | `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
 | `/effort` · `/plan` | Set reasoning effort or pass plan mode to the host |

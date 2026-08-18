@@ -36,6 +36,12 @@
 需要 Node.js 18+。同一条命令用于首次安装和以后升级；缺失的 profile 会自动创建，
 已有 profile 会显式按 npm 的 `latest` 标签重新解析 TUI 及其依赖图：
 
+首先安装官方的 [DeepSeek Harness](https://github.com/deepseek-ai/dsh)：
+```sh
+npm install -g @deepseek-ai/dsh
+```
+
+再安装本项目作为它的 TUI surface plugin：
 ```sh
 dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
 dsh --profile tui
