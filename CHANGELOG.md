@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux x64 packages now ship a statically linked musl binary instead of a
+  binary tied to the Ubuntu 24.04 glibc version. Release CI verifies the ELF
+  artifact has no dynamic program interpreter before packaging it.
+
 ### Changed
 
 - Markdown rendering now runs on `tui-markdown` (pulldown-cmark) instead of a

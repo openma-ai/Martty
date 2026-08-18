@@ -71,10 +71,10 @@ jobs:
             binary: target/x86_64-apple-darwin/release/dsh-tui
           - name: linux-x64
             runner: ubuntu-24.04
-            rust-target: x86_64-unknown-linux-gnu
+            rust-target: x86_64-unknown-linux-musl
             platform: linux
             arch: x64
-            binary: target/x86_64-unknown-linux-gnu/release/dsh-tui
+            binary: target/x86_64-unknown-linux-musl/release/dsh-tui
           - name: win32-x64
             runner: windows-2025
             rust-target: x86_64-pc-windows-msvc
@@ -89,8 +89,14 @@ jobs:
           package-manager-cache: false
       - run: rustup update stable
       - run: rustup default stable
+      - name: Install musl linker
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - run: rustup target add ${{ matrix.rust-target }}
       - run: cargo build --release --locked --target ${{ matrix.rust-target }}
+      - name: Verify Linux binary is statically linked
+        if: matrix.platform == 'linux'
+        run: node scripts/check-static-elf.mjs "${{ matrix.binary }}"
       - name: Stage native binary
         run: >-
           node scripts/package-native.mjs stage
