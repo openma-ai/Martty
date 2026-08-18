@@ -107,6 +107,8 @@ jobs:
         # dependency (iana-time-zone-haiku) is Haiku-only, so no external
         # C toolchain is needed: point the arm64 link at the toolchain's
         # bundled rust-lld. Other matrix entries build their own targets.
+        # shell: bash keeps the POSIX script valid on the Windows runner.
+        shell: bash
         run: |
           if [ "${{ matrix.platform }}" = "linux" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
             HOST="$(rustc -vV | sed -n 's/^host: //p')"
@@ -116,6 +118,10 @@ jobs:
       - name: Verify Linux binary is statically linked
         if: matrix.platform == 'linux'
         run: node scripts/check-static-elf.mjs "${{ matrix.binary }}"
+      - uses: docker/setup-qemu-action@v3
+        # GitHub-hosted runners have no arm64 binfmt by default; QEMU
+        # emulation is required to run the linux/arm64 smoke container.
+        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
       - name: Smoke test Linux binary on Ubuntu 20.04
         if: matrix.platform == 'linux'
         env:
