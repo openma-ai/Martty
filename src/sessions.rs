@@ -27,6 +27,10 @@ pub struct SessionSummary {
     pub turns: usize,
     /// First real user prompt (truncated) — the session's human handle.
     pub preview: String,
+    /// Harness-generated title from `session/title` events, when present.
+    /// The LLM ("provider" source) title wins over the truncated-prompt
+    /// "fallback" stub.
+    pub title: Option<String>,
 }
 
 /// `/Users/x/proj` → `--Users-x-proj--` (the harness's directory slug).
@@ -173,6 +177,29 @@ fn summarize(file: &Path) -> Option<SessionSummary> {
             p
         })
         .unwrap_or_default();
+    // The harness titles sessions asynchronously: a "fallback" stub derived
+    // from the first prompt arrives first, the LLM-generated "provider"
+    // title later. Keep the provider title when it exists.
+    let mut title: Option<String> = None;
+    let mut provider_title: Option<String> = None;
+    for ev in &events {
+        if ev.get("type").and_then(Value::as_str) != Some("session/title") {
+            continue;
+        }
+        let Some(t) = ev.pointer("/data/title").and_then(Value::as_str) else {
+            continue;
+        };
+        let t = t.trim().to_string();
+        if t.is_empty() {
+            continue;
+        }
+        if ev.pointer("/data/source/kind").and_then(Value::as_str) == Some("provider") {
+            provider_title = Some(t);
+        } else {
+            title = Some(t);
+        }
+    }
+    let title = provider_title.or(title);
     let modified = std::fs::metadata(file)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -182,6 +209,7 @@ fn summarize(file: &Path) -> Option<SessionSummary> {
         modified,
         turns,
         preview,
+        title,
     })
 }
 
@@ -221,6 +249,12 @@ mod tests {
         )
     }
 
+    fn title_event(kind: &str, text: &str) -> String {
+        format!(
+            r#"{{"type":"session/title","seq":8,"data":{{"title":"{text}","source":{{"kind":"{kind}"}}}}}}"#
+        )
+    }
+
     #[test]
     fn slug_matches_observed_host_layout() {
         assert_eq!(
@@ -250,6 +284,8 @@ mod tests {
                 header("dsh-new"),
                 r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#.into(),
                 user_msg("修复失败的测试 with a long tail that should be truncated away entirely"),
+                title_event("fallback", "修复失败的测试"),
+                title_event("provider", "fix failing tests"),
                 r#"{"type":"turn/start","seq":9,"data":{"turn":2}}"#.into(),
             ],
         );
@@ -261,6 +297,12 @@ mod tests {
         assert_eq!(sessions[0].turns, 2);
         assert!(sessions[0].preview.starts_with("修复失败的测试"));
         assert!(sessions[0].preview.ends_with('…'), "long preview truncated");
+        assert_eq!(
+            sessions[0].title.as_deref(),
+            Some("fix failing tests"),
+            "provider title beats the fallback stub"
+        );
+        assert_eq!(sessions[1].title, None);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -273,6 +315,50 @@ mod tests {
         assert_eq!(user_text(&injected), None);
         let real: Value = serde_json::from_str(&user_msg("hi")).unwrap();
         assert_eq!(user_text(&real).as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn title_falls_back_to_non_provider_and_skips_blanks() {
+        let tmp = std::env::temp_dir().join(format!("dsh-title-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let slug = workspace_slug("/w");
+        write_session(
+            &tmp,
+            &slug,
+            "dsh-fb",
+            &[
+                header("dsh-fb"),
+                user_msg("hello"),
+                title_event("fallback", "hello world"),
+            ],
+        );
+        write_session(
+            &tmp,
+            &slug,
+            "dsh-blank",
+            &[
+                header("dsh-blank"),
+                user_msg("hi"),
+                title_event("fallback", "  "),
+            ],
+        );
+        let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "other");
+        assert_eq!(
+            sessions
+                .iter()
+                .find(|s| s.id == "dsh-fb")
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("hello world"),
+            "fallback title used when no provider title exists"
+        );
+        assert_eq!(
+            sessions.iter().find(|s| s.id == "dsh-blank").unwrap().title,
+            None,
+            "blank titles are dropped"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Appended session logs are concatenated zstd frames — every frame

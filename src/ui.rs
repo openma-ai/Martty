@@ -1495,6 +1495,17 @@ fn pad_or_ellipsize(s: &str, w: usize) -> String {
     format!("{out}{}", " ".repeat(w.saturating_sub(ow)))
 }
 
+/// Left-pad to a fixed display width so picker columns line up
+/// (`{:<n}` pads by chars, which misaligns CJK labels).
+fn pad_to_width(s: &str, width: usize) -> String {
+    let w = UnicodeWidthStr::width(s);
+    if w >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - w))
+    }
+}
+
 fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
     let Some(picker) = &app.picker else {
         return;
@@ -1527,7 +1538,7 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         .iter()
         .map(|item| {
             let label_w = item.label.width() + if is_current(item) { 2 } else { 0 };
-            2 + label_w.max(24) + item.meta.width()
+            2 + label_w.max(crate::app::PICKER_LABEL_COL) + item.meta.width()
         })
         .max()
         .unwrap_or(0) as u16;
@@ -1557,7 +1568,7 @@ fn draw_model_picker(f: &mut Frame, app: &App, screen: Rect) {
         };
         let mut spans = vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(format!("{label:<24}"), style),
+            Span::styled(pad_to_width(&label, crate::app::PICKER_LABEL_COL), style),
         ];
         if !item.meta.is_empty() {
             spans.push(Span::styled(
@@ -2513,6 +2524,58 @@ mod tests {
         assert!(
             frame.contains("bash + str_replace_editor"),
             "descriptions visible\n{frame}"
+        );
+    }
+
+    #[test]
+    fn session_picker_rows_align_label_and_meta_columns() {
+        use crate::app::{Picker, PickerItem, PickerKind, PICKER_LABEL_COL};
+        let mut app = test_app();
+        app.show_banner = false;
+        app.picker = Some(Picker {
+            kind: PickerKind::Session,
+            title: " resume session · 2 sessions · enter select · esc close ".into(),
+            sel: 0,
+            items: vec![
+                PickerItem {
+                    id: "276b7574-b12c-488e-958b-f9673b67fba9".into(),
+                    label: "查看session历史命令的可行性".into(),
+                    meta: "276b7574 · 2h · 3 turns".into(),
+                    provider: None,
+                },
+                PickerItem {
+                    id: "dsh-alp".into(),
+                    label: "fix failing tests".into(),
+                    meta: "dsh-alp  · just now · 1 turn".into(),
+                    provider: None,
+                },
+            ],
+        });
+        let frame = dump_frame(&mut app, 100, 30);
+        let ascii_row = frame
+            .lines()
+            .find(|l| l.contains("fix failing tests"))
+            .expect("ascii row");
+        // Wide chars dump as char + continuation cell, so locate the CJK
+        // row by its meta instead of the raw label.
+        let cjk_row = frame
+            .lines()
+            .find(|l| l.contains("276b7574 · 2h"))
+            .unwrap_or_else(|| panic!("cjk row missing:\n{frame}"));
+        // Dump cells contribute exactly one char each, so the column of a
+        // marker is the char count before its byte offset (`find` alone
+        // returns byte indices, which differ for multi-byte CJK labels).
+        let meta_col = |row: &str| row.find('·').map(|i| row[..i].chars().count()).unwrap_or(0);
+        assert_eq!(
+            meta_col(ascii_row),
+            meta_col(cjk_row),
+            "meta column lines up:\n{ascii_row}\n{cjk_row}\ncols: {} vs {}",
+            meta_col(ascii_row),
+            meta_col(cjk_row),
+        );
+        assert!(
+            ascii_row.chars().count() >= 2 + PICKER_LABEL_COL + 8,
+            "label column padded to {PICKER_LABEL_COL}"
         );
     }
 
