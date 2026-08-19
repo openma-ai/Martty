@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?logo=npm&color=cb3837" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/dm/%40openma%2Fdeepseek-harness-tui" alt="npm downloads" /></a>
-  <a href="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/node/v/%40openma%2Fdeepseek-harness-tui" alt="Node.js 18+" />
+  <a href="https://www.npmjs.com/package/martty"><img src="https://img.shields.io/npm/v/martty?logo=npm&color=cb3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/martty"><img src="https://img.shields.io/npm/dm/martty" alt="npm downloads" /></a>
+  <a href="https://github.com/openma-ai/Martty/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/Martty/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/node/v/martty" alt="Node.js 18+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" /></a>
 </p>
 
@@ -49,13 +49,15 @@ directly to the `tui` profile:
 
 ```sh
 npm install -g @deepseek-ai/dsh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+dsh plugin --profile tui add martty@latest
 dsh --profile tui
 ```
 
 `dsh plugin ... add` is the recommended installation and upgrade entry point.
 It creates the profile and installs the TUI plus its ACP dependency; no global
 `dsh-tui` or separate pnpm installation is required.
+The legacy `@openma/deepseek-harness-tui` name continues to receive the same
+versions, so existing installs do not need to migrate immediately.
 
 An install guide for AI agents: [docs/agent-setup.md](docs/agent-setup.md)
 
@@ -93,7 +95,7 @@ does not put theme-specific behavior in core.
 The demo needs neither a runtime nor an API key:
 
 ```sh
-npm install --global @openma/deepseek-harness-tui
+npm install --global martty
 dsh-tui --demo
 ```
 

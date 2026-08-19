@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/v/%40openma%2Fdeepseek-harness-tui?logo=npm&color=cb3837" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/@openma/deepseek-harness-tui"><img src="https://img.shields.io/npm/dm/%40openma%2Fdeepseek-harness-tui" alt="npm downloads" /></a>
-  <a href="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/deepseek-harness-tui/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/node/v/%40openma%2Fdeepseek-harness-tui" alt="Node.js 18+" />
+  <a href="https://www.npmjs.com/package/martty"><img src="https://img.shields.io/npm/v/martty?logo=npm&color=cb3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/martty"><img src="https://img.shields.io/npm/dm/martty" alt="npm downloads" /></a>
+  <a href="https://github.com/openma-ai/Martty/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/Martty/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/node/v/martty" alt="Node.js 18+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" /></a>
 </p>
 
@@ -45,12 +45,13 @@
 
 ```sh
 npm install -g @deepseek-ai/dsh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+dsh plugin --profile tui add martty@latest
 dsh --profile tui
 ```
 
 `dsh plugin ... add` 是推荐的安装与升级入口：它会自动创建 profile、安装
 TUI 及其 ACP 依赖，不需要全局安装 `dsh-tui`，也不需要另装 pnpm。
+旧包名 `@openma/deepseek-harness-tui` 会继续发布相同版本，已有安装无需立即迁移。
 
 这是给 AI agent 阅读的安装说明：[docs/agent-setup.md](docs/agent-setup.md)
 
@@ -84,7 +85,7 @@ slider overlay、当前 ACP Session 配置事务和包内 Host/Client RPC；完�
 Demo 不需要 runtime 或 API key：
 
 ```sh
-npm install --global @openma/deepseek-harness-tui
+npm install --global martty
 dsh-tui --demo
 ```
 

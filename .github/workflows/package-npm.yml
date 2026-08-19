@@ -162,9 +162,11 @@ jobs:
         run: |
           mkdir -p dist
           npm pack ./npm --pack-destination dist
+          node scripts/package-alias.mjs npm npm-martty martty
+          npm pack ./npm-martty --pack-destination dist
       - uses: actions/upload-artifact@v7
         with:
-          name: openma-deepseek-harness-tui-npm
+          name: martty-npm-packages
           path: dist/*.tgz
           if-no-files-found: error
           retention-days: 14
@@ -190,7 +192,7 @@ jobs:
       - run: npm install --global npm@^11.15.0
       - uses: actions/download-artifact@v8
         with:
-          name: openma-deepseek-harness-tui-npm
+          name: martty-npm-packages
           path: dist
       - name: Publish npm packages
         shell: bash
@@ -200,6 +202,7 @@ jobs:
             *) DIST_TAG=latest ;;
           esac
           echo "publishing with dist-tag: $DIST_TAG"
+          npm publish ./dist/martty-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
           npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
 
   release:
@@ -213,7 +216,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
-          name: openma-deepseek-harness-tui-npm
+          name: martty-npm-packages
           path: dist
       - name: Create GitHub release
         shell: bash

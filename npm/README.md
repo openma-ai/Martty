@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/openma-ai/deepseek-harness-tui/main/assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
+  <img src="https://raw.githubusercontent.com/openma-ai/Martty/main/assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
 </p>
 
 <h1 align="center">DeepSeek Harness TUI</h1>
@@ -88,7 +88,7 @@ Plugin. Plugins submit semantic data and never receive the TTY, Ratatui,
 absolute coordinates, compositor fds, or private transport methods.
 
 The versioned contract and examples live in the repository's
-[plugin API](https://github.com/openma-ai/deepseek-harness-tui/blob/main/docs/plugins.en.md).
+[plugin API](https://github.com/openma-ai/Martty/blob/main/docs/plugins.en.md).
 
 The demo needs no API key or agent. Run `dsh-tui --help` for agent, model,
 credential, session, theme, and demo options.
@@ -113,6 +113,6 @@ npm uninstall --global @openma/deepseek-harness-tui
 ```
 
 Source, screenshots, development commands, and architecture notes live in the
-[GitHub repository](https://github.com/openma-ai/deepseek-harness-tui).
+[GitHub repository](https://github.com/openma-ai/Martty).
 
-[MIT](https://github.com/openma-ai/deepseek-harness-tui/blob/main/LICENSE).
+[MIT](https://github.com/openma-ai/Martty/blob/main/LICENSE).

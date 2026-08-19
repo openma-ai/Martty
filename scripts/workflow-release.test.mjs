@@ -15,3 +15,10 @@ test('release jobs are gated to the current canonical repository', () => {
     2,
   )
 })
+
+test('release workflow packages and publishes both npm names', () => {
+  assert.match(workflow, /package-alias\.mjs npm npm-martty martty/)
+  assert.match(workflow, /npm pack \.\/npm-martty --pack-destination dist/)
+  assert.match(workflow, /npm publish \.\/dist\/martty-\[0-9\]\*\.tgz/)
+  assert.match(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui-\[0-9\]\*\.tgz/)
+})
