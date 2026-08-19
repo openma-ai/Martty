@@ -11,9 +11,35 @@ All notable changes to this project are documented here. The project follows
   binary tied to the Ubuntu 24.04 glibc version. Release CI verifies the ELF
   artifact has no dynamic program interpreter and runs it on Ubuntu 20.04
   before packaging it.
+- Every picker (`/resume`, model, mode, theme, permission, subagent, auth,
+  plugin) now scrolls when the rows overflow the terminal: the visible
+  window follows the selection instead of clipping the tail out of reach,
+  and an inline scrollbar appears in a gutter column inside the popup's
+  right edge, leaving the rounded border intact. `page up`/`page down`
+  jump a screenful and `home`/`end` pin to the first/last row; `↑`/`↓`
+  keep wrapping. The selected row is now highlighted across its full width
+  (soft chip background behind marker, label, meta and the row tail — the
+  meta text steps up from caption gray on the highlighted row) instead of
+  only the label column. The scrolling viewport now comes from
+  `tui-widget-list` (the one new crate; it shares ratatui's
+  `ratatui-core`/`ratatui-widgets` crates, so there is no duplicate widget
+  tree).
 
 ### Changed
 
+- `/keys` is no longer a hand-written text wall: the shortcut map is now
+  derived from the keymap table (`src/input/keymap.rs`) and rendered as
+  markdown through the transcript's markdown pipeline — one GFM
+  box-drawing table per group (`send · interrupt`, `scroll · navigate`,
+  `edit · readline`, `app shortcuts`, `mouse`) with `[empty]`/`[typing]`
+  context tags for dual-use keys and platform-appropriate chord spellings
+  (⌘/⌥ vs ctrl). Notices gained a markdown render path (`/keys` is the
+  first consumer); tables truncate with an ellipsis on narrow terminals
+  instead of breaking mid-line. Anti-drift tests assert every `Action` is
+  documented and that every displayed chord resolves back to its action
+  through `classify()`; previously undocumented bindings (`ctrl+q`,
+  `shift+enter`, `shift+tab`, `ctrl+v`, …) are now listed. `/help` stays
+  the command overview; `/keys` is the complete key map.
 - `/resume` picker rows now lead with the session's human handle — the
   harness-generated `session/title` (falling back to the first real prompt)
   — instead of the full UUID; the meta column carries the 8-char id prefix,

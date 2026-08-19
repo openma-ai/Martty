@@ -561,7 +561,11 @@ pub struct SliderOverlay {
 #[derive(Clone, serde::Deserialize)]
 pub struct SliderMark {
     pub value: f64,
+    /// Optional host-side mark identity. Parsed for protocol compatibility;
+    /// the client renders by value/label and reports the numeric value back,
+    /// so the id is not consumed client-side yet.
     #[serde(default)]
+    #[allow(dead_code)]
     pub id: Option<String>,
     pub label: String,
 }
@@ -678,6 +682,9 @@ pub struct App {
     session_title: Option<String>,
     pub slash_sel: usize,
     pub picker: Option<Picker>,
+    /// Rows the open picker actually shows (`h - border`), recorded by
+    /// `ui::draw_model_picker` — the page size for picker PageUp/PageDown.
+    pub picker_page_rows: usize,
     /// ACP tool permission ask (separate from `/permission` session modes).
     pub permission_ask: Option<PermissionAskOverlay>,
     /// Standard ACP form elicitation, above permission and picker overlays.
@@ -996,6 +1003,7 @@ impl App {
             session_title: None,
             slash_sel: 0,
             picker: None,
+            picker_page_rows: 0,
             permission_ask: None,
             elicitation_ask: None,
             slider_overlay: None,
@@ -2608,10 +2616,17 @@ impl App {
             return;
         };
         let n = picker.items.len().max(1);
+        // Page keys jump a screenful of the open popup (rows recorded by the
+        // draw pass); they never wrap, unlike ↑/↓.
+        let page = self.picker_page_rows.max(1);
         match key.code {
             KeyCode::Esc => self.picker = None,
             KeyCode::Up => picker.sel = picker.sel.checked_sub(1).unwrap_or(n - 1),
             KeyCode::Down => picker.sel = (picker.sel + 1) % n,
+            KeyCode::PageUp => picker.sel = picker.sel.saturating_sub(page),
+            KeyCode::PageDown => picker.sel = picker.sel.saturating_add(page).min(n - 1),
+            KeyCode::Home => picker.sel = 0,
+            KeyCode::End => picker.sel = n - 1,
             KeyCode::Enter => {
                 let Some(item) = picker.items.get(picker.sel).cloned() else {
                     self.picker = None;
@@ -3904,54 +3919,11 @@ usage (incl. cache hits), and the turn end reason.";
     }
 
     fn push_keys(&mut self) {
-        if self.locale == Locale::Zh {
-            let os = if cfg!(target_os = "macos") {
-                "\
-  macOS：⌘←/⌘→ 行首/行尾 · ⌥←/⌥→ 按词移动 · ⌘⌫ 删除到行首 · ⌥⌫ 删除前一词
-         ⌘↑/⌘↓ 到对话顶部/底部；所有终端均读取物理 ⌘/⌥ 状态"
-            } else {
-                "\
-  Linux/Windows：ctrl+←/→ 按词移动 · ctrl+⌫ 或 alt+⌫ 删除前一词"
-            };
-            let text = format!(
-                "\
-快捷键
-  enter 发送 · ctrl+x 立即发送 · esc 取消 · ctrl+c 清草稿/连按退出
-  空输入时 ↑ 调历史 · tab 补全 / 命令
-  option+a 切 Agent · ctrl+p 模型 · ctrl+t 主题 · ctrl+o 展开 · ctrl+l 清屏 · ctrl+. 快捷键
-  pgup/pgdn 翻页 · home/end 顶部/底部 · 空输入时 ctrl+u/ctrl+d 半页
-  readline：home/ctrl+a 行首 · end/ctrl+e 行尾 · ctrl+b/ctrl+f 移动 · ctrl+k/ctrl+u 删除
-            ctrl+w 删除前一词 · 输入时 ctrl+d 向前删除
-{os}
-  点击工具展开/折叠 · 滚轮滚动对话
-  拖动选择并复制 · 双击复制单词 · shift+拖动使用终端原生选择"
-            );
-            self.transcript.push_notice(NoticeLevel::Info, text);
-            return;
-        }
-        let os = if cfg!(target_os = "macos") {
-            "\
-  macOS: ⌘←/⌘→ line ends · ⌥←/⌥→ word hops · ⌘⌫ kill to start · ⌥⌫ word back
-         ⌘↑/⌘↓ transcript top/tail — physical ⌘/⌥ are read natively (CG probe),
-         so these work in every terminal; kitty-keyboard · esc-b/f also mapped"
-        } else {
-            "\
-  linux/windows: ctrl+←/→ word hops · ctrl+⌫ or alt+⌫ deletes a word back"
-        };
-        let text = format!(
-            "\
-keys — grok-build homage set
-  enter send · ctrl+x send-now · esc interrupts · ctrl+c clears / 2× quits
-  ↑ history (empty prompt) · tab completes /commands
-  option+a cycle agent · ctrl+p model picker · ctrl+t theme · ctrl+o expand · ctrl+l clear · ctrl+. keys
-  pgup/pgdn page · home/end top/tail · ctrl+u/ctrl+d half-page (empty prompt)
-  readline: home/ctrl+a line start · end/ctrl+e line end · ctrl+b/ctrl+f move · ctrl+k/ctrl+u kill
-            ctrl+w word back · ctrl+d delete forward (while typing)
-{os}
-  click tool expands/collapses · wheel scrolls the conversation
-  drag select-copies · 2×click word-copies · shift+drag native select"
+        let text = crate::input::keymap::keys_markdown(
+            self.locale == Locale::Zh,
+            cfg!(target_os = "macos"),
         );
-        self.transcript.push_notice(NoticeLevel::Info, text);
+        self.transcript.push_markdown(text);
     }
 
     fn push_session_info(&mut self) {
@@ -4578,6 +4550,34 @@ mod resume_tests {
     }
 
     #[test]
+    fn keys_slash_pushes_the_markdown_shortcut_table() {
+        let root = tmp_root("keys");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+
+        app.run_slash("keys", "", &ctl);
+
+        let text = app
+            .transcript
+            .lines(&Theme::dark(), 80, ' ')
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<String>();
+        assert!(text.contains("keys — shortcut map"), "/keys title:\n{text}");
+        assert!(text.contains("ctrl+q"), "quit binding missing:\n{text}");
+        assert!(
+            text.contains("shift+tab") && text.contains("permission"),
+            "permission binding missing:\n{text}"
+        );
+        // Markdown tables paint box-drawing frames through the transcript.
+        assert!(text.contains('┌') && text.contains('│'), "no table frame:\n{text}");
+        assert!(
+            !text.contains("· keys —"),
+            "keys must not render as a plain notice:\n{text}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn acp_resume_usage_snapshot_reaches_the_footer_once() {
         let root = tmp_root("acp-usage");
         let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
@@ -4662,6 +4662,48 @@ mod resume_tests {
         let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
         app.run_slash("resume", "", &ctl);
         assert!(app.picker.is_none(), "no picker without sessions");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn picker_page_keys_jump_a_screenful_and_home_end_pin_the_ends() {
+        let root = tmp_root("page");
+        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+        app.picker = Some(Picker {
+            kind: PickerKind::Session,
+            title: " resume session · 40 sessions · enter select · esc close ".into(),
+            sel: 0,
+            items: (0..40)
+                .map(|i| PickerItem {
+                    id: format!("s{i:02}"),
+                    label: format!("session {i:02}"),
+                    meta: String::new(),
+                    provider: None,
+                })
+                .collect(),
+        });
+        // The draw pass records how many rows the popup shows; page keys
+        // move exactly that far (a 10-row popup in this test).
+        app.picker_page_rows = 10;
+
+        let key = |app: &mut App, code: KeyCode| {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctl);
+        };
+
+        key(&mut app, KeyCode::PageDown);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 10, "page down");
+        key(&mut app, KeyCode::PageDown);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 20, "page down again");
+        key(&mut app, KeyCode::End);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 39, "end pins the tail");
+        key(&mut app, KeyCode::PageUp);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 29, "page up");
+        key(&mut app, KeyCode::Home);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 0, "home pins the head");
+        key(&mut app, KeyCode::PageUp);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 0, "page up sticks at head");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.picker.as_ref().unwrap().sel, 39, "↑ still wraps");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

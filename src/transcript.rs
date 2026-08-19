@@ -86,6 +86,11 @@ pub enum CellKind {
         level: NoticeLevel,
         text: String,
     },
+    /// A notice rendered through the markdown pipeline (headings, tables,
+    /// inline code) instead of plain wrapped text — used by `/keys`.
+    MarkdownNotice {
+        text: String,
+    },
 }
 
 pub struct Cell {
@@ -251,6 +256,13 @@ impl Transcript {
 
     pub fn push_notice(&mut self, level: NoticeLevel, text: String) {
         self.cells.push(Cell::new(CellKind::Notice { level, text }));
+    }
+
+    /// Push a notice rendered through the markdown pipeline (tables,
+    /// headings, inline code). No `· ` prefix and no manual wrapping: the
+    /// markdown renderer owns line layout and truncation.
+    pub fn push_markdown(&mut self, text: String) {
+        self.cells.push(Cell::new(CellKind::MarkdownNotice { text }));
     }
 
     pub fn push_shell(&mut self, command: String) -> usize {
@@ -1190,6 +1202,15 @@ impl Transcript {
                             ]),
                             None,
                         );
+                    }
+                }
+                CellKind::MarkdownNotice { text } => {
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    emit(&mut out, &mut owners, Line::default(), None);
+                    for l in crate::markdown::render(text, theme, width) {
+                        emit(&mut out, &mut owners, l, None);
                     }
                 }
             }

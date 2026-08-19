@@ -543,8 +543,7 @@ pub struct Theme {
     /// Gray-blue hint text (tip banner, informational chips) — quieter
     /// than `brand_soft`, warmer than the neutral grays.
     pub hint: Color,
-    /// selection/status chip background
-    #[allow(dead_code)]
+    /// selection/status chip background (picker row highlight)
     pub chip_bg: Color,
     dark: TokenMap,
     light: TokenMap,
