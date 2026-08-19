@@ -68,7 +68,7 @@ impl Locale {
     pub fn ambient_tip(self, index: usize) -> &'static str {
         const EN: [&str; 8] = [
             "esc interrupts a running turn — your draft survives",
-            "type ! to run a one-shot local shell command without the agent",
+            "type ! to run a command in the session's persistent local shell",
             "enter queues a follow-up; ctrl+x steers the active turn now",
             "click a tool to expand it · wheel always scrolls the conversation",
             "the footer under the composer shows token usage + cache hit rate",

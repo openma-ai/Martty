@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Local `!` commands now share one shell for the lifetime of the TUI session,
+  so working-directory changes, exported variables, and other shell state
+  persist across invocations. Commands remain client-local and start in the
+  configured workspace.
 - Linux x64 packages now ship a statically linked musl binary instead of a
   binary tied to the Ubuntu 24.04 glibc version. Release CI verifies the ELF
   artifact has no dynamic program interpreter and runs it on Ubuntu 20.04
@@ -68,9 +72,6 @@ All notable changes to this project are documented here. The project follows
 
 ### Documentation
 
-- Clarified that each `!cmd` runs in an independent one-shot `sh -lc`
-  process rooted at the workspace, so shell state such as `cd` and exported
-  variables does not carry across calls; examples now show `!cd dir && cmd`.
 - Reworked the repository and npm README mastheads around the centered
   DeepSeek logo, product name, concise positioning, and a consistent badge row.
 
