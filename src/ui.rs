@@ -1,24 +1,18 @@
 //! Rendering: banner, scrollback, tips row, status bar, prompt, hints, overlays.
 
-use ratatui::layout::{Alignment, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table, TableState,
 };
 use ratatui::Frame;
-use tui_widget_list::{ListBuilder, ListState, ListView};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, RunState};
 use crate::logo;
-use crate::logo_data::WHALE_XS;
-use crate::pet::{SPRITE_H, SPRITE_W};
-use crate::theme::{lerp, Theme};
-
-/// Columns the composer text keeps clear of the pet at its right edge
-/// (widest pet form is 8 cols, plus a one-column gap).
-const PET_PAD: u16 = 9;
+use crate::theme::Theme;
 
 /// Composer card height for a terminal `height` rows tall.
 /// Composer height: the input well plus one bottom meta row (state ·
@@ -38,12 +32,7 @@ fn composer_height(height: u16) -> u16 {
 /// cursor-following viewport inside the composer.
 fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     let minimum = composer_height(area.height);
-    let pet_pad = if app.pet_visible && area.width >= 60 && area.height >= 10 {
-        PET_PAD
-    } else {
-        0
-    };
-    let inner_width = area.width.saturating_sub(2 + pet_pad);
+    let inner_width = area.width.saturating_sub(2);
     let prompt_width = "❯ ".width() as u16;
     let wrap_width = inner_width.saturating_sub(prompt_width).max(1) as usize;
     let maximum = (area.height / 2).max(minimum).min(12);
@@ -53,24 +42,6 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
         .saturating_add(1)
         .min(maximum as usize) as u16;
     desired.max(minimum).min(maximum)
-}
-
-/// The pet's cell rectangle — the kitty-graphics placement target —
-/// perched on the composer's bottom-right, matching the sprite's 192:208
-/// aspect in 1:2 cells. None hides it (`/liang` off, or the terminal is too
-/// cramped to give up columns).
-pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
-    if !app.pet_visible || area.width < 60 || area.height < 10 {
-        return None;
-    }
-    let rows = composer_height(area.height).min(4);
-    let cols = ((rows as u32 * 2 * SPRITE_W + SPRITE_H / 2) / SPRITE_H) as u16;
-    Some(Rect::new(
-        area.right() - cols,
-        area.bottom() - rows,
-        cols,
-        rows,
-    ))
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -96,89 +67,56 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let (main, right) = shell_areas(area, app);
 
-    // Composer card: input well on top, one meta row (run state + mode /
-    // permission chips + model) at the bottom — the old shortcut-hints row
-    // is gone (the tip banner and /keys carry that). Client plugins own the
-    // additive docks immediately above and below this native input surface.
+    // Composer card: one rounded box wrapping the cap row (dock / tip /
+    // · workspace title) and the native input surface (input well on top,
+    // one meta row — run state + mode/permission chips + model — at the
+    // bottom). The old shortcut-hints row is gone (the tip banner and
+    // /keys carry that).
     let child_view = app.active_subagent.is_some();
-    let composer_h = if child_view {
-        1
-    } else {
-        resolved_composer_height(main, app)
-    };
-    let input_dock_h =
-        if !child_view && main.height >= 16 && slot_has_nodes(app, "conversation.input.dock") {
-            1
-        } else {
-            0
-        };
-    let composer_dock_h =
-        if !child_view && main.height >= 20 && slot_has_nodes(app, "conversation.composer.dock") {
-            1
-        } else {
-            0
-        };
     let agents_h = if app.subagents.is_empty() { 0 } else { 1 };
     // Keep the conversation visually detached from the composer chrome.
     // This row is intentionally left untouched so the canvas/background
     // shows through instead of becoming another panel-colored separator.
     let gap_h = if child_view { 0 } else { 1 };
-    // One-row rounded cap fused with the text (`╭ Tip · … ─╮`): the
-    // 盖子 at its shortest — the tip floats inside the border line.
-    let tips_h = if !child_view && main.height >= 16 {
+    // Exactly one cap row tops the box (the `╭ … ─╮` border line). The
+    // plugin input dock (plan-view's PLAN summary) wins the row when it
+    // has nodes; otherwise the tip line carries it.
+    let cap_h = if !child_view && main.height >= 16 {
         1
     } else {
         0
     };
-    let cap_h = input_dock_h + tips_h;
+    // The box's top border is the cap row and its bottom border carries
+    // the meta row, so the box costs no extra rows — the input well stays
+    // exactly as tall as the borderless layout.
+    let composer_h = if child_view {
+        1
+    } else {
+        resolved_composer_height(main, app)
+    };
     let chat_h = main
         .height
-        .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + gap_h);
+        .saturating_sub(composer_h + cap_h + agents_h + gap_h);
 
     let chat = Rect::new(main.x, main.y, main.width, chat_h);
     let chrome_y = main.y + chat_h + gap_h;
     let agents = Rect::new(main.x, chrome_y, main.width, agents_h);
-    let cap = Rect::new(main.x, chrome_y + agents_h, main.width, cap_h);
-    let composer = Rect::new(main.x, chrome_y + agents_h + cap_h, main.width, composer_h);
-    let composer_dock = Rect::new(
-        main.x,
-        chrome_y + agents_h + cap_h + composer_h,
-        main.width,
-        composer_dock_h,
-    );
+    let composer_box = Rect::new(main.x, chrome_y + agents_h, main.width, cap_h + composer_h);
+    let composer = Rect::new(main.x, composer_box.y + cap_h, main.width, composer_h);
 
     draw_chat(f, app, chat);
     if agents_h > 0 {
         draw_agent_rail(f, app, agents);
     }
-    if cap_h > 0 {
-        draw_composer_cap(f, app, cap, input_dock_h > 0);
-    }
-    // The pet floats on the composer surface's right end; composer text
-    // keeps clear of it.
-    let pet = if child_view {
-        None
-    } else {
-        pet_rect(main, app)
-    };
-    let pet_pad = if pet.is_some() { PET_PAD } else { 0 };
     if child_view {
         draw_child_navigation(f, app, composer);
+    } else if cap_h > 0 {
+        draw_composer_box(f, app, composer_box);
     } else {
-        draw_composer(f, app, composer, pet_pad);
-    }
-    if composer_dock_h > 0 {
-        draw_composer_dock(f, app, composer_dock, pet_pad);
+        draw_composer(f, app, composer);
     }
     if let Some(right) = right {
         draw_right_slot(f, app, right);
-    }
-    if let Some(cells) = pet {
-        if !app.pet_pixels {
-            // No pixel protocol: the half-block whale stands in.
-            draw_pet_chars(f, theme, cells);
-        }
-        // Otherwise main() places the favicon PNG over `cells` after draw.
     }
     if !child_view {
         draw_slash_menu(f, app, composer, chat);
@@ -428,39 +366,12 @@ fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Fallback pet for terminals without a pixel protocol: the XS half-block
-/// whale, brand gradient, anchored bottom-right like the real image.
-fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
-    let w = WHALE_XS
-        .iter()
-        .map(|r| r.chars().count())
-        .max()
-        .unwrap_or(0) as u16;
-    let h = WHALE_XS.len() as u16;
-    let rect = Rect::new(
-        cells.right().saturating_sub(w),
-        cells.bottom().saturating_sub(h),
-        w,
-        h,
-    );
-    let (top, bottom) = theme.whale_gradient();
-    let last = WHALE_XS.len().max(2) - 1;
-    let lines: Vec<Line> = WHALE_XS
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let color = lerp(top, bottom, i as f32 / last as f32);
-            Line::from(Span::styled(*row, Style::default().fg(color)))
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), rect);
-}
-
-/// The composer card: a borderless tinted surface (panel bg) that owns the
-/// status row, the input well, and the key-hint row — mirroring the Web UI's
-/// distinct composer surface. A brand-blue edge bar glows while working.
-/// `pet_pad` columns at the right stay text-free for the whale pet.
-fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
+/// The composer card fallback for short terminals (no cap row fits): a
+/// borderless tinted surface (panel bg) that owns the status row and the
+/// input well. A brand-blue edge bar glows while working. Tall enough
+/// terminals get `draw_composer_box` instead — the same surface wrapped
+/// in the rounded frame that also carries the cap row.
+fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let running = !matches!(app.state, RunState::Idle);
 
@@ -481,7 +392,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let inner = Rect::new(
         area.x + 1,
         area.y,
-        area.width.saturating_sub(2 + pet_pad),
+        area.width.saturating_sub(2),
         area.height,
     );
     if inner.width == 0 || inner.height < 2 {
@@ -496,15 +407,24 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let well = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
     app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, well);
+    draw_meta_row(
+        f,
+        app,
+        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    );
+}
 
-    // Bottom meta row: run state + mode/permission chips left, model
-    // right, collision-aware.
+/// Meta row: run state + mode/permission chips left, model right,
+/// collision-aware. The boxed layout renders this line on the bottom
+/// border (`title_bottom`); the borderless fallback draws it as an inner
+/// row.
+fn meta_line(app: &App, width: usize) -> Line<'static> {
+    let theme = app.theme;
     let left = status_title(app);
     let mut right_spans = status_right(app);
-    let w = inner.width as usize;
     let lw = left.width();
     let rw: usize = right_spans.iter().map(|s| s.content.width()).sum();
-    if lw + rw + 2 > w {
+    if lw + rw + 2 > width {
         // fall back to just the model chip, then drop entirely
         let shown_model = app
             .transcript
@@ -512,7 +432,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
             .clone()
             .unwrap_or_else(|| app.cfg.model.clone());
         let compact = format!("{shown_model} ");
-        if lw + compact.width() + 2 <= w {
+        if lw + compact.width() + 2 <= width {
             right_spans = vec![Span::styled(compact, Style::default().fg(theme.brand_soft))];
         } else {
             right_spans = Vec::new();
@@ -520,12 +440,13 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     }
     let rw: usize = right_spans.iter().map(|s| s.content.width()).sum();
     let mut spans = left.spans;
-    spans.push(Span::raw(" ".repeat(w.saturating_sub(lw + rw))));
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(lw + rw))));
     spans.extend(right_spans);
-    f.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
-    );
+    Line::from(spans)
+}
+
+fn draw_meta_row(f: &mut Frame, app: &App, area: Rect) {
+    f.render_widget(Paragraph::new(meta_line(app, area.width as usize)), area);
 }
 
 /// The active run-state line — rendered as the transcript's always-last line
@@ -592,7 +513,8 @@ fn state_line(app: &App) -> Option<Line<'static>> {
 }
 
 /// Meta row, left side: the session's mode chips only (run state lives at
-/// the transcript tail).
+/// the transcript tail). Chips lead with a plain dot instead of emoji —
+/// the color carries the meaning (permission turns warn under full access).
 fn status_title(app: &App) -> Line<'static> {
     if !app.session_bound {
         return Line::default();
@@ -604,7 +526,7 @@ fn status_title(app: &App) -> Line<'static> {
     // facts, so the landing screen still advertises preset + permission.
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
-        format!("⚙ {} ", app.agent_label(preset)),
+        format!("· {} ", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
     let perm = app
@@ -624,7 +546,7 @@ fn status_title(app: &App) -> Line<'static> {
         crate::app::permission_label(&perm)
     };
     spans.push(Span::styled(
-        format!("⛨ {label}"),
+        format!("· {label}"),
         Style::default().fg(if perm == "danger-full-access" {
             theme.warn_soft()
         } else {
@@ -639,13 +561,13 @@ fn status_title(app: &App) -> Line<'static> {
     ));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
-            format!("⚖ {approval} "),
+            format!("· {approval} "),
             Style::default().fg(theme.fg_tertiary),
         ));
     }
     if app.modes.plan {
         spans.push(Span::styled(
-            "⌁ plan ".to_string(),
+            "· plan ".to_string(),
             Style::default().fg(theme.brand_soft),
         ));
     }
@@ -740,33 +662,6 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
-/// Additive Client-plugin dock below the native composer. Contributions are
-/// compact sections in registration order; low-priority tail sections simply
-/// do not fit on narrow terminals, matching the Web composer's stats dock.
-fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
-    let theme = app.theme;
-    f.render_widget(
-        Block::default().style(Style::default().bg(app.canvas_background_color())),
-        area,
-    );
-    let inner = Rect::new(
-        area.x + 1,
-        area.y,
-        area.width.saturating_sub(2 + pet_pad),
-        area.height,
-    );
-    if inner.width < 12 {
-        return;
-    }
-    let Some(snapshot) = app.slot_snapshots.get("conversation.composer.dock") else {
-        return;
-    };
-    f.render_widget(
-        Paragraph::new(compact_slot_line(snapshot, &theme, inner.width as usize)),
-        inner,
-    );
-}
-
 fn span_widths(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
@@ -775,15 +670,6 @@ fn slot_has_nodes(app: &App, name: &str) -> bool {
     app.slot_snapshots
         .get(name)
         .is_some_and(|snapshot| !snapshot.nodes.is_empty())
-}
-
-fn compact_slot_line(
-    snapshot: &crate::slots::SlotSnapshot,
-    theme: &Theme,
-    width: usize,
-) -> Line<'static> {
-    let sections = compact_slot_sections(snapshot, theme, width);
-    compact_slot_sections_line(&sections, theme)
 }
 
 struct CompactSlotSection {
@@ -1040,7 +926,7 @@ fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {
     let title_width = (area_width / 2).clamp(8, 64);
     let path_width = title_width.saturating_sub(4);
     Line::from(Span::styled(
-        format!(" ⌂ {} ", compact_workspace(&app.cfg.workspace, path_width)),
+        format!(" · {} ", compact_workspace(&app.cfg.workspace, path_width)),
         Style::default().fg(app.theme.caption),
     ))
     .right_aligned()
@@ -1076,8 +962,15 @@ fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'
     Line::from(spans)
 }
 
-fn draw_composer_cap(f: &mut Frame, app: &mut App, area: Rect, has_input_dock: bool) {
+/// The composer card as one rounded box: the cap row doubles as the top
+/// border (plugin input dock wins over the tip line, plus the right-
+/// aligned · workspace title) and the meta row rides the bottom border —
+/// the input well owns every inner row. The brand glow replaces the left
+/// border while a turn runs.
+fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
+    let running = !matches!(app.state, RunState::Idle);
+    let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
     let workspace = workspace_cap_title(app, area.width as usize);
     let workspace_width = span_widths(&workspace.spans);
     let title_budget = (area.width as usize).saturating_sub(2 + workspace_width + 1);
@@ -1088,6 +981,8 @@ fn draw_composer_cap(f: &mut Frame, app: &mut App, area: Rect, has_input_dock: b
     let dock_line = dock_sections
         .as_ref()
         .map(|sections| compact_slot_sections_line(sections, &theme));
+    // The dock (PLAN summary) owns the single cap row; the tip line only
+    // appears when no dock is present.
     let title = ellipsize_line(
         dock_line.clone().unwrap_or_else(|| tip_line(app)),
         title_budget,
@@ -1095,14 +990,18 @@ fn draw_composer_cap(f: &mut Frame, app: &mut App, area: Rect, has_input_dock: b
     );
     let title_width = span_widths(&title.spans) as u16;
     let block = Block::default()
-        .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+        .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
         .title(title)
         .title(workspace)
-        .style(Style::default().bg(app.canvas_background_color()));
+        .title_bottom(meta_line(app, area.width.saturating_sub(2) as usize))
+        .style(Style::default().bg(theme.panel));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    if inner.width < 4 || inner.height < 2 {
+        return;
+    }
 
     if let Some(sections) = dock_sections {
         let mut x = area.x.saturating_add(2);
@@ -1125,9 +1024,23 @@ fn draw_composer_cap(f: &mut Frame, app: &mut App, area: Rect, has_input_dock: b
             x = x.saturating_add(section_width);
         }
     }
-    if dock_line.is_some() && inner.height > 0 {
-        f.render_widget(Paragraph::new(tip_line(app)), inner);
+
+    // Running glow: the brand bar replaces the left border (corners and
+    // both title rows stay intact).
+    if running {
+        let bar: Vec<Line> = (0..inner.height).map(|_| Line::from("▎")).collect();
+        f.render_widget(
+            Paragraph::new(bar).style(Style::default().fg(theme.brand)),
+            Rect::new(area.x, area.y + 1, 1, inner.height),
+        );
     }
+
+    // Draft first: the well owns every inner row — the meta row lives on
+    // the bottom border.
+    app.att_chips.clear();
+    app.att_thumbs.clear();
+    app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
+    draw_input(f, app, inner);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -1570,27 +1483,12 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
     let item_count = items.len();
-    let mut list_state = ListState::new_with_index(Some(sel.min(items.len().saturating_sub(1))));
-    let builder = ListBuilder::new(move |ctx| {
-        let item = &items[ctx.index];
-        let selected = ctx.is_selected;
-        // Full-row selection: the soft chip background spans the whole line
-        // (marker, label, meta, and the tail), so the highlight reads as one
-        // row — not just the label column.
-        let base = if selected {
-            Style::default()
-                .fg(theme.brand)
-                .bg(theme.chip_bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg_secondary)
-        };
-        let marker_style = if selected {
-            Style::default().fg(theme.brand).bg(theme.chip_bg)
-        } else {
-            Style::default().fg(theme.brand)
-        };
-        let marker = if selected { "▸ " } else { "  " };
+    // Rows as a ratatui Table: the selection column is always reserved
+    // (marker `▸ ` on the picked row), the label column is fixed-width so
+    // metas line up, and the meta column absorbs the remaining width —
+    // row highlight paints the whole line, scrollbar gutter included.
+    let mut rows = Vec::with_capacity(item_count);
+    for item in &items {
         // The current model/mode gets a ✓ pinned to its label — it survives
         // narrow terminals, unlike a right-edge tag.
         let label = if is_current(item) {
@@ -1598,56 +1496,48 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         } else {
             item.label.clone()
         };
-        let mut spans = vec![
-            Span::styled(marker.to_string(), marker_style),
-            Span::styled(pad_to_width(&label, crate::app::PICKER_LABEL_COL), base),
-        ];
-        if !item.meta.is_empty() {
-            // On the highlighted row the meta steps up from caption gray so
-            // the whole row reads selected.
-            let meta_style = if selected {
-                Style::default().fg(theme.fg).bg(theme.chip_bg)
-            } else {
-                Style::default().fg(theme.caption)
-            };
-            spans.push(Span::styled(item.meta.clone(), meta_style));
-        }
-        // Pad the remaining row width so the selection background reaches
-        // the right edge (gap after the label, tail after the meta). When
-        // the scrollbar is shown, its gutter column stays free.
-        let width: usize = spans.iter().map(|s| s.width()).sum();
-        let fill = (ctx.cross_axis_size as usize).saturating_sub(if overflow { 1 } else { 0 });
-        if width < fill {
-            let fill_style = if selected {
-                Style::default().bg(theme.chip_bg)
-            } else {
-                Style::default()
-            };
-            spans.push(Span::styled(" ".repeat(fill - width), fill_style));
-        }
-        (Line::from(spans), 1)
-    });
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(
+                pad_to_width(&label, crate::app::PICKER_LABEL_COL),
+                Style::default().fg(theme.fg_secondary),
+            )),
+            Cell::from(Span::styled(
+                item.meta.clone(),
+                Style::default().fg(theme.caption),
+            )),
+        ]));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand))
-        .title(Span::styled(
-            title,
-            Style::default().fg(theme.caption),
-        ))
+        .title(Span::styled(title, Style::default().fg(theme.caption)))
         .style(Style::default().bg(theme.panel));
-    let list = ListView::new(builder, item_count)
-        .block(block)
-        // Keep the picker's wrap-around ↑/↓ semantics.
-        .infinite_scrolling(true);
-    // The list keeps the full popup area, so the rounded border stays at
-    // the popup's real edges; the scrollbar renders into the rightmost
-    // inner column, which the rows leave free when overflowing.
-    f.render_stateful_widget(list, area, &mut list_state);
+    // TableState follows the selection into view (the viewport stays pinned
+    // to the ends), matching the old ListView behavior.
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(crate::app::PICKER_LABEL_COL as u16),
+            Constraint::Min(0),
+        ],
+    )
+    .block(block)
+    .column_spacing(0)
+    .highlight_symbol("▸ ")
+    .highlight_spacing(HighlightSpacing::Always)
+    .row_highlight_style(
+        Style::default()
+            .fg(theme.brand)
+            .bg(theme.chip_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut table_state =
+        TableState::new().with_selected(Some(sel.min(items.len().saturating_sub(1))));
+    f.render_stateful_widget(table, area, &mut table_state);
     if overflow {
         let inner = area.inner(Margin::new(1, 1));
-        let mut sb_state =
-            ScrollbarState::new(item_count).position(list_state.scroll_offset_index());
+        let mut sb_state = ScrollbarState::new(item_count).position(table_state.offset());
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -1660,7 +1550,7 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
     // The viewport is the source of truth for what is visible; selection
     // moves (mouse later, programmatic now) land back in the picker.
     if let Some(picker) = &mut app.picker {
-        if let Some(selected) = list_state.selected {
+        if let Some(selected) = table_state.selected() {
             picker.sel = selected;
         }
         // Page keys jump a screenful: the rows the popup actually shows.
@@ -1863,21 +1753,19 @@ fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Welcome banner: whale, wordmark, slogans, session facts. Shown while
-/// `app.show_banner` is set; the whale dives on the first real prompt.
+/// Welcome banner: Martty logo, project URL, session facts. Shown while
+/// `app.show_banner` is set; it dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let mut out = vec![Line::default()];
-    out.extend(logo::whale_lines(theme, width));
-    out.push(Line::default());
-    out.extend(logo::wordmark_lines(theme, width));
+    out.extend(logo::martty_logo_lines(theme, width));
     out.push(Line::default());
 
-    // Hero slogan, mirroring the Web UI: whale + "Into the Unknown".
+    // Project URL, in the hero slot where the old slogan was.
     out.push(centered(
         width,
         vec![Span::styled(
-            app.locale.tr("Into the Unknown", "探索未知").to_string(),
+            "https://martty.sh".to_string(),
             Style::default()
                 .fg(theme.fg_tertiary)
                 .add_modifier(Modifier::BOLD),
@@ -2092,7 +1980,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_is_a_tinted_surface() {
+    fn composer_is_a_rounded_box_surface() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut app = test_app();
@@ -2102,20 +1990,21 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
         let buf = terminal.backend().buffer().clone();
         let theme = app.theme;
-        // With no composer-dock contribution, height 20 gives the tip cap row
-        // 15 and composer rows 16..19 (3-row well + bottom meta row). No empty
-        // native stats/footer row is reserved.
-        assert_eq!(
-            buf[(40, 16)].bg,
-            theme.panel,
-            "input well top on panel surface"
-        );
+        // 80x20, no composer-dock contribution: the rounded box spans rows
+        // 15..19 — top border 15 (tip + · workspace), well 16..18, bottom
+        // border 19 carrying the meta row (`╰· Standard … ╯`).
+        assert_eq!(buf[(0, 15)].symbol(), "╭", "top-left corner");
+        assert_eq!(buf[(79, 15)].symbol(), "╮", "top-right corner");
+        assert_eq!(buf[(0, 19)].symbol(), "╰", "bottom-left corner");
+        assert_eq!(buf[(79, 19)].symbol(), "╯", "bottom-right corner");
+        assert_eq!(buf[(4, 15)].bg, theme.panel, "border row on the card");
+        assert_eq!(buf[(40, 16)].bg, theme.panel, "input well on panel surface");
         assert_eq!(buf[(40, 17)].bg, theme.panel, "input well on panel surface");
-        assert_eq!(buf[(4, 19)].bg, theme.panel, "meta row on panel surface");
+        assert_eq!(buf[(4, 18)].bg, theme.panel, "well fills the inner rows");
         assert_eq!(
-            buf[(4, 15)].bg,
-            theme.bg,
-            "tip cap uses the base background"
+            buf[(1, 19)].symbol(),
+            "·",
+            "meta row rides the bottom border with small dots"
         );
         assert_eq!(buf[(4, 10)].bg, theme.bg, "chat keeps the base background");
     }
@@ -2133,7 +2022,7 @@ mod tests {
             .expect("composer cap");
 
         assert!(
-            cap.contains("⌂ /work/acme/projects/deepseek-harness-tui-plan-view"),
+            cap.contains("· /work/acme/projects/deepseek-harness-tui-plan-view"),
             "{cap}"
         );
     }
@@ -2150,7 +2039,7 @@ mod tests {
             .find(|line| line.contains("Tip"))
             .expect("composer cap");
 
-        assert!(cap.contains("⌂ …/deepseek-harness"), "{cap}");
+        assert!(cap.contains("· …/deepseek-harness"), "{cap}");
     }
 
     #[test]
@@ -2193,12 +2082,17 @@ mod tests {
             "chat reveals the image layer"
         );
         assert_eq!(
-            buf[(4, 15)].bg,
-            Color::Reset,
-            "tip cap reveals the image layer"
+            buf[(0, 15)].symbol(),
+            "╭",
+            "the composer box sits on the image layer"
         );
         assert_eq!(
-            buf[(40, 16)].bg,
+            buf[(4, 15)].bg,
+            app.theme.panel,
+            "the box card is panel, not the image"
+        );
+        assert_eq!(
+            buf[(40, 17)].bg,
             app.theme.panel,
             "composer remains readable"
         );
@@ -2326,32 +2220,6 @@ mod tests {
     }
 
     #[test]
-    fn usage_footer_shows_turn_stats_and_cache() {
-        let mut app = test_app();
-        app.show_banner = false;
-        app.slot_snapshots.insert(
-            "conversation.composer.dock".into(),
-            serde_json::from_value(serde_json::json!({
-                "protocol": 0,
-                "slot": "conversation.composer.dock",
-                "rev": 1,
-                "nodes": [
-                    { "id": "stats:tokens", "kind": "generic", "title": "Input 1.8K tok · Output 412 tok", "body": "" },
-                    { "id": "stats:counts", "kind": "generic", "title": "1 turn · 67 steps", "body": "" },
-                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" }
-                ]
-            })).expect("slot snapshot"),
-        );
-        let frame = dump_frame(&mut app, 100, 20);
-        let footer = frame.lines().last().expect("footer row");
-        assert!(footer.contains("1 turn"), "{footer}");
-        assert!(footer.contains("67 steps"), "{footer}");
-        assert!(footer.contains("Cache hit 65%"), "{footer}");
-        assert!(footer.contains("Input 1.8K tok"), "{footer}");
-        assert!(footer.contains("Output 412 tok"), "{footer}");
-    }
-
-    #[test]
     fn agent_rail_lists_created_subagents_and_their_status() {
         let mut app = test_app();
         app.show_banner = false;
@@ -2424,38 +2292,6 @@ mod tests {
     }
 
     #[test]
-    fn usage_footer_drops_sections_on_narrow_screens() {
-        let mut app = test_app();
-        app.show_banner = false;
-        app.slot_snapshots.insert(
-            "conversation.composer.dock".into(),
-            serde_json::from_value(serde_json::json!({
-                "protocol": 0,
-                "slot": "conversation.composer.dock",
-                "rev": 1,
-                "nodes": [
-                    { "id": "stats:tokens", "kind": "generic", "title": "Input 1.8K tok · Output 412 tok", "body": "" },
-                    { "id": "stats:counts", "kind": "generic", "title": "1 turn · 67 steps", "body": "" },
-                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" },
-                    { "id": "stats:time", "kind": "generic", "title": "LLM 15m9s · Tool call 0s", "body": "" },
-                    { "id": "stats:speed", "kind": "generic", "title": "TTFT avg 1.5s · 0.5 tok/s", "body": "" }
-                ]
-            })).expect("slot snapshot"),
-        );
-
-        // Narrow: low-priority timing sections are dropped, tokens survive.
-        let footer = dump_frame(&mut app, 40, 20);
-        let footer = footer.lines().last().expect("footer row");
-        assert!(footer.contains("Input"), "tokens survive: {footer}");
-        assert!(footer.contains("Output"), "tokens survive: {footer}");
-        assert!(
-            !footer.contains("TTFT"),
-            "TTFT dropped when narrow: {footer}"
-        );
-        assert!(!footer.contains("LLM"), "LLM dropped when narrow: {footer}");
-    }
-
-    #[test]
     fn long_input_wraps_in_the_well() {
         let mut app = test_app();
         app.show_banner = false;
@@ -2518,49 +2354,6 @@ mod tests {
             !dump_frame(&mut app, 84, 40).contains("██████"),
             "whale dives once the banner is dismissed"
         );
-    }
-
-    #[test]
-    fn pet_rect_geometry() {
-        let mut app = test_app();
-        let area = Rect::new(0, 0, 100, 34);
-        // 34 rows → 5-row composer → 4-row pet (192:208 sprite → 7 cols).
-        assert_eq!(pet_rect(area, &app), Some(Rect::new(93, 30, 7, 4)));
-        app.pet_visible = false;
-        assert_eq!(pet_rect(area, &app), None, "/liang off hides him");
-        app.pet_visible = true;
-        let narrow = Rect::new(0, 0, 50, 34);
-        assert_eq!(
-            pet_rect(narrow, &app),
-            None,
-            "narrow terminals keep their columns"
-        );
-    }
-
-    #[test]
-    fn pet_falls_back_to_half_blocks_and_toggles() {
-        let mut app = test_app();
-        app.show_banner = false;
-        // pet_pixels=false (no kitty graphics): XS art at the right edge.
-        let frame = dump_frame(&mut app, 100, 34);
-        assert!(
-            frame.lines().any(|l| l.ends_with("▄███▄█▄▄")),
-            "XS whale flush right:\n{frame}"
-        );
-
-        // A pixel-protocol terminal draws nothing — the image goes on top.
-        app.pet_pixels = true;
-        let frame = dump_frame(&mut app, 100, 34);
-        assert!(
-            !frame.contains("▄███"),
-            "cells stay clear for the PNG:\n{frame}"
-        );
-
-        // /pet off → gone entirely.
-        app.pet_pixels = false;
-        app.pet_visible = false;
-        let frame = dump_frame(&mut app, 100, 34);
-        assert!(!frame.contains("▄███"), "hidden by /pet:\n{frame}");
     }
 
     #[test]
@@ -2841,7 +2634,7 @@ mod tests {
             app.chat_view
                 .lines
                 .iter()
-                .any(|l| l.contains("Into the Unknown")),
+                .any(|l| l.contains("https://martty.sh")),
             "snapshot mirrors rendered content"
         );
     }

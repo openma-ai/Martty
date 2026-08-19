@@ -16,7 +16,6 @@ mod events;
 mod input;
 mod locale;
 mod logo;
-mod logo_data;
 mod markdown;
 mod pet;
 mod proto;
@@ -338,10 +337,9 @@ fn main() -> Result<()> {
         args.attach_fds || args.attach_tcp.is_some() || !args.demo,
         bus_tx.clone(),
     );
-    // The composer pet: real pixels (kitty graphics) where the terminal can,
-    // half-block art (drawn by ui) where it can't.
+    // Kitty graphics availability: chat image thumbnails and the background
+    // layer emit real pixels where the terminal supports the protocol.
     app.pet_pixels = pet::kitty_supported();
-    let mut pet = pet::Pet::new(app.pet_pixels);
     let mut backdrop = pet::Backdrop::new(app.pet_pixels);
     // User-image thumbnails in the chat scrollback (kitty graphics, PNG only).
     let mut thumbnails = pet::Thumbnails::new();
@@ -398,15 +396,11 @@ fn main() -> Result<()> {
             if app.needs_redraw {
                 terminal.draw(|f| ui::draw(f, &mut app))?;
                 app.needs_redraw = false;
-                // Reconcile the pixel pet (frame + state) with what was drawn.
+                // Reconcile the background layer and image thumbnails
+                // (chat + composer attachment strip) with what was drawn.
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
                 let _ = backdrop.sync(&mut std::io::stdout(), app.active_background(), area);
-                let working = !matches!(app.state, RunState::Idle);
-                let want = ui::pet_rect(area, &app).map(|r| (r, working));
-                let _ = pet.sync(&mut std::io::stdout(), want);
-                // Sync image thumbnails (chat + composer attachment strip)
-                // against the freshly drawn viewport.
                 let shots: Vec<pet::ThumbShot> = app
                     .chat_view
                     .images
@@ -518,7 +512,7 @@ fn install_termination_handler(_tx: mpsc::Sender<AppEvent>) -> Result<()> {
 fn restore_terminal() {
     let mut stdout = std::io::stdout();
     if pet::kitty_supported() {
-        // Drop any pet placement (panic-safe: also runs from the hook).
+        // Drop any kitty placement (panic-safe: also runs from the hook).
         let _ = stdout.write_all(pet::KITTY_DELETE_ALL.as_bytes());
     }
     let _ = execute!(stdout, PopKeyboardEnhancementFlags);

@@ -1,34 +1,13 @@
-//! Liang, the composer pet — a pixel-art homage to DeepSeek's founder
-//! 梁文锋 (Liang Wenfeng), perched at the composer's right edge.
-//!
-//! Two states, driven by the run state: **idle** goes 🤫 (shush — quiet
-//! research), **working** hammers away on a tiny terminal while DeepSeek
-//! runs. `/liang` toggles him; see README "The /liang meme".
-//!
-//! High-pixel path: the kitty graphics protocol (ghostty, kitty, WezTerm)
-//! in immediate transmit-and-display mode (`a=T`), re-sent on every state
-//! or layout change (~43KB of base64 — nothing, and far more portable than
-//! id-referencing placements). Terminals without the protocol get the
-//! `WHALE_XS` half-block whale drawn by `ui` instead.
+//! Kitty graphics infrastructure: chat image thumbnails and the Theme's
+//! optional PNG background layer, transmitted through the kitty graphics
+//! protocol (ghostty, kitty, WezTerm) in immediate transmit-and-display
+//! mode (`a=T`), re-sent on every state or layout change.
 
 use std::io::{self, Write};
 use std::sync::OnceLock;
 
 use image::ImageEncoder;
 use ratatui::layout::Rect;
-
-/// 192×208 RGBA sprites (transparent background), from the
-/// `pet-two-states` asset drop — see `assets/pet/`.
-pub const LIANG_IDLE_PNG: &[u8] = include_bytes!("../assets/pet/liang-idle.png");
-pub const LIANG_WORKING_PNG: &[u8] = include_bytes!("../assets/pet/liang-working.png");
-
-/// Sprite frame pixel size — `ui::pet_rect` keeps the cell box aspect-true.
-pub const SPRITE_W: u32 = 192;
-pub const SPRITE_H: u32 = 208;
-
-/// Arbitrary but stable ids so re-runs replace rather than accumulate.
-const ID_IDLE: u32 = 4207;
-const ID_WORKING: u32 = 4208;
 
 /// Kitty graphics chunk payload limit (base64 chars per escape).
 const CHUNK: usize = 4096;
@@ -48,64 +27,6 @@ pub fn kitty_supported() -> bool {
             || prog.eq_ignore_ascii_case("ghostty")
             || prog.eq_ignore_ascii_case("wezterm")
     })
-}
-
-/// What's on screen: the sprite's cell box and whether he's working.
-type Shown = (Rect, bool);
-
-/// Reconciles the desired sprite with what the terminal displays.
-pub struct Pet {
-    enabled: bool,
-    shown: Option<Shown>,
-}
-
-impl Pet {
-    pub fn new(enabled: bool) -> Self {
-        Pet {
-            enabled,
-            shown: None,
-        }
-    }
-
-    /// Make the terminal match `want` (cell box + working flag, or None to
-    /// hide). Idempotent and zero-cost when nothing changed.
-    pub fn sync(&mut self, out: &mut impl Write, want: Option<Shown>) -> io::Result<()> {
-        if !self.enabled || self.shown == want {
-            return Ok(());
-        }
-        if let Some((_, was_working)) = self.shown.take() {
-            let id = if was_working { ID_WORKING } else { ID_IDLE };
-            write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
-        }
-        if let Some((cell, working)) = want {
-            let (id, png) = if working {
-                (ID_WORKING, LIANG_WORKING_PNG)
-            } else {
-                (ID_IDLE, LIANG_IDLE_PNG)
-            };
-            // DECSC · jump to the cell · transmit-and-display · DECRC.
-            write!(out, "\x1b7\x1b[{};{}H", cell.y + 1, cell.x + 1)?;
-            let data = base64(png);
-            let chunks: Vec<&[u8]> = data.as_bytes().chunks(CHUNK).collect();
-            for (i, chunk) in chunks.iter().enumerate() {
-                let more = u8::from(i + 1 != chunks.len());
-                if i == 0 {
-                    write!(
-                        out,
-                        "\x1b_Ga=T,f=100,i={id},c={},r={},C=1,z=0,q=2,m={more};",
-                        cell.width, cell.height
-                    )?;
-                } else {
-                    write!(out, "\x1b_Gm={more};")?;
-                }
-                out.write_all(chunk)?;
-                write!(out, "\x1b\\")?;
-            }
-            write!(out, "\x1b8")?;
-            self.shown = Some((cell, working));
-        }
-        out.flush()
-    }
 }
 
 /// Parse pixel dimensions from a PNG (the only format thumbnailed without a
@@ -416,6 +337,27 @@ mod tests {
         decode_base64(&payload).expect("kitty PNG payload")
     }
 
+    /// A 192×208 RGBA PNG — the same geometry the original sprites used, so
+    /// the background geometry assertions stay stable without shipping any
+    /// pet assets.
+    fn sample_png() -> Vec<u8> {
+        let mut rgba = image::RgbaImage::new(192, 208);
+        for (i, pixel) in rgba.pixels_mut().enumerate() {
+            let t = (i % 255) as u8;
+            pixel.0 = [t, 40, 200, 255];
+        }
+        let mut out = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(
+                rgba.as_raw(),
+                192,
+                208,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("encode sample PNG");
+        out
+    }
+
     #[test]
     fn base64_rfc4648_vectors() {
         for (raw, enc) in [
@@ -433,13 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn sprites_are_pngs() {
-        assert_eq!(&LIANG_IDLE_PNG[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(&LIANG_WORKING_PNG[..8], b"\x89PNG\r\n\x1a\n");
-        assert_ne!(LIANG_IDLE_PNG, LIANG_WORKING_PNG, "two distinct states");
-    }
-
-    #[test]
     fn image_dims_reads_png_ihdr() {
         let mut png = vec![0u8; 24];
         png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -451,59 +386,13 @@ mod tests {
     }
 
     #[test]
-    fn sync_shows_switches_state_and_hides() {
-        let mut pet = Pet::new(true);
-        let cell = Rect::new(90, 30, 7, 4);
-
-        // Idle: one-shot transmit-and-display under the idle id.
-        let mut out = Vec::new();
-        pet.sync(&mut out, Some((cell, false))).unwrap();
-        let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("\x1b[31;91H"), "cursor jumps to the cell");
-        assert!(
-            s.contains("a=T,f=100,i=4207,c=7,r=4,C=1,z=0,q=2,m=1;"),
-            "idle sprite: {s:.90}"
-        );
-
-        // Same state again: no bytes at all.
-        let mut out = Vec::new();
-        pet.sync(&mut out, Some((cell, false))).unwrap();
-        assert!(out.is_empty(), "idempotent when unchanged");
-
-        // A turn starts: idle sprite deleted, working sprite displayed.
-        let mut out = Vec::new();
-        pet.sync(&mut out, Some((cell, true))).unwrap();
-        let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("a=d,d=I,i=4207"), "idle deleted: {s:.90}");
-        assert!(s.contains("a=T,f=100,i=4208,"), "working shown: {s:.90}");
-
-        // Hide (`/liang` off): delete only.
-        let mut out = Vec::new();
-        pet.sync(&mut out, None).unwrap();
-        let s = String::from_utf8(out).unwrap();
-        assert!(
-            s.contains("a=d,d=I,i=4208") && !s.contains("a=T"),
-            "hidden: {s}"
-        );
-    }
-
-    #[test]
-    fn disabled_pet_stays_silent() {
-        let mut pet = Pet::new(false);
-        let mut out = Vec::new();
-        pet.sync(&mut out, Some((Rect::new(0, 0, 7, 4), true)))
-            .unwrap();
-        assert!(out.is_empty());
-    }
-
-    #[test]
     fn theme_background_is_placed_behind_text_and_retracted() {
         let file = std::env::temp_dir().join(format!(
             "dsh-tui-background-{}-{}.png",
             std::process::id(),
             1
         ));
-        std::fs::write(&file, LIANG_IDLE_PNG).unwrap();
+        std::fs::write(&file, sample_png()).unwrap();
         let spec = crate::theme::ThemeBackground {
             source: crate::theme::BackgroundSource::File {
                 path: file.to_string_lossy().into_owned(),
@@ -536,7 +425,7 @@ mod tests {
 
     #[test]
     fn theme_background_opacity_changes_the_transmitted_png() {
-        let encoded = base64(LIANG_IDLE_PNG);
+        let encoded = base64(&sample_png());
         let spec = crate::theme::ThemeBackground {
             source: crate::theme::BackgroundSource::Data {
                 base64: encoded.clone(),
@@ -563,7 +452,7 @@ mod tests {
     fn contained_theme_background_preserves_aspect_and_anchor() {
         let spec = crate::theme::ThemeBackground {
             source: crate::theme::BackgroundSource::Data {
-                base64: base64(LIANG_IDLE_PNG),
+                base64: base64(&sample_png()),
             },
             fit: crate::theme::BackgroundFit::Contain,
             anchor: (1.0, 0.5),
@@ -585,7 +474,7 @@ mod tests {
     fn covered_theme_background_crops_to_the_terminal_aspect() {
         let spec = crate::theme::ThemeBackground {
             source: crate::theme::BackgroundSource::Data {
-                base64: base64(LIANG_IDLE_PNG),
+                base64: base64(&sample_png()),
             },
             fit: crate::theme::BackgroundFit::Cover,
             anchor: (0.5, 1.0),

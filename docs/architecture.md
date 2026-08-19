@@ -38,9 +38,7 @@ Client 进程：独立 Cordis root
   Client runner inject ['tuiTheme', 'tuiSlots', ...]，执行 dsh-tool-cordis 的 code.client
   TUI 壳       注入 acpClient 与 Client services，只占 TTY
   plan-view    注入 acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
-  stats-view   注入 acpSessionStats + tuiSlots
-  tui-slots    提供 tuiSlots，声明 chrome.right / conversation.input.dock /
-               conversation.composer.dock
+  tui-slots    提供 tuiSlots，声明 chrome.right / conversation.input.dock
   tui-theme    提供 tuiTheme
   acp-client   attach Host stdio，提供 acpClient
         │ Client 进程 fd 3/4 仅传 TTY
@@ -78,9 +76,8 @@ Client inspect/run 通道。
 第三方插件    sibling insert + inject ['tuiTheme'] → 配色 register
               sibling insert + inject ['tuiSlots'] → slot register
 tui-theme     配色表 → Theme registry
-tui-slots     TuiNode 树 → chrome.right / input dock / composer dock snapshot registry
+tui-slots     TuiNode 树 → chrome.right / input dock snapshot registry
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
-stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 Client runner Client inspect + code.client 挂载/停止
 TUI 壳        消费 Theme、slot 与通用 overlay 快照树
 acp-client    session/new · authenticate · prompt · cancel · config · commands

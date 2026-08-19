@@ -125,8 +125,8 @@ dsh-tui --demo
   ⌘/⌥ modifier rescue on macOS, and ctrl conventions on Linux and Windows keep
   movement and deletion consistent across terminals.
 - **A terminal-native surface:** dark/light themes, narrow layouts, mouse
-  selection and tool interaction, native/tmux/OSC 52 clipboard routing, kitty
-  image previews, and the optional `/liang` pixel companion.
+  selection and tool interaction, native/tmux/OSC 52 clipboard routing, and
+  kitty image previews.
 
 <p align="center">
   <img src="assets/screenshots/agent-turn.png" width="720"
@@ -280,23 +280,6 @@ Use `/help` for commands and `/keys` for the complete shortcut list.
   <img src="assets/screenshots/image-preview.png" width="720"
        alt="An inline image chip with its metadata preview" />
 </p>
-
-<details>
-<summary><strong>Composer pet: /liang 🤫</strong></summary>
-
-`/liang` places a small pixel-art companion beside the composer: quiet while
-idle, typing at a tiny terminal during a turn. Terminals with kitty graphics
-protocol support, including Ghostty, Kitty, and WezTerm, get RGBA sprites;
-others fall back to a half-block whale. The pet hides below 60 columns.
-
-Use `/liang on` or `/liang off` to control it explicitly.
-
-<p align="center">
-  <img src="assets/screenshots/liang.png" width="640"
-       alt="The optional Liang pixel companion beside the composer" />
-</p>
-
-</details>
 
 ## Build from source
 

@@ -121,10 +121,6 @@ test('conversation docks are additive slots with independent live snapshots', ()
     { name: 'conversation.input.dock', id: 'goal', order: 10 },
     [{ id: 'summary', kind: 'generic', title: 'Goal · ship it', body: '' }],
   )
-  const stats = ctx.tuiSlots.register(
-    { name: 'conversation.composer.dock', id: 'stats' },
-    [{ id: 'summary', kind: 'generic', title: '1 turn · 2 steps', body: '' }],
-  )
 
   const inputSnapshot = sent.findLast((entry) => entry.params.slot === 'conversation.input.dock').params
   assert.deepEqual(inputSnapshot.nodes.map((node) => node.id), ['plan:summary', 'goal:summary'])
@@ -132,12 +128,11 @@ test('conversation docks are additive slots with independent live snapshots', ()
     ctx.tuiSlots.list().find((slot) => slot.name === 'conversation.input.dock').kind,
     'list',
   )
-  assert.equal(sent.at(-1).params.slot, 'conversation.composer.dock')
-  assert.equal(sent.at(-1).params.nodes[0].id, 'stats:summary')
+  assert.equal(sent.at(-1).params.slot, 'conversation.input.dock')
+  assert.equal(sent.at(-1).params.nodes[0].id, 'plan:summary')
 
   plan.dispose()
   goal.dispose()
-  stats.dispose()
   assert.deepEqual(sent.at(-1).params.nodes, [])
 })
 

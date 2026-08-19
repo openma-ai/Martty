@@ -5,14 +5,19 @@
   "$comment": "Plugin ABI for structured TUI slots. Transport method names are not part of this schema.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol", "slot", "nodes"],
+  "required": [
+    "protocol",
+    "slot",
+    "nodes"
+  ],
   "properties": {
-    "protocol": { "const": 0 },
+    "protocol": {
+      "const": 0
+    },
     "slot": {
       "enum": [
         "chrome.right",
-        "conversation.input.dock",
-        "conversation.composer.dock"
+        "conversation.input.dock"
       ]
     },
     "rev": {
@@ -22,7 +27,9 @@
     },
     "nodes": {
       "type": "array",
-      "items": { "$ref": "#/$defs/TuiNode" }
+      "items": {
+        "$ref": "#/$defs/TuiNode"
+      }
     }
   },
   "$defs": {
@@ -50,16 +57,36 @@
     },
     "TuiNode": {
       "oneOf": [
-        { "$ref": "#/$defs/Group" },
-        { "$ref": "#/$defs/Markdown" },
-        { "$ref": "#/$defs/Reasoning" },
-        { "$ref": "#/$defs/User" },
-        { "$ref": "#/$defs/Generic" },
-        { "$ref": "#/$defs/Terminal" },
-        { "$ref": "#/$defs/Diff" },
-        { "$ref": "#/$defs/Image" },
-        { "$ref": "#/$defs/Notice" },
-        { "$ref": "#/$defs/Unknown" }
+        {
+          "$ref": "#/$defs/Group"
+        },
+        {
+          "$ref": "#/$defs/Markdown"
+        },
+        {
+          "$ref": "#/$defs/Reasoning"
+        },
+        {
+          "$ref": "#/$defs/User"
+        },
+        {
+          "$ref": "#/$defs/Generic"
+        },
+        {
+          "$ref": "#/$defs/Terminal"
+        },
+        {
+          "$ref": "#/$defs/Diff"
+        },
+        {
+          "$ref": "#/$defs/Image"
+        },
+        {
+          "$ref": "#/$defs/Notice"
+        },
+        {
+          "$ref": "#/$defs/Unknown"
+        }
       ]
     },
     "NodeId": {
@@ -70,132 +97,297 @@
     "Action": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "name"],
+      "required": [
+        "kind",
+        "name"
+      ],
       "properties": {
-        "kind": { "const": "command" },
-        "name": { "type": "string", "minLength": 1 },
-        "args": { "type": "string" }
+        "kind": {
+          "const": "command"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "string"
+        }
       }
     },
     "Group": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "children"],
+      "required": [
+        "id",
+        "kind",
+        "children"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "group" },
-        "title": { "type": "string" },
-        "tone": { "$ref": "#/$defs/ThemeToken" },
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "group"
+        },
+        "title": {
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/ThemeToken"
+        },
         "children": {
           "type": "array",
-          "items": { "$ref": "#/$defs/TuiNode" }
+          "items": {
+            "$ref": "#/$defs/TuiNode"
+          }
         }
       }
     },
     "Markdown": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "text"],
+      "required": [
+        "id",
+        "kind",
+        "text"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "markdown" },
-        "text": { "type": "string" },
-        "streaming": { "type": "boolean" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "markdown"
+        },
+        "text": {
+          "type": "string"
+        },
+        "streaming": {
+          "type": "boolean"
+        }
       }
     },
     "Reasoning": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "text", "done"],
+      "required": [
+        "id",
+        "kind",
+        "text",
+        "done"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "reasoning" },
-        "text": { "type": "string" },
-        "done": { "type": "boolean" },
-        "seconds": { "type": "number", "minimum": 0 }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "reasoning"
+        },
+        "text": {
+          "type": "string"
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
     "User": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "text"],
+      "required": [
+        "id",
+        "kind",
+        "text"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "user" },
-        "text": { "type": "string" },
-        "queued": { "type": "boolean" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "user"
+        },
+        "text": {
+          "type": "string"
+        },
+        "queued": {
+          "type": "boolean"
+        }
       }
     },
     "Generic": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "title", "body"],
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "body"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "generic" },
-        "title": { "type": "string" },
-        "body": { "type": "string" },
-        "status": { "enum": ["running", "ok", "err"] },
-        "action": { "$ref": "#/$defs/Action" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "generic"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "ok",
+            "err"
+          ]
+        },
+        "action": {
+          "$ref": "#/$defs/Action"
+        }
       }
     },
     "Terminal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "title", "body"],
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "body"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "terminal" },
-        "title": { "type": "string" },
-        "body": { "type": "string" },
-        "exit": { "type": ["integer", "null"] }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "terminal"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "exit": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
       }
     },
     "Diff": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "title", "unified"],
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "unified"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "diff" },
-        "title": { "type": "string" },
-        "path": { "type": "string" },
-        "unified": { "type": "string" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "diff"
+        },
+        "title": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "unified": {
+          "type": "string"
+        }
       }
     },
     "Image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "name", "mime"],
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "mime"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "image" },
-        "name": { "type": "string" },
-        "mime": { "type": "string" },
-        "dataBase64": { "type": "string" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "image"
+        },
+        "name": {
+          "type": "string"
+        },
+        "mime": {
+          "type": "string"
+        },
+        "dataBase64": {
+          "type": "string"
+        }
       }
     },
     "Notice": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "level", "text"],
+      "required": [
+        "id",
+        "kind",
+        "level",
+        "text"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "notice" },
-        "level": { "enum": ["info", "warn", "error"] },
-        "text": { "type": "string" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "notice"
+        },
+        "level": {
+          "enum": [
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
       }
     },
     "Unknown": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "want"],
+      "required": [
+        "id",
+        "kind",
+        "want"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/NodeId" },
-        "kind": { "const": "unknown" },
-        "want": { "type": "string", "minLength": 1 },
-        "title": { "type": "string" },
-        "detail": { "type": "string" }
+        "id": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "kind": {
+          "const": "unknown"
+        },
+        "want": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
       }
     }
   }

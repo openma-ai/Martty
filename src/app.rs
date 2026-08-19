@@ -206,6 +206,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "show session + runtime info",
     },
     SlashCommand {
+        name: "status",
+        usage: "/status",
+        desc: "session run state + key stats",
+    },
+    SlashCommand {
         name: "auth",
         usage: "/auth [method|api-key]",
         desc: "ACP sign-in (Backchat authenticate)",
@@ -214,16 +219,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "lang",
         usage: "/lang [zh|en]",
         desc: "switch interface language",
-    },
-    SlashCommand {
-        name: "logo",
-        usage: "/logo",
-        desc: "bring the whale back",
-    },
-    SlashCommand {
-        name: "liang",
-        usage: "/liang [on|off]",
-        desc: "召唤小难梁 — 🤫 idle · ⌨︎ working",
     },
     SlashCommand {
         name: "quit",
@@ -812,10 +807,8 @@ pub struct App {
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
     pub show_banner: bool,
-    /// Pixel-art Liang at the composer's right edge (`/liang` toggles him).
-    pub pet_visible: bool,
-    /// True when the terminal renders the pet as real pixels (kitty graphics
-    /// protocol, emitted by `main`); false draws the half-block fallback.
+    /// True when the terminal speaks the kitty graphics protocol: image
+    /// thumbnails and the background layer emit real pixels (set by `main`).
     pub pet_pixels: bool,
     pub run_started: Option<Instant>,
     pub spinner_idx: usize,
@@ -1144,7 +1137,6 @@ impl App {
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
-            pet_visible: true,
             pet_pixels: false,
             run_started: None,
             spinner_idx: 0,
@@ -3689,31 +3681,6 @@ impl App {
                 );
             }
             "quit" => self.quit = true,
-            "logo" => {
-                self.show_banner = true;
-                self.transcript.push_notice(
-                    NoticeLevel::Info,
-                    self.locale
-                        .tr(
-                            "🐳 the whale is back — it dives on your next prompt",
-                            "🐳 鲸鱼回来了 — 发送下一条消息时它会潜下去",
-                        )
-                        .into(),
-                );
-            }
-            "liang" => {
-                self.pet_visible = match arg {
-                    "on" | "show" => true,
-                    "off" | "hide" => false,
-                    _ => !self.pet_visible,
-                };
-                let msg = if self.pet_visible {
-                    "🤫 小难梁已召唤 — 安静，他在想 AGI · /liang 收回"
-                } else {
-                    "小难梁去隆基市场买卡了 — /liang 再次召唤"
-                };
-                self.transcript.push_notice(NoticeLevel::Info, msg.into());
-            }
             "theme" => self.apply_theme_arg(arg, ctl),
             "plugins" => {
                 ctl.send(Cmd::FetchPlugins {
@@ -3762,6 +3729,7 @@ impl App {
                 }
             }
             "session" => self.push_session_info(),
+            "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
             "resume" => {
                 if arg.is_empty() {
@@ -4006,75 +3974,62 @@ impl App {
     fn push_help(&mut self) {
         if self.locale == Locale::Zh {
             let text = "\
-DeepSeek Build (dsh-tui) — 终端里的 deepseek-harness
+## help
 
-  enter        发送；当前轮次运行时将后续消息排队
-  ctrl+x       立即 steer 当前轮次
-  esc          中断（保留草稿）；空闲时清除草稿
-  ctrl+c       有草稿先清除；无草稿时连按 2 次退出（不中断）
-  shift+tab    轮换权限预设；/permission 打开选择器
-  ctrl+p       打开模型选择器，然后选择推理强度
-  option+a     直接轮换 Agent 预设
-  /agent       切换 ACP 广告的 Agent 预设
-  /lang        切换界面语言：/lang zh 或 /lang en
-  /auth        ACP 登录；多种方式时打开选择器
-  /effort      推理强度 · /permission 权限预设 · /plan 计划模式
-  /resume      恢复持久会话并继续写入原日志
-  /image       暂存本地图片：/image ./pic.png [说明]
-  /clip        暂存剪贴板图片；ctrl+v 同样可用
-  !cmd         在会话级本地 shell 中运行命令，不经过 Agent
-               初始目录为 workspace；cd/环境变量会跨命令保留
-  /<skill>     Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
-  ctrl+o       展开思考和工具输出   ctrl+l 清屏
-  点击工具     展开/折叠；滚轮滚动对话
-  pgup/pgdn    翻页；end 回到最新消息
-  鼠标拖动     选择并复制文本；双击复制单词
+- enter · 发送；当前轮次运行时将后续消息排队
+- ctrl+x · 立即 steer 当前轮次
+- esc · 中断（保留草稿）；空闲时清除草稿
+- ctrl+c · 有草稿先清除；无草稿时连按 2 次退出（不中断）
+- shift+tab · 轮换权限预设 · /permission 打开选择器
+- ctrl+p · 打开模型选择器，然后选择推理强度
+- option+a · 直接轮换 Agent 预设
+- /agent · 切换 ACP 广告的 Agent 预设
+- /lang · 切换界面语言：/lang zh 或 /lang en
+- /auth · ACP 登录；多种方式时打开选择器
+- /effort · 推理强度 · /permission 权限预设 · /plan 计划模式
+- /resume · 恢复持久会话并继续写入原日志
+- /image · 暂存本地图片：/image ./pic.png [说明]
+- /clip · 暂存剪贴板图片；ctrl+v 同样可用
+- !cmd · 在会话级本地 shell 中运行命令，不经过 Agent；初始目录为 workspace，cd/环境变量跨命令保留
+- /<skill> · Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
+- ctrl+o · 展开思考和工具输出 · ctrl+l · 清屏
+- 编辑 · readline 组合键 + ⌘/⌥ 方向键 · 完整映射见 /keys
+- 点击工具 · 展开/折叠 · 滚轮滚动对话
+- pgup/pgdn · 翻页 · end 回到最新消息
+- 鼠标拖动 · 选择并复制文本 · 双击复制单词
 
-每轮会显示：流式思考与回答、工具调用与结果、注入上下文、
-Subagent 生命周期、token 用量（含缓存命中）以及轮次结束原因。";
-            self.transcript.push_notice(NoticeLevel::Info, text.into());
+每轮会显示：流式思考与回答、工具调用与结果、注入上下文、Subagent 生命周期、
+token 用量（含缓存命中）以及轮次结束原因。";
+            self.transcript.push_markdown(text.to_string());
             return;
         }
         let text = "\
-DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
+## help
 
-  enter        send · queues a follow-up while a turn runs
-  ctrl+x       steer the active turn immediately
-  esc          interrupt (draft survives) · clears the draft when idle
-  ctrl+c       clear a draft; 2× quits with no draft (never interrupts)
-  shift+tab    cycle permission (workspace-write ⇄ full access)
-               · /permission opens the preset picker
-  ctrl+p       model picker (host catalog) → effort picker
-  option+a     cycle agent preset directly
-  /agent       switch the agent preset advertised over ACP
-               (live switch via session/set_config_option · /new for a fresh session)
-  /auth        ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
-               · agent's /login stays a prompt when advertised · mid-session auth_required opens this surface
-  /effort      reasoning effort · /permission preset · /plan host plan mode
-  /resume      pick up a durable session — transcript replays, log continues
-  /image       stage a local image — /image ./pic.png [caption]
-  /clip        stage the clipboard image — /clip [caption] · ctrl+v also works
-               up to 8 ride one prompt as inline [image n] chips in the text
-               — ⌫ on a chip removes it · hover (or park the cursor on) a
-               chip for a preview with dimensions, size, and type
-  !cmd         run in the session's local shell (not the agent); it starts in
-               the workspace and keeps cd/env state across commands
-  /<skill>     agent commands join the / menu — picking one lands
-               `/name ` in the composer; enter ships it and the host injects
-               the skill body (works for disable-model-invocation skills too)
-  ctrl+o       expand thoughts + tool output   ctrl+l clear
-  editing      readline chords + ⌘/⌥ arrows — on macOS the physical ⌘/⌥
-               state is read natively, so they work in every terminal;
-               ctrl+arrows elsewhere — the full map lives in /keys
-  click tool   expand/collapse that tool · wheel scrolls the conversation
-  pgup/pgdn    scroll · mouse wheel works · end follows the tail
-  mouse drag   select text — copied on release · 2×click copies a word
-               (hold shift to use the terminal's native selection)
+- enter · send · queues a follow-up while a turn runs
+- ctrl+x · steer the active turn immediately
+- esc · interrupt (draft survives) · clears the draft when idle
+- ctrl+c · clear a draft; 2× quits with no draft (never interrupts)
+- shift+tab · cycle permission (workspace-write ⇄ full access) · /permission opens the preset picker
+- ctrl+p · model picker (host catalog) → effort picker
+- option+a · cycle agent preset directly
+- /agent · switch the agent preset advertised over ACP
+- /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
+- /effort · reasoning effort · /permission preset · /plan host plan mode
+- /resume · pick up a durable session — transcript replays, log continues
+- /image · stage a local image — /image ./pic.png [caption]
+- /clip · stage the clipboard image — /clip [caption] · ctrl+v also works
+- !cmd · run in the session's local shell (not the agent); starts in the workspace, keeps cd/env across commands
+- /<skill> · agent commands join the / menu — enter ships it and the host injects the skill body
+- ctrl+o · expand thoughts + tool output · ctrl+l · clear
+- editing · readline chords + ⌘/⌥ arrows (ctrl+arrows elsewhere) · full map in /keys
+- click tool · expand/collapse that tool · wheel scrolls the conversation
+- pgup/pgdn · scroll · mouse wheel works · end follows the tail
+- mouse drag · select text — copied on release · 2×click copies a word
 
-Info shown per turn: streamed reasoning, streamed answer, every tool
-call with its result, injected context, subagent lifecycles, token
-usage (incl. cache hits), and the turn end reason.";
-        self.transcript.push_notice(NoticeLevel::Info, text.into());
+Per turn: streamed reasoning, answer, tool calls with results, injected
+context, subagent lifecycles, token usage (incl. cache hits), end reason.";
+        self.transcript.push_markdown(text.to_string());
     }
 
     fn push_keys(&mut self) {
@@ -4118,8 +4073,29 @@ usage (incl. cache hits), and the turn end reason.";
         };
         let u = self.transcript.usage;
         let total = u.input + u.output + u.cached + u.reasoning;
-        let text = format!(
-            "session · {}{}\nprovider · {} / {}\nagent · {}{}\nworkspace · {}\nsession root · {}\nruntime · {}\nserver · {}\ncredentials · {}\ntokens · ↑{} ↓{} (cached {}, reasoning {}) · Σ{} total",
+        let s = self.transcript.stats;
+        let llm_millis = s.turn_millis.saturating_sub(s.tool_millis);
+        // The same facts the Client-side `acpSessionStats` service folds —
+        // rendered here from the transcript's own accumulator.
+        let effort_line = self
+            .modes
+            .effort
+            .as_deref()
+            .map(|effort| format!("\n- effort · {effort}"))
+            .unwrap_or_default();
+        let mut text = format!(
+            "## session\n\n\
+             - session · {}{}\n\
+             - provider · {} / {}{}\n\
+             - agent · {}{}\n\
+             - workspace · {}\n\
+             - session root · {}\n\
+             - runtime · {}\n\
+             - server · {}\n\
+             - credentials · {}\n\
+             - tokens · ↑{} ↓{} (cached {} · reasoning {}) · Σ {}\n\
+             - turns · {} · steps · {}\n\
+             - LLM · {} · tool · {}",
             self.session_id,
             self.session_title
                 .as_deref()
@@ -4127,22 +4103,188 @@ usage (incl. cache hits), and the turn end reason.";
                 .unwrap_or_default(),
             self.cfg.provider,
             self.cfg.model,
+            effort_line,
             self.agent_label(&self.current_mode()),
-            if self.modes.agent_preset.is_none() { " (default)" } else { "" },
+            if self.modes.agent_preset.is_none() {
+                " (default)"
+            } else {
+                ""
+            },
             self.cfg.workspace,
             self.cfg.session_root,
             self.cfg.bin,
             self.server_info.as_deref().unwrap_or("not started"),
             creds,
-            u.input,
-            u.output,
-            u.cached,
-            u.reasoning,
-            total,
+            fmt_tokens(u.input),
+            fmt_tokens(u.output),
+            fmt_tokens(u.cached),
+            fmt_tokens(u.reasoning),
+            fmt_tokens(total),
+            s.turns,
+            s.steps,
+            fmt_duration(llm_millis),
+            fmt_duration(s.tool_millis),
         );
-        self.transcript.push_notice(NoticeLevel::Info, text);
+        if s.ttft_count > 0 {
+            text.push_str(&format!(
+                "\n- TTFT avg · {}",
+                fmt_duration(s.ttft_total_millis / s.ttft_count as u64)
+            ));
+        }
+        if llm_millis > 0 && u.output > 0 {
+            text.push_str(&format!(
+                "\n- rate · {:.1} tok/s",
+                u.output as f64 / (llm_millis as f64 / 1000.0)
+            ));
+        }
+        self.transcript.push_markdown(text);
     }
 
+    /// Compact status: the run state plus the key session facts — the
+    /// meta-row items (model/agent/permission/plan) and the turn profile.
+    /// `/session` keeps the full runtime detail.
+    fn push_status_info(&mut self) {
+        let u = self.transcript.usage;
+        let total = u.input + u.output + u.cached + u.reasoning;
+        let s = self.transcript.stats;
+        let llm_millis = s.turn_millis.saturating_sub(s.tool_millis);
+        let state = match self.state {
+            RunState::Idle => self.locale.tr("idle", "空闲").to_string(),
+            RunState::Starting => self.locale.tr("starting", "启动中").to_string(),
+            RunState::Running => self.locale.tr("running", "工作中").to_string(),
+        };
+        let perm = self
+            .modes
+            .permission
+            .clone()
+            .or_else(|| self.modes.sandbox.clone())
+            .unwrap_or_else(|| self.current_permission().to_string());
+        let perm_label = if self.locale == Locale::Zh {
+            match perm.as_str() {
+                "read-only" => "只读".to_string(),
+                "workspace-write" => "工作区可写".to_string(),
+                "danger-full-access" => "完全访问".to_string(),
+                _ => permission_label(&perm),
+            }
+        } else {
+            permission_label(&perm)
+        };
+        let effort_line = self
+            .modes
+            .effort
+            .as_deref()
+            .map(|effort| format!("\n- effort · {effort}"))
+            .unwrap_or_default();
+        // ACP facts: connection, authenticate state, session binding, and
+        // the server banner when the runtime has reported it.
+        let acp = if self.demo {
+            "demo".to_string()
+        } else if self.attached {
+            "attached".to_string()
+        } else {
+            "not attached".to_string()
+        };
+        let auth_line = match self.auth.status {
+            crate::acp_auth::AuthStatus::Configured => {
+                let method = self
+                    .auth
+                    .method_name
+                    .as_deref()
+                    .or(self.auth.method_id.as_deref());
+                Some(format!(
+                    "configured{}",
+                    method.map(|m| format!(" · {m}")).unwrap_or_default()
+                ))
+            }
+            crate::acp_auth::AuthStatus::NeedsAuth => {
+                let method = self
+                    .auth
+                    .method_name
+                    .as_deref()
+                    .or(self.auth.method_id.as_deref());
+                Some(format!(
+                    "needs sign-in{}",
+                    method.map(|m| format!(" · {m}")).unwrap_or_default()
+                ))
+            }
+            _ => None,
+        };
+        let mut text = format!("## status\n\n- state · {state}\n- acp · {acp}\n");
+        if let Some(auth) = auth_line {
+            text.push_str(&format!("- auth · {auth}\n"));
+        }
+        text.push_str(&if self.session_bound {
+            format!("- session · {}\n", self.session_id)
+        } else {
+            "- session · unbound\n".to_string()
+        });
+        if let Some(server) = &self.server_info {
+            text.push_str(&format!("- server · {server}\n"));
+        }
+        text.push_str(&format!(
+            "- model · {}{}\n\
+             - agent · {}{}\n\
+             - permission · {}\n\
+             - plan · {}\n\
+             - tokens · ↑{} ↓{} (cached {}) · Σ {}\n\
+             - turns · {} · steps · {}\n\
+             - LLM · {} · tool · {}",
+            self.cfg.model,
+            effort_line,
+            self.agent_label(&self.current_mode()),
+            if self.modes.agent_preset.is_none() {
+                " (default)"
+            } else {
+                ""
+            },
+            perm_label,
+            if self.modes.plan { "on" } else { "off" },
+            fmt_tokens(u.input),
+            fmt_tokens(u.output),
+            fmt_tokens(u.cached),
+            fmt_tokens(total),
+            s.turns,
+            s.steps,
+            fmt_duration(llm_millis),
+            fmt_duration(s.tool_millis),
+        ));
+        if s.ttft_count > 0 {
+            text.push_str(&format!(
+                "\n- TTFT avg · {}",
+                fmt_duration(s.ttft_total_millis / s.ttft_count as u64)
+            ));
+        }
+        if llm_millis > 0 && u.output > 0 {
+            text.push_str(&format!(
+                "\n- rate · {:.1} tok/s",
+                u.output as f64 / (llm_millis as f64 / 1000.0)
+            ));
+        }
+        self.transcript.push_markdown(text);
+    }
+}
+
+/// Compact token count: `1234` → `1.2K`, `1_500_000` → `1.5M`.
+fn fmt_tokens(value: u64) -> String {
+    if value < 1000 {
+        value.to_string()
+    } else if value < 1_000_000 {
+        format!("{:.1}K", value as f64 / 1000.0)
+    } else {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    }
+}
+
+/// Compact duration: `1500ms` → `1.5s`, `135_000ms` → `2m15s`.
+fn fmt_duration(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{}m{}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+
+impl App {
     fn submit(&mut self, ctl: &Controller) {
         let text = self.input.buf.trim().to_string();
         // Client namespaces don't take images — keep the chips editable
@@ -4744,7 +4886,7 @@ mod resume_tests {
     }
 
     #[test]
-    fn keys_slash_pushes_the_markdown_shortcut_table() {
+    fn keys_slash_pushes_a_compact_markdown_map() {
         let root = tmp_root("keys");
         let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
 
@@ -4759,11 +4901,18 @@ mod resume_tests {
         assert!(text.contains("keys — shortcut map"), "/keys title:\n{text}");
         assert!(text.contains("ctrl+q"), "quit binding missing:\n{text}");
         assert!(
+            text.contains("· quit dsh-tui"),
+            "line style missing:\n{text}"
+        );
+        assert!(
             text.contains("shift+tab") && text.contains("permission"),
             "permission binding missing:\n{text}"
         );
-        // Markdown tables paint box-drawing frames through the transcript.
-        assert!(text.contains('┌') && text.contains('│'), "no table frame:\n{text}");
+        // Compact `chords · description` lines — no box-drawing frames.
+        assert!(
+            !text.contains('┌') && !text.contains('│'),
+            "keys should render as lines, not tables:\n{text}"
+        );
         assert!(
             !text.contains("· keys —"),
             "keys must not render as a plain notice:\n{text}"
@@ -8104,22 +8253,18 @@ mod right_slot_tests {
             .iter()
             .position(|line| line.contains("Plan · 1/2 · Implement"))
             .expect("Plan row") as u16;
-        let tip_y = lines
-            .iter()
-            .position(|line| line.contains("Tip ·"))
-            .expect("Tip row") as u16;
-        assert_eq!(
-            tip_y,
-            plan_y + 1,
-            "Tip extends the same two-row cap:\n{frame}"
-        );
         assert!(
             lines[plan_y as usize].starts_with('╭'),
-            "one top edge:\n{frame}"
+            "the dock owns the single cap row:\n{frame}"
         );
         assert!(
-            lines[tip_y as usize].starts_with('│'),
-            "Tip has no second top edge:\n{frame}"
+            !lines.iter().any(|line| line.contains("Tip ·")),
+            "a dock present means no tip line — the cap stays one row:\n{frame}"
+        );
+        assert_eq!(
+            lines[plan_y as usize + 1].chars().next(),
+            Some('│'),
+            "the input well starts right below the one cap row:\n{frame}"
         );
 
         app.handle(
@@ -8214,5 +8359,68 @@ mod right_slot_tests {
             Ok(Cmd::InvokePluginCommand { name, args })
                 if name == "goal-view" && args == "active"
         ));
+    }
+
+    #[test]
+    fn status_slash_shows_compact_run_state() {
+        let (mut app, ctl, _rx) = test_app();
+        app.modes.effort = Some("high".into());
+        app.transcript.usage.input = 1834;
+        app.transcript.usage.output = 412;
+        app.transcript.usage.cached = 1200;
+        app.transcript.stats.turns = 3;
+        app.transcript.stats.steps = 47;
+        app.transcript.stats.turn_millis = 135_000;
+        app.transcript.stats.tool_millis = 8_000;
+        app.transcript.stats.ttft_total_millis = 4_500;
+        app.transcript.stats.ttft_count = 3;
+
+        app.run_slash("status", "", &ctl);
+
+        let last = app.transcript.cells.last().expect("status cell");
+        let crate::transcript::CellKind::MarkdownNotice { text } = &last.kind else {
+            panic!("/status should be a markdown notice, got {:?}", last.kind);
+        };
+        assert!(text.contains("## status"), "{text}");
+        assert!(text.contains("- state · "), "{text}");
+        // ACP facts: demo run shows the demo marker and its session.
+        assert!(text.contains("- acp · demo"), "{text}");
+        assert!(text.contains("- session · dsh-test"), "{text}");
+        assert!(text.contains("- model · deepseek-v4-flash"), "{text}");
+        assert!(text.contains("- effort · high"), "{text}");
+        assert!(text.contains("- permission · "), "{text}");
+        assert!(text.contains("- plan · "), "{text}");
+        assert!(
+            text.contains("- tokens · ↑1.8K ↓412 (cached 1.2K)"),
+            "{text}"
+        );
+        assert!(text.contains("- turns · 3 · steps · 47"), "{text}");
+        assert!(text.contains("- LLM · 2m7s · tool · 8.0s"), "{text}");
+        assert!(text.contains("- TTFT avg · 1.5s"), "{text}");
+        assert!(text.contains("- rate · 3.2 tok/s"), "{text}");
+    }
+
+    #[test]
+    fn session_slash_shows_effort_when_set() {
+        let (mut app, ctl, _rx) = test_app();
+        app.modes.effort = Some("max".into());
+
+        app.run_slash("session", "", &ctl);
+
+        let last = app.transcript.cells.last().expect("session cell");
+        let crate::transcript::CellKind::MarkdownNotice { text } = &last.kind else {
+            panic!("/session should be a markdown notice, got {:?}", last.kind);
+        };
+        assert!(text.contains("## session"), "{text}");
+        assert!(text.contains("- effort · max"), "{text}");
+
+        // Unset effort stays hidden.
+        let (mut plain, ctl2, _rx2) = test_app();
+        plain.run_slash("session", "", &ctl2);
+        let last = plain.transcript.cells.last().expect("session cell");
+        let crate::transcript::CellKind::MarkdownNotice { text } = &last.kind else {
+            panic!("/session should be a markdown notice, got {:?}", last.kind);
+        };
+        assert!(!text.contains("- effort ·"), "{text}");
     }
 }

@@ -12,13 +12,11 @@ export const inject = []
 export const SLOT_NAMES = Object.freeze([
   'chrome.right',
   'conversation.input.dock',
-  'conversation.composer.dock',
 ])
 
 const SLOT_DEFINITIONS = Object.freeze({
   'chrome.right': Object.freeze({ kind: 'list', scope: 'root' }),
   'conversation.input.dock': Object.freeze({ kind: 'list', scope: 'session' }),
-  'conversation.composer.dock': Object.freeze({ kind: 'list', scope: 'session' }),
 })
 
 class TuiSlotsService extends Service {

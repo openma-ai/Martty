@@ -5,6 +5,51 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- The composer is now one rounded box: the cap row (`Tip` / plugin input
+  dock / `·` workspace title) and the entire input surface (input well +
+  meta row) share a single rounded rectangle, so the input text is fully
+  enclosed by the frame. The cap is exactly one row — the plugin input
+  dock (PLAN summary) wins the row over the tip line whenever both could
+  appear, so PLAN + TIP never stack. The meta row (agent / permission /
+  model chips) rides the box's bottom border (`╰⚙ … ╯`) instead of an
+  inner row, so the box costs no extra rows and the input well is taller.
+  The running-state glow now replaces the box's left border. Short
+  terminals (below the cap threshold) keep the previous borderless
+  composer.
+- The composer stats dock (`conversation.composer.dock`, the `Cache hit`
+  / token / TTFT row) is gone entirely. The built-in `stats-view` Client
+  Plugin and its slot were removed; the `acpSessionStats` service stays
+  open for plugins, and LLM usage/timing detail surfaces through
+  `/session`.
+
+### Removed
+
+- The `/liang` pet command and the composer pet image are gone (both the
+  kitty sprites and the half-block fallback, along with their assets),
+  and the `/logo` command no longer exists — the whale banner still
+  greets on launch and dives on the first prompt.
+
+### Changed
+
+- The composer meta row now leads each chip with a small dot (`· Standard
+  · Workspace Write …`) instead of emoji glyphs (`⚙ ⛨ ⚖ ⌁`); color still
+  carries the meaning (full access turns warn).
+- `/help`, `/session`, and `/keys` now share one output style: each
+  renders through the transcript's markdown pipeline as `## name` with
+  single-column markdown lists: one `- label · value` item per fact or
+  binding, grouped by `###` for the keys map.
+- `/session` shows the full turn profile folded from the same ACP facts
+  as `acpSessionStats`: turns, steps, LLM vs tool time, TTFT average,
+  and output throughput, with token counts compacted to K/M.
+- New `/status` command: a compact single-list readout of the run state
+  plus ACP facts (agent connection, authenticate state, session binding,
+  server banner) and the key session facts (model, effort, agent,
+  permission, plan, tokens, turns/steps, LLM/tool time, TTFT average,
+  throughput) — `/session` keeps the full runtime detail, and both show
+  the reasoning effort when set.
+
 ### Fixed
 
 - Local `!` commands now share one shell for the lifetime of the TUI session,
@@ -24,12 +69,20 @@ All notable changes to this project are documented here. The project follows
   keep wrapping. The selected row is now highlighted across its full width
   (soft chip background behind marker, label, meta and the row tail — the
   meta text steps up from caption gray on the highlighted row) instead of
-  only the label column. The scrolling viewport now comes from
-  `tui-widget-list` (the one new crate; it shares ratatui's
-  `ratatui-core`/`ratatui-widgets` crates, so there is no duplicate widget
-  tree).
+  only the label column. The picker viewport now comes from ratatui's own
+  `Table`/`TableState` (selection column, full-row highlight, and
+  follow-window scrolling), replacing the separate `tui-widget-list`
+  dependency.
 
 ### Changed
+
+- The startup banner now shows the **Martty** lockup (figlet `ansi_shadow`
+  block logo on wide terminals, degrading to the small figlet variant and
+  then plain text) tinted with the brand belly tone, and the hero line
+  shows the project URL `https://martty.sh` instead of the old whale +
+  slogan. The TUI's block-ASCII whale art and its generator
+  (`src/logo_data.rs`, `scripts/gen_logo.py`) were removed; the website's
+  own whale visualization keeps its data.
 
 - `/keys` is no longer a hand-written text wall: the shortcut map is now
   derived from the keymap table (`src/input/keymap.rs`) and rendered as
