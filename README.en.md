@@ -62,6 +62,20 @@ old provider/transport rows and mounts only the ACP plugin resolved from TUI's
 dependency graph. Supported profile compositions therefore do not start two
 ACP surfaces, and users do not have to normalize an existing ACP profile first.
 
+To use portable Agent Plugins, Codex plugins, Claude Code plugins, or Pi
+packages in TUI, add the
+[Agent Plugins Bridge](https://github.com/openma-ai/dsh-agents-plugins) to the
+same profile:
+
+```sh
+dsh plugin --profile tui add @openma/dsh-agents-plugins-bridge@latest
+```
+
+Bridge hooks, skills, commands, MCP connections, agents, monitors, and Pi
+extensions are shared Host capabilities; commands and skills reach the TUI
+slash menu through ACP. The Web settings panel, browser themes, and MCP Apps
+HTML renderer remain Web surfaces rather than a second terminal UI.
+
 ### Standalone: any ACP agent
 
 ```sh

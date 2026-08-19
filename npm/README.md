@@ -35,6 +35,17 @@ retain both copies, but the TUI bundle replaces that surface's rows and mounts
 only the plugin resolved from TUI's own dependency graph. The supported profile
 shape never runs two ACP surfaces for one TUI.
 
+Foreign agent plugins use the same Host composition:
+
+```sh
+dsh plugin --profile tui add @openma/dsh-agents-plugins-bridge@latest
+```
+
+The [Agent Plugins Bridge](https://github.com/openma-ai/dsh-agents-plugins)
+projects imported commands and skills into TUI through ACP and keeps hooks,
+MCP, agents, monitors, and Pi extensions on the Host. Browser-only management,
+themes, and MCP Apps HTML rendering remain on the Web surface.
+
 The package carries ACP as a runtime dependency and exports its Creator Host
 overlay internally. The profile bundle mounts both on the Host Base tree;
 neither enters the Client tree. Creator adds TUI plugin guidance to the

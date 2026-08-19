@@ -55,6 +55,18 @@ TUI 把 ACP 声明为自身运行时依赖。若目标 profile 已通过标准 A
 transport/provider 行，并只挂载从 TUI 自身依赖图解析出的 ACP plugin；因此受支持的
 profile 组合不会同时启动两套 ACP，也不要求用户先手工整理已有 ACP profile。
 
+要在 TUI 中使用 portable Agent Plugins、Codex、Claude Code 或 Pi 插件，把
+[Agent Plugins Bridge](https://github.com/openma-ai/dsh-agents-plugins) 加到同一个
+profile：
+
+```sh
+dsh plugin --profile tui add @openma/dsh-agents-plugins-bridge@latest
+```
+
+Bridge 的 hooks、skills、commands、MCP、agents、monitors 和 Pi extensions 都是
+通用 Host 能力；commands 与 skills 会通过 ACP 进入 TUI 的斜杠菜单。Web 设置面板、
+浏览器主题和 MCP Apps HTML renderer 属于 Web 表面，不会在终端里复制一套 UI。
+
 ### Standalone：接任意 ACP agent
 
 ```sh
