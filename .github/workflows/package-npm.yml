@@ -45,7 +45,7 @@ jobs:
         run: cargo check --locked --tests
       - name: Install Node test dependencies
         if: runner.os != 'Windows'
-        run: npm install --prefix npm --ignore-scripts --no-package-lock --no-audit --no-fund
+        run: npm install --prefix npm --ignore-scripts --legacy-peer-deps --no-package-lock --no-audit --no-fund
       - name: Run Node tests
         if: runner.os != 'Windows'
         run: npm test --prefix npm
