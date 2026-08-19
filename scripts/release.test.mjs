@@ -15,6 +15,7 @@ function fixture(t) {
   mkdirSync(path.join(root, 'npm'))
   writeFileSync(path.join(root, 'npm', 'package.json'), JSON.stringify({ name: 'fixture', version: '0.1.0' }, null, 2) + '\n')
   writeFileSync(path.join(root, 'Cargo.toml'), '[package]\nname = "fixture"\nversion = "0.1.0"\n')
+  writeFileSync(path.join(root, 'Cargo.lock'), 'version = 4\n\n[[package]]\nname = "fixture"\nversion = "0.1.0"\n')
   git(root, ['init', '-b', 'main'])
   git(root, ['add', '.'])
   git(root, ['commit', '-m', 'initial'])
@@ -48,14 +49,16 @@ function run(root, version, extra = []) {
   })
 }
 
-test('bumps both versions, commits, and tags', (t) => {
+test('bumps all package versions, commits, and tags', (t) => {
   const root = fixture(t)
   const result = run(root, '0.2.8')
   assert.equal(result.status, 0, result.stderr)
   assert.equal(JSON.parse(readFileSync(path.join(root, 'npm', 'package.json'), 'utf8')).version, '0.2.8')
   assert.match(readFileSync(path.join(root, 'Cargo.toml'), 'utf8'), /^version = "0\.2\.8"$/m)
+  assert.match(readFileSync(path.join(root, 'Cargo.lock'), 'utf8'), /^version = "0\.2\.8"$/m)
   assert.equal(git(root, ['log', '-1', '--format=%s']), 'release: v0.2.8')
   assert.equal(git(root, ['tag', '--list']), 'v0.2.8')
+  assert.equal(git(root, ['status', '--porcelain']), '')
 })
 
 test('accepts a v-prefixed version and dry-run changes nothing', (t) => {

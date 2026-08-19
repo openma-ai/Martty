@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Bump both package versions, commit, and tag a release.
+// Bump all package versions, commit, and tag a release.
 //
 // Usage: node scripts/release.mjs <version> [--dry-run]
 //
@@ -20,6 +20,7 @@ const repoRoot = process.env.DSH_TUI_RELEASE_ROOT
   : path.resolve(moduleDir, '..')
 const npmPackage = path.join(repoRoot, 'npm', 'package.json')
 const cargoToml = path.join(repoRoot, 'Cargo.toml')
+const cargoLock = path.join(repoRoot, 'Cargo.lock')
 const verifyScript = path.join(moduleDir, 'check-release-tag.mjs')
 
 function git(args) {
@@ -32,6 +33,27 @@ function git(args) {
 
 function bumpCargo(toml, version) {
   return toml.replace(/^(\[package\][\s\S]*?^version\s*=\s*")[^"]+(")/m, `$1${version}$2`)
+}
+
+function cargoPackageName(toml) {
+  const match = toml.match(/^\[package\][\s\S]*?^name\s*=\s*"([^"]+)"/m)
+  if (!match) throw new Error('could not locate the package name in Cargo.toml')
+  return match[1]
+}
+
+function bumpCargoLock(lock, packageName, version) {
+  let found = false
+  const updated = lock.replace(
+    /^\[\[package\]\]\r?\n[\s\S]*?(?=^\[\[package\]\]\r?$|(?![\s\S]))/gm,
+    (block) => {
+      const name = block.match(/^name\s*=\s*"([^"]+)"$/m)?.[1]
+      if (name !== packageName) return block
+      found = true
+      return block.replace(/^(version\s*=\s*")[^"]+(")/m, `$1${version}$2`)
+    },
+  )
+  if (!found) throw new Error(`could not locate ${packageName} in Cargo.lock`)
+  return updated
 }
 
 function fail(message) {
@@ -68,15 +90,21 @@ try {
   if (cargoAfter === cargoBefore) {
     throw new Error(`could not locate the version line in Cargo.toml`)
   }
+  const lockBefore = readFileSync(cargoLock, 'utf8')
+  const lockAfter = bumpCargoLock(lockBefore, cargoPackageName(cargoBefore), version)
+  if (lockAfter === lockBefore) {
+    throw new Error(`Cargo.lock is already at ${version}`)
+  }
 
   if (dryRun) {
-    process.stdout.write(`[dry-run] would bump npm/package.json + Cargo.toml to ${version} and create tag ${tag}\n`)
+    process.stdout.write(`[dry-run] would bump npm/package.json + Cargo.toml + Cargo.lock to ${version} and create tag ${tag}\n`)
     process.exit(0)
   }
 
   packageJson.version = version
   writeFileSync(npmPackage, `${JSON.stringify(packageJson, null, 2)}\n`)
   writeFileSync(cargoToml, cargoAfter)
+  writeFileSync(cargoLock, lockAfter)
 
   const verify = spawnSync(process.execPath, [
     verifyScript,
@@ -88,7 +116,11 @@ try {
     throw new Error(`self-check failed: ${verify.stderr.trim()}`)
   }
 
-  git(['add', path.relative(repoRoot, npmPackage), path.relative(repoRoot, cargoToml)])
+  git(['add',
+    path.relative(repoRoot, npmPackage),
+    path.relative(repoRoot, cargoToml),
+    path.relative(repoRoot, cargoLock),
+  ])
   git(['commit', '-m', `release: ${tag}`])
   git(['tag', tag])
 
