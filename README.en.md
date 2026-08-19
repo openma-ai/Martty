@@ -265,7 +265,7 @@ Requests/Notifications and never enter prompts or conversation history.
 | Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
 | Click tool · wheel | Click a tool to expand/collapse it; wheel always scrolls the conversation |
 | Mouse drag | Copy on release; double-click a word; `shift+drag` uses native selection |
-| `!cmd` | Run a local shell command on the client, outside the agent |
+| `!cmd` | Run a command in the client's session-local shell, outside the agent; the shell starts in the workspace and keeps `cd`, environment variables, and other state for later `!` commands until the TUI exits |
 
 Use `/help` for commands and `/keys` for the complete shortcut list.
 

@@ -3,10 +3,11 @@
 //! Enter sends (or queues mid-turn, client-side); Ctrl+X steers the active
 //! turn immediately; Esc cancels a running turn with the draft preserved, and
 //! Esc owns interrupt; Ctrl+C clears a draft, then needs two empty presses to quit;
-//! `!` runs a local shell command; `/` opens the slash menu; Up recalls
+//! `!` runs a command in the session's local shell; `/` opens the slash menu; Up recalls
 //! history on an empty prompt.
 
 use std::collections::{HashMap, VecDeque};
+use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -640,6 +641,160 @@ pub struct Modes {
     pub effort: Option<String>,
 }
 
+struct ShellRequest {
+    id: u64,
+    command: String,
+}
+
+struct ShellWorker {
+    tx: Sender<ShellRequest>,
+}
+
+impl ShellWorker {
+    fn spawn(cwd: String, app_tx: Sender<AppEvent>) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<ShellRequest>();
+        std::thread::spawn(move || {
+            let mut shell: Option<PersistentShell> = None;
+            for request in rx {
+                if shell.is_none() {
+                    match PersistentShell::spawn(&cwd) {
+                        Ok(started) => shell = Some(started),
+                        Err(err) => {
+                            let _ = app_tx.send(AppEvent::ShellDone {
+                                id: request.id,
+                                code: None,
+                                output: format!("failed to start shell: {err}"),
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                let result = shell.as_mut().unwrap().run(request.id, &request.command);
+                let (code, output, alive) = match result {
+                    Ok(result) => result,
+                    Err(err) => (None, format!("shell failed: {err}"), false),
+                };
+                if !alive {
+                    shell = None;
+                }
+                let _ = app_tx.send(AppEvent::ShellDone {
+                    id: request.id,
+                    code,
+                    output,
+                });
+            }
+        });
+        Self { tx }
+    }
+
+    fn send(&self, request: ShellRequest) -> Result<(), ShellRequest> {
+        self.tx.send(request).map_err(|err| err.0)
+    }
+}
+
+struct PersistentShell {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+    marker: String,
+}
+
+impl PersistentShell {
+    fn spawn(cwd: &str) -> std::io::Result<Self> {
+        let mut child = std::process::Command::new("sh")
+            .arg("-l")
+            .arg("-s")
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "shell stdin unavailable")
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "shell stdout unavailable")
+        })?;
+        // Keep a control fd independent from shell-level stdout redirects.
+        stdin.write_all(b"exec 9>&1\n")?;
+        stdin.flush()?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            marker: format!("MARTTY_SHELL_{}_{}", std::process::id(), timestamp()),
+        })
+    }
+
+    fn run(&mut self, id: u64, command: &str) -> std::io::Result<(Option<i32>, String, bool)> {
+        let marker = format!("\x1e{}:{id}:", self.marker);
+        writeln!(self.stdin, "eval {} 2>&1", shell_quote(command))?;
+        writeln!(self.stdin, "__martty_shell_status=$?")?;
+        writeln!(
+            self.stdin,
+            "command printf '\\036{}:{id}:%s\\037' \"$__martty_shell_status\" >&9",
+            self.marker
+        )?;
+        self.stdin.flush()?;
+
+        let mut captured = Vec::new();
+        loop {
+            let read = self.stdout.read_until(0x1f, &mut captured)?;
+            if read == 0 {
+                let code = self.child.wait().ok().and_then(|status| status.code());
+                return Ok((code, shell_output(captured), false));
+            }
+            let Some(start) = find_bytes(&captured, marker.as_bytes()) else {
+                continue;
+            };
+            let status_start = start + marker.len();
+            let Some(status_len) = captured[status_start..]
+                .iter()
+                .position(|byte| *byte == 0x1f)
+            else {
+                continue;
+            };
+            let status = std::str::from_utf8(&captured[status_start..status_start + status_len])
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok());
+            captured.truncate(start);
+            return Ok((status, shell_output(captured), true));
+        }
+    }
+}
+
+impl Drop for PersistentShell {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn shell_output(bytes: Vec<u8>) -> String {
+    let mut output = String::from_utf8_lossy(&bytes).into_owned();
+    const LIMIT: usize = 16 * 1024;
+    if output.len() > LIMIT {
+        let mut cut = LIMIT;
+        while cut > 0 && !output.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        output.truncate(cut);
+        output.push_str("\n… (truncated)");
+    }
+    output
+}
+
 pub struct App {
     pub theme: Theme,
     pub locale: Locale,
@@ -751,6 +906,7 @@ pub struct App {
     prompt_pending: bool,
     shell_seq: u64,
     shell_pending: Vec<(u64, usize)>, // (id, cell idx)
+    shell_worker: Option<ShellWorker>,
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
     pub needs_redraw: bool,
@@ -1040,6 +1196,7 @@ impl App {
             prompt_pending: false,
             shell_seq: 0,
             shell_pending: Vec::new(),
+            shell_worker: None,
             bus_tx,
             server_info: None,
             needs_redraw: true,
@@ -3865,7 +4022,8 @@ DeepSeek Build (dsh-tui) — 终端里的 deepseek-harness
   /resume      恢复持久会话并继续写入原日志
   /image       暂存本地图片：/image ./pic.png [说明]
   /clip        暂存剪贴板图片；ctrl+v 同样可用
-  !cmd         直接运行本地命令，不经过 Agent
+  !cmd         在会话级本地 shell 中运行命令，不经过 Agent
+               初始目录为 workspace；cd/环境变量会跨命令保留
   /<skill>     Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
   ctrl+o       展开思考和工具输出   ctrl+l 清屏
   点击工具     展开/折叠；滚轮滚动对话
@@ -3899,7 +4057,8 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
                up to 8 ride one prompt as inline [image n] chips in the text
                — ⌫ on a chip removes it · hover (or park the cursor on) a
                chip for a preview with dimensions, size, and type
-  !cmd         run a local shell command (not the agent)
+  !cmd         run in the session's local shell (not the agent); it starts in
+               the workspace and keeps cd/env state across commands
   /<skill>     agent commands join the / menu — picking one lands
                `/name ` in the composer; enter ships it and the host injects
                the skill body (works for disable-model-invocation skills too)
@@ -4342,43 +4501,78 @@ usage (incl. cache hits), and the turn end reason.";
         let id = self.shell_seq;
         let cell = self.transcript.push_shell(cmd.clone());
         self.shell_pending.push((id, cell));
-        let tx = self.bus_tx.clone();
-        let cwd = self.cfg.workspace.clone();
-        std::thread::spawn(move || {
-            let out = std::process::Command::new("sh")
-                .arg("-lc")
-                .arg(&cmd)
-                .current_dir(&cwd)
-                .output();
-            let (code, text) = match out {
-                Ok(o) => {
-                    let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
-                    let e = String::from_utf8_lossy(&o.stderr);
-                    if !e.trim().is_empty() {
-                        if !s.is_empty() {
-                            s.push('\n');
-                        }
-                        s.push_str(&e);
-                    }
-                    const LIMIT: usize = 16 * 1024;
-                    if s.len() > LIMIT {
-                        let mut cut = LIMIT;
-                        while cut > 0 && !s.is_char_boundary(cut) {
-                            cut -= 1;
-                        }
-                        s.truncate(cut);
-                        s.push_str("\n… (truncated)");
-                    }
-                    (o.status.code(), s)
-                }
-                Err(err) => (None, format!("failed to run: {err}")),
-            };
-            let _ = tx.send(AppEvent::ShellDone {
-                id,
-                code,
-                output: text,
-            });
+        let request = ShellRequest { id, command: cmd };
+        let worker = self.shell_worker.get_or_insert_with(|| {
+            ShellWorker::spawn(self.cfg.workspace.clone(), self.bus_tx.clone())
         });
+        if let Err(request) = worker.send(request) {
+            let worker = ShellWorker::spawn(self.cfg.workspace.clone(), self.bus_tx.clone());
+            if let Err(request) = worker.send(request) {
+                let _ = self.bus_tx.send(AppEvent::ShellDone {
+                    id: request.id,
+                    code: None,
+                    output: "failed to start shell worker".into(),
+                });
+            }
+            self.shell_worker = Some(worker);
+        }
+    }
+}
+
+#[cfg(test)]
+mod persistent_shell_tests {
+    use super::*;
+    use std::sync::mpsc::Receiver;
+
+    fn test_app(workspace: &std::path::Path) -> (App, Receiver<AppEvent>) {
+        let cfg = RuntimeConfig {
+            bin: "demo".into(),
+            cordis: "demo".into(),
+            workspace: workspace.to_string_lossy().into_owned(),
+            session_root: workspace.join("sessions").to_string_lossy().into_owned(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+        (app, rx)
+    }
+
+    fn wait_for_shell(rx: &Receiver<AppEvent>) -> (Option<i32>, String) {
+        match rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("local shell result")
+        {
+            AppEvent::ShellDone { code, output, .. } => (code, output),
+            _ => panic!("unexpected app event"),
+        }
+    }
+
+    #[test]
+    fn local_shell_state_persists_between_invocations() {
+        let workspace =
+            std::env::temp_dir().join(format!("martty-shell-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(workspace.join("nested")).unwrap();
+        let (mut app, rx) = test_app(&workspace);
+
+        app.run_local_shell("cd nested; export MARTTY_SHELL_TEST=kept".into());
+        assert_eq!(wait_for_shell(&rx).0, Some(0));
+        app.run_local_shell("printf %s \"$MARTTY_SHELL_TEST\" > shell-state.txt".into());
+        assert_eq!(wait_for_shell(&rx).0, Some(0));
+
+        let state_file = workspace.join("nested/shell-state.txt");
+        assert!(
+            state_file.exists(),
+            "the second command must run in the directory selected by the first"
+        );
+        assert_eq!(std::fs::read_to_string(state_file).unwrap(), "kept");
+        assert!(!workspace.join("shell-state.txt").exists());
+        drop(app);
+        let _ = std::fs::remove_dir_all(workspace);
     }
 }
 
