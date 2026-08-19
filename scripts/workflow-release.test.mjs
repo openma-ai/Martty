@@ -23,7 +23,7 @@ test('release workflow packages and publishes both npm names', () => {
   )
   assert.match(
     workflow,
-    /npm ci --prefix npm --ignore-scripts --legacy-peer-deps --no-audit --no-fund/,
+    /npm ci --prefix npm --ignore-scripts --no-audit --no-fund/,
   )
   assert.match(workflow, /package-alias\.mjs npm npm-martty martty/)
   assert.match(workflow, /npm pack \.\/npm-martty --pack-destination dist/)
