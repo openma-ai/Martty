@@ -225,7 +225,7 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 | Linux/Windows | `ctrl+←/→` 跳词 · `ctrl+⌫` 删词 |
 | 点击工具 · 滚轮 | 点击工具展开/折叠输出；滚轮始终滚动整个对话 |
 | 鼠标拖选 | 松手复制；双击复制单词；`shift+拖选` 使用终端原生选择 |
-| `!cmd` | 在客户端本地执行 shell 命令，不经过 agent |
+| `!cmd` | 在客户端本地执行一次性 shell 命令，不经过 agent；每次调用都从 workspace 启动独立的 `sh -lc`，`cd`、环境变量等状态不会保留。需要切目录时请写成 `!cd dir && command` |
 
 界面内使用 `/help` 查看命令，使用 `/keys` 查看完整快捷键。
 

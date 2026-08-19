@@ -3865,7 +3865,8 @@ DeepSeek Build (dsh-tui) — 终端里的 deepseek-harness
   /resume      恢复持久会话并继续写入原日志
   /image       暂存本地图片：/image ./pic.png [说明]
   /clip        暂存剪贴板图片；ctrl+v 同样可用
-  !cmd         直接运行本地命令，不经过 Agent
+  !cmd         单次运行本地命令，不经过 Agent；每次从 workspace 启动
+               cd/环境变量不会跨命令保留；请用 !cd dir && command
   /<skill>     Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
   ctrl+o       展开思考和工具输出   ctrl+l 清屏
   点击工具     展开/折叠；滚轮滚动对话
@@ -3899,7 +3900,9 @@ DeepSeek Build (dsh-tui) — deepseek-harness in your terminal
                up to 8 ride one prompt as inline [image n] chips in the text
                — ⌫ on a chip removes it · hover (or park the cursor on) a
                chip for a preview with dimensions, size, and type
-  !cmd         run a local shell command (not the agent)
+  !cmd         run one local shell command (not the agent); every call starts
+               in the workspace — cd/env state does not carry over
+               use !cd dir && command when needed
   /<skill>     agent commands join the / menu — picking one lands
                `/name ` in the composer; enter ships it and the host injects
                the skill body (works for disable-model-invocation skills too)

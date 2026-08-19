@@ -68,6 +68,9 @@ All notable changes to this project are documented here. The project follows
 
 ### Documentation
 
+- Clarified that each `!cmd` runs in an independent one-shot `sh -lc`
+  process rooted at the workspace, so shell state such as `cd` and exported
+  variables does not carry across calls; examples now show `!cd dir && cmd`.
 - Reworked the repository and npm README mastheads around the centered
   DeepSeek logo, product name, concise positioning, and a consistent badge row.
 
