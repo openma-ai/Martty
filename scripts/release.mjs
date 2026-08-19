@@ -19,6 +19,7 @@ const repoRoot = process.env.DSH_TUI_RELEASE_ROOT
   ? path.resolve(process.env.DSH_TUI_RELEASE_ROOT)
   : path.resolve(moduleDir, '..')
 const npmPackage = path.join(repoRoot, 'npm', 'package.json')
+const npmPackageLock = path.join(repoRoot, 'npm', 'package-lock.json')
 const cargoToml = path.join(repoRoot, 'Cargo.toml')
 const cargoLock = path.join(repoRoot, 'Cargo.lock')
 const verifyScript = path.join(moduleDir, 'check-release-tag.mjs')
@@ -84,6 +85,11 @@ try {
   if (packageJson.version === version) {
     throw new Error(`npm/package.json is already at ${version}`)
   }
+  const packageLockJson = JSON.parse(readFileSync(npmPackageLock, 'utf8'))
+  const packageLockRoot = packageLockJson.packages?.['']
+  if (packageLockJson.name !== packageJson.name || packageLockRoot?.name !== packageJson.name) {
+    throw new Error('npm/package-lock.json root package does not match npm/package.json')
+  }
 
   const cargoBefore = readFileSync(cargoToml, 'utf8')
   const cargoAfter = bumpCargo(cargoBefore, version)
@@ -97,12 +103,15 @@ try {
   }
 
   if (dryRun) {
-    process.stdout.write(`[dry-run] would bump npm/package.json + Cargo.toml + Cargo.lock to ${version} and create tag ${tag}\n`)
+    process.stdout.write(`[dry-run] would bump npm/package.json + npm/package-lock.json + Cargo.toml + Cargo.lock to ${version} and create tag ${tag}\n`)
     process.exit(0)
   }
 
   packageJson.version = version
+  packageLockJson.version = version
+  packageLockRoot.version = version
   writeFileSync(npmPackage, `${JSON.stringify(packageJson, null, 2)}\n`)
+  writeFileSync(npmPackageLock, `${JSON.stringify(packageLockJson, null, 2)}\n`)
   writeFileSync(cargoToml, cargoAfter)
   writeFileSync(cargoLock, lockAfter)
 
@@ -118,6 +127,7 @@ try {
 
   git(['add',
     path.relative(repoRoot, npmPackage),
+    path.relative(repoRoot, npmPackageLock),
     path.relative(repoRoot, cargoToml),
     path.relative(repoRoot, cargoLock),
   ])

@@ -19,7 +19,11 @@ test('release jobs are gated to the current canonical repository', () => {
 test('release workflow packages and publishes both npm names', () => {
   assert.match(
     workflow,
-    /npm install --prefix npm --ignore-scripts --legacy-peer-deps --no-package-lock --no-audit --no-fund/,
+    /cache: npm\n\s+cache-dependency-path: npm\/package-lock\.json/,
+  )
+  assert.match(
+    workflow,
+    /npm ci --prefix npm --ignore-scripts --legacy-peer-deps --no-audit --no-fund/,
   )
   assert.match(workflow, /package-alias\.mjs npm npm-martty martty/)
   assert.match(workflow, /npm pack \.\/npm-martty --pack-destination dist/)
