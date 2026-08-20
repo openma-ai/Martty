@@ -103,14 +103,17 @@ impl AuthSnapshot {
     }
 }
 
-pub fn client_capability_meta() -> Meta {
+pub fn client_capability_meta(interaction_mode: &str) -> Meta {
     let mut meta = Map::new();
     meta.insert("terminal-auth".into(), json!(true));
     meta.insert("terminal_output".into(), json!(true));
     meta.insert("subagent-transcript".into(), json!(true));
     meta.insert(
         "dsh".into(),
-        json!({ "cordis": { "protocol": crate::cordis::PROTOCOL } }),
+        json!({
+            "cordis": { "protocol": crate::cordis::PROTOCOL },
+            "interaction": { "mode": interaction_mode },
+        }),
     );
     meta
 }

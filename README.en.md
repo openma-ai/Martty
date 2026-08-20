@@ -84,6 +84,20 @@ old provider/transport rows and mounts only the ACP plugin resolved from TUI's
 dependency graph. Supported profile compositions therefore do not start two
 ACP surfaces, and users do not have to normalize an existing ACP profile first.
 
+To use portable Agent Plugins, Codex plugins, Claude Code plugins, or Pi
+packages in TUI, add the
+[Agent Plugins Bridge](https://github.com/openma-ai/dsh-agents-plugins-bridge) to the
+same profile:
+
+```sh
+dsh plugin --profile tui add @openma/dsh-agents-plugins-bridge@latest
+```
+
+Bridge hooks, skills, commands, MCP connections, agents, monitors, and Pi
+extensions are shared Host capabilities; commands and skills reach the TUI
+slash menu through ACP. The Web settings panel, browser themes, and MCP Apps
+HTML renderer remain Web surfaces rather than a second terminal UI.
+
 ### Standalone: any ACP agent
 
 ```sh
@@ -96,6 +110,39 @@ From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, bina
 ```sh
 DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
 ```
+
+### Martty owner: long-lived headless ACP / Pi RPC
+
+`martty owner` is a generic long-lived ACP client with no TUI. It opens a real
+Session with an explicit `rpc` interaction mode, waits until the Session
+advertises each slash command, runs startup commands in order, keeps the
+Session and extension lifecycle alive, and runs shutdown commands on
+`SIGINT`/`SIGTERM`. There is no Telegram-specific production path; any Pi
+extension with the same lifecycle semantics can use it.
+
+Prepare a Host-only profile, then import the extension through Web, TUI, or
+`/plugin-bridge import <location:key>`:
+
+```sh
+npm install --global @openma/deepseek-harness-tui
+dsh plugin --profile telegram-owner add @openma/deepseek-harness-acp@latest
+dsh plugin --profile telegram-owner add @openma/dsh-agents-plugins-bridge@latest
+
+martty owner \
+  --agent dsh \
+  --agent-arg --profile \
+  --agent-arg telegram-owner \
+  --startup-command /telegram-connect \
+  --shutdown-command /telegram-disconnect
+```
+
+Run `/telegram-setup` once in interactive Pi/TUI for initial `pi-telegram`
+configuration. Owner never auto-approves permissions or answers `confirm`,
+`input`, or other forms. Stop any Pi/TUI instance that already owns the same
+Telegram profile before starting owner; otherwise the extension requests a
+takeover and the headless client cancels it with an explicit error. Keep the
+`martty owner` process alive under a terminal, launchd, systemd, or another
+process supervisor for continuous delivery.
 
 Third-party capabilities are ordinary Cordis plugins on the client tree: they
 declare the services they need, register contributions in `apply`, and retract
@@ -115,7 +162,8 @@ npm install --global martty
 dsh-tui --demo
 ```
 
-`dsh-tui` is the primary command; `dsb` remains as a compatibility alias.
+`dsh-tui` is the interactive command; `martty` is the product alias for the
+same native program, and `dsb` remains as a compatibility alias.
 
 ## Highlights
 
