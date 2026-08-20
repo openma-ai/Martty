@@ -53,6 +53,20 @@ dsh --profile tui
 TUI 及其 ACP 依赖，不需要全局安装 `dsh-tui`，也不需要另装 pnpm。
 旧包名 `@openma/deepseek-harness-tui` 会继续发布相同版本，已有安装无需立即迁移。
 
+### 从旧包名迁移
+
+`martty` 是新的推荐包名。从 `0.2.12` 开始，`martty` 和
+`@openma/deepseek-harness-tui` 由同一条 CI 以相同版本、相同产物发布；
+旧包名作为兼容别名保留。如需切换，只替换 `tui` profile 中的包规格：
+
+```sh
+dsh plugin --profile tui remove @openma/deepseek-harness-tui
+dsh plugin --profile tui add martty@latest
+```
+
+迁移不改变 `dsh-tui` / `dsb` 命令、`tui` profile 名或运行方式，也不需要
+迁移配置和会话数据。不想立即切换时，继续使用旧包名即可。
+
 这是给 AI agent 阅读的安装说明：[docs/agent-setup.md](docs/agent-setup.md)
 
 TUI 把 ACP 声明为自身运行时依赖。若目标 profile 已通过标准 ACP bundle 装过另一

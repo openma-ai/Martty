@@ -20,7 +20,7 @@
 npm install -g @deepseek-ai/dsh
 
 # 2) 把 dsh-tui 作为 TUI surface plugin 装入 profile `tui`
-dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+dsh plugin --profile tui add martty@latest
 ```
 
 注意：
@@ -59,15 +59,25 @@ agent、打印协商信息后退出（`--demo` 模式下不可用）。
 ## 4. 升级
 
 ```sh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+dsh plugin --profile tui add martty@latest
 ```
 
 与安装是同一命令，可定期运行。
 
-## 5. 卸载（可选）
+从旧包名迁移时，只替换 profile 中的包规格：
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
+dsh plugin --profile tui add martty@latest
+```
+
+从 `0.2.12` 开始，两个包名由同一条 CI 发布相同版本和产物。迁移不改变
+`dsh-tui` / `dsb` 命令、`tui` profile、配置或会话数据；旧包名也会继续支持。
+
+## 5. 卸载（可选）
+
+```sh
+dsh plugin --profile tui remove martty
 npm uninstall -g @deepseek-ai/dsh
 ```
 
