@@ -47,8 +47,15 @@ All notable changes to this project are documented here. The project follows
   plus ACP facts (agent connection, authenticate state, session binding,
   server banner) and the key session facts (model, effort, agent,
   permission, plan, tokens, turns/steps, LLM/tool time, TTFT average,
-  throughput) — `/session` keeps the full runtime detail, and both show
-  the reasoning effort when set.
+  throughput). Live runs render it through the built-in `status-view`
+  Client Plugin overlay: run-state facts come from the new
+  `acpSessionStatus` Client service, and every token/turn/step/timing
+  figure comes from `acpSessionStats.current()` — the same snapshot the
+  composer stats dock renders, so the two readouts can never drift apart.
+  The Rust painter no longer reads its own transcript accumulators for
+  `/status` (a lean fallback keeps demo/standalone runs working with
+  run-state facts only); `/session` keeps the full runtime detail, and
+  both show the reasoning effort when set.
 
 ### Fixed
 

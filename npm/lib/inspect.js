@@ -10,7 +10,7 @@ import { CORDIS_METHODS } from './cordis-protocol.js'
 export const name = 'tui-cordis-client-runner'
 export const inject = [
   'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay', 'acpSessionConfig',
-  'acpSessionPlan', 'acpSessionStats',
+  'acpSessionPlan', 'acpSessionStats', 'acpSessionStatus',
 ]
 
 const EMPTY_INPUT = Object.freeze({ type: 'object', properties: {}, additionalProperties: false })
@@ -589,6 +589,45 @@ export function statsInspectProvider(acpSessionStats) {
   }
 }
 
+/** Describe non-statistics run-state facts folded from standard ACP. */
+export function statusInspectProvider(acpSessionStatus) {
+  return {
+    manifest: {
+      id: 'Status',
+      description:
+        'Current ACP run-state facts (connection, server, auth, session, model, '
+        + 'effort, permission, plan, agent) folded from standard ACP traffic. '
+        + 'Statistics stay in the Stats provider.',
+      methods: [{
+        name: 'current',
+        description: 'Return the current status snapshot and the read/subscribe contract.',
+        inputSchema: EMPTY_INPUT,
+        outputSchema: ANY_OUTPUT,
+      }],
+    },
+    query(method) {
+      if (method !== 'current') throw new Error(`unknown Status inspect method "${method}"`)
+      return {
+        current: acpSessionStatus.current(),
+        api: {
+          service: 'acpSessionStatus',
+          inject: ['acpSessionStatus'],
+          current: {
+            call: 'ctx.acpSessionStatus.current()',
+            returns: 'SessionStatusSnapshot',
+          },
+          subscribe: {
+            call: 'ctx.acpSessionStatus.subscribe((snapshot) => { ... })',
+            returns: { type: 'function', role: 'dispose', idempotent: true },
+          },
+          transport: 'standard ACP initialize, authenticate, session and session/update messages',
+        },
+        referencedTypes: ['SessionStatusSnapshot'],
+      }
+    },
+  }
+}
+
 async function mountClientHalf(
   ctx,
   pluginId,
@@ -600,6 +639,7 @@ async function mountClientHalf(
   acpSessionConfig,
   acpSessionPlan,
   acpSessionStats,
+  acpSessionStatus,
   timer,
   invoke,
 ) {
@@ -607,7 +647,7 @@ async function mountClientHalf(
     return applyClientHalf(clientCode, {
       pluginId,
       tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
-      acpSessionStats, timer, invoke,
+      acpSessionStats, acpSessionStatus, timer, invoke,
     })
   }
 
@@ -619,7 +659,7 @@ async function mountClientHalf(
       applied = await applyClientHalf(clientCode, {
         pluginId,
         tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
-        acpSessionStats, timer, invoke,
+        acpSessionStats, acpSessionStatus, timer, invoke,
       })
       return applied.dispose
     },
@@ -650,6 +690,7 @@ async function mountClientHalf(
  *   acpSessionConfig?: object,
  *   acpSessionPlan?: object,
  *   acpSessionStats?: object,
+ *   acpSessionStatus?: object,
  *   requestAgent: (method: string, params?: object) => Promise<unknown>,
  * }} opts
  * @returns {{ onHost: (message: object) => void }}
@@ -657,7 +698,7 @@ async function mountClientHalf(
 export function attachTuiClient(opts) {
   const {
     ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
-    acpSessionStats,
+    acpSessionStats, acpSessionStatus,
     requestAgent,
   } = opts
   const providers = [
@@ -668,6 +709,7 @@ export function attachTuiClient(opts) {
     ...(acpSessionConfig === undefined ? [] : [configOptionsInspectProvider(acpSessionConfig)]),
     ...(acpSessionPlan === undefined ? [] : [planInspectProvider(acpSessionPlan)]),
     ...(acpSessionStats === undefined ? [] : [statsInspectProvider(acpSessionStats)]),
+    ...(acpSessionStatus === undefined ? [] : [statusInspectProvider(acpSessionStatus)]),
   ]
   const timer = createClientTimer()
   /** @type {Map<string, () => void>} */
@@ -765,6 +807,7 @@ export function attachTuiClient(opts) {
         acpSessionConfig,
         acpSessionPlan,
         acpSessionStats,
+        acpSessionStatus,
         timer,
         async (method, args) => {
           const answered = await requestAgent(CORDIS_METHODS.pluginInvoke, {
@@ -933,13 +976,14 @@ export function apply(ctx) {
   const acpSessionConfig = ctx.acpSessionConfig ?? ctx.get?.('acpSessionConfig')
   const acpSessionPlan = ctx.acpSessionPlan ?? ctx.get?.('acpSessionPlan')
   const acpSessionStats = ctx.acpSessionStats ?? ctx.get?.('acpSessionStats')
+  const acpSessionStatus = ctx.acpSessionStatus ?? ctx.get?.('acpSessionStatus')
   let client
   const service = {
     bindTransport(requestAgent) {
       client?.dispose()
       client = attachTuiClient({
         ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
-        acpSessionStats,
+        acpSessionStats, acpSessionStatus,
         requestAgent,
       })
       const attached = client

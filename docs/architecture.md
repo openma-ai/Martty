@@ -39,6 +39,10 @@ Client 进程：独立 Cordis root
   TUI 壳       注入 acpClient 与 Client services，只占 TTY
   plan-view    注入 acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
   stats-view   注入 acpSessionStats + tuiSlots
+  status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
+               tuiOverlay，注册 /status 命令
+  acp-session-status 提供 acpSessionStatus（连接/服务端/认证/会话/
+               模型/effort/权限/plan/agent 等运行状态事实）
   tui-slots    提供 tuiSlots，声明 chrome.right / conversation.input.dock /
                conversation.composer.dock
   tui-theme    提供 tuiTheme
@@ -81,6 +85,10 @@ tui-theme     配色表 → Theme registry
 tui-slots     TuiNode 树 → chrome.right / input dock / composer dock snapshot registry
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
+status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
+acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/
+              effort/权限/plan/agent —— 不累计 token 或耗时（那是
+              acpSessionStats 的职责）
 Client runner Client inspect + code.client 挂载/停止
 TUI 壳        消费 Theme、slot 与通用 overlay 快照树
 acp-client    session/new · authenticate · prompt · cancel · config · commands

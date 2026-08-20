@@ -62,6 +62,7 @@ Use the narrowest capability:
 | Current ACP Session option | advertised config-option Provider | `acpSessionConfig` |
 | Current structured ACP Plan | `Plans` | `acpSessionPlan` |
 | Current ACP Session statistics | `Stats` | `acpSessionStats` |
+| Current ACP run-state facts | `Status` | `acpSessionStatus` |
 
 A transient control is not a side panel. When the user did not request
 persistent content, do not query Slots or mount `chrome.right`.

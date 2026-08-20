@@ -5,7 +5,7 @@ Third parties extend the TUI only through the APIs on this page. Objects, fds, a
 **Open now:** palette packs, the root `chrome.right` rail,
 `conversation.input.dock` above the composer,
 `conversation.composer.dock` below it, local commands and semantic overlays,
-plus standard ACP Session config, Plan, and statistics state. All three slots
+plus standard ACP Session config, Plan, statistics, and run-state facts. All three slots
 are additive list seats. They accept structured `TuiNode` trees and never become
 session history.
 
@@ -26,6 +26,26 @@ step, LLM, tool, TTFT, and throughput statistics. It exposes `current()` and
 `subscribe(listener)`. The builtin `stats-view` Client Plugin is merely its
 default consumer: it contributes the compact readout to
 `conversation.composer.dock`; the Rust shell no longer owns that business UI.
+
+## Open: `acpSessionStatus`
+
+`acpSessionStatus` folds the non-statistics facts `/status` needs from standard
+ACP initialize / authenticate / session / session/update / session.event
+traffic: state (idle/starting/running), connection, server, authenticate state,
+session binding, model, effort, permission, plan, and agent preset. It exposes
+`current()` and `subscribe(listener)` and never accumulates tokens or timings —
+statistics have exactly one source, `acpSessionStats`.
+
+The builtin `status-view` Client Plugin is its default consumer: it registers
+the local `/status` command and opens a markdown status view with
+`tuiOverlay.openView()`. Run-state facts come from
+`acpSessionStatus.current()`; tokens, turns, steps, LLM/tool time, TTFT, and
+rate all come from `acpSessionStats.current()` — the same snapshot `stats-view`
+renders in the composer dock, so the two readouts cannot drift. The Rust
+painter only renders the serialized `TuiNode`s and reads none of its own
+transcript accumulators for this command. Runs without a Client tree (demo,
+standalone painter) keep a lean Rust fallback that renders run-state and ACP
+facts only, also without touching token/timing accumulators.
 
 ## Open: `tuiTheme`
 

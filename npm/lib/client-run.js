@@ -3,7 +3,8 @@
  *
  * Same closure convention as the web runner: the source is an async function
  * body that returns a plugin. Open services include `tuiTheme`, `tuiSlots`,
- * `acpSessionConfig`, `acpSessionPlan`, `acpSessionStats`, and lifecycle-owned `timer`; `host.call` reaches this
+ * `acpSessionConfig`, `acpSessionPlan`, `acpSessionStats`, `acpSessionStatus`,
+ * and lifecycle-owned `timer`; `host.call` reaches this
  * Package's Host half.
  * No React, browser slots, TTY, or raw Host service names.
  */
@@ -16,6 +17,7 @@ const ALLOWED_INJECT = new Set([
   'acpSessionConfig',
   'acpSessionPlan',
   'acpSessionStats',
+  'acpSessionStatus',
   'timer',
 ])
 
@@ -32,7 +34,7 @@ const SLOT_TEACHING =
 
 /**
  * @param {string} clientCode
- * @param {{ pluginId?: string, tuiTheme?: object, tuiSlots?: object, tuiCommands?: object, tuiOverlay?: object, acpSessionConfig?: object, acpSessionPlan?: object, acpSessionStats?: object, timer?: object, invoke?: Function }} env
+ * @param {{ pluginId?: string, tuiTheme?: object, tuiSlots?: object, tuiCommands?: object, tuiOverlay?: object, acpSessionConfig?: object, acpSessionPlan?: object, acpSessionStats?: object, acpSessionStatus?: object, timer?: object, invoke?: Function }} env
  * @returns {Promise<{ waitingFor: string[], dispose: () => void }>}
  */
 export async function applyClientHalf(clientCode, env) {
@@ -84,7 +86,7 @@ export async function applyClientHalf(clientCode, env) {
     }
     if (!ALLOWED_INJECT.has(name)) {
       throw new Error(
-        `TUI Client inject "${name}" is not open. Open services: tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan, acpSessionStats, timer.`,
+        `TUI Client inject "${name}" is not open. Open services: tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan, acpSessionStats, acpSessionStatus, timer.`,
       )
     }
   }
@@ -137,6 +139,7 @@ function restrictedCtx(env, own, inject) {
   const sourceSessionConfig = env.acpSessionConfig
   const sourceSessionPlan = env.acpSessionPlan
   const sourceSessionStats = env.acpSessionStats
+  const sourceSessionStatus = env.acpSessionStatus
   const sourceTimer = env.timer
   const tuiTheme = sourceTheme === undefined
     ? undefined
@@ -254,6 +257,16 @@ function restrictedCtx(env, own, inject) {
           return own(sourceSessionStats.subscribe(listener))
         },
       }
+  const acpSessionStatus = sourceSessionStatus === undefined
+    ? undefined
+    : {
+        current() {
+          return sourceSessionStatus.current()
+        },
+        subscribe(listener) {
+          return own(sourceSessionStatus.subscribe(listener))
+        },
+      }
   const timer = sourceTimer === undefined || !inject.has('timer')
     ? undefined
     : {
@@ -272,6 +285,7 @@ function restrictedCtx(env, own, inject) {
     acpSessionConfig,
     acpSessionPlan,
     acpSessionStats,
+    acpSessionStatus,
     timer,
     interval: timer?.interval,
     timeout: timer?.timeout,
@@ -283,6 +297,7 @@ function restrictedCtx(env, own, inject) {
       if (name === 'acpSessionConfig') return acpSessionConfig
       if (name === 'acpSessionPlan') return acpSessionPlan
       if (name === 'acpSessionStats') return acpSessionStats
+      if (name === 'acpSessionStatus') return acpSessionStatus
       if (name === 'timer') return timer
       return undefined
     },

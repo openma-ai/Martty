@@ -206,11 +206,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "show session + runtime info",
     },
     SlashCommand {
-        name: "status",
-        usage: "/status",
-        desc: "session run state + key stats",
-    },
-    SlashCommand {
         name: "auth",
         usage: "/auth [method|api-key]",
         desc: "ACP sign-in (Backchat authenticate)",
@@ -4264,14 +4259,16 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         self.transcript.push_markdown(text);
     }
 
-    /// Compact status: the run state plus the key session facts — the
-    /// meta-row items (model/agent/permission/plan) and the turn profile.
-    /// `/session` keeps the full runtime detail.
+    /// Compact status fallback: the run state plus painter-owned ACP facts.
+    ///
+    /// The live `/status` is a Client Plugin command (`status-view`): it opens
+    /// the semantic overlay and takes every token/turn/step/timing figure from
+    /// the Client-side `acpSessionStats.current()` — the same snapshot
+    /// `stats-view` renders in the composer dock. This arm only serves runs
+    /// without a Client tree (demo, standalone painter) and deliberately
+    /// reads no `Transcript.usage`/`stats` accumulator, so the two surfaces
+    /// can never drift apart.
     fn push_status_info(&mut self) {
-        let u = self.transcript.usage;
-        let total = u.input + u.output + u.cached + u.reasoning;
-        let s = self.transcript.stats;
-        let llm_millis = s.turn_millis.saturating_sub(s.tool_millis);
         let state = match self.state {
             RunState::Idle => self.locale.tr("idle", "空闲").to_string(),
             RunState::Starting => self.locale.tr("starting", "启动中").to_string(),
@@ -4349,10 +4346,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             "- model · {}{}\n\
              - agent · {}{}\n\
              - permission · {}\n\
-             - plan · {}\n\
-             - tokens · ↑{} ↓{} (cached {}) · Σ {}\n\
-             - turns · {} · steps · {}\n\
-             - LLM · {} · tool · {}",
+             - plan · {}",
             self.cfg.model,
             effort_line,
             self.agent_label(&self.current_mode()),
@@ -4363,27 +4357,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             },
             perm_label,
             if self.modes.plan { "on" } else { "off" },
-            fmt_tokens(u.input),
-            fmt_tokens(u.output),
-            fmt_tokens(u.cached),
-            fmt_tokens(total),
-            s.turns,
-            s.steps,
-            fmt_duration(llm_millis),
-            fmt_duration(s.tool_millis),
         ));
-        if s.ttft_count > 0 {
-            text.push_str(&format!(
-                "\n- TTFT avg · {}",
-                fmt_duration(s.ttft_total_millis / s.ttft_count as u64)
-            ));
-        }
-        if llm_millis > 0 && u.output > 0 {
-            text.push_str(&format!(
-                "\n- rate · {:.1} tok/s",
-                u.output as f64 / (llm_millis as f64 / 1000.0)
-            ));
-        }
         self.transcript.push_markdown(text);
     }
 }
@@ -8486,9 +8460,10 @@ mod right_slot_tests {
     }
 
     #[test]
-    fn status_slash_shows_compact_run_state() {
+    fn status_slash_fallback_shows_run_state_without_transcript_stats() {
         let (mut app, ctl, _rx) = test_app();
         app.modes.effort = Some("high".into());
+        // Seed the transcript accumulators: the fallback must not render them.
         app.transcript.usage.input = 1834;
         app.transcript.usage.output = 412;
         app.transcript.usage.cached = 1200;
@@ -8514,14 +8489,53 @@ mod right_slot_tests {
         assert!(text.contains("- effort · high"), "{text}");
         assert!(text.contains("- permission · "), "{text}");
         assert!(text.contains("- plan · "), "{text}");
-        assert!(
-            text.contains("- tokens · ↑1.8K ↓412 (cached 1.2K)"),
-            "{text}"
+        // The fallback owns no transcript accumulators: token/turn/timing
+        // figures belong to the Client `acpSessionStats` snapshot that the
+        // status-view overlay renders in live runs.
+        assert!(!text.contains("- tokens ·"), "{text}");
+        assert!(!text.contains("- turns ·"), "{text}");
+        assert!(!text.contains("- LLM ·"), "{text}");
+        assert!(!text.contains("- TTFT avg ·"), "{text}");
+        assert!(!text.contains("- rate ·"), "{text}");
+    }
+
+    #[test]
+    fn status_client_command_is_listed_and_invoked_locally() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::COMMANDS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "commands": [{
+                        "name": "status",
+                        "description": "Session run state and key stats"
+                    }]
+                }),
+            },
+            &ctl,
         );
-        assert!(text.contains("- turns · 3 · steps · 47"), "{text}");
-        assert!(text.contains("- LLM · 2m7s · tool · 8.0s"), "{text}");
-        assert!(text.contains("- TTFT avg · 1.5s"), "{text}");
-        assert!(text.contains("- rate · 3.2 tok/s"), "{text}");
+        app.input.set("/status".into());
+
+        let menu = app.slash_matches();
+        assert_eq!(menu.len(), 1);
+        assert!(menu[0].plugin, "/status is the status-view Client command");
+        assert!(
+            !SLASH_COMMANDS.iter().any(|c| c.name == "status"),
+            "/status must not stay a Rust builtin: the Client command renders it"
+        );
+
+        app.submit(&ctl);
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::InvokePluginCommand { name, args })
+                if name == "status" && args.is_empty()
+        ));
+        assert!(
+            app.transcript.cells.is_empty(),
+            "no transcript cell is created for the Client command"
+        );
     }
 
     #[test]

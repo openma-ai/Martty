@@ -87,4 +87,4 @@ function formatRate(value) {
   return String(Math.round(value * 10) / 10)
 }
 
-export { formatDuration, formatTokens, nodesOf }
+export { formatDuration, formatRate, formatTokens, nodesOf }

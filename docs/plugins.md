@@ -4,7 +4,7 @@
 
 **当前开放：** 配色包、根级右栏 `chrome.right`、composer 上方的
 `conversation.input.dock`、composer 下方的 `conversation.composer.dock`、本地命令/
-语义 overlay，以及标准 ACP 当前 Session 的配置、Plan 与统计目录。三个 Slot 都是
+语义 overlay，以及标准 ACP 当前 Session 的配置、Plan、统计与运行状态目录。三个 Slot 都是
 可叠加的 list seat，接收结构化 `TuiNode` 树，不进入会话日志。
 
 ## 当前可调用：`acpSessionConfig`
@@ -55,6 +55,22 @@ resume usage 更新折叠当前 Session 的 token、cache、turn、step、LLM、
 吞吐统计，提供 `current()` 和 `subscribe(listener)`。内置 `stats-view` Client Plugin
 是它的默认消费者，向 `conversation.composer.dock` 注入紧凑统计行；Rust 壳不再
 直接拥有这块业务 UI。动态插件也可以注入同一服务并选择自己的呈现方式。
+
+## 当前可调用：`acpSessionStatus`
+
+`acpSessionStatus` 从标准 ACP initialize / authenticate / session / session/update /
+session.event 流量折叠 `/status` 需要的非统计运行状态：state（idle/starting/
+running）、connection、server、auth、session 绑定、model、effort、permission、
+plan 与 agent preset，提供 `current()` 和 `subscribe(listener)`。它**不**累计任何
+token 或耗时——统计只有 `acpSessionStats` 这一套口径。
+
+内置 `status-view` Client Plugin 正是普通消费者：它注册本地 `/status` 命令，用
+`tuiOverlay.openView()` 打开一个 markdown 状态视图——运行状态事实取自
+`acpSessionStatus.current()`，token/turn/step/LLM/tool/TTFT/rate 全部取自
+`acpSessionStats.current()`（与 composer dock 里的 `stats-view` 同一快照来源，
+两处读数不会漂移）。Rust painter 只渲染序列化后的 `TuiNode`，不读自己的
+transcript accumulator。没有 Client 树的运行（demo、独立 painter）由 Rust 的
+精简 fallback 只画运行状态与 ACP 事实，同样不读 token/耗时累计器。
 
 ## 当前可调用：`tuiTheme`
 
