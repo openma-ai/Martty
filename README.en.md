@@ -59,6 +59,22 @@ It creates the profile and installs the TUI plus its ACP dependency; no global
 The legacy `@openma/deepseek-harness-tui` name continues to receive the same
 versions, so existing installs do not need to migrate immediately.
 
+### Migrating from the legacy package name
+
+`martty` is the new recommended package name. Starting with `0.2.13`, `martty`
+and `@openma/deepseek-harness-tui` are published by the same CI run with the
+same version and artifacts; the scoped name remains as a compatibility alias.
+To switch, replace only the package spec in the `tui` profile:
+
+```sh
+dsh plugin --profile tui remove @openma/deepseek-harness-tui
+dsh plugin --profile tui add martty@latest
+```
+
+Migration does not change the `dsh-tui` / `dsb` commands, the `tui` profile
+name, or runtime behavior, and it requires no config or session-data migration.
+You may continue using the legacy package name if you do not want to switch yet.
+
 An install guide for AI agents: [docs/agent-setup.md](docs/agent-setup.md)
 
 TUI declares ACP as its own runtime dependency. If the target profile already

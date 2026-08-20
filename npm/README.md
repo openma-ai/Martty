@@ -17,13 +17,28 @@ x64. Requires Node.js 18+.
 
 ```sh
 npm install --global @deepseek-ai/dsh
-dsh plugin --profile tui add @openma/deepseek-harness-tui@latest
+dsh plugin --profile tui add martty@latest
 dsh --profile tui
 ```
 
 The profile command is the recommended install and upgrade path. It creates a
 missing profile and installs the TUI plus its ACP dependency; no global
 `dsh-tui` installation is required.
+
+## Migrating from the scoped package
+
+`martty` is the recommended package name. Starting with `0.2.13`, it and the
+legacy `@openma/deepseek-harness-tui` package are published by the same CI run
+with identical versions and artifacts. Existing scoped-package installs remain
+supported. To switch package names:
+
+```sh
+dsh plugin --profile tui remove @openma/deepseek-harness-tui
+dsh plugin --profile tui add martty@latest
+```
+
+Only the package spec changes. The `dsh-tui` / `dsb` commands, `tui` profile,
+runtime behavior, config, and session data remain unchanged.
 
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
@@ -109,8 +124,11 @@ that you installed the latest version and that your platform appears above.
 ## Uninstall
 
 ```sh
-npm uninstall --global @openma/deepseek-harness-tui
+npm uninstall --global martty
 ```
+
+Use `npm uninstall --global @openma/deepseek-harness-tui` instead for a legacy
+global installation.
 
 Source, screenshots, development commands, and architecture notes live in the
 [GitHub repository](https://github.com/openma-ai/Martty).
