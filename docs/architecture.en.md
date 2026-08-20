@@ -38,8 +38,9 @@ Client process: independent Cordis root
   Client runner   injects Client services and runs dsh-tool-cordis code.client
   TUI shell       injects acpClient plus Client services; owns only the TTY
   plan-view       injects acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
+  stats-view      injects acpSessionStats + tuiSlots
   tui-slots       provides tuiSlots; declares chrome.right /
-                  conversation.input.dock
+                  conversation.input.dock / conversation.composer.dock
   tui-theme       provides tuiTheme
   acp-client      attaches Host stdio, provides acpClient
         │ Client fd 3/4 carries only the inherited TTY
@@ -78,8 +79,9 @@ Client inspect/run channel.
 Third-party plugins   sibling insert + inject ['tuiTheme'] → palette register
                       sibling insert + inject ['tuiSlots'] → slot register
 tui-theme             palette → Theme registry
-tui-slots             TuiNode trees → chrome.right / input dock registry
+tui-slots             TuiNode trees → chrome.right / input dock / composer dock registry
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
+stats-view            standard ACP usage/timing projection → composer dock stats line
 Client runner         Client inspect + code.client mount/stop
 TUI shell             consumes Theme, slot, and generic overlay snapshot trees
 acp-client            session/new · authenticate · prompt · cancel · config · commands

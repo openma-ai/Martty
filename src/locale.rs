@@ -59,6 +59,7 @@ impl Locale {
             "status" => "会话运行状态与关键统计",
             "auth" => "ACP 登录（Backchat authenticate）",
             "lang" => "切换界面语言",
+            "liang" => "召唤小难梁 — 🤫 空闲 · ⌨︎ 工作中",
             "quit" => "退出 dsh-tui",
             _ => fallback,
         }

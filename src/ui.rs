@@ -12,7 +12,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, RunState};
 use crate::logo;
-use crate::theme::Theme;
+use crate::pet::{SPRITE_H, SPRITE_W, WHALE_XS};
+use crate::theme::{lerp, Theme};
+
+/// Columns the composer text keeps clear of the pet at its right edge
+/// (widest pet form is 8 cols, plus a one-column gap).
+const PET_PAD: u16 = 9;
 
 /// Composer card height for a terminal `height` rows tall.
 /// Composer height: the input well plus one bottom meta row (state ·
@@ -32,7 +37,12 @@ fn composer_height(height: u16) -> u16 {
 /// cursor-following viewport inside the composer.
 fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     let minimum = composer_height(area.height);
-    let inner_width = area.width.saturating_sub(2);
+    let pet_pad = if app.pet_visible && area.width >= 60 && area.height >= 10 {
+        PET_PAD
+    } else {
+        0
+    };
+    let inner_width = area.width.saturating_sub(2 + pet_pad);
     let prompt_width = "❯ ".width() as u16;
     let wrap_width = inner_width.saturating_sub(prompt_width).max(1) as usize;
     let maximum = (area.height / 2).max(minimum).min(12);
@@ -42,6 +52,25 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
         .saturating_add(1)
         .min(maximum as usize) as u16;
     desired.max(minimum).min(maximum)
+}
+
+/// The pet's cell rectangle — the kitty-graphics placement target —
+/// perched inside the composer box's bottom-right (one row/column clear
+/// of the rounded border), matching the sprite's 192:208 aspect in 1:2
+/// cells. None hides it (`/liang` off, or the terminal is too cramped to
+/// give up columns).
+pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
+    if !app.pet_visible || area.width < 60 || area.height < 10 {
+        return None;
+    }
+    let rows = composer_height(area.height).min(4);
+    let cols = ((rows as u32 * 2 * SPRITE_W + SPRITE_H / 2) / SPRITE_H) as u16;
+    Some(Rect::new(
+        area.right().saturating_sub(1 + cols),
+        area.bottom().saturating_sub(1 + rows),
+        cols,
+        rows,
+    ))
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -94,29 +123,61 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         resolved_composer_height(main, app)
     };
+    // The composer stats dock (token / cache / timing readout) rides below
+    // the box when the terminal is tall enough.
+    let composer_dock_h =
+        if !child_view && main.height >= 20 && slot_has_nodes(app, "conversation.composer.dock") {
+            1
+        } else {
+            0
+        };
     let chat_h = main
         .height
-        .saturating_sub(composer_h + cap_h + agents_h + gap_h);
+        .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + gap_h);
 
     let chat = Rect::new(main.x, main.y, main.width, chat_h);
     let chrome_y = main.y + chat_h + gap_h;
     let agents = Rect::new(main.x, chrome_y, main.width, agents_h);
     let composer_box = Rect::new(main.x, chrome_y + agents_h, main.width, cap_h + composer_h);
     let composer = Rect::new(main.x, composer_box.y + cap_h, main.width, composer_h);
+    let composer_dock = Rect::new(
+        main.x,
+        composer_box.y + composer_box.height,
+        main.width,
+        composer_dock_h,
+    );
 
     draw_chat(f, app, chat);
     if agents_h > 0 {
         draw_agent_rail(f, app, agents);
     }
+    // The pet floats inside the box's bottom-right; composer text keeps
+    // clear of it.
+    let pet = if child_view {
+        None
+    } else {
+        pet_rect(main, app)
+    };
+    let pet_pad = if pet.is_some() { PET_PAD } else { 0 };
     if child_view {
         draw_child_navigation(f, app, composer);
     } else if cap_h > 0 {
-        draw_composer_box(f, app, composer_box);
+        draw_composer_box(f, app, composer_box, pet_pad);
     } else {
-        draw_composer(f, app, composer);
+        draw_composer(f, app, composer, pet_pad);
+    }
+    if composer_dock_h > 0 {
+        draw_composer_dock(f, app, composer_dock, pet_pad);
     }
     if let Some(right) = right {
         draw_right_slot(f, app, right);
+    }
+    if let Some(cells) = pet {
+        if !app.pet_pixels {
+            // No pixel protocol: the half-block whale stands in.
+            draw_pet_chars(f, theme, cells);
+        }
+        // Otherwise main() places the favicon PNG over `cells` after draw.
     }
     if !child_view {
         draw_slash_menu(f, app, composer, chat);
@@ -230,11 +291,17 @@ fn draw_plugin_view(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     let theme = app.theme;
-    let width = screen.width.saturating_sub(4).min(84).max(24);
+    // A review pane, not a snackbar: wide terminals get up to 2/3 of the
+    // screen (the old 84-column cap made long plans feel cramped).
+    let width = screen
+        .width
+        .saturating_sub(4)
+        .min((screen.width.saturating_mul(2) / 3).max(84))
+        .max(24);
     let inner_width = width.saturating_sub(2) as usize;
     let lines = crate::slots::render_nodes(&view.nodes, &theme, inner_width);
     let height = (lines.len() as u16 + 2)
-        .min(screen.height.saturating_sub(2))
+        .min(screen.height.saturating_sub(4))
         .max(4);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
@@ -366,12 +433,41 @@ fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Fallback pet for terminals without a pixel protocol: the XS half-block
+/// whale, brand gradient, anchored bottom-right like the real image.
+fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
+    let w = WHALE_XS
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    let h = WHALE_XS.len() as u16;
+    let rect = Rect::new(
+        cells.right().saturating_sub(w),
+        cells.bottom().saturating_sub(h),
+        w,
+        h,
+    );
+    let (top, bottom) = theme.whale_gradient();
+    let last = WHALE_XS.len().max(2) - 1;
+    let lines: Vec<Line> = WHALE_XS
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let color = lerp(top, bottom, i as f32 / last as f32);
+            Line::from(Span::styled(*row, Style::default().fg(color)))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), rect);
+}
+
 /// The composer card fallback for short terminals (no cap row fits): a
 /// borderless tinted surface (panel bg) that owns the status row and the
-/// input well. A brand-blue edge bar glows while working. Tall enough
+/// input well. A brand-blue edge bar glows while working. `pet_pad`
+/// columns at the right stay text-free for the whale pet. Tall enough
 /// terminals get `draw_composer_box` instead — the same surface wrapped
 /// in the rounded frame that also carries the cap row.
-fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
     let running = !matches!(app.state, RunState::Idle);
 
@@ -392,7 +488,7 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = Rect::new(
         area.x + 1,
         area.y,
-        area.width.saturating_sub(2),
+        area.width.saturating_sub(2 + pet_pad),
         area.height,
     );
     if inner.width == 0 || inner.height < 2 {
@@ -706,6 +802,42 @@ fn compact_slot_sections(
     sections
 }
 
+/// The composer stats dock below the box: one compact row of plugin
+/// sections (token/cache usage, timing) in registration order; low-
+/// priority tail sections simply do not fit on narrow terminals.
+fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
+    let theme = app.theme;
+    f.render_widget(
+        Block::default().style(Style::default().bg(app.canvas_background_color())),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(2 + pet_pad),
+        area.height,
+    );
+    if inner.width < 12 {
+        return;
+    }
+    let Some(snapshot) = app.slot_snapshots.get("conversation.composer.dock") else {
+        return;
+    };
+    f.render_widget(
+        Paragraph::new(compact_slot_line(snapshot, &theme, inner.width as usize)),
+        inner,
+    );
+}
+
+fn compact_slot_line(
+    snapshot: &crate::slots::SlotSnapshot,
+    theme: &Theme,
+    width: usize,
+) -> Line<'static> {
+    let sections = compact_slot_sections(snapshot, theme, width);
+    compact_slot_sections_line(&sections, theme)
+}
+
 fn compact_slot_sections_line(sections: &[CompactSlotSection], theme: &Theme) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     for (index, section) in sections.iter().enumerate() {
@@ -967,7 +1099,7 @@ fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'
 /// aligned · workspace title) and the meta row rides the bottom border —
 /// the input well owns every inner row. The brand glow replaces the left
 /// border while a turn runs.
-fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
     let running = !matches!(app.state, RunState::Idle);
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
@@ -1035,12 +1167,21 @@ fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect) {
         );
     }
 
+    // The pet keeps clear of the text: content is inset from the right
+    // border by pet_pad columns.
+    let content = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width.saturating_sub(pet_pad),
+        inner.height,
+    );
+
     // Draft first: the well owns every inner row — the meta row lives on
     // the bottom border.
     app.att_chips.clear();
     app.att_thumbs.clear();
-    app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
-    draw_input(f, app, inner);
+    app.composer_wrap_width = content.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
+    draw_input(f, app, content);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -2220,6 +2361,64 @@ mod tests {
     }
 
     #[test]
+    fn usage_footer_shows_turn_stats_and_cache() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:tokens", "kind": "generic", "title": "Input 1.8K tok · Output 412 tok", "body": "" },
+                    { "id": "stats:counts", "kind": "generic", "title": "1 turn · 67 steps", "body": "" },
+                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" }
+                ]
+            })).expect("slot snapshot"),
+        );
+        let frame = dump_frame(&mut app, 100, 20);
+        let footer = frame.lines().last().expect("footer row");
+        assert!(footer.contains("1 turn"), "{footer}");
+        assert!(footer.contains("67 steps"), "{footer}");
+        assert!(footer.contains("Cache hit 65%"), "{footer}");
+        assert!(footer.contains("Input 1.8K tok"), "{footer}");
+        assert!(footer.contains("Output 412 tok"), "{footer}");
+    }
+
+    #[test]
+    fn usage_footer_drops_sections_on_narrow_screens() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:tokens", "kind": "generic", "title": "Input 1.8K tok · Output 412 tok", "body": "" },
+                    { "id": "stats:counts", "kind": "generic", "title": "1 turn · 67 steps", "body": "" },
+                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" },
+                    { "id": "stats:time", "kind": "generic", "title": "LLM 15m9s · Tool call 0s", "body": "" },
+                    { "id": "stats:speed", "kind": "generic", "title": "TTFT avg 1.5s · 0.5 tok/s", "body": "" }
+                ]
+            })).expect("slot snapshot"),
+        );
+
+        // Narrow: low-priority timing sections are dropped, tokens survive.
+        let footer = dump_frame(&mut app, 40, 20);
+        let footer = footer.lines().last().expect("footer row");
+        assert!(footer.contains("Input"), "tokens survive: {footer}");
+        assert!(footer.contains("Output"), "tokens survive: {footer}");
+        assert!(
+            !footer.contains("TTFT"),
+            "TTFT dropped when narrow: {footer}"
+        );
+        assert!(!footer.contains("LLM"), "LLM dropped when narrow: {footer}");
+    }
+
+    #[test]
     fn agent_rail_lists_created_subagents_and_their_status() {
         let mut app = test_app();
         app.show_banner = false;
@@ -2354,6 +2553,51 @@ mod tests {
             !dump_frame(&mut app, 84, 40).contains("██████"),
             "whale dives once the banner is dismissed"
         );
+    }
+
+    #[test]
+    fn pet_rect_geometry() {
+        let mut app = test_app();
+        let area = Rect::new(0, 0, 100, 34);
+        // 34 rows → 5-row composer → 4-row pet (192:208 sprite → 7 cols),
+        // inset one row/column so the rounded box border stays intact.
+        assert_eq!(pet_rect(area, &app), Some(Rect::new(92, 29, 7, 4)));
+        app.pet_visible = false;
+        assert_eq!(pet_rect(area, &app), None, "/liang off hides him");
+        app.pet_visible = true;
+        let narrow = Rect::new(0, 0, 50, 34);
+        assert_eq!(
+            pet_rect(narrow, &app),
+            None,
+            "narrow terminals keep their columns"
+        );
+    }
+
+    #[test]
+    fn pet_falls_back_to_half_blocks_and_toggles() {
+        let mut app = test_app();
+        app.show_banner = false;
+        // pet_pixels=false (no kitty graphics): XS art at the right edge,
+        // inside the box border.
+        let frame = dump_frame(&mut app, 100, 34);
+        assert!(
+            frame.contains("▄███▄█▄▄"),
+            "XS whale flush inside the box:\n{frame}"
+        );
+
+        // A pixel-protocol terminal draws nothing — the image goes on top.
+        app.pet_pixels = true;
+        let frame = dump_frame(&mut app, 100, 34);
+        assert!(
+            !frame.contains("▄███"),
+            "cells stay clear for the PNG:\n{frame}"
+        );
+
+        // /pet off → gone entirely.
+        app.pet_pixels = false;
+        app.pet_visible = false;
+        let frame = dump_frame(&mut app, 100, 34);
+        assert!(!frame.contains("▄███"), "hidden by /pet:\n{frame}");
     }
 
     #[test]
@@ -2765,6 +3009,42 @@ mod tests {
                 && frame.contains("enter apply")
                 && frame.contains("esc cancel"),
             "keyboard affordances\n{frame}"
+        );
+    }
+
+    #[test]
+    fn plugin_view_overlay_renders_markdown_and_uses_wide_screens() {
+        use crate::app::ViewOverlay;
+        let mut app = test_app();
+        app.show_banner = false;
+        app.view_overlay = Some(ViewOverlay {
+            id: "plan-view".into(),
+            title: "Plan".into(),
+            nodes: vec![crate::slots::TuiNode::Markdown {
+                id: "content".into(),
+                text: "## Plan · 1/2\n\n- [x] Inspect · priority · high\n- [ ] **Implement** · priority · medium"
+                    .into(),
+                streaming: false,
+            }],
+            scroll: 0,
+        });
+        let frame = dump_frame(&mut app, 160, 30);
+        // The plan review renders through the full markdown pipeline: the
+        // heading loses its `#` markers but the task list survives.
+        assert!(frame.contains("Plan · 1/2"), "heading:\n{frame}");
+        assert!(frame.contains("- [x] Inspect"), "task list:\n{frame}");
+        assert!(frame.contains("Implement"), "pending item:\n{frame}");
+        // Wide terminals: the review pane exceeds the old 84-column cap.
+        let title_line = frame
+            .lines()
+            .find(|l| l.contains("esc close"))
+            .expect("overlay title row");
+        let left = title_line.find('╭').expect("left corner");
+        let right = title_line.rfind('╮').expect("right corner");
+        assert!(
+            right - left > 84,
+            "wide overlay expected, got {} cols: {title_line}",
+            right - left
         );
     }
 

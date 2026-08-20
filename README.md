@@ -122,7 +122,7 @@ dsh-tui --demo
 - **跨平台输入体验**：readline 编辑、上下文快捷键，以及 macOS 的物理 ⌘/⌥
   修复和 Linux/Windows 的 ctrl 组合键，让常用移动与删除在不同终端保持一致。
 - **终端原生界面**：深浅主题、窄屏布局、鼠标选择/工具交互、原生/tmux/OSC 52
-  剪贴板，以及支持 kitty graphics protocol 的图片预览。
+  剪贴板，以及支持 kitty graphics protocol 的图片预览和可选 `/liang` 像素宠物。
 
 <p align="center">
   <img src="assets/screenshots/agent-turn.png" width="720"
@@ -253,6 +253,22 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
   <img src="assets/screenshots/image-preview.png" width="720"
        alt="草稿中的图片 chip 与图片元数据预览" />
 </p>
+
+<details>
+<summary><strong>输入框宠物：/liang 🤫</strong></summary>
+
+`/liang` 会在输入框右侧显示小难梁：空闲时安静思考，回合运行时敲小终端。
+Ghostty、Kitty 和 WezTerm 等支持 kitty graphics protocol 的终端会显示 RGBA
+像素精灵；其他终端退回半块字符鲸鱼。宽度低于 60 列时自动隐藏。
+
+可用 `/liang on`、`/liang off` 显式控制。
+
+<p align="center">
+  <img src="assets/screenshots/liang.png" width="640"
+       alt="输入框旁的可选小难梁像素宠物" />
+</p>
+
+</details>
 
 ## 从源码构建
 

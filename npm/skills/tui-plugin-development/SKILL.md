@@ -93,7 +93,8 @@ compose only in the Plugin code. The services do not imply one another:
   contribution instead of creating parallel panels. Select the live seat from
   `Slots.list`: all current seats aggregate contributors. Use
   `conversation.input.dock` for content needing its own line (it owns the
-  single cap row and displaces the tip line while present).
+  single cap row and displaces the tip line while present) and keep
+  `conversation.composer.dock` contributions compact.
 - **Overlays:** open a transient native control only in response to the
   interaction that needs it. A command is one possible trigger, not part of
   the Overlay contract. Do not use a persistent Slot as a transient control.
@@ -107,9 +108,9 @@ compose only in the Plugin code. The services do not imply one another:
   do not parse raw messages or add a Host RPC. A persistent summary and a
   command-opened full view remain independent Slot, Command, and Overlay contributions.
 - **ACP Session statistics:** consume `current()` / `subscribe()` for token,
-  cache, turn, step, latency, or throughput UI. There is no builtin stats
-  row; a plugin may render these through its own command or overlay. Do not
-  scrape the transcript or recreate raw ACP event folding in another plugin.
+  cache, turn, step, latency, or throughput UI. The builtin stats line is an
+  ordinary Client Plugin in `conversation.composer.dock`; do not scrape the
+  transcript or recreate raw ACP event folding in another plugin.
 - **Host-backed behavior:** add a Host half only for Host-owned data. Use the
   Package-private JSON call surface exactly as inspected. ACP Session config is
   already Client-owned and needs no Host RPC.

@@ -618,6 +618,24 @@ impl Theme {
     }
 }
 
+/// Linear interpolation between two RGB colors, `t` in `[0, 1]`.
+pub fn lerp(a: Color, b: Color, t: f32) -> Color {
+    fn parts(c: Color) -> (f32, f32, f32) {
+        match c {
+            Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+            _ => (255.0, 255.0, 255.0),
+        }
+    }
+    let (ar, ag, ab) = parts(a);
+    let (br, bg, bb) = parts(b);
+    let t = t.clamp(0.0, 1.0);
+    Color::Rgb(
+        (ar + (br - ar) * t).round() as u8,
+        (ag + (bg - ag) * t).round() as u8,
+        (ab + (bb - ab) * t).round() as u8,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

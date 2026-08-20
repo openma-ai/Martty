@@ -168,8 +168,8 @@ export function slotInspectProvider(tuiSlots) {
           update: 'const panel = register(...); panel.update(nextNodes)',
           dispose: 'Return panel.dispose from inject; plugin unload removes the pane immediately.',
           note:
-            'chrome.right is a root list slot; conversation.input.dock is the additive row '
-            + 'above the composer. '
+            'chrome.right is a root list slot; conversation.input.dock is the additive row above '
+            + 'the composer; conversation.composer.dock is the additive compact row below it. '
             + 'Node ids are stable inside one contribution; '
             + 'the compositor namespaces them by contribution id. Compose group/markdown/reasoning/'
             + 'user/generic/terminal/diff/image/notice/unknown nodes. Colors use theme tokens only.',

@@ -3,8 +3,9 @@
 Third parties extend the TUI only through the APIs on this page. Objects, fds, and methods not listed here are not provided. Make them unreachable in the host; do not document a honor-system ban.
 
 **Open now:** palette packs, the root `chrome.right` rail,
-`conversation.input.dock` above the composer, local commands and semantic overlays,
-plus standard ACP Session config, Plan, and statistics state. Both slots
+`conversation.input.dock` above the composer,
+`conversation.composer.dock` below it, local commands and semantic overlays,
+plus standard ACP Session config, Plan, and statistics state. All three slots
 are additive list seats. They accept structured `TuiNode` trees and never become
 session history.
 
@@ -22,9 +23,9 @@ command or mode semantics remain separate.
 `acpSessionStats` folds standard ACP prompt-response usage, first text/thought
 tokens, tool calls, and resumed usage into current-session token, cache, turn,
 step, LLM, tool, TTFT, and throughput statistics. It exposes `current()` and
-`subscribe(listener)`. The TUI ships no persistent stats row; dynamic plugins
-may inject this service and choose their own presentation (for example a
-command-owned overlay).
+`subscribe(listener)`. The builtin `stats-view` Client Plugin is merely its
+default consumer: it contributes the compact readout to
+`conversation.composer.dock`; the Rust shell no longer owns that business UI.
 
 ## Open: `tuiTheme`
 
@@ -97,8 +98,9 @@ whole Plugin.
 
 ## Open: `tuiSlots`
 
-The shell declares two additive list slots: the root `chrome.right` rail and
-`conversation.input.dock` above the composer. A plugin waits with
+The shell declares three additive list slots: the root `chrome.right` rail,
+`conversation.input.dock` above the composer, and the compact
+`conversation.composer.dock` below it. A plugin waits with
 `inject`, then `register`s any composition of the node kinds in
 [tui-node.v0.schema.json](tui-node.v0.schema.json).
 
@@ -121,10 +123,11 @@ temporarily hide the rail without deleting state. Dynamic Creator plugins query
 `Slots.list` and inject `tuiSlots`, not Web React `ctx.slots`. The optional
 `@openma/deepseek-harness-tui/right-demo` export is a rich gallery plugin.
 
-Put Plan, Todo, Goal, or other content needing its own line in
-`conversation.input.dock` — it owns the single cap row and displaces the tip
-line while present. Open detailed content in a command-owned overlay instead of
-expanding a compact stats seat.
+Use the same registration API for both composer docks. Put Plan, Todo, Goal, or
+other content needing its own line in `conversation.input.dock` — it owns the
+single cap row and displaces the tip line while present; put ambient compact
+statistics in `conversation.composer.dock`. Open detailed content in a
+command-owned overlay instead of expanding the compact stats seat.
 
 ## Open: `tuiOverlay`
 

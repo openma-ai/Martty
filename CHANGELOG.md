@@ -18,20 +18,20 @@ All notable changes to this project are documented here. The project follows
   The running-state glow now replaces the box's left border. Short
   terminals (below the cap threshold) keep the previous borderless
   composer.
-- The composer stats dock (`conversation.composer.dock`, the `Cache hit`
-  / token / TTFT row) is gone entirely. The built-in `stats-view` Client
-  Plugin and its slot were removed; the `acpSessionStats` service stays
-  open for plugins, and LLM usage/timing detail surfaces through
-  `/session`.
-
-### Removed
-
-- The `/liang` pet command and the composer pet image are gone (both the
-  kitty sprites and the half-block fallback, along with their assets),
-  and the `/logo` command no longer exists — the whale banner still
-  greets on launch and dives on the first prompt.
+- The composer stats dock is back: `conversation.composer.dock` (the
+  `Cache hit` / token / TTFT readout) rides below the composer box on
+  terminals tall enough, fed by the restored built-in `stats-view`
+  Client Plugin; the `/liang` pet command and its pixel companion (kitty
+  sprites + half-block fallback) are back too, perched inside the box's
+  bottom-right corner. The `/logo` command stays removed — the banner is
+  the Martty lockup.
 
 ### Changed
+
+- `/plan-view` 的审阅界面重做：`items` 型 plan 现在以单条 markdown 任务
+  列表节点渲染（`## Plan · n/m` 标题、`- [x]`/`- [ ]` 状态框、进行中
+  加粗、取消/失败删除线、priority 后缀），走完整 markdown 管线；审阅
+  面板在宽终端上可扩到 2/3 屏宽（原 84 列封顶），滚动与关闭语义不变。
 
 - The composer meta row now leads each chip with a small dot (`· Standard
   · Workspace Write …`) instead of emoji glyphs (`⚙ ⛨ ⚖ ⌁`); color still

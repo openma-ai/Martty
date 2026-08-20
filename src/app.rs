@@ -221,6 +221,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "switch interface language",
     },
     SlashCommand {
+        name: "liang",
+        usage: "/liang [on|off]",
+        desc: "召唤小难梁 — 🤫 idle · ⌨︎ working",
+    },
+    SlashCommand {
         name: "quit",
         usage: "/quit",
         desc: "exit dsh-tui",
@@ -807,6 +812,8 @@ pub struct App {
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
     pub show_banner: bool,
+    /// Pixel-art Liang at the composer's right edge (`/liang` toggles him).
+    pub pet_visible: bool,
     /// True when the terminal speaks the kitty graphics protocol: image
     /// thumbnails and the background layer emit real pixels (set by `main`).
     pub pet_pixels: bool,
@@ -1137,6 +1144,7 @@ impl App {
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
+            pet_visible: true,
             pet_pixels: false,
             run_started: None,
             spinner_idx: 0,
@@ -3681,6 +3689,19 @@ impl App {
                 );
             }
             "quit" => self.quit = true,
+            "liang" => {
+                self.pet_visible = match arg {
+                    "on" | "show" => true,
+                    "off" | "hide" => false,
+                    _ => !self.pet_visible,
+                };
+                let msg = if self.pet_visible {
+                    "🤫 小难梁已召唤 — 安静，他在想 AGI · /liang 收回"
+                } else {
+                    "小难梁去隆基市场买卡了 — /liang 再次召唤"
+                };
+                self.transcript.push_notice(NoticeLevel::Info, msg.into());
+            }
             "theme" => self.apply_theme_arg(arg, ctl),
             "plugins" => {
                 ctl.send(Cmd::FetchPlugins {

@@ -15,6 +15,7 @@ import { apply as applyTheme } from './tui-theme.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
 import { apply as applyPlanView, inject as planViewInject } from './plan-view.js'
+import { apply as applyStatsView, inject as statsViewInject } from './stats-view.js'
 
 /**
  * @param {object} [options]
@@ -35,6 +36,7 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
     await ctx.plugin({ name: 'acp-client', inject: [], apply: applyAcpClient }, acpConfig)
     await ctx.plugin({ name: 'plan-view', inject: planViewInject, apply: applyPlanView })
+    await ctx.plugin({ name: 'stats-view', inject: statsViewInject, apply: applyStatsView })
     await ctx.plugin({
       name: 'tui-cordis-client-runner',
       inject: [
@@ -61,6 +63,7 @@ export async function bootClient(options = {}) {
     applyOverlay(ctx)
     applyAcpClient(ctx, acpConfig)
     applyPlanView(ctx)
+    applyStatsView(ctx)
     applyCordisClientRunner(ctx)
     await applyShell(ctx, { extraArgs: options.extraArgs ?? [], tty: options.tty })
   }

@@ -83,8 +83,8 @@ dsh-tui --demo-skin
   and mixed CJK/Latin text.
 - Durable sessions, queued follow-ups, immediate steering, readline editing,
   platform-native modifier bindings, mouse selection, and inline-expanded tools.
-- Dark/light themes, clipboard routing for local, tmux, and SSH sessions, and
-  kitty image previews.
+- Dark/light themes, clipboard routing for local, tmux, and SSH sessions, plus
+  the optional `/liang` pixel companion.
 - A root `chrome.right` plugin rail for validated TuiNode trees, with live
   update/unload and Client inspect support for Creator-authored plugins.
 - Lifecycle-owned local commands and native slider overlays, plus transactions

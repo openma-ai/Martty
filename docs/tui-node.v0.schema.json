@@ -17,7 +17,8 @@
     "slot": {
       "enum": [
         "chrome.right",
-        "conversation.input.dock"
+        "conversation.input.dock",
+        "conversation.composer.dock"
       ]
     },
     "rev": {

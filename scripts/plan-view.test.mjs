@@ -76,9 +76,15 @@ test('the Plan Client Plugin owns its dock, fallback command, and modal together
   })
 
   await command.handler('')
-  assert.equal(opened.kind, undefined)
   assert.equal(opened.id, 'plan-view')
-  assert.deepEqual(opened.nodes.map((node) => node.title), ['Inspect', 'Implement'])
+  // Items render as one markdown task-list node the transcript pipeline
+  // can fully render (heading, [x]/[ ], bold, strikethrough).
+  assert.equal(opened.nodes.length, 1)
+  assert.equal(opened.nodes[0].kind, 'markdown')
+  const md = opened.nodes[0].text
+  assert.match(md, /## Plan · 1\/2/)
+  assert.match(md, /- \[x\] Inspect · priority · high/)
+  assert.match(md, /- \[ \] \*\*Implement\*\* · priority · medium/)
 
   current = null
   listener({ sessionId: 's-1', plans: [] })

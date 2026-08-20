@@ -206,7 +206,7 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
     }
     if !matches!(
         snapshot.slot.as_str(),
-        "chrome.right" | "conversation.input.dock"
+        "chrome.right" | "conversation.input.dock" | "conversation.composer.dock"
     ) {
         return Ok(None);
     }

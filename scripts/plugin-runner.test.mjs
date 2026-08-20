@@ -137,9 +137,9 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
       ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.input.dock')?.occupants,
       [{ id: 'plan-view', order: 0 }],
     )
-    assert.equal(
-      ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.composer.dock'),
-      undefined,
+    assert.deepEqual(
+      ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.composer.dock')?.occupants,
+      [{ id: 'stats', order: 0 }],
     )
   } finally {
     restore()
