@@ -444,6 +444,7 @@ mod tests {
                     name: "telegram-connect".into(),
                     description: "connect".into(),
                     config_action: None,
+                    client_command: false,
                 }],
             }))
             .unwrap();
@@ -474,6 +475,7 @@ mod tests {
                     name: "telegram-disconnect".into(),
                     description: "disconnect".into(),
                     config_action: None,
+                    client_command: false,
                 }],
             }))
             .unwrap();
