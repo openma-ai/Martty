@@ -550,17 +550,14 @@ fn acp_endpoint(args: &Args) -> Result<acp::AcpEndpoint> {
     Ok(acp::AcpEndpoint::Spawn(agent_argv(args)))
 }
 
+#[cfg(unix)]
 fn owner_stop_channel() -> Result<mpsc::Receiver<()>> {
     let (tx, rx) = mpsc::channel();
-    #[cfg(unix)]
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::signal::SIGINT,
         signal_hook::consts::signal::SIGTERM,
     ])
     .context("install owner SIGINT/SIGTERM handlers")?;
-    #[cfg(windows)]
-    let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::signal::SIGINT])
-        .context("install owner Ctrl-C handler")?;
     std::thread::Builder::new()
         .name("martty-owner-signal".into())
         .spawn(move || {
@@ -569,6 +566,16 @@ fn owner_stop_channel() -> Result<mpsc::Receiver<()>> {
             }
         })
         .context("spawn owner signal watcher")?;
+    Ok(rx)
+}
+
+#[cfg(windows)]
+fn owner_stop_channel() -> Result<mpsc::Receiver<()>> {
+    let (tx, rx) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = tx.send(());
+    })
+    .context("install owner Ctrl-C handler")?;
     Ok(rx)
 }
 

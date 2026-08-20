@@ -27,6 +27,9 @@ tokio-util = { version = "0.7.19", features = ["compat"] }
 futures = "0.3.34"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3"
+
 [profile.release]
 lto = true
 strip = true
