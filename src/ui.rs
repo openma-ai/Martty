@@ -54,6 +54,17 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     desired.max(minimum).min(maximum)
 }
 
+/// Height of the composer stats dock row: 1 when it fits and the slot has
+/// nodes, else 0. Shared by the frame layout and the kitty pixel sync so
+/// the pet anchors to the box bottom in both places.
+pub fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u16 {
+    if !child_view && main_height >= 20 && slot_has_nodes(app, "conversation.composer.dock") {
+        1
+    } else {
+        0
+    }
+}
+
 /// The pet's cell rectangle — the kitty-graphics placement target —
 /// perched inside the composer box's bottom-right (one row/column clear
 /// of the rounded border), matching the sprite's 192:208 aspect in 1:2
@@ -125,12 +136,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     // The composer stats dock (token / cache / timing readout) rides below
     // the box when the terminal is tall enough.
-    let composer_dock_h =
-        if !child_view && main.height >= 20 && slot_has_nodes(app, "conversation.composer.dock") {
-            1
-        } else {
-            0
-        };
+    let composer_dock_h = composer_dock_height(app, main.height, child_view);
     let chat_h = main
         .height
         .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + gap_h);
@@ -152,11 +158,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_agent_rail(f, app, agents);
     }
     // The pet floats inside the box's bottom-right; composer text keeps
-    // clear of it.
+    // clear of it. Anchor to the box's bottom — when the stats dock sits
+    // below the box, the pet rides up with it instead of overlapping.
     let pet = if child_view {
         None
     } else {
-        pet_rect(main, app)
+        let pet_area = Rect::new(
+            main.x,
+            main.y,
+            main.width,
+            main.height.saturating_sub(composer_dock_h),
+        );
+        pet_rect(pet_area, app)
     };
     let pet_pad = if pet.is_some() { PET_PAD } else { 0 };
     if child_view {
@@ -2570,6 +2583,67 @@ mod tests {
             pet_rect(narrow, &app),
             None,
             "narrow terminals keep their columns"
+        );
+    }
+
+    #[test]
+    fn pet_rides_above_the_stats_dock() {
+        let mut app = test_app();
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" }
+                ]
+            }))
+            .expect("slot snapshot"),
+        );
+        let main = Rect::new(0, 0, 100, 26);
+        let dock_h = composer_dock_height(&app, main.height, false);
+        assert_eq!(dock_h, 1, "dock fits on a 26-row terminal");
+        // Anchored to the box bottom (dock row excluded): one row higher
+        // than without the dock.
+        let with_dock = Rect::new(
+            main.x,
+            main.y,
+            main.width,
+            main.height.saturating_sub(dock_h),
+        );
+        assert_eq!(pet_rect(with_dock, &app), Some(Rect::new(92, 20, 7, 4)));
+        app.slot_snapshots.remove("conversation.composer.dock");
+        let without_dock = Rect::new(main.x, main.y, main.width, main.height);
+        assert_eq!(pet_rect(without_dock, &app), Some(Rect::new(92, 21, 7, 4)));
+    }
+
+    #[test]
+    fn pet_stays_inside_the_box_when_the_stats_dock_shows() {
+        let mut app = test_app();
+        app.show_banner = false;
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:cache", "kind": "generic", "title": "Cache hit 65%", "body": "" }
+                ]
+            }))
+            .expect("slot snapshot"),
+        );
+        let frame = dump_frame(&mut app, 100, 26);
+        let dock_line = frame.lines().last().expect("dock row");
+        assert!(dock_line.contains("Cache hit 65%"), "{dock_line}");
+        assert!(
+            !dock_line.contains("▄███"),
+            "pet must not overlap the dock: {dock_line}"
+        );
+        assert!(
+            frame.contains("▄███▄█▄▄"),
+            "pet still visible inside the box:\n{frame}"
         );
     }
 
