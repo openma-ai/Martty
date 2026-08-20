@@ -61,23 +61,39 @@ impl Controller {
     pub fn start_acp(
         cfg: RuntimeConfig,
         endpoint: crate::acp::AcpEndpoint,
+        mode: crate::acp::AcpClientMode,
         bus: Sender<AppEvent>,
     ) -> Controller {
+        Self::start_acp_owned(cfg, endpoint, mode, bus).0
+    }
+
+    /// Start ACP and return the controller thread to a process-level owner.
+    /// Interactive callers keep the detached behavior because the TUI owns
+    /// the whole process; headless owner mode joins this handle on every exit.
+    pub fn start_acp_owned(
+        cfg: RuntimeConfig,
+        endpoint: crate::acp::AcpEndpoint,
+        mode: crate::acp::AcpClientMode,
+        bus: Sender<AppEvent>,
+    ) -> (Controller, std::thread::JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
         let runtime: Arc<Mutex<Option<Arc<RuntimeProcess>>>> = Arc::new(Mutex::new(None));
         let interrupted = Arc::new(AtomicBool::new(false));
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("dsh-controller".into())
-            .spawn(move || crate::acp::run_blocking(cfg, endpoint, bus, cmd_rx))
+            .spawn(move || crate::acp::run_blocking(cfg, endpoint, mode, bus, cmd_rx))
             .expect("spawn acp controller");
-        Controller {
-            cmd_tx,
-            runtime,
-            interrupted,
-            demo: false,
-            attached: true,
-            acp: true,
-        }
+        (
+            Controller {
+                cmd_tx,
+                runtime,
+                interrupted,
+                demo: false,
+                attached: true,
+                acp: true,
+            },
+            thread,
+        )
     }
 
     pub fn send(&self, cmd: Cmd) {

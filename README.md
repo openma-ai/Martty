@@ -60,6 +60,18 @@ TUI 把 ACP 声明为自身运行时依赖。若目标 profile 已通过标准 A
 transport/provider 行，并只挂载从 TUI 自身依赖图解析出的 ACP plugin；因此受支持的
 profile 组合不会同时启动两套 ACP，也不要求用户先手工整理已有 ACP profile。
 
+要在 TUI 中使用 portable Agent Plugins、Codex、Claude Code 或 Pi 插件，把
+[Agent Plugins Bridge](https://github.com/openma-ai/dsh-agents-plugins-bridge) 加到同一个
+profile：
+
+```sh
+dsh plugin --profile tui add @openma/dsh-agents-plugins-bridge@latest
+```
+
+Bridge 的 hooks、skills、commands、MCP、agents、monitors 和 Pi extensions 都是
+通用 Host 能力；commands 与 skills 会通过 ACP 进入 TUI 的斜杠菜单。Web 设置面板、
+浏览器主题和 MCP Apps HTML renderer 属于 Web 表面，不会在终端里复制一套 UI。
+
 ### Standalone：接任意 ACP agent
 
 ```sh
@@ -72,6 +84,35 @@ dsh-tui --agent dsh --agent-arg --profile --agent-arg acp
 ```sh
 DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
 ```
+
+### Martty owner：无界面常驻 ACP / Pi RPC
+
+`martty owner` 是不创建 TUI 的通用长驻 ACP client。它以明确的 `rpc` interaction
+mode 建立一个真实 Session，在 Session 广告对应斜杠命令后依次执行启动命令，保持
+Session 和 extension lifecycle 存活，并在 `SIGINT`/`SIGTERM` 时依次执行退出命令。
+它不包含 Telegram 特例：任何遵循相同生命周期的 Pi extension 都可使用。
+
+先准备一个只承载 ACP Host 能力的 profile，并通过 Web、TUI 或
+`/plugin-bridge import <location:key>` 导入所需插件：
+
+```sh
+npm install --global @openma/deepseek-harness-tui
+dsh plugin --profile telegram-owner add @openma/deepseek-harness-acp@latest
+dsh plugin --profile telegram-owner add @openma/dsh-agents-plugins-bridge@latest
+
+martty owner \
+  --agent dsh \
+  --agent-arg --profile \
+  --agent-arg telegram-owner \
+  --startup-command /telegram-connect \
+  --shutdown-command /telegram-disconnect
+```
+
+`pi-telegram` 首次配置仍应在交互式 Pi/TUI 中用 `/telegram-setup` 完成；owner 不会
+自动批准权限，也不会代答 `confirm`、`input` 等表单。启动前应正常退出持有同一
+Telegram profile 的 Pi/TUI 实例，否则 extension 会按自身协议请求 takeover，而
+headless owner 会取消该交互并清晰失败。要持续收发，`martty owner` 进程必须由
+终端、launchd、systemd 或其他进程管理器保持运行。
 
 第三方能力是 client 树上的普通 Cordis 插件：声明所需 service，在 `apply` 中
 注册贡献，并随 fiber 卸载自动撤销。当前已经开放主题、根级右栏、本地命令、
@@ -89,7 +130,7 @@ npm install --global martty
 dsh-tui --demo
 ```
 
-`dsh-tui` 是主命令；`dsb` 保留为兼容别名。
+`dsh-tui` 是交互式主命令；`martty` 是同一原生程序的产品别名，`dsb` 保留为兼容别名。
 
 ## 核心能力
 

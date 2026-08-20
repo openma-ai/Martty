@@ -5,6 +5,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { bootClient, parseClientArgv, painterArgs } from '../lib/boot.js'
+import { runsNativeOwner } from '../lib/native-cli.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const platformKey = process.platform + '-' + process.arch
@@ -21,6 +22,7 @@ const wantDemoSkin = argv.includes('--demo-skin')
 const wantDemo = argv.includes('--demo')
 const wantHelp = argv.includes('-h') || argv.includes('--help')
 const wantVersion = argv.includes('-V') || argv.includes('--version')
+const wantOwner = runsNativeOwner(argv)
 
 if (!fs.existsSync(binaryPath)) {
   let available = []
@@ -49,7 +51,7 @@ function exitFromSpawn(result) {
   )
 }
 
-if (wantHelp || wantVersion || wantDemo) {
+if (wantHelp || wantVersion || wantDemo || wantOwner) {
   exitFromSpawn(spawnSync(binaryPath, argv, { stdio: 'inherit' }))
 }
 

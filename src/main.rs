@@ -18,6 +18,7 @@ mod locale;
 mod logo;
 mod logo_data;
 mod markdown;
+mod owner;
 mod pet;
 mod proto;
 mod runtime;
@@ -51,6 +52,7 @@ dsh-tui — terminal-native ACP client UI
 
 USAGE:
   dsh-tui [OPTIONS]
+  dsh-tui owner [OPTIONS]
 
 OPTIONS:
   -w, --workspace <dir>     agent workspace (default: cwd)
@@ -70,6 +72,10 @@ OPTIONS:
       --attach-tcp <addr>   authenticated loopback TCP (Windows)
       --check-runtime       spawn + initialize the ACP agent, print info, exit
       --dump-frame [WxH]    render one demo frame as text (default 100x34)
+      --startup-command <command>
+                            owner: run an advertised slash command after connect (repeatable)
+      --shutdown-command <command>
+                            owner: run an advertised slash command before exit (repeatable)
   -V, --version             print version
   -h, --help                this help
 
@@ -81,7 +87,14 @@ drag selects & copies on release · 2×click
 copies a word · shift+drag uses the terminal's native selection
 ";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Tui,
+    Owner,
+}
+
 struct Args {
+    mode: RunMode,
     workspace: Option<String>,
     session_root: Option<String>,
     session_id: Option<String>,
@@ -99,6 +112,8 @@ struct Args {
     attach_tcp: Option<String>,
     check_runtime: bool,
     dump_frame: Option<(u16, u16)>,
+    startup_commands: Vec<String>,
+    shutdown_commands: Vec<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -107,6 +122,7 @@ fn parse_args() -> Result<Args> {
 
 fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
     let mut args_out = Args {
+        mode: RunMode::Tui,
         workspace: None,
         session_root: None,
         session_id: None,
@@ -124,6 +140,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
         attach_tcp: None,
         check_runtime: false,
         dump_frame: None,
+        startup_commands: Vec::new(),
+        shutdown_commands: Vec::new(),
     };
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -131,6 +149,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
             it.next().with_context(|| format!("{name} needs a value"))
         };
         match arg.as_str() {
+            "owner" if args_out.mode == RunMode::Tui => args_out.mode = RunMode::Owner,
             "-w" | "--workspace" => args_out.workspace = Some(take("--workspace")?),
             "--session-root" => args_out.session_root = Some(take("--session-root")?),
             "--session-id" => args_out.session_id = Some(take("--session-id")?),
@@ -150,6 +169,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--attach-fds" => args_out.attach_fds = true,
             "--attach-tcp" => args_out.attach_tcp = Some(take("--attach-tcp")?),
             "--check-runtime" => args_out.check_runtime = true,
+            "--startup-command" => args_out.startup_commands.push(take("--startup-command")?),
+            "--shutdown-command" => args_out.shutdown_commands.push(take("--shutdown-command")?),
             "--dump-frame" => {
                 let dims = it.next().unwrap_or_else(|| "100x34".into());
                 let (w, h) = dims
@@ -168,6 +189,25 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             other => bail!("unknown argument {other} (see --help)"),
         }
+    }
+    if args_out.mode == RunMode::Tui
+        && (!args_out.startup_commands.is_empty() || !args_out.shutdown_commands.is_empty())
+    {
+        bail!("--startup-command and --shutdown-command require the owner subcommand");
+    }
+    if args_out.mode == RunMode::Owner {
+        if args_out.demo
+            || args_out.demo_skin
+            || args_out.check_runtime
+            || args_out.dump_frame.is_some()
+        {
+            bail!("owner mode cannot be combined with demo, frame dump, or runtime probe modes");
+        }
+        owner::OwnerConfig {
+            startup_commands: args_out.startup_commands.clone(),
+            shutdown_commands: args_out.shutdown_commands.clone(),
+        }
+        .validate()?;
     }
     Ok(args_out)
 }
@@ -270,13 +310,43 @@ fn main() -> Result<()> {
     }
 
     let cfg = build_config(&args)?;
+    let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
+
+    if args.mode == RunMode::Owner {
+        let stop_rx = owner_stop_channel()?;
+        let (controller, controller_thread) =
+            Controller::start_acp_owned(cfg, acp_endpoint(&args)?, acp::AcpClientMode::Rpc, bus_tx);
+        eprintln!("owner: ACP connected; waiting for lifecycle commands");
+        let owner_result = owner::run_owner(
+            owner::OwnerConfig {
+                startup_commands: args.startup_commands,
+                shutdown_commands: args.shutdown_commands,
+            },
+            bus_rx,
+            stop_rx,
+            &controller,
+            Duration::from_secs(30),
+        );
+        let controller_result = controller_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("ACP owner controller thread panicked"));
+        owner_result.and(controller_result)
+    } else {
+        install_termination_handler(bus_tx.clone())?;
+        run_tui(args, cfg, bus_tx, bus_rx)
+    }
+}
+
+fn run_tui(
+    args: Args,
+    cfg: runtime::RuntimeConfig,
+    bus_tx: mpsc::Sender<AppEvent>,
+    bus_rx: mpsc::Receiver<AppEvent>,
+) -> Result<()> {
     let session_id = args
         .session_id
         .clone()
         .unwrap_or_else(|| format!("dsh-{}", app::timestamp()));
-
-    let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
-    install_termination_handler(bus_tx.clone())?;
 
     // `--demo` / `--demo-skin`: JSON-RPC attach for palette + scripted turns.
     // Live: official ACP on those fds (Node mux) or a spawned agent.
@@ -310,24 +380,13 @@ fn main() -> Result<()> {
         };
         Controller::start(cfg.clone(), true, attached_rt, bus_tx.clone())
     } else {
-        let endpoint = if args.attach_fds {
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::FromRawFd;
-                let incoming = unsafe { std::fs::File::from_raw_fd(3) };
-                let outgoing = unsafe { std::fs::File::from_raw_fd(4) };
-                acp::AcpEndpoint::AttachStdio { incoming, outgoing }
-            }
-            #[cfg(not(unix))]
-            {
-                bail!("--attach-fds requires a unix platform");
-            }
-        } else if let Some(address) = &args.attach_tcp {
-            acp::AcpEndpoint::AttachTcp(tcp_attach_stream(address)?)
-        } else {
-            acp::AcpEndpoint::Spawn(agent_argv(&args))
-        };
-        Controller::start_acp(cfg.clone(), endpoint, bus_tx.clone())
+        let endpoint = acp_endpoint(&args)?;
+        Controller::start_acp(
+            cfg.clone(),
+            endpoint,
+            acp::AcpClientMode::Interactive,
+            bus_tx.clone(),
+        )
     };
     let theme = ui::theme_for(&args.theme);
     let mut app = App::new(
@@ -469,6 +528,48 @@ fn main() -> Result<()> {
     controller.send(Cmd::Shutdown);
     restore_terminal();
     run
+}
+
+fn acp_endpoint(args: &Args) -> Result<acp::AcpEndpoint> {
+    if args.attach_fds {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::FromRawFd;
+            let incoming = unsafe { std::fs::File::from_raw_fd(3) };
+            let outgoing = unsafe { std::fs::File::from_raw_fd(4) };
+            return Ok(acp::AcpEndpoint::AttachStdio { incoming, outgoing });
+        }
+        #[cfg(not(unix))]
+        {
+            bail!("--attach-fds requires a unix platform");
+        }
+    }
+    if let Some(address) = &args.attach_tcp {
+        return Ok(acp::AcpEndpoint::AttachTcp(tcp_attach_stream(address)?));
+    }
+    Ok(acp::AcpEndpoint::Spawn(agent_argv(args)))
+}
+
+fn owner_stop_channel() -> Result<mpsc::Receiver<()>> {
+    let (tx, rx) = mpsc::channel();
+    #[cfg(unix)]
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::signal::SIGINT,
+        signal_hook::consts::signal::SIGTERM,
+    ])
+    .context("install owner SIGINT/SIGTERM handlers")?;
+    #[cfg(windows)]
+    let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::signal::SIGINT])
+        .context("install owner Ctrl-C handler")?;
+    std::thread::Builder::new()
+        .name("martty-owner-signal".into())
+        .spawn(move || {
+            if signals.forever().next().is_some() {
+                let _ = tx.send(());
+            }
+        })
+        .context("spawn owner signal watcher")?;
+    Ok(rx)
 }
 
 fn enter_tui() -> Result<()> {
@@ -709,6 +810,57 @@ mod cli_args_tests {
     fn help_mentions_demo_skin() {
         assert!(HELP.contains("--demo-skin"));
         assert!(HELP.contains("--demo"));
+    }
+
+    #[test]
+    fn owner_subcommand_collects_explicit_lifecycle_commands() {
+        let args = parse_args_from([
+            "owner".into(),
+            "--startup-command".into(),
+            "/telegram-connect".into(),
+            "--startup-command".into(),
+            "/second-start".into(),
+            "--shutdown-command".into(),
+            "/telegram-disconnect".into(),
+        ])
+        .unwrap();
+
+        assert!(matches!(args.mode, RunMode::Owner));
+        assert_eq!(
+            args.startup_commands,
+            vec!["/telegram-connect", "/second-start"]
+        );
+        assert_eq!(args.shutdown_commands, vec!["/telegram-disconnect"]);
+    }
+
+    #[test]
+    fn lifecycle_commands_require_owner_mode_and_slash_syntax() {
+        let tui_err = parse_args_from(["--startup-command".into(), "/telegram-connect".into()])
+            .err()
+            .expect("TUI mode must not silently accept owner lifecycle flags");
+        assert!(tui_err.to_string().contains("owner"));
+
+        let syntax_err = parse_args_from([
+            "owner".into(),
+            "--startup-command".into(),
+            "telegram-connect".into(),
+        ])
+        .err()
+        .expect("owner commands must keep explicit slash-command semantics");
+        assert!(syntax_err.to_string().contains("must start with '/'"));
+    }
+
+    #[test]
+    fn owner_rejects_ui_and_probe_only_modes() {
+        for flag in ["--demo", "--demo-skin", "--check-runtime", "--dump-frame"] {
+            let err = parse_args_from(["owner".into(), flag.into()])
+                .err()
+                .unwrap_or_else(|| panic!("owner unexpectedly accepted {flag}"));
+            assert!(
+                err.to_string().contains("owner"),
+                "{flag} should explain the owner-mode conflict: {err:#}"
+            );
+        }
     }
 
     #[test]

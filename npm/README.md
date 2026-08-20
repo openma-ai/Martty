@@ -38,6 +38,37 @@ retain both copies, but the TUI bundle replaces that surface's rows and mounts
 only the plugin resolved from TUI's own dependency graph. The supported profile
 shape never runs two ACP surfaces for one TUI.
 
+Foreign agent plugins use the same Host composition:
+
+```sh
+dsh plugin --profile tui add @openma/dsh-agents-plugins-bridge@latest
+```
+
+The [Agent Plugins Bridge](https://github.com/openma-ai/dsh-agents-plugins-bridge)
+projects imported commands and skills into TUI through ACP and keeps hooks,
+MCP, agents, monitors, and Pi extensions on the Host. Browser-only management,
+themes, and MCP Apps HTML rendering remain on the Web surface.
+
+## Headless owner
+
+`martty owner` keeps one real ACP Session and its Host plugin lifecycles alive
+without starting the Node compositor or Rust TUI. Lifecycle commands are
+repeatable, must be advertised by the Session, and run in order:
+
+```sh
+martty owner \
+  --agent dsh \
+  --agent-arg --profile \
+  --agent-arg telegram-owner \
+  --startup-command /telegram-connect \
+  --shutdown-command /telegram-disconnect
+```
+
+The client negotiates explicit `rpc` interaction mode. It does not auto-answer
+permissions, authentication, or extension forms; perform one-time interactive
+setup first and stop any existing owner of the same extension resource. Keep
+the process alive with a process supervisor for continuous operation.
+
 The package carries ACP as a runtime dependency and exports its Creator Host
 overlay internally. The profile bundle mounts both on the Host Base tree;
 neither enters the Client tree. Creator adds TUI plugin guidance to the
@@ -54,7 +85,8 @@ dsh-tui --demo
 dsh-tui --demo-skin
 ```
 
-`dsh-tui` is the primary command. `dsb` is a compatibility alias.
+`dsh-tui` is the interactive command. `martty` is the product alias for the
+same native program; `dsb` is a compatibility alias.
 
 ## Highlights
 

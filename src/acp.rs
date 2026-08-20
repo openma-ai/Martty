@@ -139,6 +139,7 @@ impl Surface {
 pub fn run_blocking(
     cfg: RuntimeConfig,
     endpoint: AcpEndpoint,
+    mode: AcpClientMode,
     bus: Sender<AppEvent>,
     cmd_rx: Receiver<Cmd>,
 ) {
@@ -154,7 +155,7 @@ pub fn run_blocking(
             return;
         }
     };
-    if let Err(err) = runtime.block_on(run(cfg, endpoint, bus.clone(), cmd_rx)) {
+    if let Err(err) = runtime.block_on(run(cfg, endpoint, mode, bus.clone(), cmd_rx)) {
         let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!("{err:#}"))));
     }
 }
@@ -186,7 +187,26 @@ fn acp_err(err: AcpError) -> anyhow::Error {
     anyhow::anyhow!("{err}")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpClientMode {
+    Interactive,
+    Rpc,
+}
+
+impl AcpClientMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::Rpc => "rpc",
+        }
+    }
+}
+
 pub(crate) fn initialize_request() -> InitializeRequest {
+    initialize_request_for(AcpClientMode::Interactive)
+}
+
+pub(crate) fn initialize_request_for(mode: AcpClientMode) -> InitializeRequest {
     InitializeRequest::new(ProtocolVersion::V1)
         .client_info(Implementation::new("dsh-tui", env!("CARGO_PKG_VERSION")))
         .client_capabilities(
@@ -207,7 +227,7 @@ pub(crate) fn initialize_request() -> InitializeRequest {
                 .elicitation(
                     ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()),
                 )
-                .meta(crate::acp_auth::client_capability_meta()),
+                .meta(crate::acp_auth::client_capability_meta(mode.as_str())),
         )
 }
 
@@ -757,19 +777,22 @@ fn unix_stream_from_file(file: std::fs::File) -> Result<tokio::net::UnixStream> 
 async fn run(
     cfg: RuntimeConfig,
     endpoint: AcpEndpoint,
+    mode: AcpClientMode,
     bus: Sender<AppEvent>,
     cmd_rx: Receiver<Cmd>,
 ) -> Result<()> {
     match endpoint {
         AcpEndpoint::Spawn(args) => {
             let agent = AcpAgent::from_args(args).map_err(acp_err)?;
-            connect(agent, cfg, bus, cmd_rx).await.map_err(acp_err)
+            connect_with_mode(agent, cfg, mode, bus, cmd_rx)
+                .await
+                .map_err(acp_err)
         }
         #[cfg(unix)]
         AcpEndpoint::AttachStdio { incoming, outgoing } => {
             let incoming = unix_stream_from_file(incoming)?.compat();
             let outgoing = unix_stream_from_file(outgoing)?.compat_write();
-            connect(ByteStreams::new(outgoing, incoming), cfg, bus, cmd_rx)
+            connect_with_mode(ByteStreams::new(outgoing, incoming), cfg, mode, bus, cmd_rx)
                 .await
                 .map_err(acp_err)
         }
@@ -783,9 +806,10 @@ async fn run(
                 .context("tcp set_nonblocking")?;
             let stream = tokio::net::TcpStream::from_std(stream).context("tokio tcp from_std")?;
             let (read, write) = stream.into_split();
-            connect(
+            connect_with_mode(
                 ByteStreams::new(write.compat_write(), read.compat()),
                 cfg,
+                mode,
                 bus,
                 cmd_rx,
             )
@@ -880,9 +904,23 @@ fn ensure_agent_cordis(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent>) ->
     advertised
 }
 
+#[cfg(test)]
 async fn connect<T>(
     transport: T,
     cfg: RuntimeConfig,
+    bus: Sender<AppEvent>,
+    cmd_rx: Receiver<Cmd>,
+) -> std::result::Result<(), AcpError>
+where
+    T: ConnectTo<Client> + 'static,
+{
+    connect_with_mode(transport, cfg, AcpClientMode::Interactive, bus, cmd_rx).await
+}
+
+async fn connect_with_mode<T>(
+    transport: T,
+    cfg: RuntimeConfig,
+    mode: AcpClientMode,
     bus: Sender<AppEvent>,
     cmd_rx: Receiver<Cmd>,
 ) -> std::result::Result<(), AcpError>
@@ -1340,7 +1378,10 @@ where
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
                 }));
-                let init = cx.send_request(initialize_request()).block_task().await?;
+                let init = cx
+                    .send_request(initialize_request_for(mode))
+                    .block_task()
+                    .await?;
                 let agent_name = init
                     .agent_info
                     .as_ref()
@@ -2483,6 +2524,22 @@ mod tests {
         assert_eq!(caps["fs"]["readTextFile"], true);
         assert_eq!(caps["fs"]["writeTextFile"], true);
         assert_eq!(caps["terminal"], true);
+    }
+
+    #[test]
+    fn owner_initialize_explicitly_advertises_rpc_interaction_mode() {
+        let value = serde_json::to_value(initialize_request_for(AcpClientMode::Rpc))
+            .expect("serialize owner initialize request");
+        assert_eq!(
+            value["clientCapabilities"]["_meta"]["dsh"]["interaction"]["mode"],
+            "rpc"
+        );
+        let interactive = serde_json::to_value(initialize_request_for(AcpClientMode::Interactive))
+            .expect("serialize interactive initialize request");
+        assert_eq!(
+            interactive["clientCapabilities"]["_meta"]["dsh"]["interaction"]["mode"],
+            "interactive"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
