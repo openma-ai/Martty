@@ -124,7 +124,7 @@ Prepare a Host-only profile, then import the extension through Web, TUI, or
 `/plugin-bridge import <location:key>`:
 
 ```sh
-npm install --global @openma/deepseek-harness-tui
+npm install --global martty
 dsh plugin --profile telegram-owner add @openma/deepseek-harness-acp@latest
 dsh plugin --profile telegram-owner add @openma/dsh-agents-plugins-bridge@latest
 

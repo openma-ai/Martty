@@ -110,7 +110,7 @@ Session 和 extension lifecycle 存活，并在 `SIGINT`/`SIGTERM` 时依次执�
 `/plugin-bridge import <location:key>` 导入所需插件：
 
 ```sh
-npm install --global @openma/deepseek-harness-tui
+npm install --global martty
 dsh plugin --profile telegram-owner add @openma/deepseek-harness-acp@latest
 dsh plugin --profile telegram-owner add @openma/dsh-agents-plugins-bridge@latest
 

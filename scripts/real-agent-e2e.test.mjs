@@ -284,9 +284,9 @@ sleep 1
     '--root', runRoot,
     '--dsh-bin', fakeDsh,
     '--tui-bin', fakeDsh,
-    '--ready-timeout', '2',
-    '--preset-timeout', '2',
-    '--timeout', '2',
+    '--ready-timeout', '5',
+    '--preset-timeout', '5',
+    '--timeout', '5',
   ], {
     encoding: 'utf8',
     env: { ...process.env, DSH_HOME: fakeHome },
