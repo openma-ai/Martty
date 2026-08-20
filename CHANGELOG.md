@@ -52,6 +52,26 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The plan review window (the ACP elicitation form the agent opens with
+  `exit_plan_mode`) now renders the plan markdown through the full markdown
+  pipeline instead of truncating raw source lines: headings lose their `#`,
+  task-list checkboxes become `✓`/`○` status glyphs, tables and code blocks
+  keep their layout. The detail pane scrolls with PageUp/PageDown/End and
+  the mouse wheel, the stored offset is normalized to the visible content so
+  scrolling back up works after `End` (previously it stayed pinned at the
+  bottom), and the Approve / Keep planning answers stay pinned below the
+  pane; the title bar hints the scroll keys when the plan overflows it.
+- The plan review (`/plan-view`) task list no longer reads as raw markdown:
+  `- [x]` / `- [ ]` checkboxes render as status glyphs (`✓` in the ok color
+  for completed items, `○` in the caption color for open ones) through the
+  full markdown pipeline — the same applies to task lists in agent replies.
+  Continuation lines keep hanging under the shorter glyph prefix.
+- The plugin view overlay scrolls with the mouse wheel (previously wheel
+  silently scrolled the chat underneath), and arrow keys scroll even when
+  the terminal reports them with modifier bits (kitty keyboard protocol).
+  `End` jumps to the bottom and overscroll clamps to the last content row
+  instead of showing blank space; the title bar now hints
+  `↑↓/wheel scroll · esc close`.
 - Local `!` commands now share one shell for the lifetime of the TUI session,
   so working-directory changes, exported variables, and other shell state
   persist across invocations. Commands remain client-local and start in the

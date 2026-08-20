@@ -136,6 +136,10 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         // Prefixes keep their block style — the two-tone split applies to the
         // body only, so markers don't turn into bright Latin runs.
         let (prefix, body) = split_prefix(segs);
+        // Task-list checkboxes render as status glyphs instead of literal
+        // `[x]` / `[ ]` markers, so lists read as rendered UI rather than
+        // raw markdown source.
+        let prefix = task_list_glyphs(prefix, theme);
         let body = two_tone(body, theme);
         let indent: usize = prefix.iter().map(|s| UnicodeWidthStr::width(s.text.as_str())).sum();
         let mut wrapped = wrap_segments(body, width.saturating_sub(indent));
@@ -363,6 +367,50 @@ fn split_prefix(segs: Vec<Seg>) -> (Vec<Seg>, Vec<Seg>) {
     body.extend(segs.into_iter().skip(1));
     prefix.shrink_to_fit();
     (prefix, body)
+}
+
+/// Replace a task-list checkbox marker (`- [x] ` / `- [X] ` / `- [ ] `) in a
+/// split-off list prefix with a status glyph: `✓` in the ok color for
+/// checked items, `○` in the caption color for open ones. The dash stays in
+/// the original list style so the marker reads as UI, not markdown source;
+/// continuation indent follows the shorter glyph prefix automatically.
+fn task_list_glyphs(prefix: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
+    let Some(first) = prefix.first() else {
+        return prefix;
+    };
+    let t = first.text.as_str();
+    let lead = t.len() - t.trim_start().len();
+    let rest = &t[lead..];
+    let glyph = if rest.starts_with("- [x] ") || rest.starts_with("- [X] ") {
+        Some(("✓", theme.ok))
+    } else if rest.starts_with("- [ ] ") {
+        Some(("○", theme.caption))
+    } else {
+        None
+    };
+    let Some((glyph, glyph_color)) = glyph else {
+        return prefix;
+    };
+    // Marker is `lead` spaces + `- [x] ` (6 chars); keep the dash part with
+    // the original style and emit the glyph as its own colored span.
+    let mut out = Vec::with_capacity(prefix.len() + 1);
+    out.push(Seg {
+        text: t[..lead + 2].to_string(),
+        style: first.style,
+    });
+    out.push(Seg {
+        text: format!("{glyph} "),
+        style: Style::default().fg(glyph_color),
+    });
+    let tail = &t[lead + 6..];
+    if !tail.is_empty() {
+        out.push(Seg {
+            text: tail.to_string(),
+            style: first.style,
+        });
+    }
+    out.extend(prefix.into_iter().skip(1));
+    out
 }
 
 /// Two-tone body coloring: plain body runs (paragraph/list/table-cell text,
@@ -870,6 +918,52 @@ mod tests {
     }
 
     #[test]
+    fn task_list_checkboxes_render_as_status_glyphs() {
+        let theme = Theme::dark();
+        let lines = render("- [x] done\n- [ ] pending\n- [X] also done", &theme, 40);
+        let text = plain(&lines);
+        assert!(text.contains("✓ done"), "checked:\n{text}");
+        assert!(text.contains("○ pending"), "open:\n{text}");
+        assert!(text.contains("✓ also done"), "uppercase marker:\n{text}");
+        assert!(
+            !text.contains("[x]") && !text.contains("[X]") && !text.contains("[ ]"),
+            "no literal markers:\n{text}"
+        );
+        // The glyph carries its status color; the dash keeps the list style.
+        let line_text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let done = lines
+            .iter()
+            .find(|l| line_text(l).contains("✓ done"))
+            .expect("checked line");
+        let glyph = done
+            .spans
+            .iter()
+            .find(|s| s.content == "✓ ")
+            .expect("glyph span");
+        assert_eq!(glyph.style.fg, Some(theme.ok));
+        let pending = lines
+            .iter()
+            .find(|l| line_text(l).contains("○ pending"))
+            .expect("open line");
+        let glyph = pending
+            .spans
+            .iter()
+            .find(|s| s.content == "○ ")
+            .expect("glyph span");
+        assert_eq!(glyph.style.fg, Some(theme.caption));
+    }
+
+    #[test]
+    fn task_list_continuations_hang_under_the_glyph_prefix() {
+        let lines = render_dark("- [ ] one two three four five six", 14);
+        assert!(lines.len() > 1, "wraps: {lines:?}");
+        assert!(
+            lines[1..].iter().all(|l| l.spans[0].content == "    "),
+            "continuations align under the body (4 cols): {lines:?}"
+        );
+    }
+
+    #[test]
     fn rule_renders_full_width() {
         let theme = Theme::dark();
         let lines = render("above\n\n---\n\nbelow", &theme, 30);
@@ -1055,7 +1149,7 @@ mod tests {
             "┌",
             "│",
             "[img]",
-            "[x]",
+            "✓",
             "术语",
         ] {
             assert!(text.contains(token), "token {token} survives");

@@ -171,7 +171,9 @@ impl ElicitationFormState {
         }
     }
 
-    fn current_is_text(&self) -> bool {
+    /// Whether the focused field owns a text editor (typed answer or an
+    /// inline `Other` input). Text fields keep their cursor keys.
+    pub fn current_is_text(&self) -> bool {
         self.fields.get(self.index).is_some_and(|state| {
             matches!(
                 state.field.kind,

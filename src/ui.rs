@@ -299,11 +299,11 @@ fn draw_plugin_slider(f: &mut Frame, app: &App, screen: Rect) {
     );
 }
 
-fn draw_plugin_view(f: &mut Frame, app: &App, screen: Rect) {
-    let Some(view) = &app.view_overlay else {
+fn draw_plugin_view(f: &mut Frame, app: &mut App, screen: Rect) {
+    let theme = app.theme;
+    let Some(view) = app.view_overlay.as_mut() else {
         return;
     };
-    let theme = app.theme;
     // A review pane, not a snackbar: wide terminals get up to 2/3 of the
     // screen (the old 84-column cap made long plans feel cramped).
     let width = screen
@@ -322,19 +322,26 @@ fn draw_plugin_view(f: &mut Frame, app: &App, screen: Rect) {
         width,
         height,
     );
+    // Clamp the scroll to the content: End / wheel overscroll stops at the
+    // last content row instead of showing blank space below the review.
+    // The stored offset is normalized here too, so scrolling back up starts
+    // from the visible bottom (End parks at `usize::MAX` until the next draw).
+    let max_scroll = lines.len().saturating_sub(area.height.saturating_sub(2) as usize);
+    let scroll = view.scroll.min(max_scroll) as u16;
+    view.scroll = view.scroll.min(max_scroll);
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(
-            format!(" {} · esc close ", view.title),
+            format!(" {} · ↑↓/wheel scroll · esc close ", view.title),
             Style::default().fg(theme.fg),
         ))
         .style(Style::default().bg(theme.panel).fg(theme.fg));
     f.render_widget(
         Paragraph::new(lines)
-            .scroll((view.scroll.min(u16::MAX as usize) as u16, 0))
+            .scroll((scroll, 0))
             .block(block),
         area,
     );
@@ -1760,34 +1767,37 @@ fn draw_permission_ask(f: &mut Frame, app: &App, screen: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
-    let Some(ask) = &app.elicitation_ask else {
+fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
+    let theme = app.theme;
+    let Some(ask) = app.elicitation_ask.as_mut() else {
         return;
     };
     let Some(state) = ask.form.fields.get(ask.form.index) else {
         return;
     };
-    let theme = app.theme;
     let content_width = screen.width.saturating_sub(10).clamp(28, 74) as usize;
-    let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(
-        ask.form.message.clone(),
-        Style::default().fg(theme.caption),
-    )));
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        state.field.title.clone(),
-        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-    )));
-    if let Some(description) = &state.field.description {
-        for paragraph in description.lines() {
-            lines.push(Line::from(Span::styled(
-                pad_or_ellipsize(paragraph, content_width),
-                Style::default().fg(theme.fg_secondary),
-            )));
-        }
-    }
-    lines.push(Line::default());
+    // Fixed chrome: message + field title on top, answers pinned to the
+    // bottom. The question detail — for a plan review that is the complete
+    // plan markdown — owns a scrollable pane between them and renders
+    // through the full markdown pipeline.
+    let top = vec![
+        Line::from(Span::styled(
+            ask.form.message.clone(),
+            Style::default().fg(theme.caption),
+        )),
+        Line::default(),
+        Line::from(Span::styled(
+            state.field.title.clone(),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        )),
+    ];
+    let desc = state
+        .field
+        .description
+        .as_ref()
+        .map(|text| crate::markdown::render(text, &theme, content_width));
+    let mut bottom = Vec::new();
+    bottom.push(Line::default());
 
     match &state.field.kind {
         crate::elicitation::ElicitationFieldKind::Single { options, .. }
@@ -1835,9 +1845,9 @@ fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
                         Style::default().fg(theme.caption),
                     ));
                 }
-                lines.push(Line::from(spans));
+                bottom.push(Line::from(spans));
                 if option.custom && state.editing_custom {
-                    lines.push(Line::from(vec![
+                    bottom.push(Line::from(vec![
                         Span::styled("      ❯ ", Style::default().fg(theme.brand)),
                         Span::styled(
                             format!("{}▏", state.input.buf),
@@ -1851,7 +1861,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
             for (index, label) in ["Yes", "No"].iter().enumerate() {
                 let focused = index == state.cursor;
                 let chosen = state.selected.get(index).copied().unwrap_or(false);
-                lines.push(Line::from(vec![
+                bottom.push(Line::from(vec![
                     Span::styled(
                         if focused { "▸ " } else { "  " }.to_string(),
                         Style::default().fg(theme.brand),
@@ -1868,7 +1878,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
             }
         }
         _ => {
-            lines.push(Line::from(vec![
+            bottom.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(theme.brand)),
                 Span::styled(
                     format!("{}▏", state.input.buf),
@@ -1878,8 +1888,8 @@ fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
         }
     }
     if let Some(error) = &ask.form.error {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
+        bottom.push(Line::default());
+        bottom.push(Line::from(Span::styled(
             error.clone(),
             Style::default().fg(theme.err),
         )));
@@ -1887,24 +1897,72 @@ fn draw_elicitation_form(f: &mut Frame, app: &App, screen: Rect) {
 
     let cap_w = screen.width.saturating_sub(4).max(24);
     let w = (content_width as u16 + 4).min(cap_w);
-    let h = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    // The pane gets whatever rows the terminal leaves after the fixed top /
+    // bottom and the border; overscroll clamps to the last content row.
+    let budget = screen.height.saturating_sub(2) as usize;
+    let base = top.len() + bottom.len() + 2;
+    let desc_len = desc.as_ref().map_or(0, Vec::len);
+    let middle_h = desc_len.min(budget.saturating_sub(base));
+    let max_scroll = if middle_h == 0 {
+        0
+    } else {
+        desc_len.saturating_sub(middle_h)
+    };
+    let scroll = ask.scroll.min(max_scroll) as u16;
+    // Normalize the stored offset so scrolling back up starts from the
+    // visible bottom (End parks at `usize::MAX` until the next draw).
+    ask.scroll = ask.scroll.min(max_scroll);
+    let h = (base + middle_h).min(budget) as u16;
     let x = screen.x + (screen.width.saturating_sub(w)) / 2;
     let y = screen.y + (screen.height.saturating_sub(h)) / 3;
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
     let count = ask.form.fields.len();
-    let title = format!(
-        " ask · {}/{} · enter next/submit · tab skip · esc cancel ",
-        ask.form.index + 1,
-        count,
-    );
+    let title = if max_scroll > 0 {
+        format!(
+            " ask · {}/{} · pgup/pgdn/end scroll · enter next/submit · tab skip · esc cancel ",
+            ask.form.index + 1,
+            count,
+        )
+    } else {
+        format!(
+            " ask · {}/{} · enter next/submit · tab skip · esc cancel ",
+            ask.form.index + 1,
+            count,
+        )
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(title, Style::default().fg(theme.caption)))
         .style(Style::default().bg(theme.panel));
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let top_h = top.len().min(inner.height as usize);
+    f.render_widget(
+        Paragraph::new(top),
+        Rect::new(inner.x, inner.y, inner.width, top_h as u16),
+    );
+    if let Some(lines) = desc {
+        let middle = Rect::new(
+            inner.x,
+            inner.y.saturating_add(top_h as u16),
+            inner.width,
+            middle_h as u16,
+        );
+        f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), middle);
+    }
+    let bottom_h = inner.height as usize - top_h - middle_h;
+    f.render_widget(
+        Paragraph::new(bottom),
+        Rect::new(
+            inner.x,
+            inner.y.saturating_add((top_h + middle_h) as u16),
+            inner.width,
+            bottom_h as u16,
+        ),
+    );
 }
 
 /// Welcome banner: Martty logo, project URL, session facts. Shown while
@@ -3104,9 +3162,11 @@ mod tests {
         });
         let frame = dump_frame(&mut app, 160, 30);
         // The plan review renders through the full markdown pipeline: the
-        // heading loses its `#` markers but the task list survives.
+        // heading loses its `#` markers, checkboxes become status glyphs,
+        // and the task list survives.
         assert!(frame.contains("Plan · 1/2"), "heading:\n{frame}");
-        assert!(frame.contains("- [x] Inspect"), "task list:\n{frame}");
+        assert!(frame.contains("✓ Inspect"), "checked item:\n{frame}");
+        assert!(frame.contains("○ Implement"), "pending item:\n{frame}");
         assert!(frame.contains("Implement"), "pending item:\n{frame}");
         // Wide terminals: the review pane exceeds the old 84-column cap.
         let title_line = frame
@@ -3160,6 +3220,7 @@ mod tests {
                     },
                 }],
             }),
+            scroll: 0,
             reply: None,
         });
 
@@ -3173,5 +3234,366 @@ mod tests {
         assert!(frame.contains("Local"), "choice\n{frame}");
         assert!(frame.contains("Other"), "custom choice\n{frame}");
         assert!(frame.contains("enter"), "keyboard affordance\n{frame}");
+    }
+}
+
+#[cfg(test)]
+mod rpc_probe {
+    use super::*;
+    use crate::runtime::RuntimeConfig;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    use std::sync::mpsc;
+
+    fn probe_app() -> App {
+        let cfg = RuntimeConfig {
+            bin: "dsh-runtime".into(),
+            cordis: "cordis".into(),
+            workspace: "/w".into(),
+            session_root: std::env::temp_dir()
+                .join(format!("dsh-tui-rpc-probe-{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (tx, _rx) = mpsc::channel();
+        App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx)
+    }
+
+    fn push_view(app: &mut App, ctl: &crate::controller::Controller, text: &str) {
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "view",
+                        "id": "plan-view",
+                        "title": "Plan",
+                        "nodes": [{ "id": "content", "kind": "markdown", "text": text }]
+                    }
+                }),
+            },
+            ctl,
+        );
+    }
+
+    #[test]
+    fn real_rpc_path_renders_markdown_and_scrolls() {
+        use crate::controller::test_controller;
+        let mut app = probe_app();
+        app.show_banner = false;
+        let (ctl, _commands) = test_controller();
+        let long = (0..80)
+            .map(|i| format!("- [{}] task {i:02}", if i % 3 == 0 { 'x' } else { ' ' }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        push_view(&mut app, &ctl, &format!("## Plan · 27/80\n\n{long}"));
+        assert!(app.view_overlay.is_some(), "view opened via RPC");
+
+        let frame = dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("Plan · 27/80"), "heading rendered:\n{frame}");
+        assert!(frame.contains("task 00"), "task list rendered:\n{frame}");
+        assert!(frame.contains("✓ task 00"), "checked glyph:\n{frame}");
+        assert!(frame.contains("○ task 01"), "open glyph:\n{frame}");
+
+        let before = app.view_overlay.as_ref().unwrap().scroll;
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        let after = app.view_overlay.as_ref().unwrap().scroll;
+        assert_eq!(after, before + 1, "Down scrolls the view");
+        let frame2 = dump_frame(&mut app, 100, 30);
+        assert!(
+            !frame2.lines().any(|l| l.contains("Plan · 27/80")),
+            "scrolling pushed the heading out:\n{frame2}"
+        );
+        assert!(
+            frame2.contains("task 02"),
+            "content followed the scroll:\n{frame2}"
+        );
+    }
+
+    #[test]
+    fn arrow_keys_with_modifiers_still_scroll_the_view() {
+        use crate::controller::test_controller;
+        let mut app = probe_app();
+        app.show_banner = false;
+        let (ctl, _commands) = test_controller();
+        push_view(
+            &mut app,
+            &ctl,
+            &format!("## Plan\n\n{}", (0..60).map(|i| format!("- [ ] task {i:02}")).collect::<Vec<_>>().join("\n")),
+        );
+        let before = app.view_overlay.as_ref().unwrap().scroll;
+        // Some terminals report arrows with modifier bits (kitty keyboard
+        // protocol); those must still scroll the view.
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            app.handle(
+                crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                    KeyCode::Down,
+                    modifiers,
+                ))),
+                &ctl,
+            );
+        }
+        assert_eq!(
+            app.view_overlay.as_ref().unwrap().scroll,
+            before + 3,
+            "modified arrows scroll"
+        );
+    }
+
+    #[test]
+    fn wheel_scrolls_the_view_overlay() {
+        use crate::controller::test_controller;
+        let mut app = probe_app();
+        app.show_banner = false;
+        let (ctl, _commands) = test_controller();
+        push_view(
+            &mut app,
+            &ctl,
+            &format!("## Plan\n\n{}", (0..60).map(|i| format!("- [ ] task {i:02}")).collect::<Vec<_>>().join("\n")),
+        );
+        let before = app.view_overlay.as_ref().unwrap().scroll;
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 50,
+                row: 15,
+                modifiers: KeyModifiers::NONE,
+            })),
+            &ctl,
+        );
+        assert_eq!(
+            app.view_overlay.as_ref().unwrap().scroll,
+            before + 3,
+            "wheel scrolls the view"
+        );
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 50,
+                row: 15,
+                modifiers: KeyModifiers::NONE,
+            })),
+            &ctl,
+        );
+        assert_eq!(
+            app.view_overlay.as_ref().unwrap().scroll,
+            before,
+            "wheel up reverses the view scroll"
+        );
+    }
+
+    #[test]
+    fn end_clamps_the_view_to_the_last_content_row() {
+        use crate::controller::test_controller;
+        let mut app = probe_app();
+        app.show_banner = false;
+        let (ctl, _commands) = test_controller();
+        let long = (0..80)
+            .map(|i| format!("- [ ] task {i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        push_view(&mut app, &ctl, &format!("## Plan\n\n{long}"));
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::End,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        let frame = dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("task 79"), "bottom row visible:\n{frame}");
+        // Overscroll stays clamped: End then more Down shows no blank tail.
+        for _ in 0..10 {
+            app.handle(
+                crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                    KeyCode::Down,
+                    KeyModifiers::NONE,
+                ))),
+                &ctl,
+            );
+        }
+        let frame2 = dump_frame(&mut app, 100, 30);
+        assert!(frame2.contains("task 79"), "still at the bottom:\n{frame2}");
+        assert!(
+            frame2.lines().any(|l| l.contains("task 79")),
+            "last row remains visible:\n{frame2}"
+        );
+    }
+
+    #[test]
+    fn plan_review_elicitation_renders_markdown_and_scrolls() {
+        use crate::controller::test_controller;
+        let mut app = probe_app();
+        app.show_banner = false;
+        let (ctl, _commands) = test_controller();
+        // The real plan-review path: dsh-acp folds userQuestions into one
+        // standard ACP form field whose description carries the full plan
+        // markdown (question + detail).
+        let detail = (0..60)
+            .map(|i| format!("- [{}] step {i:02}", if i == 0 { 'x' } else { ' ' }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let request: agent_client_protocol::schema::v1::CreateElicitationRequest =
+            serde_json::from_value(serde_json::json!({
+                "mode": "form",
+                "sessionId": "s1",
+                "message": "The agent needs your input.",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "question_0": {
+                            "type": "string",
+                            "title": "Plan review",
+                            "description": format!(
+                                "Approve this plan and leave plan mode?\n\n# Implementation Plan\n\n{detail}"
+                            ),
+                            "oneOf": [
+                                { "const": "option_0", "title": "Approve" },
+                                { "const": "option_1", "title": "Keep planning" },
+                                { "const": "custom_0", "title": "Other" }
+                            ]
+                        },
+                        "question_0_custom": {
+                            "type": "string",
+                            "title": "Other",
+                            "description": "Type a custom answer."
+                        }
+                    },
+                    "required": ["question_0"]
+                }
+            }))
+            .expect("standard ACP form");
+        let form = crate::elicitation::form_from_request(&request).expect("supported form");
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        app.handle(crate::bus::AppEvent::ElicitationAsk { form, reply: tx }, &ctl);
+        assert!(app.elicitation_ask.is_some(), "elicitation opened");
+
+        let frame = dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("Plan review"), "field title:\n{frame}");
+        assert!(
+            frame.contains("Implementation Plan"),
+            "markdown heading rendered:\n{frame}"
+        );
+        assert!(
+            !frame.contains("# Implementation Plan"),
+            "heading markers dropped:\n{frame}"
+        );
+        assert!(frame.contains("✓ step 00"), "task glyph:\n{frame}");
+        assert!(
+            frame.contains("Approve") && frame.contains("Keep planning"),
+            "answers pinned at the bottom:\n{frame}"
+        );
+        assert!(
+            frame.contains("pgup/pgdn/end scroll"),
+            "scroll affordance in the title:\n{frame}"
+        );
+
+        // PageDown scrolls the markdown pane; the answers stay pinned.
+        let before = app.elicitation_ask.as_ref().unwrap().scroll;
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::PageDown,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        assert_eq!(
+            app.elicitation_ask.as_ref().unwrap().scroll,
+            before + 5,
+            "PageDown scrolls the description pane"
+        );
+        let frame2 = dump_frame(&mut app, 100, 30);
+        assert!(
+            frame2.contains("Approve"),
+            "answers stay pinned while scrolling:\n{frame2}"
+        );
+
+        // End reaches the last row and clamps there; scrolling back up must
+        // start from the visible bottom, not from the `usize::MAX` sentinel.
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::End,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        let frame3 = dump_frame(&mut app, 100, 30);
+        assert!(frame3.contains("step 59"), "bottom row visible:\n{frame3}");
+        assert!(
+            frame3.contains("Approve"),
+            "answers visible at the bottom:\n{frame3}"
+        );
+        let at_bottom = app.elicitation_ask.as_ref().unwrap().scroll;
+        assert!(at_bottom < 1000, "End offset normalized by the draw:\n{at_bottom}");
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::PageUp,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        assert_eq!(
+            app.elicitation_ask.as_ref().unwrap().scroll,
+            at_bottom.saturating_sub(5),
+            "PageUp scrolls back up after End"
+        );
+        let frame4 = dump_frame(&mut app, 100, 30);
+        assert!(
+            !frame4.contains("step 59"),
+            "scrolled up from the bottom:\n{frame4}"
+        );
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 50,
+                row: 15,
+                modifiers: KeyModifiers::NONE,
+            })),
+            &ctl,
+        );
+        assert_eq!(
+            app.elicitation_ask.as_ref().unwrap().scroll,
+            at_bottom - 8,
+            "wheel scrolls the description pane"
+        );
+
+        // Up/Down still move the option cursor; Enter answers the form.
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        app.handle(
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        match rx.try_recv() {
+            Ok(crate::elicitation::ElicitationReply::Accepted(values)) => {
+                assert_eq!(
+                    values.get("question_0"),
+                    Some(&crate::elicitation::ElicitationValue::String(
+                        "option_1".into()
+                    )),
+                    "Down + Enter selected Keep planning"
+                );
+            }
+            other => panic!("expected the accepted form reply, got {other:?}"),
+        }
     }
 }

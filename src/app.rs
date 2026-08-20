@@ -606,6 +606,9 @@ pub struct PermissionAskOverlay {
 /// One live ACP form elicitation. Its editor is separate from the composer.
 pub struct ElicitationAskOverlay {
     pub form: crate::elicitation::ElicitationFormState,
+    /// Scroll offset of the markdown description pane (render clamps it to
+    /// the actual content height, so `usize::MAX` reliably reaches the end).
+    pub scroll: usize,
     pub(crate) reply: Option<tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>>,
 }
 
@@ -1864,6 +1867,7 @@ impl App {
             AppEvent::ElicitationAsk { form, reply } => {
                 self.elicitation_ask = Some(ElicitationAskOverlay {
                     form: crate::elicitation::ElicitationFormState::new(form),
+                    scroll: 0,
                     reply: Some(reply),
                 });
                 self.needs_redraw = true;
@@ -2021,8 +2025,24 @@ impl App {
     /// bypasses capture in most terminals → native selection still works.
     fn handle_mouse(&mut self, mouse: MouseEvent, ctl: &Controller) {
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.mouse_scroll(3, mouse.column, mouse.row),
-            MouseEventKind::ScrollDown => self.mouse_scroll(-3, mouse.column, mouse.row),
+            MouseEventKind::ScrollUp => {
+                if self.elicitation_ask.is_some() {
+                    self.elicitation_scroll_by(-3);
+                } else if self.view_overlay.is_some() {
+                    self.view_scroll_by(-3);
+                } else {
+                    self.mouse_scroll(3, mouse.column, mouse.row);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.elicitation_ask.is_some() {
+                    self.elicitation_scroll_by(3);
+                } else if self.view_overlay.is_some() {
+                    self.view_scroll_by(3);
+                } else {
+                    self.mouse_scroll(-3, mouse.column, mouse.row);
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
                 if let Some(action) = self
@@ -2223,6 +2243,34 @@ impl App {
         self.scroll_by(delta);
     }
 
+    /// Scroll the open plugin view overlay (wheel and keyboard share this
+    /// path). The renderer clamps to the actual content height, so a large
+    /// value (End) reliably reaches the bottom.
+    fn view_scroll_by(&mut self, delta: i64) {
+        if let Some(view) = self.view_overlay.as_mut() {
+            if delta < 0 {
+                view.scroll = view.scroll.saturating_sub(delta.unsigned_abs() as usize);
+            } else {
+                view.scroll = view.scroll.saturating_add(delta as usize);
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Scroll the markdown description pane of the open ACP elicitation form
+    /// (wheel and keyboard share this path). The renderer clamps to the
+    /// visible pane height, so `usize::MAX` (End) reaches the last row.
+    fn elicitation_scroll_by(&mut self, delta: i64) {
+        if let Some(ask) = self.elicitation_ask.as_mut() {
+            if delta < 0 {
+                ask.scroll = ask.scroll.saturating_sub(delta.unsigned_abs() as usize);
+            } else {
+                ask.scroll = ask.scroll.saturating_add(delta as usize);
+            }
+            self.needs_redraw = true;
+        }
+    }
+
     /// Toggle a tool between its collapsed viewport and full expansion.
     fn toggle_tool(&mut self, ci: usize) {
         let label = {
@@ -2397,6 +2445,44 @@ impl App {
     }
 
     fn handle_view_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        // Scroll keys work regardless of modifier bits: terminals that
+        // report arrows with modifiers (kitty keyboard protocol and friends)
+        // must still scroll the view. The view has no other arrow bindings.
+        match key.code {
+            KeyCode::Up => {
+                self.view_scroll_by(-1);
+                return;
+            }
+            KeyCode::Down => {
+                self.view_scroll_by(1);
+                return;
+            }
+            KeyCode::PageUp => {
+                self.view_scroll_by(-5);
+                return;
+            }
+            KeyCode::PageDown => {
+                self.view_scroll_by(5);
+                return;
+            }
+            KeyCode::Home => {
+                if let Some(view) = self.view_overlay.as_mut() {
+                    view.scroll = 0;
+                    self.needs_redraw = true;
+                }
+                return;
+            }
+            KeyCode::End => {
+                // Render clamps to the content height, so `usize::MAX` is
+                // reliably the bottom of the view.
+                if let Some(view) = self.view_overlay.as_mut() {
+                    view.scroll = usize::MAX;
+                    self.needs_redraw = true;
+                }
+                return;
+            }
+            _ => {}
+        }
         if key.modifiers != KeyModifiers::NONE {
             return;
         }
@@ -2413,18 +2499,6 @@ impl App {
                     value: None,
                 });
             }
-            return;
-        }
-        let Some(view) = self.view_overlay.as_mut() else {
-            return;
-        };
-        match key.code {
-            KeyCode::Up => view.scroll = view.scroll.saturating_sub(1),
-            KeyCode::Down => view.scroll = view.scroll.saturating_add(1),
-            KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(5),
-            KeyCode::PageDown => view.scroll = view.scroll.saturating_add(5),
-            KeyCode::Home => view.scroll = 0,
-            _ => {}
         }
     }
 
@@ -2725,10 +2799,39 @@ impl App {
     }
 
     fn handle_elicitation_key(&mut self, key: KeyEvent) {
-        let reply = self
-            .elicitation_ask
-            .as_mut()
-            .and_then(|ask| ask.form.handle_key(key));
+        let Some(ask) = &mut self.elicitation_ask else {
+            return;
+        };
+        // The description pane scrolls without touching the form: PageUp /
+        // PageDown always, Home / End only while the field is not a text
+        // editor (typed answers keep their cursor keys). The render clamps
+        // to the visible pane, so End reliably reaches the last row.
+        let editing_text = ask.form.current_is_text();
+        match key.code {
+            KeyCode::PageUp => {
+                ask.scroll = ask.scroll.saturating_sub(5);
+                return;
+            }
+            KeyCode::PageDown => {
+                ask.scroll = ask.scroll.saturating_add(5);
+                return;
+            }
+            KeyCode::Home if !editing_text => {
+                ask.scroll = 0;
+                return;
+            }
+            KeyCode::End if !editing_text => {
+                ask.scroll = usize::MAX;
+                return;
+            }
+            _ => {}
+        }
+        let before = ask.form.index;
+        let reply = ask.form.handle_key(key);
+        if ask.form.index != before {
+            // A new field owns a fresh pane; don't carry the old offset.
+            ask.scroll = 0;
+        }
         if let Some(reply) = reply {
             self.finish_elicitation(reply);
         }
