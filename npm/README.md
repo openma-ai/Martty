@@ -27,7 +27,7 @@ missing profile and installs the TUI plus its ACP dependency; no global
 
 ## Migrating from the scoped package
 
-`martty` is the recommended package name. Starting with `0.2.12`, it and the
+`martty` is the recommended package name. Starting with `0.2.13`, it and the
 legacy `@openma/deepseek-harness-tui` package are published by the same CI run
 with identical versions and artifacts. Existing scoped-package installs remain
 supported. To switch package names:

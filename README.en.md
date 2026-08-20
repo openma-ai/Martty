@@ -61,7 +61,7 @@ versions, so existing installs do not need to migrate immediately.
 
 ### Migrating from the legacy package name
 
-`martty` is the new recommended package name. Starting with `0.2.12`, `martty`
+`martty` is the new recommended package name. Starting with `0.2.13`, `martty`
 and `@openma/deepseek-harness-tui` are published by the same CI run with the
 same version and artifacts; the scoped name remains as a compatibility alias.
 To switch, replace only the package spec in the `tui` profile:

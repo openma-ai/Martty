@@ -55,7 +55,7 @@ TUI 及其 ACP 依赖，不需要全局安装 `dsh-tui`，也不需要另装 pnp
 
 ### 从旧包名迁移
 
-`martty` 是新的推荐包名。从 `0.2.12` 开始，`martty` 和
+`martty` 是新的推荐包名。从 `0.2.13` 开始，`martty` 和
 `@openma/deepseek-harness-tui` 由同一条 CI 以相同版本、相同产物发布；
 旧包名作为兼容别名保留。如需切换，只替换 `tui` profile 中的包规格：
 

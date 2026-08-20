@@ -71,7 +71,7 @@ dsh plugin --profile tui remove @openma/deepseek-harness-tui
 dsh plugin --profile tui add martty@latest
 ```
 
-从 `0.2.12` 开始，两个包名由同一条 CI 发布相同版本和产物。迁移不改变
+从 `0.2.13` 开始，两个包名由同一条 CI 发布相同版本和产物。迁移不改变
 `dsh-tui` / `dsb` 命令、`tui` profile、配置或会话数据；旧包名也会继续支持。
 
 ## 5. 卸载（可选）
