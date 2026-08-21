@@ -8522,6 +8522,8 @@ mod palette_tests {
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "nord" => include_str!("../docs/fixtures/nord.v0.json"),
             "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
+            "ghostty" => include_str!("../docs/fixtures/ghostty.v0.json"),
+            "one" => include_str!("../docs/fixtures/one.v0.json"),
             _ => panic!("unknown gallery fixture {id}"),
         };
         let palette: serde_json::Value = serde_json::from_str(fixture).unwrap();
@@ -8622,7 +8624,7 @@ mod palette_tests {
     #[test]
     fn slash_theme_switches_between_gallery_packs() {
         let (mut app, ctl, _rx) = test_app();
-        for id in ["ayu", "nord", "nvim"] {
+        for id in ["ayu", "nord", "nvim", "ghostty", "one"] {
             app.handle(
                 AppEvent::Rpc {
                     method: crate::cordis::THEME_UPDATE.into(),
@@ -8658,6 +8660,31 @@ mod palette_tests {
         );
         assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
         assert_eq!(app.theme.brand, Color::Rgb(166, 219, 255)); // #A6DBFF Nvim Dark blue
+        app.run_slash("theme", "ghostty", &ctl);
+        assert_eq!(app.active_palette_id, "ghostty");
+        assert_eq!(app.theme.brand, Color::Rgb(130, 162, 190)); // #82A2BE Ghostty blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(66, 113, 174)); // #4271AE Tomorrow blue
+        app.run_slash("theme", "one", &ctl);
+        assert_eq!(app.active_palette_id, "one");
+        // Mode (Light) persists, so one shows its light map.
+        assert_eq!(app.theme.brand, Color::Rgb(47, 90, 243)); // #2F5AF3 One Light blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
+        assert_eq!(app.theme.brand, Color::Rgb(97, 175, 239)); // #61AFEF One Dark blue
     }
 
     #[test]

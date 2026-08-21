@@ -355,6 +355,8 @@ const GALLERY = [
   ['ayu', 'Ayu'],
   ['nord', 'Nord'],
   ['nvim', 'Nvim'],
+  ['ghostty', 'Ghostty'],
+  ['one', 'One'],
 ]
 
 test('npm gallery palettes match docs/fixtures v0.json', () => {
