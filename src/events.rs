@@ -721,6 +721,10 @@ pub fn skills_from_available_commands(commands: &Value) -> Vec<crate::bus::Skill
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+            input_hint: command
+                .pointer("/input/hint")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             config_action: command_config_action(command),
             client_command: command_client_action(command),
         });
@@ -1595,6 +1599,7 @@ mod tests {
         let commands = skills_from_available_commands(&json!([{
             "name": "plan",
             "description": "Enter or leave plan mode",
+            "input": { "hint": "on|off" },
             "_meta": {
                 "commandAction": {
                     "kind": "setConfigOption",
@@ -1613,6 +1618,7 @@ mod tests {
                 reset_value: Some("default".into()),
             })
         );
+        assert_eq!(commands[0].input_hint.as_deref(), Some("on|off"));
     }
 
     #[test]

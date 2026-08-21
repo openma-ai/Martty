@@ -50,11 +50,15 @@ facts only, also without touching token/timing accumulators.
 ## UI Presets and the two welcome slots
 
 `tuiPresets` composes several independent UI Plugin contributions into one
-saved choice; it is not an alias for Theme. The `mount` callback passed to
-`ctx.tuiPresets.register({ id, label }, mount)` may register a Theme, slots,
-pet, or other UI contributions and returns one disposer. `/ui` opens the native
-selector; `/ui <id>` switches directly and persists its id in
-`dsh-tui-settings.json`.
+saved choice. It lives on the Client tree, separate from Agent Presets that
+compose Host/Agent capabilities, and is not an alias for Theme. The `mount`
+callback passed to `ctx.tuiPresets.register({ id, label }, mount)` may register
+a Theme, slots, pet, or other UI contributions and returns one disposer. `/ui`
+opens the native single-select form, `/ui ` reuses the slash menu above the
+composer for candidates, and `/ui <id>` switches directly. The id persists in
+`dsh-tui-settings.json`. Creator can inspect `UiPresets` and adjacent Client
+services, generate a `code.client` Package that calls `tuiPresets.register`,
+and save/mount it; the new preset then appears in both selection paths.
 
 The builtin `default` (Martty) and `deepseek` UI Presets both fill two single
 root slots:
@@ -174,11 +178,22 @@ command-owned overlay instead of expanding the compact stats seat.
 
 ## Open: `tuiOverlay`
 
-`openSlider(options, handlers)` opens a numeric slider.
-`openView({ id, title, nodes })` opens a read-only `TuiNode[]` modal. Both share
-one modal seat and return a lifecycle-owned `close()` controller. Views scroll
+`openSlider(options, handlers)` opens a numeric slider;
+`openSelect(options, handlers)` opens an ordinary single-select form; and
+`openView({ id, title, nodes })` opens a read-only `TuiNode[]` modal. All three
+share one modal seat and return a lifecycle-owned `close()` controller. Views scroll
 with up/down and close through Enter or Escape; the primitive has no Plan-specific
 behavior.
+
+Local commands may declare
+`input: { hint, options: [{ value, label, description }] }` in
+`tuiCommands.register`. After `/name `, the Rust painter reuses the existing
+upward slash menu for those candidates. The returned disposer also exposes
+`update({ input })` so dynamic catalogs such as UI Presets can refresh them.
+Standard ACP `AvailableCommand.input` currently carries only `hint`, not an
+enumerated candidate list; Agent commands therefore expose the standard hint,
+while Client extensions or values derived from ACP config/catalog can provide
+actual candidates.
 
 ### Host data and polling
 

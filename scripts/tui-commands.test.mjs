@@ -113,3 +113,43 @@ test('late transport binding publishes one authoritative current catalog', () =>
     },
   }])
 })
+
+test('commands publish and refresh argument completion candidates', () => {
+  assert.equal(typeof commandsPlugin.installTuiCommands, 'function')
+  if (typeof commandsPlugin.installTuiCommands !== 'function') return
+
+  const sent = []
+  const commands = commandsPlugin.installTuiCommands(makeCtx(), {
+    notify(method, params) {
+      sent.push({ method, params })
+    },
+  })
+  const dispose = commands.register({
+    name: 'ui',
+    description: 'Switch UI preset',
+    input: {
+      hint: 'preset',
+      options: [{ value: 'default', label: 'Martty' }],
+    },
+  }, () => {})
+
+  assert.deepEqual(sent.at(-1).params.commands[0].input, {
+    hint: 'preset',
+    options: [{ value: 'default', label: 'Martty' }],
+  })
+
+  dispose.update({
+    input: {
+      hint: 'preset',
+      options: [
+        { value: 'default', label: 'Martty' },
+        { value: 'deepseek', label: 'DeepSeek', description: 'Classic harness UI' },
+      ],
+    },
+  })
+  assert.deepEqual(sent.at(-1).params.commands[0].input.options.at(-1), {
+    value: 'deepseek',
+    label: 'DeepSeek',
+    description: 'Classic harness UI',
+  })
+})

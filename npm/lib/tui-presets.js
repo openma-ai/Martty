@@ -121,6 +121,18 @@ export function installTuiPresets(ctx, options = {}) {
     if (next !== undefined) switchTo(next)
   }
 
+  function refreshCommandInput() {
+    stopCommand?.update?.({
+      input: {
+        hint: 'preset',
+        options: list().map((entry) => ({
+          value: entry.id,
+          label: entry.label,
+        })),
+      },
+    })
+  }
+
   function register(options, mountPreset) {
     if (disposed) throw new Error('tuiPresets: registry is disposed')
     if (options === null || typeof options !== 'object' || Array.isArray(options)) {
@@ -144,6 +156,7 @@ export function installTuiPresets(ctx, options = {}) {
     }
     const entry = { id: options.id, label: options.label, mount: mountPreset }
     entries.set(entry.id, entry)
+    refreshCommandInput()
     if (activeEntry === undefined || entry.id === preferredId) fallback()
 
     let stopped = false
@@ -158,6 +171,7 @@ export function installTuiPresets(ctx, options = {}) {
         releaseActive = undefined
       }
       entries.delete(entry.id)
+      refreshCommandInput()
       if (wasActive) fallback()
     }
   }
@@ -177,25 +191,19 @@ export function installTuiPresets(ctx, options = {}) {
     const id = args.trim().toLowerCase()
     if (id.length === 0) {
       const choices = list()
-      const selected = Math.max(0, choices.findIndex((entry) => entry.id === active()))
       presetSelector?.close()
-      presetSelector = ctx.tuiOverlay.openSlider({
+      presetSelector = ctx.tuiOverlay.openSelect({
         id: 'ui-preset',
         title: 'UI preset',
-        min: 0,
-        max: Math.max(1, choices.length - 1),
-        step: 1,
-        marks: choices.map((entry, index) => ({
-          value: index,
-          id: entry.id,
+        value: active(),
+        options: choices.map((entry) => ({
+          value: entry.id,
           label: entry.label,
         })),
-        snapToMarks: true,
-        value: selected,
       }, {
-        onSubmit(_value, mark) {
+        onSubmit(value) {
           presetSelector = undefined
-          if (mark?.id !== undefined) activate(mark.id)
+          activate(value)
         },
         onCancel() {
           presetSelector = undefined
@@ -205,6 +213,7 @@ export function installTuiPresets(ctx, options = {}) {
     }
     activate(id)
   })
+  refreshCommandInput()
 
   function dispose() {
     if (disposed) return

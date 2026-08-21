@@ -89,7 +89,8 @@ DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
 
 第三方能力是 client 树上的普通 Cordis 插件：声明所需 service，在 `apply` 中
 注册贡献，并随 fiber 卸载自动撤销。当前已经开放主题、根级右栏、本地命令、
-slider overlay、当前 ACP Session 配置事务和包内 Host/Client RPC；完整契约见
+slider / single-select / view overlay、UI Preset、当前 ACP Session 配置事务和包内
+Host/Client RPC；完整契约见
 [插件 API](docs/plugins.md)，完整方向见
 [完全插件化与自进化](#完全插件化与自进化)。`--demo-skin` 只挂载 gallery 包
 `ember`，不代表主题逻辑写进了本体。
@@ -146,8 +147,8 @@ dsh-tui --demo
   坐标；替换 renderer 不应改变插件 ABI。
 - **动态预览与持久组合分开：** `define/run` 负责即时预览，`stop/update/rollback`
   负责运行期生命周期；确认后的 Package 可以持久化。`AgentPreset` 继续只组合
-  agent 侧能力，未来由独立的 `ViewPreset` 组合 client/UI 插件。两者可以一起选择，
-  但分别存储、分别切换。
+  agent 侧能力；独立的 `UI Preset` 组合 theme、欢迎页 slot、pet 等 client/UI
+  contribution。两者分别存储、分别切换。
 - **Creator 闭环：** Creator 先 inspect 当前 Host/Client 的真实 service、slot、
   token 和 schema，再生成 `code.host`、`code.client` 或两者，运行后观察装载错误和
   渲染错误，继续修复、更新、回滚或保存。这才是“自进化”，不是让模型直接操作
@@ -158,15 +159,18 @@ dsh-tui --demo
 现在已经落地的是 ACP client 分层，以及同一条动态 Package 生命周期上的这些原语：
 
 - `tuiTheme` 与 `/theme` 单选 Plugin 席位；
-- `tuiSlots`、`chrome.right` 和 schema 校验后的 `TuiNode`；
-- 生命周期归属的本地 slash command 与原生 slider overlay；
+- `tuiSlots`、`welcome.hero`、`welcome.info`、两个 composer dock、`chrome.right`
+  和 schema 校验后的 `TuiNode`；
+- 生命周期归属的本地 slash command、可更新的参数候选，以及原生
+  slider / single-select / view overlay；
+- 持久化 `UI Preset`，内置 Martty 与 DeepSeek 两套欢迎页组合；
 - 从标准 ACP `configOptions` 投影出的当前 Session 配置目录和事务；
 - Client inspect/run、Package stop/start/retract，以及包内 Host/Client RPC；
 - 只在 Creator preset 中可见、但不依赖 ACP 注入的 TUI 开发 skill。
 
 这些能力同时服务静态插件与动态 `code.client`，不是为某个 demo 单独开的通道。
-仍在迁移的是更多 shell/conversation slot、form 等其他通用输入组件、完整的运行期
-诊断和 `ViewPreset`。因此“完全插件化”仍是目标架构；逐阶段状态以
+仍在迁移的是更多 shell/conversation slot、更多 form 字段类型和完整的运行期
+诊断。因此“完全插件化”仍是目标架构；逐阶段状态以
 [迁移计划](docs/migration.md) 为准。
 
 ### 与 Web 插件平台对照
@@ -176,10 +180,10 @@ dsh-tui --demo
 | Client runtime | 成熟的 React Cordis tree | Node Cordis client tree 已落地；Rust 只做语义 renderer，不成为第三棵树 |
 | UI 扩展 | 类型化 slot tree，覆盖会话、设置、工具卡等大量页面区域 | 当前开放 `chrome.right`；目标是用 `tuiSlots` 覆盖 shell 与 conversation，而不暴露终端坐标 |
 | Theme | `ThemeRuntime` 注册主题、叠加 token、运行时切换并持久化内置偏好 | `/theme` 作为单选 Plugin 开关，整体加载/替换贡献 palette 与其他能力的 Theme Plugin |
-| 交互组件 | 插件可贡献 React component | 已开放受 schema 约束的 `TuiNode`、本地 command 和 slider overlay；form 等继续按通用终端语义补齐 |
+| 交互组件 | 插件可贡献 React component | 已开放受 schema 约束的 `TuiNode`、本地 command 参数候选，以及 slider / single-select / view overlay；更多表单字段继续按通用终端语义补齐 |
 | 动态插件 | `code.host` + `code.client` 双半 Package，共用 Loader/fiber，支持 run、stop、update、rollback | inspect/run、主题、右栏、命令、overlay、配置事务与包内 RPC 已走统一 DSH Cordis ACP 扩展；继续补齐诊断与持久组合 |
 | 诊断与修复 | Client 装载和 React 渲染失败可回传 Creator，继续生成新版本 | 目标对齐相同闭环：装载、schema、绘制错误可观察且能更新或回滚 |
-| Preset | `AgentPreset` 组合 agent；Client 插件另行持久化 | 保持 AgentPreset 边界，新增独立 `ViewPreset` 管理终端视图组合 |
+| Preset | `AgentPreset` 组合 agent；Client 插件另行持久化 | 保持 AgentPreset 边界；独立 `UI Preset` 已可组合并持久切换终端 UI contribution |
 
 Web 今天的插件面更广、实现也更成熟。TUI 要对齐的是 Cordis 的组合方式、生命周期
 和 Creator 创造闭环，而不是把 React 或浏览器 DOM 搬进终端。
@@ -225,7 +229,8 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 | `ctrl+x` | 不取消当前回合，立即 steer 当前 agent |
 | `esc` | 打断当前回合（保留草稿）；空闲时清空草稿 |
 | `ctrl+c` | 有草稿先清除；空闲连按 2 次、运行中连按 5 次退出；不中断当前回合 |
-| `/` | 打开命令菜单并按前缀过滤；agent 广告的 skills 也在其中，选中后仍以 `/name ` prompt 发送 |
+| `/` | 打开上拉命令菜单并按前缀过滤；输入 `/命令 ` 后同一菜单切成参数候选。Enter 选中并执行，Tab 只补全；agent 广告的 skills 仍以 `/name ` prompt 发送 |
+| `/ui` · `/ui ` | 直接回车打开普通 UI Preset 单选表单；尾随空格显示 Martty / DeepSeek 等上拉候选 |
 | `/model` · `/agent` | 选择 agent 广告的模型和 agent preset；`option+a` 不弹表单，直接轮换 agent |
 | `/auth` | ACP 登录（多种方法时弹出选择；否则 Terminal Auth 或 `authenticate` `_meta`）；会话中途 `auth_required` 也会打开同一界面；agent 的 `/login` 仍当 prompt |
 | `/permission` · `shift+tab` | 选择或轮换 agent 广告的权限模式 |
@@ -248,10 +253,42 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 独立 slot 构成：居中的 `welcome.hero`（`logo + hint`）和左下的
 `welcome.info`（版本、模型、workspace、session、凭据、访问说明与帮助）。两套
 preset 当前复用同一套动态信息 renderer，但该区域可由插件独立替换。
-`/ui` 打开原生 UI Preset 选择器；也可直接用 `/ui deepseek` 打开经典
+`/ui` 打开原生 UI Preset 单选表单；输入 `/ui ` 会在 composer 上方复用 slash
+菜单显示候选。也可直接用 `/ui deepseek` 打开经典
 DeepSeek Harness 大鲸鱼与 wordmark，`/ui default`
 切回 Martty；选择持久化到 `dsh-tui-settings.json`，不写入对话记录。Martty 的
 `MAR` 使用海洋蓝白渐变，`TTY` 使用终端主题的黑/白前景色。
+
+### UI Preset 与 Agent Preset
+
+两者都借鉴同一种“把多个插件 contribution 收敛成一个可选组合”的方式，但作用在
+不同的 Cordis 树上，不能混为一个 preset：
+
+| | Agent Preset | UI Preset |
+|---|---|---|
+| 组合什么 | Host/Agent 的 system prompt、工具、skills 与运行能力 | Client UI 的 theme、slot、pet、command 与 overlay |
+| 切换入口 | `/agent` | `/ui` |
+| 当前内置 | standard、code、minimal、cordis 等 Agent 组合 | `default`（Martty）、`deepseek` |
+| 持久化 | 会话/Agent 选择 | `dsh-tui-settings.json` 中的界面选择 |
+
+Creator 模式可以 inspect `UiPresets`、`Theme`、`Slots`、`Commands` 和 `Overlay`
+的真实契约，生成包含 `code.client` 的动态 Package，并在其中调用
+`tuiPresets.register({ id, label }, mount)` 创建新的 UI Preset。`mount` 组合该
+Preset 所需的 theme、欢迎页 slot、pet 或其他 UI contribution；Package 保存并挂载后，
+新 Preset 自动进入 `/ui` 表单和 `/ui ` 上拉候选，也沿用同一套切换、持久化与卸载
+生命周期。Creator 创建的是普通 Client Plugin 组合，不会取得 TTY、绝对坐标或绕过
+slot/overlay 协议。
+
+#### 回到经典 DeepSeek View
+
+启动 `dsh --profile tui` 后，可以直接输入 `/ui deepseek`；也可以输入 `/ui` 后回车，
+在普通单选表单中选择 DeepSeek。若在 `/ui` 后再输入一个空格（即 `/ui `），候选会在
+composer 上方弹出，选中 DeepSeek 即可。
+
+经典 View 会恢复旧 DeepSeek Harness 的响应式鲸鱼、`DEEPSEEK HARNESS` wordmark 和
+提示文字，同时保留当前 Martty 的插件化壳、ACP 会话与动态信息区。选择会持久化，
+下次启动仍是 DeepSeek。使用 `/ui default`（或在 `/ui` 表单选择 Martty）即可切回
+蓝白 `MARTTY`。旧实验命令 `/deepseeklogo` 已收敛为 UI Preset，不再使用。
 
 <p align="center">
   <img src="assets/screenshots/skills-menu.png" width="720"

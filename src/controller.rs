@@ -383,12 +383,14 @@ fn controller_loop(
                             SkillInfo {
                                 name: "commit-helper".into(),
                                 description: "draft a conventional commit from the diff".into(),
+                                input_hint: None,
                                 config_action: None,
                                 client_command: false,
                             },
                             SkillInfo {
                                 name: "code-review".into(),
                                 description: "structured review of the working tree".into(),
+                                input_hint: None,
                                 config_action: None,
                                 client_command: false,
                             },
@@ -860,6 +862,7 @@ fn parse_skills(value: &Value) -> Vec<SkillInfo> {
             out.push(SkillInfo {
                 name: name.to_string(),
                 description,
+                input_hint: None,
                 config_action: None,
                 client_command: false,
             });

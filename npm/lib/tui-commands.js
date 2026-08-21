@@ -42,14 +42,60 @@ function validateCommand(options) {
   if (typeof options.description !== 'string' || options.description.length === 0) {
     throw new Error('tuiCommands.register: description must be a non-empty string')
   }
-  const extra = Object.keys(options).filter((key) => key !== 'name' && key !== 'description')
+  const extra = Object.keys(options).filter((key) => !['name', 'description', 'input'].includes(key))
   if (extra.length > 0) {
     throw new Error(`tuiCommands.register: unknown option field(s) ${extra.join(', ')}`)
   }
-  return {
+  const command = {
     name: options.name,
     description: options.description,
   }
+  if (options.input !== undefined) command.input = validateInput(options.input)
+  return command
+}
+
+function validateInput(input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('tuiCommands.register: input must be an object')
+  }
+  const extra = Object.keys(input).filter((key) => !['hint', 'options'].includes(key))
+  if (extra.length > 0) {
+    throw new Error(`tuiCommands.register: unknown input field(s) ${extra.join(', ')}`)
+  }
+  if (typeof input.hint !== 'string' || input.hint.length === 0) {
+    throw new Error('tuiCommands.register: input.hint must be a non-empty string')
+  }
+  if (input.options !== undefined && !Array.isArray(input.options)) {
+    throw new Error('tuiCommands.register: input.options must be an array')
+  }
+  const normalized = { hint: input.hint }
+  if (input.options !== undefined) {
+    normalized.options = input.options.map((option) => {
+      if (option === null || typeof option !== 'object' || Array.isArray(option)) {
+        throw new Error('tuiCommands.register: each input option must be an object')
+      }
+      const unknown = Object.keys(option)
+        .filter((key) => !['value', 'label', 'description'].includes(key))
+      if (unknown.length > 0) {
+        throw new Error(`tuiCommands.register: unknown input option field(s) ${unknown.join(', ')}`)
+      }
+      if (typeof option.value !== 'string' || option.value.length === 0) {
+        throw new Error('tuiCommands.register: input option value must be a non-empty string')
+      }
+      if (option.label !== undefined && typeof option.label !== 'string') {
+        throw new Error('tuiCommands.register: input option label must be a string')
+      }
+      if (option.description !== undefined && typeof option.description !== 'string') {
+        throw new Error('tuiCommands.register: input option description must be a string')
+      }
+      return {
+        value: option.value,
+        ...(option.label === undefined ? {} : { label: option.label }),
+        ...(option.description === undefined ? {} : { description: option.description }),
+      }
+    })
+  }
+  return normalized
 }
 
 /**
@@ -101,11 +147,24 @@ export function installTuiCommands(ctx, options = {}) {
       ? effectCtx.effect(setup, `tuiCommands.register(${JSON.stringify(command.name)})`)
       : setup()
     let disposed = false
-    return () => {
+    const dispose = () => {
       if (disposed) return
       disposed = true
       return release?.()
     }
+    dispose.update = (patch) => {
+      if (disposed) return
+      if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('tuiCommands.register: update patch must be an object')
+      }
+      const unknown = Object.keys(patch).filter((key) => !['description', 'input'].includes(key))
+      if (unknown.length > 0) {
+        throw new Error(`tuiCommands.register: unknown update field(s) ${unknown.join(', ')}`)
+      }
+      entry.command = validateCommand({ ...entry.command, ...patch, name: entry.command.name })
+      if (entry.active) publish()
+    }
+    return dispose
   }
 
   async function dispatch(params) {

@@ -93,7 +93,10 @@ compose only in the Plugin code. The services do not imply one another:
 - **Commands:** register a local slash command. Registration publishes slash
   completion and keeps invocation out of the ACP prompt. Its availability is
   the registration's lifetime; Commands does not know about themes, overlays,
-  config categories, or Slots.
+  config categories, or Slots. Optional `input: { hint, options }` metadata
+  reuses the same upward slash menu after `/name `; each option has `value`
+  plus optional `label` and `description`. Call the returned disposer’s
+  `update({ input })` method when a dynamic candidate catalog changes.
 - **Slots:** register persistent native `TuiNode` content only when the user
   asked for persistent shell UI. Use stable node ids and update the existing
   contribution instead of creating parallel panels. Select the live seat from

@@ -19,6 +19,10 @@ class TuiOverlayService extends Service {
     return this.core.openSlider(options, handlers)
   }
 
+  openSelect(options, handlers) {
+    return this.core.openSelect(options, handlers)
+  }
+
   openView(options, handlers) {
     return this.core.openView(options, handlers)
   }
@@ -116,6 +120,50 @@ function validateView(input) {
   }
 }
 
+function validateSelect(input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('tuiOverlay.openSelect: options must be an object')
+  }
+  if (typeof input.id !== 'string' || input.id.length === 0) {
+    throw new Error('tuiOverlay.openSelect: id must be a non-empty string')
+  }
+  if (typeof input.title !== 'string' || input.title.length === 0) {
+    throw new Error('tuiOverlay.openSelect: title must be a non-empty string')
+  }
+  if (!Array.isArray(input.options) || input.options.length === 0) {
+    throw new Error('tuiOverlay.openSelect: options must be a non-empty array')
+  }
+  const values = new Set()
+  const options = input.options.map((option, index) => {
+    if (option === null || typeof option !== 'object' || Array.isArray(option)) {
+      throw new Error(`tuiOverlay.openSelect: options[${index}] must be an object`)
+    }
+    if (typeof option.value !== 'string' || option.value.length === 0) {
+      throw new Error(`tuiOverlay.openSelect: options[${index}].value must be a non-empty string`)
+    }
+    if (values.has(option.value)) {
+      throw new Error(`tuiOverlay.openSelect: duplicate value "${option.value}"`)
+    }
+    values.add(option.value)
+    if (typeof option.label !== 'string' || option.label.length === 0) {
+      throw new Error(`tuiOverlay.openSelect: options[${index}].label must be a non-empty string`)
+    }
+    if (option.description !== undefined && typeof option.description !== 'string') {
+      throw new Error(`tuiOverlay.openSelect: options[${index}].description must be a string`)
+    }
+    return {
+      value: option.value,
+      label: option.label,
+      ...(option.description === undefined ? {} : { description: option.description }),
+    }
+  })
+  const value = input.value === undefined ? options[0].value : input.value
+  if (typeof value !== 'string' || !values.has(value)) {
+    throw new Error('tuiOverlay.openSelect: value must match one option')
+  }
+  return { kind: 'select', id: input.id, title: input.title, value, options }
+}
+
 /**
  * @param {object} ctx
  * @param {{ notify?: (method: string, params: object) => void }} [options]
@@ -164,6 +212,17 @@ export function installTuiOverlay(ctx, options = {}) {
     return controllerFor(entry)
   }
 
+  function openSelect(options, handlers = {}) {
+    if (current !== null) {
+      throw new Error(`tuiOverlay.openSelect: overlay "${current.overlay.id}" is already open`)
+    }
+    const select = validateSelect(options)
+    const entry = { overlay: select, handlers, closed: false }
+    current = entry
+    publish(structuredClone(select))
+    return controllerFor(entry)
+  }
+
   function openView(options, handlers = {}) {
     const view = validateView(options)
     if (current !== null) {
@@ -205,6 +264,31 @@ export function installTuiOverlay(ctx, options = {}) {
       return handler?.()
     }
 
+    if (entry.overlay.kind === 'select') {
+      if (!['change', 'submit', 'cancel'].includes(params.event)) {
+        throw new Error(`tuiOverlay.dispatch: unknown select event "${String(params.event)}"`)
+      }
+      if (params.event !== 'cancel') {
+        if (typeof params.value !== 'string'
+          || !entry.overlay.options.some((option) => option.value === params.value)) {
+          throw new Error('tuiOverlay.dispatch: select value is not an option')
+        }
+        entry.overlay.value = params.value
+      }
+      if (params.event === 'change') {
+        return entry.handlers.onChange?.(entry.overlay.value)
+      }
+      const handler = params.event === 'submit'
+        ? entry.handlers.onSubmit
+        : entry.handlers.onCancel
+      entry.closed = true
+      if (current === entry) {
+        current = null
+        publish(null)
+      }
+      return handler?.(entry.overlay.value)
+    }
+
     const slider = entry.overlay
     const value = finite(params.value, 'event.value')
     if (value < slider.min || value > slider.max) {
@@ -239,10 +323,10 @@ export function installTuiOverlay(ctx, options = {}) {
     return current === null ? null : structuredClone(current.overlay)
   }
 
-  const core = { openSlider, openView, dispatch, active, bindNotify }
+  const core = { openSlider, openSelect, openView, dispatch, active, bindNotify }
   const service = typeof ctx.provide === 'function'
     ? new TuiOverlayService(ctx, core)
-    : { openSlider, openView, dispatch, active, bindNotify }
+    : { openSlider, openSelect, openView, dispatch, active, bindNotify }
   if (typeof ctx.provide !== 'function') ctx.tuiOverlay = service
   return service
 }

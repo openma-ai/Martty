@@ -513,12 +513,33 @@ pub struct SlashEntry {
     pub desc: String,
     pub skill: bool,
     pub plugin: bool,
+    /// Full composer text for an argument candidate. Command-name rows leave
+    /// this empty and retain the historical `/name ` tab completion.
+    pub completion: Option<String>,
 }
 
 #[derive(Clone, serde::Deserialize)]
 struct PluginCommand {
     name: String,
     description: String,
+    #[serde(default)]
+    input: Option<PluginCommandInput>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct PluginCommandInput {
+    hint: String,
+    #[serde(default)]
+    options: Vec<PluginCommandOption>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct PluginCommandOption {
+    value: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -537,7 +558,45 @@ struct PluginOverlaySnapshot {
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum PluginOverlay {
     Slider(SliderOverlay),
+    Select(SelectOverlay),
     View(ViewOverlay),
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SelectOverlay {
+    pub id: String,
+    pub title: String,
+    pub value: String,
+    pub options: Vec<SelectOption>,
+    #[serde(skip)]
+    pub sel: usize,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SelectOption {
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+fn select_initial_index(select: &SelectOverlay) -> Option<usize> {
+    if select.id.is_empty() || select.title.is_empty() || select.options.is_empty() {
+        return None;
+    }
+    let mut values = std::collections::HashSet::new();
+    for option in &select.options {
+        if option.value.is_empty()
+            || option.label.is_empty()
+            || !values.insert(option.value.as_str())
+        {
+            return None;
+        }
+    }
+    select
+        .options
+        .iter()
+        .position(|option| option.value == select.value)
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -847,6 +906,8 @@ pub struct App {
     pub elicitation_ask: Option<ElicitationAskOverlay>,
     /// Client Plugin modal rendered and driven by the native compositor.
     pub slider_overlay: Option<SliderOverlay>,
+    /// Client Plugin single-select form rendered by the native compositor.
+    pub select_overlay: Option<SelectOverlay>,
     /// Read-only Client Plugin modal rendered from the same semantic TuiNode tree.
     pub view_overlay: Option<ViewOverlay>,
     /// Images staged in the composer as inline `[image N]` chips living in
@@ -872,8 +933,12 @@ pub struct App {
     dynamic_plugins: Vec<crate::bus::DynamicPluginItem>,
     /// Last advertised composition select (`/agent`).
     last_presets: Vec<crate::bus::CatalogPreset>,
+    /// Last advertised ACP model select (`/model`).
+    last_models: Vec<crate::bus::CatalogModel>,
     /// Last advertised session modes (`/permission`, shift+tab).
     permission_choices: Vec<crate::bus::CatalogPreset>,
+    /// Last advertised effort catalog for the current model.
+    effort_choices: Vec<String>,
     pub tip: Option<(String, Instant)>,
     /// DSH_TUI_KEYDEBUG=1: echo every delivered key event in the tip row.
     key_debug: bool,
@@ -1166,6 +1231,7 @@ impl App {
             permission_ask: None,
             elicitation_ask: None,
             slider_overlay: None,
+            select_overlay: None,
             view_overlay: None,
             pending_images: crate::attachments::Staged::default(),
             att_chips: Vec::new(),
@@ -1177,7 +1243,9 @@ impl App {
             plugin_commands: Vec::new(),
             dynamic_plugins: Vec::new(),
             last_presets: Vec::new(),
+            last_models: Vec::new(),
             permission_choices: Vec::new(),
+            effort_choices: Vec::new(),
             tip: None,
             key_debug: std::env::var("DSH_TUI_KEYDEBUG").is_ok_and(|v| v == "1"),
             ambient_tip_idx: 0,
@@ -1444,8 +1512,11 @@ impl App {
     }
 
     pub fn slash_matches(&self) -> Vec<SlashEntry> {
-        if !self.input.buf.starts_with('/') || self.input.buf.contains(' ') {
+        if !self.input.buf.starts_with('/') {
             return Vec::new();
+        }
+        if let Some((name, arg)) = self.input.buf[1..].split_once(' ') {
+            return self.slash_argument_matches(name, arg);
         }
         let prefix = &self.input.buf[1..];
         let mut out: Vec<SlashEntry> = SLASH_COMMANDS
@@ -1457,6 +1528,7 @@ impl App {
                 desc: self.locale.command_desc(c.name, c.desc).to_string(),
                 skill: false,
                 plugin: false,
+                completion: None,
             })
             .collect();
         for command in &self.plugin_commands {
@@ -1465,10 +1537,15 @@ impl App {
             {
                 out.push(SlashEntry {
                     name: command.name.clone(),
-                    usage: format!("/{}", command.name),
+                    usage: command
+                        .input
+                        .as_ref()
+                        .map(|input| format!("/{} [{}]", command.name, input.hint))
+                        .unwrap_or_else(|| format!("/{}", command.name)),
                     desc: command.description.clone(),
                     skill: false,
                     plugin: true,
+                    completion: None,
                 });
             }
         }
@@ -1484,16 +1561,176 @@ impl App {
             {
                 out.push(SlashEntry {
                     name: s.name.clone(),
-                    usage: format!("/{}", s.name),
+                    usage: s
+                        .input_hint
+                        .as_ref()
+                        .map(|hint| format!("/{} {}", s.name, hint))
+                        .unwrap_or_else(|| format!("/{}", s.name)),
                     desc: s.description.clone(),
                     skill: !s.client_command,
                     plugin: s.client_command,
+                    completion: None,
                 });
             }
         }
         // An exact command must win over a longer name sharing its prefix.
         out.sort_by_key(|entry| entry.name != prefix);
         out
+    }
+
+    fn slash_argument_matches(&self, name: &str, arg: &str) -> Vec<SlashEntry> {
+        let prefix = arg.trim_start();
+        if prefix.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+
+        if !SLASH_COMMANDS.iter().any(|command| command.name == name) {
+            if let Some(command) = self
+                .plugin_commands
+                .iter()
+                .find(|command| command.name == name)
+            {
+                return command
+                    .input
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|input| input.options.iter())
+                    .filter(|option| option.value.starts_with(prefix))
+                    .map(|option| SlashEntry {
+                        name: name.to_string(),
+                        usage: option.label.clone().unwrap_or_else(|| option.value.clone()),
+                        desc: option.description.clone().unwrap_or_default(),
+                        skill: false,
+                        plugin: true,
+                        completion: Some(format!("/{name} {}", option.value)),
+                    })
+                    .collect();
+            }
+        }
+
+        self.builtin_argument_options(name)
+            .into_iter()
+            .filter(|(value, _, _)| value.starts_with(prefix))
+            .map(|(value, label, desc)| SlashEntry {
+                name: name.to_string(),
+                usage: label,
+                desc,
+                skill: false,
+                plugin: false,
+                completion: Some(format!("/{name} {value}")),
+            })
+            .collect()
+    }
+
+    fn builtin_argument_options(&self, name: &str) -> Vec<(String, String, String)> {
+        let plain =
+            |value: &str, desc: &str| (value.to_string(), value.to_string(), desc.to_string());
+        match name {
+            "model" => {
+                if !self.last_models.is_empty() {
+                    return self
+                        .last_models
+                        .iter()
+                        .map(|model| {
+                            (
+                                model.id.clone(),
+                                model.name.clone(),
+                                model.provider.clone(),
+                            )
+                        })
+                        .collect();
+                }
+                let mut ids = host_catalog_models().unwrap_or_else(|| {
+                    MODEL_PRESETS
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect()
+                });
+                if !ids.iter().any(|id| id == &self.cfg.model) {
+                    ids.insert(0, self.cfg.model.clone());
+                }
+                ids.into_iter()
+                    .map(|id| (id.clone(), id, String::new()))
+                    .collect()
+            }
+            "agent" if !self.last_presets.is_empty() => self
+                .last_presets
+                .iter()
+                .map(|preset| {
+                    (
+                        preset.id.clone(),
+                        preset.name.clone(),
+                        preset.description.clone(),
+                    )
+                })
+                .collect(),
+            "agent" => AGENT_MODES
+                .iter()
+                .map(|(id, label, desc)| {
+                    ((*id).to_string(), (*label).to_string(), (*desc).to_string())
+                })
+                .collect(),
+            "effort" if !self.effort_choices.is_empty() => self
+                .effort_choices
+                .iter()
+                .map(|effort| (effort.clone(), effort.clone(), String::new()))
+                .collect(),
+            "effort" => vec![
+                plain("off", "disable extended reasoning"),
+                plain("high", "high reasoning effort"),
+                plain("max", "maximum reasoning effort"),
+            ],
+            "permission" if !self.permission_choices.is_empty() => self
+                .permission_choices
+                .iter()
+                .map(|preset| {
+                    (
+                        preset.id.clone(),
+                        preset.name.clone(),
+                        preset.description.clone(),
+                    )
+                })
+                .collect(),
+            "permission" => PERMISSION_PRESETS
+                .iter()
+                .map(|(id, desc)| plain(id, desc))
+                .collect(),
+            "plan" => vec![
+                plain("on", "enable plan mode"),
+                plain("off", "disable plan mode"),
+            ],
+            "theme" => {
+                let mut choices = vec![
+                    plain("dark", "dark appearance"),
+                    plain("light", "light appearance"),
+                ];
+                choices.extend(self.palettes.iter().filter(|palette| palette.loaded).map(
+                    |palette| {
+                        (
+                            palette.id.clone(),
+                            palette.label.clone(),
+                            "palette pack".to_string(),
+                        )
+                    },
+                ));
+                choices
+            }
+            "auth" => self
+                .auth
+                .methods
+                .iter()
+                .map(|method| {
+                    (
+                        method.id.clone(),
+                        method.name.clone().unwrap_or_else(|| method.id.clone()),
+                        method.description.clone().unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            "lang" => vec![plain("zh", "中文"), plain("en", "English")],
+            "liang" => vec![plain("on", "show pet"), plain("off", "hide pet")],
+            _ => Vec::new(),
+        }
     }
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
@@ -1542,6 +1779,19 @@ impl App {
                 if method == crate::cordis::OVERLAY_UPDATE {
                     match serde_json::from_value::<PluginOverlaySnapshot>(params) {
                         Ok(snapshot) if snapshot.protocol == 0 => match snapshot.overlay {
+                            Some(PluginOverlay::Select(mut select)) => {
+                                if let Some(sel) = select_initial_index(&select) {
+                                    select.sel = sel;
+                                    self.slider_overlay = None;
+                                    self.view_overlay = None;
+                                    self.select_overlay = Some(select);
+                                } else {
+                                    self.show_tip("overlay ignored: invalid select");
+                                    self.slider_overlay = None;
+                                    self.select_overlay = None;
+                                    self.view_overlay = None;
+                                }
+                            }
                             Some(PluginOverlay::Slider(mut slider))
                                 if !slider.id.is_empty()
                                     && slider.min.is_finite()
@@ -1559,12 +1809,14 @@ impl App {
                                     }) =>
                             {
                                 slider.value = slider.value.clamp(slider.min, slider.max);
+                                self.select_overlay = None;
                                 self.view_overlay = None;
                                 self.slider_overlay = Some(slider);
                             }
                             Some(PluginOverlay::Slider(_)) => {
                                 self.show_tip("overlay ignored: invalid slider");
                                 self.slider_overlay = None;
+                                self.select_overlay = None;
                                 self.view_overlay = None;
                             }
                             Some(PluginOverlay::View(view))
@@ -1573,15 +1825,18 @@ impl App {
                                     && crate::slots::validate_node_tree(&view.nodes).is_ok() =>
                             {
                                 self.slider_overlay = None;
+                                self.select_overlay = None;
                                 self.view_overlay = Some(view);
                             }
                             Some(PluginOverlay::View(_)) => {
                                 self.show_tip("overlay ignored: invalid view");
                                 self.slider_overlay = None;
+                                self.select_overlay = None;
                                 self.view_overlay = None;
                             }
                             None => {
                                 self.slider_overlay = None;
+                                self.select_overlay = None;
                                 self.view_overlay = None;
                             }
                         },
@@ -1712,6 +1967,9 @@ impl App {
                         if !presets.is_empty() {
                             self.last_presets = presets.clone();
                         }
+                        if !models.is_empty() {
+                            self.last_models = models.clone();
+                        }
                         let mode_current = self.current_mode();
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
@@ -1793,6 +2051,9 @@ impl App {
                         }
                     }
                     CtlEvent::Efforts { efforts, default } => {
+                        if !efforts.is_empty() {
+                            self.effort_choices = efforts.clone();
+                        }
                         self.open_effort_picker(efforts, default);
                     }
                     CtlEvent::PresetSet { preset } => {
@@ -2560,6 +2821,58 @@ impl App {
         });
     }
 
+    fn handle_select_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+        if key.code == KeyCode::Enter {
+            if let Some(select) = self.select_overlay.take() {
+                let value = select.options[select.sel].value.clone();
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: select.id,
+                    event: "submit".into(),
+                    value: Some(serde_json::json!(value)),
+                });
+            }
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            if let Some(select) = self.select_overlay.take() {
+                let value = select.options[select.sel].value.clone();
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: select.id,
+                    event: "cancel".into(),
+                    value: Some(serde_json::json!(value)),
+                });
+            }
+            return;
+        }
+        let Some(select) = self.select_overlay.as_mut() else {
+            return;
+        };
+        let previous = select.sel;
+        match key.code {
+            KeyCode::Up => {
+                select.sel = select.sel.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                select.sel = (select.sel + 1).min(select.options.len() - 1);
+            }
+            KeyCode::Home => select.sel = 0,
+            KeyCode::End => select.sel = select.options.len() - 1,
+            _ => return,
+        }
+        if select.sel == previous {
+            return;
+        }
+        select.value = select.options[select.sel].value.clone();
+        ctl.send(Cmd::PluginOverlayEvent {
+            id: select.id.clone(),
+            event: "change".into(),
+            value: Some(serde_json::json!(select.value)),
+        });
+    }
+
     fn handle_key(&mut self, key: KeyEvent, ctl: &Controller) {
         self.needs_redraw = true;
         // DSH_TUI_KEYDEBUG=1: surface exactly what the terminal delivered
@@ -2582,6 +2895,11 @@ impl App {
 
         if self.view_overlay.is_some() {
             self.handle_view_key(key, ctl);
+            return;
+        }
+
+        if self.select_overlay.is_some() {
+            self.handle_select_key(key, ctl);
             return;
         }
 
@@ -2683,7 +3001,12 @@ impl App {
                 let menu = self.slash_matches();
                 if !menu.is_empty() {
                     let entry = &menu[self.slash_sel.min(menu.len() - 1)];
-                    self.input.set(format!("/{} ", entry.name));
+                    self.input.set(
+                        entry
+                            .completion
+                            .clone()
+                            .unwrap_or_else(|| format!("/{} ", entry.name)),
+                    );
                 }
             }
             Action::Esc => self.handle_esc(ctl),
@@ -3740,6 +4063,9 @@ impl App {
     }
 
     fn accept_slash(&mut self, entry: &SlashEntry, ctl: &Controller) {
+        if let Some(completion) = &entry.completion {
+            self.input.set(completion.clone());
+        }
         if entry.plugin {
             let line = self.input.buf.clone();
             let rest = line
@@ -6885,12 +7211,14 @@ mod mode_tests {
             crate::bus::SkillInfo {
                 name: "commit-helper".into(),
                 description: "draft a commit".into(),
+                input_hint: None,
                 config_action: None,
                 client_command: false,
             },
             crate::bus::SkillInfo {
                 name: "help".into(),
                 description: "shadowed by builtin".into(),
+                input_hint: None,
                 config_action: None,
                 client_command: false,
             },
@@ -7011,6 +7339,72 @@ mod mode_tests {
     }
 
     #[test]
+    fn plugin_command_arguments_reuse_the_upward_slash_menu() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.show_banner = false;
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::COMMANDS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "commands": [{
+                        "name": "ui",
+                        "description": "Switch UI preset",
+                        "input": {
+                            "hint": "preset",
+                            "options": [
+                                { "value": "default", "label": "Martty" },
+                                {
+                                    "value": "deepseek",
+                                    "label": "DeepSeek",
+                                    "description": "Classic harness UI"
+                                }
+                            ]
+                        }
+                    }]
+                }),
+            },
+            &ctl,
+        );
+        app.input.set("/ui ".into());
+
+        let menu = app.slash_matches();
+        assert_eq!(menu.len(), 2);
+        assert_eq!(menu[0].usage, "Martty");
+        assert_eq!(menu[1].usage, "DeepSeek");
+        assert_eq!(menu[1].desc, "Classic harness UI");
+        assert_eq!(menu[1].completion.as_deref(), Some("/ui deepseek"));
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 28);
+        let menu_y = frame.lines().position(|line| line.contains("DeepSeek")).unwrap();
+        let input_y = frame.lines().position(|line| line.contains("/ui ")).unwrap();
+        assert!(menu_y < input_y, "argument candidates stay above the composer:\n{frame}");
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::InvokePluginCommand { name, args })
+                if name == "ui" && args == "deepseek"
+        ));
+    }
+
+    #[test]
+    fn tab_completes_a_slash_argument_without_running_it() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.input.set("/plan o".into());
+
+        let menu = app.slash_matches();
+        assert_eq!(menu.iter().map(|entry| entry.usage.as_str()).collect::<Vec<_>>(), ["on", "off"]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &ctl);
+        assert_eq!(app.input.buf, "/plan on");
+        assert!(matches!(commands.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
     fn plugin_slider_moves_between_effort_marks_for_material_preview() {
         let (mut app, _demo_ctl, _rx) = test_app();
         let (ctl, commands) = crate::controller::test_controller();
@@ -7054,6 +7448,64 @@ mod mode_tests {
                 if id == "liang-effort"
                     && event == "change"
                     && value == Some(serde_json::json!(16.0))
+        ));
+    }
+
+    #[test]
+    fn plugin_select_form_renders_rows_and_submits_the_selected_value() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::OVERLAY_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "overlay": {
+                        "kind": "select",
+                        "id": "ui-preset",
+                        "title": "UI preset",
+                        "value": "default",
+                        "options": [
+                            {
+                                "value": "default",
+                                "label": "Martty",
+                                "description": "Ocean blue terminal identity"
+                            },
+                            {
+                                "value": "deepseek",
+                                "label": "DeepSeek",
+                                "description": "Classic Harness identity"
+                            }
+                        ]
+                    }
+                }),
+            },
+            &ctl,
+        );
+
+        let frame = crate::ui::dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("UI preset"), "form title:\n{frame}");
+        assert!(frame.contains("Martty"), "first option:\n{frame}");
+        assert!(frame.contains("DeepSeek"), "second option:\n{frame}");
+        assert!(frame.contains("Ocean blue terminal identity"), "description:\n{frame}");
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+        assert!(app.select_overlay.is_none());
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginOverlayEvent { id, event, value })
+                if id == "ui-preset"
+                    && event == "change"
+                    && value == Some(serde_json::json!("deepseek"))
+        ));
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::PluginOverlayEvent { id, event, value })
+                if id == "ui-preset"
+                    && event == "submit"
+                    && value == Some(serde_json::json!("deepseek"))
         ));
     }
 
@@ -7269,6 +7721,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "plan".into(),
             description: "Enter plan mode".into(),
+            input_hint: None,
             config_action: Some(crate::bus::CommandConfigAction {
                 config_id: "collaboration_mode".into(),
                 value: "plan".into(),
@@ -7295,6 +7748,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "plan".into(),
             description: "Enter plan mode".into(),
+            input_hint: None,
             config_action: Some(crate::bus::CommandConfigAction {
                 config_id: "collaboration_mode".into(),
                 value: "plan".into(),
@@ -7399,6 +7853,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "plan".into(),
             description: "Enter plan mode".into(),
+            input_hint: None,
             config_action: Some(crate::bus::CommandConfigAction {
                 config_id: "collaboration_mode".into(),
                 value: "plan".into(),
@@ -7423,6 +7878,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "commit-helper".into(),
             description: "draft a commit".into(),
+            input_hint: None,
             config_action: None,
             client_command: false,
         }];
@@ -7441,6 +7897,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "commit-helper".into(),
             description: "draft a commit".into(),
+            input_hint: None,
             config_action: None,
             client_command: false,
         }];
@@ -7469,6 +7926,7 @@ mod mode_tests {
         app.skills = vec![crate::bus::SkillInfo {
             name: "login".into(),
             description: "Save a DeepSeek API key into the harness credential store".into(),
+            input_hint: None,
             config_action: None,
             client_command: false,
         }];
@@ -7523,12 +7981,14 @@ mod mode_tests {
             crate::bus::SkillInfo {
                 name: "logout".into(),
                 description: "sign out".into(),
+                input_hint: None,
                 config_action: None,
                 client_command: false,
             },
             crate::bus::SkillInfo {
                 name: "login".into(),
                 description: "agent login".into(),
+                input_hint: None,
                 config_action: None,
                 client_command: false,
             },

@@ -74,10 +74,14 @@ transcript accumulator。没有 Client 树的运行（demo、独立 painter）�
 
 ## UI Preset 与两个欢迎页 slot
 
-`tuiPresets` 把多个独立 UI Plugin contribution 组合成一个可持久化选择；它不是
-Theme 的别名。`ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 可同时注册
-Theme、slot、pet 或其他 UI contribution，并返回统一 disposer。`/ui` 打开原生
-选择器，也可用 `/ui <id>` 直接切换；选择写入 `dsh-tui-settings.json`，重启后恢复。
+`tuiPresets` 把多个独立 UI Plugin contribution 组合成一个可持久化选择；它与
+组合 Host/Agent 能力的 Agent Preset 分属 Client/Host 两棵树，也不是 Theme 的别名。
+`ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 可同时注册 Theme、slot、pet
+或其他 UI contribution，并返回统一 disposer。`/ui` 打开原生单选表单，`/ui ` 复用
+composer 上方的 slash 菜单列出候选，也可用 `/ui <id>` 直接切换；选择写入
+`dsh-tui-settings.json`，重启后恢复。Creator 可以 inspect `UiPresets` 与相邻 Client
+服务，生成调用 `tuiPresets.register` 的 `code.client` Package；保存并挂载后，新
+preset 自动进入这两个选择入口。
 
 内置 `default`（Martty）和 `deepseek` 两个 UI Preset 都装配两个 single root slot：
 
@@ -192,9 +196,17 @@ contribution 内稳定即可，聚合器会用 contribution id 做命名空间�
 
 ## 当前可调用：`tuiOverlay`
 
-`openSlider(options, handlers)` 提供数值滑条；`openView({ id, title, nodes })` 提供
-只读 `TuiNode[]` 弹窗。两者共享一个 modal 席位，返回的 `close()` 和插件 Fiber 同
-生命周期。View 支持上下翻阅，Enter 提交、Esc 取消；它是通用节点视图，不认识 Plan。
+`openSlider(options, handlers)` 提供数值滑条；`openSelect(options, handlers)` 提供
+普通单选表单；`openView({ id, title, nodes })` 提供只读 `TuiNode[]` 弹窗。三者共享
+一个 modal 席位，返回的 `close()` 和插件 Fiber 同生命周期。View 支持上下翻阅，
+Enter 提交、Esc 取消；它是通用节点视图，不认识 Plan。
+
+本地命令可在 `tuiCommands.register` 的 options 中声明
+`input: { hint, options: [{ value, label, description }] }`。用户输入 `/name ` 后，Rust
+painter 会复用现有上拉 slash 菜单展示候选；注册返回的 disposer 还提供
+`update({ input })`，供 UI Preset、模型等动态目录刷新候选。标准 ACP
+`AvailableCommand.input` 当前只有 `hint`，没有枚举候选；Agent 命令因此展示标准
+hint，只有 Client 插件扩展或可从 ACP config/catalog 推导的命令才列出候选。
 
 ### Host 数据与轮询
 

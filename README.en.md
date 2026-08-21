@@ -99,8 +99,9 @@ DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
 
 Third-party capabilities are ordinary Cordis plugins on the client tree: they
 declare the services they need, register contributions in `apply`, and retract
-them with the owning fiber. Themes, the root right rail, local commands, slider
-overlays, current ACP Session config transactions, and package-private
+them with the owning fiber. Themes, the root right rail, local commands,
+slider/single-select/view overlays, UI Presets, current ACP Session config
+transactions, and package-private
 Host/Client RPC are open today. See the [plugin API](docs/plugins.en.md) and
 [Fully pluggable and self-evolving](#fully-pluggable-and-self-evolving) for the
 complete direction. `--demo-skin` merely mounts the gallery pack `ember`; it
@@ -172,8 +173,9 @@ enter the client tree through Cordis services, slots, and plugin lifecycles.
 - **Dynamic preview and durable composition stay separate:** `define/run` drives
   immediate preview, while `stop/update/rollback` owns the live lifecycle; an
   approved Package can then be persisted. `AgentPreset` continues to compose
-  agent-side capabilities. A separate future `ViewPreset` will compose Client/UI
-  plugins. They may be selected together, but are stored and switched separately.
+  agent-side capabilities; an independent `UI Preset` composes Client/UI
+  contributions such as themes, welcome slots, and pets. They are stored and
+  switched separately.
 - **The Creator loop:** Creator inspects the real Host/Client services, slots,
   tokens, and schemas before generating `code.host`, `code.client`, or both. It
   then observes activation and render failures and can repair, update, roll back,
@@ -186,8 +188,11 @@ The ACP client split is in place, together with these primitives on one dynamic
 Package lifecycle:
 
 - `tuiTheme` and the single-select `/theme` Plugin seat;
-- `tuiSlots`, `chrome.right`, and schema-validated `TuiNode` trees;
-- lifecycle-owned local slash commands and native slider overlays;
+- `tuiSlots`, `welcome.hero`, `welcome.info`, both composer docks,
+  `chrome.right`, and schema-validated `TuiNode` trees;
+- lifecycle-owned local slash commands with refreshable argument candidates,
+  plus native slider, single-select, and view overlays;
+- persistent UI Presets, including the built-in Martty and DeepSeek welcomes;
 - a current-Session config directory and transactions projected from standard
   ACP `configOptions`;
 - Client inspect/run, Package stop/start/retract, and package-private
@@ -196,9 +201,9 @@ Package lifecycle:
   independently of ACP.
 
 Static plugins and dynamic `code.client` packages use the same primitives;
-none is a demo-specific side channel. More shell and conversation slots, other
-general inputs such as forms, complete runtime diagnostics, and `ViewPreset`
-are still being migrated. "Fully pluggable" remains the target architecture.
+none is a demo-specific side channel. More shell and conversation slots,
+additional form field types, and complete runtime diagnostics are still being
+migrated. "Fully pluggable" remains the target architecture.
 See the [migration plan](docs/migration.en.md) for phase-by-phase status.
 
 ### Compared with the Web plugin platform
@@ -208,10 +213,10 @@ See the [migration plan](docs/migration.en.md) for phase-by-phase status.
 | Client runtime | Mature React Cordis tree | Node Cordis client tree is in place; Rust remains a semantic renderer, not a third tree |
 | UI extension | Typed slot tree across conversations, settings, tool cards, and many other surfaces | `chrome.right` is open today; `tuiSlots` will cover shell and conversation surfaces without exposing terminal coordinates |
 | Theme | `ThemeRuntime` registers themes, stacks token overrides, switches at runtime, and persists built-in preferences | `/theme` is a single-select Plugin switch that loads/replaces a Theme Plugin and all of its contributions together |
-| Interaction components | Plugins contribute React components | Schema-validated `TuiNode`, local commands, and slider overlays are open; forms and other inputs continue as general terminal semantics |
+| Interaction components | Plugins contribute React components | Schema-validated `TuiNode`, slash argument candidates, and slider/single-select/view overlays are open; more form fields continue as general terminal semantics |
 | Dynamic plugins | Two-half `code.host` + `code.client` Packages share Loader/fiber and support run, stop, update, and rollback | Inspect/run, themes, right rail, commands, overlays, config transactions, and package-private RPC share one DSH Cordis ACP extension; diagnostics and durable composition continue |
 | Diagnosis and repair | Client activation and React render failures return to Creator for another revision | The target is the same loop for activation, schema, and paint failures, with update and rollback |
-| Presets | `AgentPreset` composes agents; Client plugins persist separately | Keep the AgentPreset boundary and add an independent `ViewPreset` for terminal view composition |
+| Presets | `AgentPreset` composes agents; Client plugins persist separately | Keep the AgentPreset boundary; an independent `UI Preset` now composes and persistently switches terminal UI contributions |
 
 The Web plugin surface is broader and more mature today. TUI aligns with its
 Cordis composition, lifecycle, and Creator loop; it does not move React or the
@@ -268,7 +273,8 @@ Requests/Notifications and never enter prompts or conversation history.
 | `ctrl+x` | Steer the active turn immediately without cancelling it |
 | `esc` | Interrupt the current turn (draft survives); clears the draft when idle |
 | `ctrl+c` | Clear the draft first; press twice when idle, five times while a turn runs, to quit; never interrupts the current turn |
-| `/` | Open the command menu and filter by prefix; agent-advertised skills join it and still ship as `/name ` prompts |
+| `/` | Open the upward command menu and filter by prefix; after `/command ` the same menu shows argument candidates. Enter selects and runs; Tab only completes. Agent-advertised skills still ship as `/name ` prompts |
+| `/ui` · `/ui ` | Enter directly for the ordinary UI Preset single-select form; add a trailing space for upward Martty / DeepSeek candidates |
 | `/model` · `/agent` | Pick an agent-advertised model or agent preset; `option+a` cycles agents directly without a picker |
 | `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
 | `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
@@ -286,6 +292,47 @@ Requests/Notifications and never enter prompts or conversation history.
 | `!cmd` | Run a command in the client's session-local shell, outside the agent; the shell starts in the workspace and keeps `cd`, environment variables, and other state for later `!` commands until the TUI exits |
 
 Use `/help` for commands and `/keys` for the complete shortcut list.
+
+The welcome surface is a composable UI Preset. Built-in `default` (Martty) and
+`deepseek` each mount a centered `welcome.hero` (`logo + hint`) and a separate
+dynamic `welcome.info` slot. `/ui` opens the native select form, `/ui ` reuses
+the upward slash menu for candidates, and the choice persists in
+`dsh-tui-settings.json`.
+
+### UI Preset vs Agent Preset
+
+Both apply the same idea—turn several plugin contributions into one selectable
+composition—but they live on different Cordis trees and remain separate:
+
+| | Agent Preset | UI Preset |
+|---|---|---|
+| Composes | Host/Agent system prompt, tools, skills, and runtime capabilities | Client UI themes, slots, pets, commands, and overlays |
+| Switch with | `/agent` | `/ui` |
+| Built-ins | Agent compositions such as standard, code, minimal, and cordis | `default` (Martty) and `deepseek` |
+| Persistence | Session/Agent selection | UI selection in `dsh-tui-settings.json` |
+
+Creator mode can inspect the real `UiPresets`, `Theme`, `Slots`, `Commands`,
+and `Overlay` contracts, generate a dynamic Package with `code.client`, and
+call `tuiPresets.register({ id, label }, mount)` to create a new UI Preset.
+The mount callback composes that Preset's theme, welcome slots, pet, or other UI
+contributions. Once the Package is saved and mounted, the new Preset appears in
+both the `/ui` form and `/ui ` candidates and shares the same switching,
+persistence, and unload lifecycle. Creator produces an ordinary Client Plugin
+composition; it does not receive the TTY, absolute coordinates, or a way around
+the slot/overlay protocols.
+
+#### Return to the classic DeepSeek view
+
+After `dsh --profile tui` starts, run `/ui deepseek` directly, or enter `/ui`
+and choose DeepSeek in the ordinary single-select form. Typing one trailing
+space after `/ui` (that is, `/ui `) opens the same candidates above the
+composer.
+
+The classic view restores the responsive whale, `DEEPSEEK HARNESS` wordmark,
+and hint text while keeping Martty's pluggable shell, ACP session, and dynamic
+info slot. The choice persists across launches. Run `/ui default` (or choose
+Martty in the `/ui` form) to return to the blue-white `MARTTY` view. The old
+experimental `/deepseeklogo` command has been replaced by this UI Preset.
 
 <p align="center">
   <img src="assets/screenshots/skills-menu.png" width="720"

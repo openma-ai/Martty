@@ -184,6 +184,9 @@ pub struct CommandConfigAction {
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
+    /// Standard ACP `AvailableCommand.input.hint`. ACP does not currently
+    /// define enumerated argument candidates here.
+    pub input_hint: Option<String>,
     pub config_action: Option<CommandConfigAction>,
     /// ACP advertised this as a command handled by the local Client plane.
     pub client_command: bool,

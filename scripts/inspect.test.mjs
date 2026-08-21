@@ -187,7 +187,11 @@ test('Commands.list reports current commands and the dynamic Client registration
   assert.deepEqual(listed.api.register.options.required, ['name', 'description'])
   assert.deepEqual(
     Object.keys(listed.api.register.options.properties),
-    ['name', 'description'],
+    ['name', 'description', 'input'],
+  )
+  assert.deepEqual(
+    listed.api.register.options.properties.input.properties.options.items.required,
+    ['value'],
   )
   assert.equal(listed.api.lifecycle.whenTheme, undefined)
   assert.deepEqual(listed.api.register.handler.arguments, [
@@ -199,6 +203,10 @@ test('Commands.list reports current commands and the dynamic Client registration
     },
   ])
   assert.equal(listed.api.register.returns.role, 'dispose')
+  assert.match(
+    listed.api.register.returns.methods.update.description,
+    /completion metadata/i,
+  )
   assert.equal(listed.api.list.returns.items, 'Command')
 })
 

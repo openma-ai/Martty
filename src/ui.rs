@@ -205,6 +205,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_model_picker(f, app, area);
     draw_plugin_slider(f, app, area);
+    draw_plugin_select(f, app, area);
     draw_plugin_view(f, app, area);
     draw_permission_ask(f, app, area);
     draw_elicitation_form(f, app, area);
@@ -302,6 +303,70 @@ fn draw_plugin_slider(f: &mut Frame, app: &App, screen: Rect) {
             .block(block),
         area,
     );
+}
+
+fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
+    let Some(select) = &app.select_overlay else {
+        return;
+    };
+    let theme = app.theme;
+    let width = screen.width.saturating_sub(4).min(72).max(28);
+    let mut lines = Vec::new();
+    for (index, option) in select.options.iter().enumerate() {
+        let selected = index == select.sel;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "▸ " } else { "  " },
+                Style::default().fg(theme.brand),
+            ),
+            Span::styled(
+                if selected { "● " } else { "○ " },
+                Style::default().fg(if selected { theme.brand } else { theme.caption }),
+            ),
+            Span::styled(
+                option.label.clone(),
+                Style::default()
+                    .fg(if selected { theme.fg } else { theme.fg_secondary })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+        ]));
+        if let Some(description) = option.description.as_deref().filter(|text| !text.is_empty()) {
+            lines.push(Line::from(Span::styled(
+                format!("    {description}"),
+                Style::default().fg(theme.caption),
+            )));
+        }
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "↑/↓ select   enter apply   esc cancel",
+        Style::default().fg(theme.caption),
+    )));
+
+    let height = (lines.len() as u16 + 2)
+        .min(screen.height.saturating_sub(2))
+        .max(5);
+    let area = Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.brand))
+        .title(Span::styled(
+            format!(" {} ", select.title),
+            Style::default().fg(theme.fg),
+        ))
+        .style(Style::default().bg(theme.panel));
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn draw_plugin_view(f: &mut Frame, app: &mut App, screen: Rect) {
@@ -1542,7 +1607,9 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
             Span::styled(format!(" {desc}"), Style::default().fg(theme.caption)),
         ]));
     }
-    let title = if matches.iter().any(|m| m.skill) {
+    let title = if matches.iter().any(|m| m.completion.is_some()) {
+        app.locale.tr(" options ", " 候选 ")
+    } else if matches.iter().any(|m| m.skill) {
         app.locale.tr(" commands · skills ", " 命令 · 技能 ")
     } else {
         app.locale.tr(" commands ", " 命令 ")

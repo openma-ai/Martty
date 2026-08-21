@@ -15,7 +15,11 @@ function commandService() {
   return {
     register(options, handler) {
       command = { options, handler }
-      return () => { command = undefined }
+      const dispose = () => { command = undefined }
+      dispose.update = (patch) => {
+        command.options = { ...command.options, ...patch }
+      }
+      return dispose
     },
     async run(args) {
       return command.handler(args)
@@ -55,6 +59,13 @@ test('UI presets compose plugin mounts, switch atomically, and persist selection
   assert.deepEqual(commands.current().options, {
     name: 'ui',
     description: 'Switch UI preset',
+    input: {
+      hint: 'preset',
+      options: [
+        { value: 'default', label: 'Martty' },
+        { value: 'deepseek', label: 'DeepSeek' },
+      ],
+    },
   })
 
   await commands.run('deepseek')
@@ -104,21 +115,17 @@ test('/ui without arguments opens a native preset selector', async () => {
   await commands.run('')
 
   assert.deepEqual(overlay.active(), {
-    kind: 'slider',
+    kind: 'select',
     id: 'ui-preset',
     title: 'UI preset',
-    min: 0,
-    max: 1,
-    step: 1,
-    marks: [
-      { value: 0, id: 'default', label: 'Martty' },
-      { value: 1, id: 'deepseek', label: 'DeepSeek' },
+    value: 'default',
+    options: [
+      { value: 'default', label: 'Martty' },
+      { value: 'deepseek', label: 'DeepSeek' },
     ],
-    snapToMarks: true,
-    value: 0,
   })
 
-  await overlay.dispatch({ protocol: 0, id: 'ui-preset', event: 'submit', value: 1 })
+  await overlay.dispatch({ protocol: 0, id: 'ui-preset', event: 'submit', value: 'deepseek' })
   assert.equal(service.active(), 'deepseek')
   assert.equal(notifications.at(-1).params.overlay, null)
   service.dispose()

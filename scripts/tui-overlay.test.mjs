@@ -133,6 +133,50 @@ test('a plugin can open a read-only node view and escape closes it', async () =>
   assert.equal(sent.at(-1).params.overlay, null)
 })
 
+test('a plugin can open a native single-select form', async () => {
+  assert.equal(typeof overlayPlugin.installTuiOverlay, 'function')
+  if (typeof overlayPlugin.installTuiOverlay !== 'function') return
+
+  const sent = []
+  const submitted = []
+  const overlay = overlayPlugin.installTuiOverlay(makeCtx(), {
+    notify(method, params) {
+      sent.push({ method, params })
+    },
+  })
+  overlay.openSelect({
+    id: 'ui-preset',
+    title: 'UI preset',
+    value: 'default',
+    options: [
+      { value: 'default', label: 'Martty', description: 'Ocean blue terminal identity' },
+      { value: 'deepseek', label: 'DeepSeek', description: 'Classic Harness identity' },
+    ],
+  }, {
+    onSubmit(value) { submitted.push(value) },
+  })
+
+  assert.deepEqual(sent.at(-1).params.overlay, {
+    kind: 'select',
+    id: 'ui-preset',
+    title: 'UI preset',
+    value: 'default',
+    options: [
+      { value: 'default', label: 'Martty', description: 'Ocean blue terminal identity' },
+      { value: 'deepseek', label: 'DeepSeek', description: 'Classic Harness identity' },
+    ],
+  })
+  await overlay.dispatch({
+    protocol: 0,
+    id: 'ui-preset',
+    event: 'submit',
+    value: 'deepseek',
+  })
+  assert.deepEqual(submitted, ['deepseek'])
+  assert.equal(overlay.active(), null)
+  assert.equal(sent.at(-1).params.overlay, null)
+})
+
 test('opening the same view refreshes its snapshot and handlers idempotently', async () => {
   assert.equal(typeof overlayPlugin.installTuiOverlay, 'function')
   if (typeof overlayPlugin.installTuiOverlay !== 'function') return

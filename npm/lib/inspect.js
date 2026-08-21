@@ -260,6 +260,27 @@ export function commandInspectProvider(tuiCommands) {
                   slashPrefix: false,
                 },
                 description: { type: 'string', minLength: 1 },
+                input: {
+                  type: 'object',
+                  required: ['hint'],
+                  additionalProperties: false,
+                  properties: {
+                    hint: { type: 'string', minLength: 1 },
+                    options: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['value'],
+                        additionalProperties: false,
+                        properties: {
+                          value: { type: 'string', minLength: 1 },
+                          label: { type: 'string' },
+                          description: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
               },
             },
             handler: {
@@ -277,6 +298,12 @@ export function commandInspectProvider(tuiCommands) {
               type: 'function',
               role: 'dispose',
               idempotent: true,
+              methods: {
+                update: {
+                  arguments: [{ name: 'patch', type: 'object' }],
+                  description: 'Refresh description or input completion metadata',
+                },
+              },
             },
           },
           list: {
