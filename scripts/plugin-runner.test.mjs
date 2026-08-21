@@ -241,6 +241,7 @@ function makeCtx({ cordisClientRunner } = {}) {
   const defaultClientRunner = {
     bindTransport() {},
     onHost() {},
+    sync() {},
     selectTheme() {},
   }
   const ctx = {
@@ -308,6 +309,49 @@ test('shell consumes tuiTheme and register notifies _dsh/cordis/tui/theme/update
     assert.equal(note.params.protocol, 0)
     assert.equal(note.params.activate, false)
     assert.equal(note.params.palette.id, 'ember')
+  } finally {
+    restore()
+  }
+})
+
+test('shell republishes Client commands after the agent enables the Cordis plane', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  try {
+    const ctx = makeCtx()
+    ctx.tuiCommands.register(
+      { name: 'deepseeklogo', description: 'Open the classic DeepSeek Harness whale' },
+      () => {},
+    )
+    await runner.apply(ctx)
+
+    const writes = []
+    fakeChild.stdio[3].write = (chunk) => {
+      writes.push(String(chunk))
+      return true
+    }
+    for (const listener of fakeChild.stdio[4].listeners.data ?? []) {
+      listener(Buffer.from(`${JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+      })}\n`))
+    }
+    for (const listener of ctx.acpClient.stdout.listeners.data ?? []) {
+      listener(Buffer.from(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          agentCapabilities: { _meta: { dsh: { cordis: { protocol: 0 } } } },
+        },
+      })}\n`))
+    }
+
+    const updates = writes
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.method === '_dsh/cordis/tui/commands/update')
+    assert.deepEqual(updates.at(-1)?.params.commands, [{
+      name: 'deepseeklogo',
+      description: 'Open the classic DeepSeek Harness whale',
+    }])
   } finally {
     restore()
   }

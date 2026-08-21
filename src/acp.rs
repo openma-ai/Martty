@@ -897,7 +897,6 @@ where
     let bus_write = bus.clone();
     let bus_config = bus.clone();
     let surface_n = Arc::clone(&surface);
-    let surface_u = Arc::clone(&surface);
     let surface_config = Arc::clone(&surface);
     let workspace = cfg.workspace.clone();
     let workspace_read = workspace.clone();
@@ -956,11 +955,7 @@ where
                         | crate::cordis::SLOTS_UPDATE
                         | crate::cordis::COMMANDS_UPDATE
                         | crate::cordis::OVERLAY_UPDATE
-                ) && surface_u
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .cordis
-                {
+                ) {
                     let _ = bus_u.send(AppEvent::Rpc {
                         method: msg.method().into(),
                         params: msg.params().clone(),
@@ -2765,6 +2760,77 @@ mod tests {
             )),
             "the client should report that the Cordis capability is unavailable",
         );
+
+        let _ = cmd_tx.send(Cmd::Shutdown);
+        let _ = client.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
+        use agent_client_protocol::schema::v1::{
+            AgentCapabilities, InitializeResponse, NewSessionResponse,
+        };
+        use std::time::Duration;
+
+        let agent = Agent
+            .builder()
+            .name("standard-acp-agent")
+            .on_receive_request(
+                async move |init: InitializeRequest, responder, _cx| {
+                    responder.respond(
+                        InitializeResponse::new(init.protocol_version)
+                            .agent_capabilities(AgentCapabilities::new())
+                            .agent_info(Implementation::new("standard-acp-agent", "0")),
+                    )
+                },
+                on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |_req: NewSessionRequest, responder, cx| {
+                    responder.respond(NewSessionResponse::new(SessionId::new("s1")))?;
+                    cx.send_notification(UntypedMessage::new(
+                        crate::cordis::COMMANDS_UPDATE,
+                        json!({
+                            "protocol": 0,
+                            "commands": [{
+                                "name": "deepseeklogo",
+                                "description": "Open the classic DeepSeek Harness whale"
+                            }]
+                        }),
+                    )?)
+                },
+                on_receive_request!(),
+            );
+        let cfg = RuntimeConfig {
+            bin: "demo".into(),
+            cordis: "demo".into(),
+            workspace: "/tmp".into(),
+            session_root: "/tmp".into(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            max_tokens: None,
+            base_url: None,
+            api_key: None,
+        };
+        let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut catalog = None;
+        while std::time::Instant::now() < deadline && catalog.is_none() {
+            match bus_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(AppEvent::Rpc { method, params })
+                    if method == crate::cordis::COMMANDS_UPDATE =>
+                {
+                    catalog = Some(params);
+                }
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(error) => panic!("bus disconnected: {error}"),
+            }
+        }
+        assert_eq!(catalog.unwrap()["commands"][0]["name"], "deepseeklogo");
 
         let _ = cmd_tx.send(Cmd::Shutdown);
         let _ = client.await;

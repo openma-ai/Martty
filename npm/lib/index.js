@@ -184,6 +184,7 @@ export async function applyShell(ctx, options = {}) {
   }
 
   if (!connection.muxed) {
+    let republishCompositorState = () => {}
     const mux = muxAcpAndCompositor({
       agent,
       tui: connection,
@@ -191,6 +192,7 @@ export async function applyShell(ctx, options = {}) {
         clientRunner.onHost(message)
       },
       onCordisReady() {
+        republishCompositorState()
         clientRunner.sync()
       },
       onAcp(direction, message) {
@@ -213,10 +215,14 @@ export async function applyShell(ctx, options = {}) {
         throw new Error(`unsupported Cordis TUI method: ${String(message.method)}`)
       },
     })
-    handle.bindNotify((method, params) => mux.notifyTui(method, params))
-    slots.bindNotify((method, params) => mux.notifyTui(method, params))
-    commands.bindNotify((method, params) => mux.notifyTui(method, params))
-    overlay.bindNotify((method, params) => mux.notifyTui(method, params))
+    const notifyTui = (method, params) => mux.notifyTui(method, params)
+    republishCompositorState = () => {
+      handle.bindNotify(notifyTui)
+      slots.bindNotify(notifyTui)
+      commands.bindNotify(notifyTui)
+      overlay.bindNotify(notifyTui)
+    }
+    republishCompositorState()
     clientRunner.bindTransport(mux.requestAgent)
     sessionConfig.bindTransport(mux.requestTui)
     connection.resume?.()
