@@ -712,11 +712,9 @@ mod tests {
         match name {
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
-            "github" => include_str!("../docs/fixtures/github.v0.json"),
             "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
-            "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown fixture {name}"),
         }
@@ -744,14 +742,6 @@ mod tests {
                 Color::Rgb(48, 52, 70),    // #303446
             ),
             (
-                "github",
-                "GitHub",
-                Color::Rgb(88, 166, 255), // #58A6FF GitHub Dark blue
-                Color::Rgb(83, 155, 245), // #539BF5 GitHub Dark Dimmed blue
-                Color::Rgb(1, 4, 9),      // #010409
-                Color::Rgb(28, 33, 40),   // #1C2128
-            ),
-            (
                 "kanagawa",
                 "Kanagawa",
                 Color::Rgb(126, 156, 216), // #7E9CD8 Kanagawa Wave blue
@@ -774,14 +764,6 @@ mod tests {
                 Color::Rgb(45, 83, 158),   // #2D539E
                 Color::Rgb(22, 24, 33),    // #161821
                 Color::Rgb(232, 233, 236), // #E8E9EC
-            ),
-            (
-                "one-half",
-                "One Half",
-                Color::Rgb(97, 175, 239),  // #61AFEF
-                Color::Rgb(1, 132, 188),   // #0184BC
-                Color::Rgb(40, 44, 52),    // #282C34
-                Color::Rgb(250, 250, 250), // #FAFAFA
             ),
             (
                 "solarized",

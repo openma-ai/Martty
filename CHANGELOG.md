@@ -11,10 +11,6 @@ All notable changes to this project are documented here. The project follows
   Kanagawa Lotus), sourced from terminalcolors.com/themes/kanagawa. It
   registers at Client boot as a sibling insert row and is switchable via
   `/theme`.
-- New gallery palette pack `github` (dark from GitHub Dark, the second token
-  map from GitHub Dark Dimmed), sourced from terminalcolors.com/themes/github.
-  It registers at Client boot as a sibling insert row and is switchable via
-  `/theme`.
 - New gallery palette pack `catppuccin` (dark from Catppuccin Mocha, the
   second token map from Catppuccin Frappe), sourced from
   terminalcolors.com/themes/catppuccin. It registers at Client boot as a
@@ -23,7 +19,7 @@ All notable changes to this project are documented here. The project follows
   token map from Ayu Mirage), sourced from terminalcolors.com/themes/ayu.
   It registers at Client boot as a sibling insert row and is switchable via
   `/theme`.
-- New gallery palette packs `everforest`, `iceberg`, `one-half` and `solarized` (each with complete dark and light
+- New gallery palette packs `everforest`, `iceberg` and `solarized` (each with complete dark and light
   variant maps), sourced from terminalcolors.com/themes. They register at
   Client boot as sibling insert rows and are switchable via `/theme`.
 - UI Presets now compose multiple UI Plugin contributions behind one

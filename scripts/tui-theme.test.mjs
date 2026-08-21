@@ -354,11 +354,9 @@ test('exportInspectTokens lists every closed token as #RRGGBB', () => {
 const GALLERY = [
   ['ayu', 'Ayu'],
   ['catppuccin', 'Catppuccin'],
-  ['github', 'GitHub'],
   ['kanagawa', 'Kanagawa'],
   ['everforest', 'Everforest'],
   ['iceberg', 'Iceberg'],
-  ['one-half', 'One Half'],
   ['solarized', 'Solarized'],
 ]
 

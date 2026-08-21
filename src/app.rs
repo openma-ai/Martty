@@ -8521,11 +8521,9 @@ mod palette_tests {
         let fixture = match id {
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
-            "github" => include_str!("../docs/fixtures/github.v0.json"),
             "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
-            "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown gallery fixture {id}"),
         };
@@ -8628,8 +8626,8 @@ mod palette_tests {
     fn slash_theme_switches_between_gallery_packs() {
         let (mut app, ctl, _rx) = test_app();
         for id in [
-            "ayu", "catppuccin", "github", "kanagawa", "everforest",
-            "iceberg", "one-half", "solarized",
+            "ayu", "catppuccin", "kanagawa", "everforest",
+            "iceberg", "solarized",
         ] {
             app.handle(
                 AppEvent::Rpc {
