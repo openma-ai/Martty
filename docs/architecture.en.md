@@ -41,11 +41,11 @@ Client process: independent Cordis root
   stats-view      injects acpSessionStats + tuiSlots
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
-  deepseek-logo   injects tuiCommands + tuiOverlay; registers /deepseeklogo;
-                  the classic whale is a serialized markdown TuiNode
+  deepseek-logo   injects tuiCommands + tuiSlots; registers /deepseeklogo;
+                  the classic whale occupies the single welcome.hero slot
   acp-session-status  provides acpSessionStatus (connection/server/auth/
                   session/model/effort/permission/plan/agent run-state facts)
-  tui-slots       provides tuiSlots; declares chrome.right /
+  tui-slots       provides tuiSlots; declares welcome.hero / chrome.right /
                   conversation.input.dock / conversation.composer.dock
   tui-theme       provides tuiTheme
   acp-client      attaches Host stdio, provides acpClient
@@ -85,11 +85,11 @@ Client inspect/run channel.
 Third-party plugins   sibling insert + inject ['tuiTheme'] → palette register
                       sibling insert + inject ['tuiSlots'] → slot register
 tui-theme             palette → Theme registry
-tui-slots             TuiNode trees → chrome.right / input dock / composer dock registry
+tui-slots             TuiNode trees → welcome.hero / chrome.right / input dock / composer dock registry
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
-deepseek-logo         classic DeepSeek Harness whale → /deepseeklogo markdown overlay
+deepseek-logo         classic whale → /deepseeklogo in-place welcome.hero replacement
 acp-session-status    standard ACP run-state projection: connection/server/auth/
                       session/model/effort/permission/plan/agent — no token or
                       timing accumulation (acpSessionStats owns that)
@@ -130,8 +130,9 @@ Token **names** are closed; see [plugins.md](plugins.en.md). Built-in `default` 
 Theme Plugin. Kitty pet sprites are RGBA and do not recolor. In the startup
 lockup, `MAR` reads the ocean gradient while `TTY` uses terminal foreground
 (white in dark mode, black in light mode). The classic DeepSeek Harness whale
-is owned by the `deepseek-logo` Client Plugin and opens through `/deepseeklogo`;
-the Rust painter only renders its markdown `TuiNode`.
+is owned by the `deepseek-logo` Client Plugin. `/deepseeklogo` places its ASCII
+nodes in the single `welcome.hero` slot, replacing only the Martty lockup while
+the Rust painter keeps the session facts and help row intact.
 
 ## Out of scope
 

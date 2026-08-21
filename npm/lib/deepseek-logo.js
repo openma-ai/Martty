@@ -1,7 +1,7 @@
 /** Built-in Client Plugin: the classic DeepSeek Harness whale lockup. */
 
 export const name = 'deepseek-logo'
-export const inject = ['tuiCommands', 'tuiOverlay']
+export const inject = ['tuiCommands', 'tuiSlots']
 
 const WHALE_LG = [
   '          ▄▄▄▄ ▄▄▄███      █▄',
@@ -28,35 +28,28 @@ const WORDMARK_SMALL = [
   '|___/|___|___|_|  |___/___|___|_|\\_\\',
 ]
 
-export function deepseekLogoMarkdown() {
-  return [
-    '## DeepSeek Harness',
-    '',
-    '```text',
-    ...WHALE_LG,
-    '',
-    ...WORDMARK_SMALL,
-    'H A R N E S S',
-    '```',
-    '',
-    '_Into the Unknown_',
-  ].join('\n')
-}
-
 export function apply(ctx) {
+  let hero
   const stopCommand = ctx.tuiCommands.register({
     name: 'deepseeklogo',
-    description: 'Open the classic DeepSeek Harness whale',
+    description: 'Replace the welcome hero with classic DeepSeek Harness',
   }, async () => {
-    ctx.tuiOverlay.openView({
-      id: 'deepseek-logo',
-      title: 'DeepSeek Harness',
-      nodes: [{
-        id: 'lockup',
-        kind: 'markdown',
-        text: deepseekLogoMarkdown(),
-      }],
-    })
+    if (hero !== undefined) return
+    hero = ctx.tuiSlots.register(
+      { name: 'welcome.hero', id: 'deepseek-logo' },
+      [
+        { id: 'whale', kind: 'ascii', lines: WHALE_LG, tone: 'brand' },
+        {
+          id: 'wordmark',
+          kind: 'ascii',
+          lines: [...WORDMARK_SMALL, 'H A R N E S S', 'Into the Unknown'],
+          tone: 'fg_secondary',
+        },
+      ],
+    )
   })
-  return () => stopCommand?.()
+  return () => {
+    hero?.dispose()
+    stopCommand?.()
+  }
 }

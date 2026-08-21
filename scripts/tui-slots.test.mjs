@@ -141,6 +141,47 @@ test('conversation docks are additive slots with independent live snapshots', ()
   assert.deepEqual(sent.at(-1).params.nodes, [])
 })
 
+test('welcome.hero is a single root replacement with terminal-native ascii', () => {
+  assert.equal(typeof slotsPlugin.installTuiSlots, 'function')
+  if (typeof slotsPlugin.installTuiSlots !== 'function') return
+
+  const sent = []
+  const ctx = makeCtx()
+  slotsPlugin.installTuiSlots(ctx, {
+    notify(method, params) {
+      sent.push({ method, params })
+    },
+  })
+
+  const hero = ctx.tuiSlots.register(
+    { name: 'welcome.hero', id: 'deepseek-logo' },
+    [{ id: 'whale', kind: 'ascii', lines: ['▄███▄'], tone: 'brand' }],
+  )
+
+  assert.deepEqual(
+    ctx.tuiSlots.list().find((slot) => slot.name === 'welcome.hero'),
+    {
+      name: 'welcome.hero',
+      kind: 'single',
+      scope: 'root',
+      occupants: [{ id: 'deepseek-logo', order: 0 }],
+    },
+  )
+  assert.deepEqual(sent.at(-1).params.nodes, [
+    { id: 'deepseek-logo:whale', kind: 'ascii', lines: ['▄███▄'], tone: 'brand' },
+  ])
+  assert.throws(
+    () => ctx.tuiSlots.register(
+      { name: 'welcome.hero', id: 'second' },
+      [{ id: 'other', kind: 'ascii', lines: ['other'] }],
+    ),
+    /single.*occupied/i,
+  )
+
+  hero.dispose()
+  assert.deepEqual(sent.at(-1).params.nodes, [])
+})
+
 test('the gallery is a real sibling plugin whose whole view unloads with its fiber', async () => {
   assert.deepEqual(demoPlugin.inject, ['tuiSlots'])
   assert.equal(typeof demoPlugin.apply, 'function')

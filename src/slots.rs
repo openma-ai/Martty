@@ -33,6 +33,12 @@ pub enum TuiAction {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum TuiNode {
+    Ascii {
+        id: String,
+        lines: Vec<String>,
+        #[serde(default)]
+        tone: Option<String>,
+    },
     Group {
         id: String,
         #[serde(default)]
@@ -108,7 +114,8 @@ pub enum TuiNode {
 impl TuiNode {
     fn id(&self) -> &str {
         match self {
-            Self::Group { id, .. }
+            Self::Ascii { id, .. }
+            | Self::Group { id, .. }
             | Self::Markdown { id, .. }
             | Self::Reasoning { id, .. }
             | Self::User { id, .. }
@@ -138,6 +145,17 @@ fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), St
             return Err(format!("duplicate tui snapshot node id: {}", node.id()));
         }
         match node {
+            TuiNode::Ascii { lines, tone, .. } => {
+                if lines.is_empty() {
+                    return Err("tui ascii lines must not be empty".into());
+                }
+                if tone.as_deref().is_some_and(theme_color_name_invalid) {
+                    return Err(format!(
+                        "unknown tui theme token: {}",
+                        tone.as_deref().unwrap_or("")
+                    ));
+                }
+            }
             TuiNode::Group { tone, children, .. } => {
                 if tone.as_deref().is_some_and(theme_color_name_invalid) {
                     return Err(format!(
@@ -206,7 +224,7 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
     }
     if !matches!(
         snapshot.slot.as_str(),
-        "chrome.right" | "conversation.input.dock" | "conversation.composer.dock"
+        "welcome.hero" | "chrome.right" | "conversation.input.dock" | "conversation.composer.dock"
     ) {
         return Ok(None);
     }
@@ -264,6 +282,14 @@ fn indent(lines: Vec<Line<'static>>, prefix: &str, color: Color) -> Vec<Line<'st
 
 fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     match node {
+        TuiNode::Ascii { lines, tone, .. } => styled_wrapped(
+            &lines.join("\n"),
+            width,
+            Style::default().fg(tone
+                .as_deref()
+                .map(|name| token_color(theme, name))
+                .unwrap_or(theme.fg)),
+        ),
         TuiNode::Group {
             title,
             tone,

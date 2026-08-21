@@ -10,12 +10,14 @@ export const name = 'tui-slots'
 export const inject = []
 
 export const SLOT_NAMES = Object.freeze([
+  'welcome.hero',
   'chrome.right',
   'conversation.input.dock',
   'conversation.composer.dock',
 ])
 
 const SLOT_DEFINITIONS = Object.freeze({
+  'welcome.hero': Object.freeze({ kind: 'single', scope: 'root' }),
   'chrome.right': Object.freeze({ kind: 'list', scope: 'root' }),
   'conversation.input.dock': Object.freeze({ kind: 'list', scope: 'session' }),
   'conversation.composer.dock': Object.freeze({ kind: 'list', scope: 'session' }),
@@ -52,6 +54,7 @@ const THEME_TOKENS = new Set([
 ])
 
 const NODE_FIELDS = Object.freeze({
+  ascii: { required: ['id', 'kind', 'lines'], optional: ['tone'] },
   group: { required: ['id', 'kind', 'children'], optional: ['title', 'tone'] },
   markdown: { required: ['id', 'kind', 'text'], optional: ['streaming'] },
   reasoning: { required: ['id', 'kind', 'text', 'done'], optional: ['seconds'] },
@@ -113,6 +116,15 @@ function validateNode(node, path, ids) {
   ids.add(node.id)
 
   switch (node.kind) {
+    case 'ascii':
+      if (!Array.isArray(node.lines) || node.lines.length === 0) {
+        throw new Error(`tuiSlots: ${path}.lines must be a non-empty array`)
+      }
+      node.lines.forEach((line, index) => string(line, `${path}.lines[${index}]`))
+      if (node.tone !== undefined && !THEME_TOKENS.has(node.tone)) {
+        throw new Error(`tuiSlots: ${path}.tone must be a theme token`)
+      }
+      break
     case 'group':
       optionalString(node.title, `${path}.title`)
       if (node.tone !== undefined && !THEME_TOKENS.has(node.tone)) {

@@ -49,12 +49,13 @@ facts only, also without touching token/timing accumulators.
 
 ## Built-in Client Plugin: `deepseek-logo`
 
-`deepseek-logo` injects only `tuiCommands` and `tuiOverlay` and registers the
-local `/deepseeklogo` command. Invoking it opens the classic “DeepSeek Harness
-+ whale” markdown lockup through `tuiOverlay.openView()`. The artwork,
-wordmark, and command lifecycle all belong to this Client Plugin. It never
-enters the ACP prompt or transcript and does not restore `/logo` as a Rust
-builtin; the Rust painter only consumes the serialized `TuiNode`.
+`deepseek-logo` injects only `tuiCommands` and `tuiSlots` and registers the
+local `/deepseeklogo` command. Invoking it occupies the single `welcome.hero`
+slot and replaces the Martty Hero in place with the classic “DeepSeek Harness
++ whale” ASCII lockup. Session facts and the help row remain unchanged. The
+artwork, wordmark, and command lifecycle all belong to this Client Plugin; it
+never enters the ACP prompt or transcript and does not restore `/logo` as a
+Rust builtin.
 
 ## Open: `tuiTheme`
 

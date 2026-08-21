@@ -74,11 +74,11 @@ transcript accumulator。没有 Client 树的运行（demo、独立 painter）�
 
 ## 内置 Client Plugin：`deepseek-logo`
 
-`deepseek-logo` 只注入 `tuiCommands` 与 `tuiOverlay`，注册本地
-`/deepseeklogo`。执行后通过 `tuiOverlay.openView()` 打开旧版
-“DeepSeek Harness + 大鲸鱼”markdown 画面。鲸鱼素材、wordmark 与命令生命周期
-全部属于该 Client Plugin；它不进入 ACP prompt 或 transcript，也不把 `/logo`
-重新做成 Rust builtin。Rust painter 只消费序列化后的 `TuiNode`。
+`deepseek-logo` 只注入 `tuiCommands` 与 `tuiSlots`，注册本地
+`/deepseeklogo`。执行后占用 single `welcome.hero` 槽位，以旧版
+“DeepSeek Harness + 大鲸鱼”ASCII lockup 原位替换 Martty Hero；版本、模型、会话
+与帮助行保持不变。鲸鱼素材、wordmark 与命令生命周期全部属于该 Client Plugin；
+它不进入 ACP prompt 或 transcript，也不把 `/logo` 重新做成 Rust builtin。
 
 ## 当前可调用：`tuiTheme`
 

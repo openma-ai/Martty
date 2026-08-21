@@ -133,6 +133,7 @@ test('Slots.list reports root shell contracts for dynamic Client plugins', () =>
   const listed = slotInspectProvider(slots).query('list')
 
   assert.deepEqual(listed.slots, [
+    { name: 'welcome.hero', kind: 'single', scope: 'root', occupants: [] },
     { name: 'chrome.right', kind: 'list', scope: 'root', occupants: [] },
     { name: 'conversation.input.dock', kind: 'list', scope: 'session', occupants: [] },
     { name: 'conversation.composer.dock', kind: 'list', scope: 'session', occupants: [] },

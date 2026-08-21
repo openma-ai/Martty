@@ -1969,20 +1969,37 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
 /// `app.show_banner` is set; it dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let theme = &app.theme;
-    let mut out = vec![Line::default(), Line::default(), Line::default()];
-    out.extend(logo::martty_logo_lines(theme, width));
-    out.push(Line::default());
+    let mut out = vec![
+        Line::default(),
+        Line::default(),
+        Line::default(),
+        Line::default(),
+    ];
+    if let Some(hero) = app
+        .slot_snapshots
+        .get("welcome.hero")
+        .filter(|snapshot| !snapshot.nodes.is_empty())
+    {
+        out.extend(
+            crate::slots::render(hero, theme, width as usize)
+                .into_iter()
+                .map(|line| centered(width, line.spans)),
+        );
+    } else {
+        out.extend(logo::martty_logo_lines(theme, width));
+        out.push(Line::default());
 
-    // Project URL, in the hero slot where the old slogan was.
-    out.push(centered(
-        width,
-        vec![Span::styled(
-            "https://martty.sh".to_string(),
-            Style::default()
-                .fg(theme.fg_tertiary)
-                .add_modifier(Modifier::BOLD),
-        )],
-    ));
+        // Project URL, in the hero slot where the old slogan was.
+        out.push(centered(
+            width,
+            vec![Span::styled(
+                "https://martty.sh".to_string(),
+                Style::default()
+                    .fg(theme.fg_tertiary)
+                    .add_modifier(Modifier::BOLD),
+            )],
+        ));
+    }
     out.push(Line::default());
 
     let kv = |k: &str, v: String| -> Line<'static> {
@@ -2093,7 +2110,12 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             .to_string(),
         Style::default().fg(theme.caption),
     )));
-    out.extend([Line::default(), Line::default(), Line::default()]);
+    out.extend([
+        Line::default(),
+        Line::default(),
+        Line::default(),
+        Line::default(),
+    ]);
     out
 }
 
@@ -2628,7 +2650,7 @@ mod tests {
     }
 
     #[test]
-    fn welcome_block_has_three_rows_of_symmetric_vertical_padding() {
+    fn welcome_block_has_four_rows_of_symmetric_vertical_padding() {
         let app = test_app();
         let lines = banner_lines(&app, 84);
         let plain = |line: &Line<'_>| {
@@ -2641,11 +2663,64 @@ mod tests {
         assert_eq!(plain(&lines[0]), "");
         assert_eq!(plain(&lines[1]), "");
         assert_eq!(plain(&lines[2]), "");
-        assert!(plain(&lines[3]).contains('█'), "logo begins after three rows");
-        assert!(plain(&lines[lines.len() - 4]).contains("/help"));
+        assert_eq!(plain(&lines[3]), "");
+        assert!(
+            plain(&lines[4]).contains('█'),
+            "logo begins after four rows"
+        );
+        assert!(plain(&lines[lines.len() - 5]).contains("/help"));
+        assert_eq!(plain(&lines[lines.len() - 4]), "");
         assert_eq!(plain(&lines[lines.len() - 3]), "");
         assert_eq!(plain(&lines[lines.len() - 2]), "");
         assert_eq!(plain(&lines[lines.len() - 1]), "");
+    }
+
+    #[test]
+    fn welcome_hero_slot_replaces_only_the_martty_lockup() {
+        let mut app = test_app();
+        let (ctl, _commands) = crate::controller::test_controller();
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: serde_json::json!({
+                "protocol": 0,
+                "slot": "welcome.hero",
+                "rev": 1,
+                "nodes": [
+                    {
+                        "id": "deepseek-logo:whale",
+                        "kind": "ascii",
+                        "lines": ["▄█████████████████▄▄"],
+                        "tone": "brand"
+                    },
+                    {
+                        "id": "deepseek-logo:wordmark",
+                        "kind": "ascii",
+                        "lines": ["DEEPSEEK", "H A R N E S S", "Into the Unknown"],
+                        "tone": "fg_secondary"
+                    }
+                ]
+                }),
+            },
+            &ctl,
+        );
+
+        let frame = dump_frame(&mut app, 100, 40);
+
+        assert!(
+            frame.contains("▄█████████████████▄▄"),
+            "whale hero:\n{frame}"
+        );
+        assert!(frame.contains("H A R N E S S"), "wordmark:\n{frame}");
+        assert!(
+            !frame.contains("https://martty.sh"),
+            "Martty hero replaced:\n{frame}"
+        );
+        assert!(frame.contains("dsh-tui"), "session facts remain:\n{frame}");
+        assert!(
+            frame.contains("/help commands"),
+            "help row remains:\n{frame}"
+        );
     }
 
     #[test]
