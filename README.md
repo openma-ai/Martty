@@ -231,7 +231,7 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 | `ctrl+c` | 有草稿先清除；空闲连按 2 次、运行中连按 5 次退出；不中断当前回合 |
 | `/` | 打开上拉命令菜单并按前缀过滤；输入 `/命令 ` 后同一菜单切成参数候选。Enter 选中并执行，Tab 只补全；agent 广告的 skills 仍以 `/name ` prompt 发送 |
 | `/ui` · `/ui ` | 直接回车打开普通 UI Preset 单选表单；尾随空格显示 Martty / DeepSeek 等上拉候选 |
-| `/model` · `/agent` | 选择 agent 广告的模型和 agent preset；`option+a` 不弹表单，直接轮换 agent |
+| `/model` · `/agent` | 选择 agent 广告的模型和 agent preset；`ctrl+shift+a` 不弹表单，直接轮换 agent |
 | `/auth` | ACP 登录（多种方法时弹出选择；否则 Terminal Auth 或 `authenticate` `_meta`）；会话中途 `auth_required` 也会打开同一界面；agent 的 `/login` 仍当 prompt |
 | `/permission` · `shift+tab` | 选择或轮换 agent 广告的权限模式 |
 | `/effort` · `/plan` | 设置推理力度或把 plan 模式传给宿主 |
@@ -239,8 +239,9 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 | `/clip [text]` · `ctrl+v` | 暂存剪切板图片（可多次，最多 8 张同行）；macOS/Linux |
 | 图片 chip | 以 `[image n]` 内联在草稿文字里（无 icon）；退格整个删除，hover 或光标停在上面弹出预览（kitty 缩略图 + 尺寸/大小/类型） |
 | `ctrl+o` · `ctrl+t` | 展开输出 · 切换主题 |
+| `ctrl+k`（空输入） · `/keys` | 打开完整快捷键弹窗 |
 | `pgup/pgdn` · `ctrl+u/d`（空输入） | 滚动；`end` 回到实时尾部 |
-| readline 编辑 | `home/ctrl+e` 行首尾 · `ctrl+k/u` 删至尾/首 · `ctrl+w` 删词 |
+| readline 编辑 | `home/ctrl+e` 行首尾 · 输入时 `ctrl+k/u` 删至尾/首 · `ctrl+w` 删词 |
 | macOS | `⌘←/→` 行首尾 · `⌥←/→` 跳词 · `⌘⌫` 删至行首 · `⌥⌫` 删词（直接读物理键状态，任意终端可用） |
 | Linux/Windows | `ctrl+←/→` 跳词 · `ctrl+⌫` 删词 |
 | 点击工具 · 滚轮 | 点击工具展开/折叠输出；滚轮始终滚动整个对话 |

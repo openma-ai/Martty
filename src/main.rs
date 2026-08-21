@@ -356,7 +356,7 @@ fn main() -> Result<()> {
                     Ok(crossterm::event::Event::Key(key)) => {
                         // Recover terminal-lost physical modifiers at read
                         // time, before a quick key release can race the UI
-                        // event queue (notably Option+A becoming U+00E5).
+                        // event queue.
                         let ev = crossterm::event::Event::Key(crate::input::rescue_key(key));
                         if tx.send(AppEvent::Term(ev)).is_err() {
                             break;

@@ -206,7 +206,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_model_picker(f, app, area);
     draw_plugin_slider(f, app, area);
     draw_plugin_select(f, app, area);
-    draw_plugin_view(f, app, area);
+    draw_view_overlay(f, app, area);
     draw_permission_ask(f, app, area);
     draw_elicitation_form(f, app, area);
 }
@@ -369,7 +369,7 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_plugin_view(f: &mut Frame, app: &mut App, screen: Rect) {
+fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     let theme = app.theme;
     let Some(view) = app.view_overlay.as_mut() else {
         return;
@@ -611,15 +611,32 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
     let lw = left.width();
     let rw: usize = right_spans.iter().map(|s| s.content.width()).sum();
     if lw + rw + 2 > width {
-        // fall back to just the model chip, then drop entirely
+        // Drop the contextual hints first, but keep the scroll position
+        // beside the model so a longer left-side mode label never hides it.
         let shown_model = app
             .transcript
             .last_model
             .clone()
             .unwrap_or_else(|| app.cfg.model.clone());
-        let compact = format!("{shown_model} ");
-        if lw + compact.width() + 2 <= width {
-            right_spans = vec![Span::styled(compact, Style::default().fg(theme.brand_soft))];
+        let mut compact = Vec::new();
+        if app.scroll_up > 0 {
+            compact.push(Span::styled(
+                format!("▲{} · ", app.scroll_up),
+                Style::default().fg(theme.caption),
+            ));
+        }
+        compact.push(Span::styled(
+            format!("{shown_model} "),
+            Style::default().fg(theme.brand_soft),
+        ));
+        let compact_width = span_widths(&compact);
+        if lw + compact_width + 2 <= width {
+            right_spans = compact;
+        } else if lw + shown_model.width() + 3 <= width {
+            right_spans = vec![Span::styled(
+                format!("{shown_model} "),
+                Style::default().fg(theme.brand_soft),
+            )];
         } else {
             right_spans = Vec::new();
         }
@@ -707,14 +724,18 @@ fn status_title(app: &App) -> Line<'static> {
     }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
+    let key_style = Style::default()
+        .fg(theme.brand_soft)
+        .add_modifier(Modifier::BOLD);
     // Mode chips: folded from the durable event stream (same facts as the
     // Web UI chips). Stock defaults render until the host reports its own
     // facts, so the landing screen still advertises preset + permission.
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
-        format!("· {} ", app.agent_label(preset)),
+        format!("· {}", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
+    spans.push(Span::styled(" ctrl+shift+a", key_style));
     let perm = app
         .modes
         .permission
@@ -732,28 +753,23 @@ fn status_title(app: &App) -> Line<'static> {
         crate::app::permission_label(&perm)
     };
     spans.push(Span::styled(
-        format!("· {label}"),
+        format!(" · {label}"),
         Style::default().fg(if perm == "danger-full-access" {
             theme.warn_soft()
         } else {
             theme.fg_tertiary
         }),
     ));
-    // ⇧⇥ cycles the permission preset — keep the affordance visible
-    // now that the shortcut-hints row is gone.
-    spans.push(Span::styled(
-        "·⇧⇥ ".to_string(),
-        Style::default().fg(theme.caption),
-    ));
+    spans.push(Span::styled(" shift+tab", key_style));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
-            format!("· {approval} "),
+            format!(" · {approval}"),
             Style::default().fg(theme.fg_tertiary),
         ));
     }
     if app.modes.plan {
         spans.push(Span::styled(
-            "· plan ".to_string(),
+            " · plan".to_string(),
             Style::default().fg(theme.brand_soft),
         ));
     }
@@ -762,7 +778,7 @@ fn status_title(app: &App) -> Line<'static> {
 
 /// Contextual shortcut hints — a tiny state machine over (run state ×
 /// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty falls back to the `^. keys` discovery hint.
+/// immediately. Idle+empty falls back to the `^K keys` discovery hint.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
     let key = Style::default()
@@ -780,7 +796,7 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
             ("esc", app.locale.tr("interrupt", "中断")),
         ],
         // Idle, empty: point at the full shortcut list.
-        (false, true) => vec![("^.", app.locale.tr("keys", "快捷键"))],
+        (false, true) => vec![("^K", app.locale.tr("keys", "快捷键"))],
         // Idle with a draft: enter's meaning follows the prefix.
         (false, false) if app.input.buf.starts_with('/') => {
             vec![("⏎", app.locale.tr("command", "命令"))]
@@ -2482,7 +2498,7 @@ mod tests {
 
         assert_eq!(flat_line(status_title(&app)), "");
         let pending = flat_spans(status_right(&app));
-        assert!(pending.contains("^. keys"), "{pending}");
+        assert!(pending.contains("^K keys"), "{pending}");
         assert!(!pending.contains("deepseek-chat"), "{pending}");
         assert!(!pending.contains("high"), "{pending}");
 
@@ -2501,6 +2517,61 @@ mod tests {
         assert!(bound_left.contains("Full access"), "{bound_left}");
         assert!(bound_right.contains("deepseek-chat"), "{bound_right}");
         assert!(bound_right.contains("high"), "{bound_right}");
+    }
+
+    #[test]
+    fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
+        let flat = |line: &Line| -> String {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let mut app = test_app();
+
+        app.locale = crate::locale::Locale::Zh;
+        let zh_line = status_title(&app);
+        let zh = flat(&zh_line);
+        assert!(
+            zh.contains("Standard mode ctrl+shift+a · 工作区可写 shift+tab"),
+            "{zh}"
+        );
+        assert!(!zh.contains("permission"), "{zh}");
+        assert!(!zh.contains("权限"), "{zh}");
+
+        app.locale = crate::locale::Locale::En;
+        let en_line = status_title(&app);
+        let en = flat(&en_line);
+        assert!(
+            en.contains("Standard mode ctrl+shift+a · Workspace Write shift+tab"),
+            "{en}"
+        );
+        assert!(!en.contains("permission"), "{en}");
+        assert!(!en.contains("access"), "{en}");
+
+        let key_spans = en_line
+            .spans
+            .iter()
+            .filter(|span| span.content.contains('+'))
+            .collect::<Vec<_>>();
+        assert_eq!(key_spans.len(), 2, "{en}");
+        assert!(key_spans.iter().all(|span| {
+            span.style.fg == Some(app.theme.brand_soft)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
+        let value_spans = en_line
+            .spans
+            .iter()
+            .filter(|span| {
+                span.content.contains("Standard mode")
+                    || span.content.contains("Workspace Write")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(value_spans.len(), 2, "{en}");
+        assert!(value_spans
+            .iter()
+            .all(|span| span.style.fg == Some(app.theme.fg_tertiary)));
+        assert_ne!(key_spans[0].style.fg, value_spans[0].style.fg);
     }
 
     #[test]
@@ -2538,7 +2609,7 @@ mod tests {
         };
         let mut app = test_app();
         // idle · empty → discovery hint
-        assert!(flat(context_hints(&app)).contains("^. keys"));
+        assert!(flat(context_hints(&app)).contains("^K keys"));
         // idle · draft → enter sends
         app.input.set("hello".into());
         let s = flat(context_hints(&app));
@@ -3571,6 +3642,7 @@ mod tests {
                 streaming: false,
             }],
             scroll: 0,
+            notify_plugin: true,
         });
         let frame = dump_frame(&mut app, 160, 30);
         // The plan review renders through the full markdown pipeline: the

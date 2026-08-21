@@ -47,7 +47,7 @@ impl Locale {
             "resume" => "恢复当前工作区的持久会话",
             "clear" => "清空对话滚动区",
             "model" => "通过 ACP 实时切换模型",
-            "agent" => "切换 Agent 预设 · option+a",
+            "agent" => "切换 Agent 预设 · ctrl+shift+a",
             "effort" => "设置当前会话的推理强度",
             "permission" => "选择权限预设 · shift+tab 轮换",
             "plan" => "切换 Host 计划模式",
@@ -72,7 +72,7 @@ impl Locale {
             "click a tool to expand it · wheel always scrolls the conversation",
             "the footer under the composer shows token usage + cache hit rate",
             "answers render markdown: headings, code, links, and images",
-            "/agent or option+a switches the agent preset",
+            "/agent or ctrl+shift+a switches the agent preset",
             "/new starts a fresh session · /theme switches packs · ctrl+t toggles dark/light",
         ];
         const ZH: [&str; 8] = [
@@ -82,7 +82,7 @@ impl Locale {
             "点击工具可展开 · 滚轮始终滚动对话",
             "输入框下方显示 token 用量和缓存命中率",
             "回答支持 Markdown：标题、代码、链接和图片",
-            "/agent 或 option+a 可切换 Agent 预设",
+            "/agent 或 ctrl+shift+a 可切换 Agent 预设",
             "/new 新建会话 · /theme 切换主题包 · ctrl+t 切换明暗模式",
         ];
         match self {

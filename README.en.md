@@ -275,7 +275,7 @@ Requests/Notifications and never enter prompts or conversation history.
 | `ctrl+c` | Clear the draft first; press twice when idle, five times while a turn runs, to quit; never interrupts the current turn |
 | `/` | Open the upward command menu and filter by prefix; after `/command ` the same menu shows argument candidates. Enter selects and runs; Tab only completes. Agent-advertised skills still ship as `/name ` prompts |
 | `/ui` · `/ui ` | Enter directly for the ordinary UI Preset single-select form; add a trailing space for upward Martty / DeepSeek candidates |
-| `/model` · `/agent` | Pick an agent-advertised model or agent preset; `option+a` cycles agents directly without a picker |
+| `/model` · `/agent` | Pick an agent-advertised model or agent preset; `ctrl+shift+a` cycles agents directly without a picker |
 | `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
 | `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
 | `/effort` · `/plan` | Set reasoning effort or pass plan mode to the host |
@@ -283,8 +283,9 @@ Requests/Notifications and never enter prompts or conversation history.
 | `/clip [text]` · `ctrl+v` | Stage the clipboard image (repeatable; up to 8 ride one prompt); macOS/Linux |
 | Image chips | Live inline in the draft as `[image n]` tokens (no icon); backspace cuts the whole chip, hover (or park the cursor on) one for a preview popup — kitty thumbnail + dimensions/size/type |
 | `ctrl+o` · `ctrl+t` | Expand output · toggle the theme |
+| `ctrl+k` (empty prompt) · `/keys` | Open the complete keyboard-shortcut modal |
 | `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
-| Readline editing | `home/ctrl+e` line ends · `ctrl+k/u` kill to end/start · `ctrl+w` word back |
+| Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+w` word back |
 | macOS | `⌘←/→` line ends · `⌥←/→` word hops · `⌘⌫` kill to start · `⌥⌫` word back (physical key state read natively — works in every terminal) |
 | Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
 | Click tool · wheel | Click a tool to expand/collapse it; wheel always scrolls the conversation |

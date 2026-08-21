@@ -86,16 +86,15 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('v') if ctrl => AttachClipboard,
         // ctrl+p (not ctrl+m): terminals send ctrl+m as the Enter byte.
         KeyCode::Char('p') if ctrl => ModelPicker,
-        KeyCode::Char('a') if alt => CycleAgent,
         // Keep the agent shortcut on the modified chord. Legacy terminals
         // may collapse it to ^a, which safely degrades to line-start.
         KeyCode::Char('a') if ctrl && shift => CycleAgent,
         // ^a = start of line — also what macOS terminals commonly send for
         // ⌘← when their natural-editing mode consumes the Command modifier.
         KeyCode::Char('a') if ctrl => LineStart,
-        // ctrl+. → the shortcut list; needs a terminal that can encode
-        // ctrl+punctuation (kitty protocol) — /keys always works.
-        KeyCode::Char('.') if ctrl => ShowKeys,
+        // ^k is dual-use: discover the shortcut list from an empty prompt,
+        // retain readline's kill-to-end behavior while editing.
+        KeyCode::Char('k') if ctrl && ctx.input_empty => ShowKeys,
         KeyCode::BackTab => CyclePermission,
         // kitty-protocol terminals may report shift+tab instead of BackTab.
         KeyCode::Tab if shift => CyclePermission,
@@ -571,15 +570,12 @@ pub const KEY_ROWS: &[KeyRow] = &[
     KeyRow {
         action: CycleAgent,
         group: KeyGroup::App,
-        chords_mac: &["option+a"],
+        chords_mac: &["ctrl+shift+a"],
         chords_other: &["ctrl+shift+a"],
         ctx: CtxNote::Always,
         desc_en: "cycle agent preset",
         desc_zh: "切换 Agent 预设",
-        probes: &[
-            p(KeyCode::Char('a'), ALT, false),
-            p(KeyCode::Char('a'), CTRL_SHIFT, false),
-        ],
+        probes: &[p(KeyCode::Char('a'), CTRL_SHIFT, false)],
     },
     KeyRow {
         action: CyclePermission,
@@ -634,12 +630,12 @@ pub const KEY_ROWS: &[KeyRow] = &[
     KeyRow {
         action: ShowKeys,
         group: KeyGroup::App,
-        chords_mac: &["ctrl+."],
-        chords_other: &["ctrl+."],
-        ctx: CtxNote::Always,
+        chords_mac: &["ctrl+k"],
+        chords_other: &["ctrl+k"],
+        ctx: CtxNote::EmptyPrompt,
         desc_en: "this shortcut list (/keys)",
         desc_zh: "本快捷键列表（/keys）",
-        probes: &[p(KeyCode::Char('.'), CTRL, false)],
+        probes: &[p(KeyCode::Char('k'), CTRL, true)],
     },
     KeyRow {
         action: TabComplete,
@@ -829,10 +825,11 @@ mod tests {
     }
 
     #[test]
-    fn option_a_cycles_the_agent_without_stealing_readline_ctrl_a() {
+    fn agent_cycle_is_ctrl_shift_a_on_every_platform() {
         assert_eq!(
             classify(&key(KeyCode::Char('a'), ALT), typing()),
-            Some(Action::CycleAgent)
+            None,
+            "option+a is no longer a platform-specific alias"
         );
         assert_eq!(
             classify(&key(KeyCode::Char('a'), CTRL), typing()),
@@ -897,14 +894,20 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_dot_shows_the_shortcut_list() {
+    fn ctrl_k_opens_keys_only_on_an_empty_draft() {
         assert_eq!(
-            classify(&key(KeyCode::Char('.'), CTRL), empty()),
+            classify(&key(KeyCode::Char('k'), CTRL), empty()),
             Some(Action::ShowKeys)
         );
         assert_eq!(
-            classify(&key(KeyCode::Char('.'), NONE), typing()),
-            Some(Action::Insert('.'))
+            classify(&key(KeyCode::Char('k'), CTRL), typing()),
+            Some(Action::KillToEnd),
+            "typing keeps the readline kill-to-end behavior"
+        );
+        assert_eq!(classify(&key(KeyCode::Char('.'), CTRL), empty()), None);
+        assert_eq!(
+            classify(&key(KeyCode::Char('k'), NONE), typing()),
+            Some(Action::Insert('k'))
         );
     }
 
@@ -912,7 +915,7 @@ mod tests {
     fn unbound_chords_do_not_type_their_base_letter() {
         assert_eq!(classify(&key(KeyCode::Char('z'), ALT), typing()), None);
         assert_eq!(classify(&key(KeyCode::Char('c'), SUPER), typing()), None);
-        assert_eq!(classify(&key(KeyCode::Char('g'), CTRL), typing()), None);
+        assert_eq!(classify(&key(KeyCode::Char('r'), CTRL), typing()), None);
         assert_eq!(
             classify(&key(KeyCode::Char('z'), NONE), typing()),
             Some(Action::Insert('z'))
@@ -1067,7 +1070,11 @@ mod tests {
     fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
         let mac = keys_markdown(false, true);
         assert!(mac.contains("⌘←"), "macOS chord missing:\n{mac}");
-        assert!(mac.contains("option+a"), "macOS agent chord missing:\n{mac}");
+        assert!(
+            mac.contains("ctrl+shift+a"),
+            "unified agent chord missing on macOS:\n{mac}"
+        );
+        assert!(!mac.contains("option+a"), "old macOS alias leaked:\n{mac}");
         let linux = keys_markdown(false, false);
         assert!(linux.contains("ctrl+←"), "linux chord missing:\n{linux}");
         assert!(!linux.contains("⌘←"), "macOS chord leaked to linux:\n{linux}");

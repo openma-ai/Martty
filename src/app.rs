@@ -163,7 +163,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "agent",
         usage: "/agent [id]",
-        desc: "switch agent preset · option+a",
+        desc: "switch agent preset · ctrl+shift+a",
     },
     SlashCommand {
         name: "effort",
@@ -632,6 +632,10 @@ pub struct ViewOverlay {
     pub nodes: Vec<crate::slots::TuiNode>,
     #[serde(skip)]
     pub scroll: usize,
+    /// Plugin-owned views report submit/cancel over the compositor plane;
+    /// builtin chrome such as `/keys` closes entirely inside the painter.
+    #[serde(skip)]
+    pub(crate) notify_plugin: bool,
 }
 
 pub struct Picker {
@@ -908,7 +912,8 @@ pub struct App {
     pub slider_overlay: Option<SliderOverlay>,
     /// Client Plugin single-select form rendered by the native compositor.
     pub select_overlay: Option<SelectOverlay>,
-    /// Read-only Client Plugin modal rendered from the same semantic TuiNode tree.
+    /// Read-only modal rendered from a semantic TuiNode tree. Client Plugins
+    /// and builtin chrome such as `/keys` share this surface.
     pub view_overlay: Option<ViewOverlay>,
     /// Images staged in the composer as inline `[image N]` chips living in
     /// the draft text; editing a token away un-stages its image.
@@ -1819,11 +1824,12 @@ impl App {
                                 self.select_overlay = None;
                                 self.view_overlay = None;
                             }
-                            Some(PluginOverlay::View(view))
+                            Some(PluginOverlay::View(mut view))
                                 if !view.id.is_empty()
                                     && !view.title.is_empty()
                                     && crate::slots::validate_node_tree(&view.nodes).is_ok() =>
                             {
+                                view.notify_plugin = true;
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
                                 self.view_overlay = Some(view);
@@ -2759,11 +2765,13 @@ impl App {
         };
         if let Some(event) = event {
             if let Some(view) = self.view_overlay.take() {
-                ctl.send(Cmd::PluginOverlayEvent {
-                    id: view.id,
-                    event: event.into(),
-                    value: None,
-                });
+                if view.notify_plugin {
+                    ctl.send(Cmd::PluginOverlayEvent {
+                        id: view.id,
+                        event: event.into(),
+                        value: None,
+                    });
+                }
             }
         }
     }
@@ -3785,9 +3793,9 @@ impl App {
         self.show_tip(format!("agent → {label} …"));
     }
 
-    /// Option+A cycles the advertised agent presets directly. `/agent` keeps
-    /// the picker for explicit selection; the shortcut mirrors Shift+Tab's
-    /// one-keystroke permission switching.
+    /// Ctrl+Shift+A cycles the advertised agent presets directly. `/agent`
+    /// keeps the picker for explicit selection; the shortcut mirrors
+    /// Shift+Tab's one-keystroke permission switching.
     fn cycle_agent(&mut self, ctl: &Controller) {
         let current = self.current_mode();
         let choices: Vec<&str> = if self.demo {
@@ -4437,7 +4445,7 @@ impl App {
 - ctrl+c · 有草稿先清除；无草稿时连按 2 次退出（不中断）
 - shift+tab · 轮换权限预设 · /permission 打开选择器
 - ctrl+p · 打开模型选择器，然后选择推理强度
-- option+a · 直接轮换 Agent 预设
+- ctrl+shift+a · 直接轮换 Agent 预设
 - /agent · 切换 ACP 广告的 Agent 预设
 - /lang · 切换界面语言：/lang zh 或 /lang en
 - /auth · ACP 登录；多种方式时打开选择器
@@ -4467,7 +4475,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - ctrl+c · clear a draft; 2× quits with no draft (never interrupts)
 - shift+tab · cycle permission (workspace-write ⇄ full access) · /permission opens the preset picker
 - ctrl+p · model picker (host catalog) → effort picker
-- option+a · cycle agent preset directly
+- ctrl+shift+a · cycle agent preset directly
 - /agent · switch the agent preset advertised over ACP
 - /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
@@ -4492,7 +4500,17 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             self.locale == Locale::Zh,
             cfg!(target_os = "macos"),
         );
-        self.transcript.push_markdown(text);
+        self.view_overlay = Some(ViewOverlay {
+            id: "builtin.keys".into(),
+            title: self.locale.tr("Keyboard shortcuts", "快捷键").to_string(),
+            nodes: vec![crate::slots::TuiNode::Markdown {
+                id: "keys".into(),
+                text,
+                streaming: false,
+            }],
+            scroll: 0,
+            notify_plugin: false,
+        });
     }
 
     fn push_session_info(&mut self) {
@@ -5320,37 +5338,61 @@ mod resume_tests {
     }
 
     #[test]
-    fn keys_slash_pushes_a_compact_markdown_map() {
+    fn keys_slash_opens_a_local_modal_without_polluting_the_timeline() {
         let root = tmp_root("keys");
-        let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+        let (mut app, _demo_ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+        let (ctl, commands) = crate::controller::test_controller();
+        let cells_before = app.transcript.cells.len();
+        app.input.set("/keys".into());
 
-        app.run_slash("keys", "", &ctl);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
-        let text = app
-            .transcript
-            .lines(&Theme::dark(), 80, ' ')
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-            .collect::<String>();
-        assert!(text.contains("keys — shortcut map"), "/keys title:\n{text}");
-        assert!(text.contains("ctrl+q"), "quit binding missing:\n{text}");
-        assert!(
-            text.contains("· quit dsh-tui"),
-            "line style missing:\n{text}"
+        assert_eq!(
+            app.transcript.cells.len(),
+            cells_before,
+            "/keys is chrome and must not enter the conversation timeline"
         );
+        assert!(app.view_overlay.is_some(), "/keys modal should open");
+        let frame = crate::ui::dump_frame(&mut app, 100, 30);
         assert!(
-            text.contains("shift+tab") && text.contains("permission"),
-            "permission binding missing:\n{text}"
+            frame.contains("Keyboard shortcuts"),
+            "modal title:\n{frame}"
         );
-        // Compact `chords · description` lines — no box-drawing frames.
+        assert!(frame.contains("ctrl+q"), "quit binding missing:\n{frame}");
+
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &ctl);
+        let frame = crate::ui::dump_frame(&mut app, 100, 30);
         assert!(
-            !text.contains('┌') && !text.contains('│'),
-            "keys should render as lines, not tables:\n{text}"
+            frame.contains("shift+tab") && frame.contains("permission"),
+            "permission binding missing:\n{frame}"
         );
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+        assert!(app.view_overlay.is_none(), "esc closes the local modal");
         assert!(
-            !text.contains("· keys —"),
-            "keys must not render as a plain notice:\n{text}"
+            matches!(
+                commands.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "closing a builtin modal must not emit a plugin overlay event"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_k_opens_the_same_keys_modal_from_an_empty_prompt() {
+        let root = tmp_root("keys-shortcut");
+        let (mut app, _demo_ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+        let (ctl, _commands) = crate::controller::test_controller();
+        let cells_before = app.transcript.cells.len();
+
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            &ctl,
+        );
+
+        assert!(app.view_overlay.is_some(), "ctrl+k modal should open");
+        assert_eq!(app.transcript.cells.len(), cells_before);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -6138,11 +6180,17 @@ mod mode_tests {
     }
 
     #[test]
-    fn option_a_cycles_the_agent_directly_without_touching_the_draft() {
+    fn ctrl_shift_a_cycles_the_agent_directly_without_touching_the_draft() {
         let (mut app, ctl, rx) = test_app();
         app.input.set("keep this draft".into());
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT), &ctl);
+        app.handle_key(
+            KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            &ctl,
+        );
 
         assert_eq!(app.input.buf, "keep this draft");
         assert!(app.picker.is_none(), "the shortcut must not open a form");
@@ -6151,7 +6199,7 @@ mod mode_tests {
         while app.modes.agent_preset.as_deref() != Some("code") {
             let remaining = deadline
                 .checked_duration_since(std::time::Instant::now())
-                .expect("option+a switches to the next agent preset");
+                .expect("ctrl+shift+a switches to the next agent preset");
             let ev = rx.recv_timeout(remaining).expect("agent preset event");
             app.handle(ev, &ctl);
         }
