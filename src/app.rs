@@ -8517,6 +8517,17 @@ mod palette_tests {
         json!({"protocol": 0, "palette": palette, "activate": activate})
     }
 
+    fn gallery_params(id: &str, activate: bool) -> serde_json::Value {
+        let fixture = match id {
+            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
+            "nord" => include_str!("../docs/fixtures/nord.v0.json"),
+            "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
+            _ => panic!("unknown gallery fixture {id}"),
+        };
+        let palette: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        json!({"protocol": 0, "palette": palette, "activate": activate})
+    }
+
     #[test]
     fn starts_on_default_pack() {
         let (app, _ctl, _rx) = test_app();
@@ -8577,6 +8588,76 @@ mod palette_tests {
             app.picker.is_some(),
             "toggling mode must not close the picker"
         );
+    }
+
+    #[test]
+    fn gallery_palette_rpc_activates_ayu_and_toggles_modes() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: gallery_params("ayu", true),
+            },
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "ayu");
+        assert_eq!(app.theme.brand, Color::Rgb(83, 189, 250)); // #53BDFA Ayu blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "ayu");
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(49, 153, 225)); // #3199E1 Ayu Light blue
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(
+            tip.contains("ayu") && tip.contains("light"),
+            "tip should name the pack, got {tip:?}"
+        );
+    }
+
+    #[test]
+    fn slash_theme_switches_between_gallery_packs() {
+        let (mut app, ctl, _rx) = test_app();
+        for id in ["ayu", "nord", "nvim"] {
+            app.handle(
+                AppEvent::Rpc {
+                    method: crate::cordis::THEME_UPDATE.into(),
+                    params: gallery_params(id, false),
+                },
+                &ctl,
+            );
+        }
+        assert_eq!(app.active_palette_id, "default");
+        app.run_slash("theme", "nord", &ctl);
+        assert_eq!(app.active_palette_id, "nord");
+        // Nord keeps the same blue in both modes; toggling must stay in-pack.
+        assert_eq!(app.theme.brand, Color::Rgb(129, 161, 193)); // #81A1C1
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(129, 161, 193)); // #81A1C1 still
+        app.run_slash("theme", "nvim", &ctl);
+        assert_eq!(app.active_palette_id, "nvim");
+        // Mode (Light) persists across pack switches, so nvim shows its light map.
+        assert_eq!(app.theme.brand, Color::Rgb(0, 76, 115)); // #004C73 Nvim Light blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
+        assert_eq!(app.theme.brand, Color::Rgb(166, 219, 255)); // #A6DBFF Nvim Dark blue
     }
 
     #[test]

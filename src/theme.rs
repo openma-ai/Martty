@@ -708,6 +708,61 @@ mod tests {
         assert_eq!(light.bg, Color::Rgb(255, 246, 238)); // #FFF6EE
     }
 
+    fn fixture_json(name: &str) -> serde_json::Value {
+        match name {
+            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
+            "nord" => include_str!("../docs/fixtures/nord.v0.json"),
+            "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
+            _ => panic!("unknown fixture {name}"),
+        }
+        .parse::<serde_json::Value>()
+        .expect("fixture json")
+    }
+
+    #[test]
+    fn gallery_fixtures_parse_both_modes() {
+        for (name, label, dark_brand, light_brand, dark_bg, light_bg) in [
+            (
+                "ayu",
+                "Ayu",
+                Color::Rgb(83, 189, 250),  // #53BDFA Ayu blue
+                Color::Rgb(49, 153, 225),  // #3199E1 Ayu Light blue
+                Color::Rgb(11, 14, 20),    // #0B0E14
+                Color::Rgb(248, 249, 250), // #F8F9FA
+            ),
+            (
+                "nord",
+                "Nord",
+                Color::Rgb(129, 161, 193), // #81A1C1 Nord blue (both modes)
+                Color::Rgb(129, 161, 193), // #81A1C1
+                Color::Rgb(46, 52, 64),    // #2E3440
+                Color::Rgb(229, 233, 240), // #E5E9F0
+            ),
+            (
+                "nvim",
+                "Nvim",
+                Color::Rgb(166, 219, 255), // #A6DBFF Nvim Dark blue
+                Color::Rgb(0, 76, 115),    // #004C73 Nvim Light blue
+                Color::Rgb(20, 22, 27),    // #14161B
+                Color::Rgb(224, 226, 234), // #E0E2EA
+            ),
+        ] {
+            let pack = PalettePack::from_json(&fixture_json(name)).expect("gallery fixture");
+            assert_eq!(pack.id, name);
+            assert_eq!(pack.label, label);
+            let dark = pack.theme(Mode::Dark);
+            let light = pack.theme(Mode::Light);
+            assert_eq!(dark.mode, Mode::Dark);
+            assert_eq!(light.mode, Mode::Light);
+            assert_eq!(dark.brand, dark_brand, "{name} dark brand");
+            assert_eq!(light.brand, light_brand, "{name} light brand");
+            assert_eq!(dark.bg, dark_bg, "{name} dark bg");
+            assert_eq!(light.bg, light_bg, "{name} light bg");
+            // Toggling stays inside the pack's own maps.
+            assert_eq!(dark.toggled().brand, light.brand, "{name} toggled");
+        }
+    }
+
     #[test]
     fn palette_parses_an_optional_png_background() {
         let mut value = ember_json();

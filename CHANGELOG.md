@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- New gallery palette packs `ayu` (dark from Ayu, light from Ayu Light),
+  `nord` (dark from Nord, light from Nord Light) and `nvim` (dark from
+  Nvim Dark, light from Nvim Light), sourced from the alacritty directory of
+  mbadolato/iTerm2-Color-Schemes. All three register at Client boot as
+  sibling insert rows and are switchable via `/theme`.
 - UI Presets now compose multiple UI Plugin contributions behind one
   persistent `/ui` choice. Builtin `default` (Martty) and `deepseek` presets
   each fill independent `welcome.hero` and `welcome.info` slots; dynamic

@@ -15,6 +15,9 @@ import { apply as applyShell } from './index.js'
 import { resolveStackedAgent } from './agent.js'
 import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
+import { apply as applyAyu, inject as ayuInject } from './ayu.js'
+import { apply as applyNord, inject as nordInject } from './nord.js'
+import { apply as applyNvim, inject as nvimInject } from './nvim.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
 import { apply as applyPresets, inject as presetsInject } from './tui-presets.js'
@@ -49,6 +52,9 @@ export async function bootClient(options = {}) {
   const presetConfig = { settingsPath }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
+    await ctx.plugin({ name: 'tui-theme-ayu', inject: ayuInject, apply: applyAyu })
+    await ctx.plugin({ name: 'tui-theme-nord', inject: nordInject, apply: applyNord })
+    await ctx.plugin({ name: 'tui-theme-nvim', inject: nvimInject, apply: applyNvim })
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
@@ -95,6 +101,9 @@ export async function bootClient(options = {}) {
     )
   } else {
     applyTheme(ctx, presetConfig)
+    applyAyu(ctx)
+    applyNord(ctx)
+    applyNvim(ctx)
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
