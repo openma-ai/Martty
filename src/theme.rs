@@ -711,6 +711,7 @@ mod tests {
     fn fixture_json(name: &str) -> serde_json::Value {
         match name {
             "one" => include_str!("../docs/fixtures/one.v0.json"),
+            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
@@ -734,6 +735,14 @@ mod tests {
                 Color::Rgb(47, 90, 243),   // #2F5AF3 One Light blue
                 Color::Rgb(40, 44, 52),    // #282C34
                 Color::Rgb(248, 248, 248), // #F8F8F8
+            ),
+            (
+                "ayu",
+                "Ayu",
+                Color::Rgb(83, 189, 250), // #53BDFA Ayu dark blue
+                Color::Rgb(109, 203, 250), // #6DCBFA Ayu Mirage blue
+                Color::Rgb(11, 14, 20),   // #0B0E14
+                Color::Rgb(31, 36, 48),   // #1F2430
             ),
             (
                 "everforest",

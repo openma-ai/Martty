@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- New gallery palette pack `ayu` (dark from the Ayu dark variant, the second
+  token map from Ayu Mirage), sourced from terminalcolors.com/themes/ayu.
+  It registers at Client boot as a sibling insert row and is switchable via
+  `/theme`.
 - New gallery palette packs `everforest`, `gruvbox`, `iceberg`, `night-owl`,
   `one-half`, `seoul256` and `solarized` (each with complete dark and light
   variant maps), sourced from terminalcolors.com/themes. They register at
