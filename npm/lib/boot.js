@@ -15,13 +15,11 @@ import { apply as applyShell } from './index.js'
 import { resolveStackedAgent } from './agent.js'
 import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
-import { apply as applyOne, inject as oneInject } from './one.js'
 import { apply as applyAyu, inject as ayuInject } from './ayu.js'
 import { apply as applyCatppuccin, inject as catppuccinInject } from './catppuccin.js'
 import { apply as applyGithub, inject as githubInject } from './github.js'
 import { apply as applyKanagawa, inject as kanagawaInject } from './kanagawa.js'
 import { apply as applyEverforest, inject as everforestInject } from './everforest.js'
-import { apply as applyGruvbox, inject as gruvboxInject } from './gruvbox.js'
 import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
 import { apply as applyOneHalf, inject as oneHalfInject } from './one-half.js'
 import { apply as applySolarized, inject as solarizedInject } from './solarized.js'
@@ -59,13 +57,11 @@ export async function bootClient(options = {}) {
   const presetConfig = { settingsPath }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
-    await ctx.plugin({ name: 'tui-theme-one', inject: oneInject, apply: applyOne })
     await ctx.plugin({ name: 'tui-theme-ayu', inject: ayuInject, apply: applyAyu })
     await ctx.plugin({ name: 'tui-theme-catppuccin', inject: catppuccinInject, apply: applyCatppuccin })
     await ctx.plugin({ name: 'tui-theme-github', inject: githubInject, apply: applyGithub })
     await ctx.plugin({ name: 'tui-theme-kanagawa', inject: kanagawaInject, apply: applyKanagawa })
     await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
-    await ctx.plugin({ name: 'tui-theme-gruvbox', inject: gruvboxInject, apply: applyGruvbox })
     await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
     await ctx.plugin({ name: 'tui-theme-one-half', inject: oneHalfInject, apply: applyOneHalf })
     await ctx.plugin({ name: 'tui-theme-solarized', inject: solarizedInject, apply: applySolarized })
@@ -115,13 +111,11 @@ export async function bootClient(options = {}) {
     )
   } else {
     applyTheme(ctx, presetConfig)
-    applyOne(ctx)
     applyAyu(ctx)
     applyCatppuccin(ctx)
     applyGithub(ctx)
     applyKanagawa(ctx)
     applyEverforest(ctx)
-    applyGruvbox(ctx)
     applyIceberg(ctx)
     applyOneHalf(ctx)
     applySolarized(ctx)

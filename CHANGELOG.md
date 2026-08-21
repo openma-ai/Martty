@@ -23,13 +23,9 @@ All notable changes to this project are documented here. The project follows
   token map from Ayu Mirage), sourced from terminalcolors.com/themes/ayu.
   It registers at Client boot as a sibling insert row and is switchable via
   `/theme`.
-- New gallery palette packs `everforest`, `gruvbox`, `iceberg`,
-  `one-half` and `solarized` (each with complete dark and light
+- New gallery palette packs `everforest`, `iceberg`, `one-half` and `solarized` (each with complete dark and light
   variant maps), sourced from terminalcolors.com/themes. They register at
   Client boot as sibling insert rows and are switchable via `/theme`.
-- New gallery palette pack `one` (dark from One Dark, light from One Light),
-  sourced from terminalcolors.com/themes/one. It registers at Client boot
-  as a sibling insert row and is switchable via `/theme`.
 - UI Presets now compose multiple UI Plugin contributions behind one
   persistent `/ui` choice. Builtin `default` (Martty) and `deepseek` presets
   each fill independent `welcome.hero` and `welcome.info` slots; dynamic

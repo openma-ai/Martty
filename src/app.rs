@@ -8519,13 +8519,11 @@ mod palette_tests {
 
     fn gallery_params(id: &str, activate: bool) -> serde_json::Value {
         let fixture = match id {
-            "one" => include_str!("../docs/fixtures/one.v0.json"),
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
             "github" => include_str!("../docs/fixtures/github.v0.json"),
             "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
-            "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
             "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
@@ -8630,7 +8628,7 @@ mod palette_tests {
     fn slash_theme_switches_between_gallery_packs() {
         let (mut app, ctl, _rx) = test_app();
         for id in [
-            "one", "ayu", "catppuccin", "github", "kanagawa", "everforest", "gruvbox",
+            "ayu", "catppuccin", "github", "kanagawa", "everforest",
             "iceberg", "one-half", "solarized",
         ] {
             app.handle(
@@ -8642,19 +8640,6 @@ mod palette_tests {
             );
         }
         assert_eq!(app.active_palette_id, "default");
-        app.run_slash("theme", "one", &ctl);
-        assert_eq!(app.active_palette_id, "one");
-        // Mode (Dark) persists, so one shows its dark map.
-        assert_eq!(app.theme.brand, Color::Rgb(97, 175, 239)); // #61AFEF One Dark blue
-        app.handle(
-            AppEvent::Term(Event::Key(KeyEvent::new(
-                KeyCode::Char('t'),
-                crossterm::event::KeyModifiers::CONTROL,
-            ))),
-            &ctl,
-        );
-        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
-        assert_eq!(app.theme.brand, Color::Rgb(47, 90, 243)); // #2F5AF3 One Light blue
         app.run_slash("theme", "solarized", &ctl);
         assert_eq!(app.active_palette_id, "solarized");
         // Solarized keeps the same blue in both modes.

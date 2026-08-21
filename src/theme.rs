@@ -710,13 +710,11 @@ mod tests {
 
     fn fixture_json(name: &str) -> serde_json::Value {
         match name {
-            "one" => include_str!("../docs/fixtures/one.v0.json"),
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
             "github" => include_str!("../docs/fixtures/github.v0.json"),
             "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
-            "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
             "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
@@ -729,14 +727,6 @@ mod tests {
     #[test]
     fn gallery_fixtures_parse_both_modes() {
         for (name, label, dark_brand, light_brand, dark_bg, light_bg) in [
-            (
-                "one",
-                "One",
-                Color::Rgb(97, 175, 239),  // #61AFEF One Dark blue
-                Color::Rgb(47, 90, 243),   // #2F5AF3 One Light blue
-                Color::Rgb(40, 44, 52),    // #282C34
-                Color::Rgb(248, 248, 248), // #F8F8F8
-            ),
             (
                 "ayu",
                 "Ayu",
@@ -776,14 +766,6 @@ mod tests {
                 Color::Rgb(58, 148, 197),  // #3A94C5
                 Color::Rgb(45, 53, 59),    // #2D353B
                 Color::Rgb(253, 246, 227), // #FDF6E3
-            ),
-            (
-                "gruvbox",
-                "Gruvbox",
-                Color::Rgb(69, 133, 136),  // #458588 (both modes)
-                Color::Rgb(69, 133, 136),  // #458588
-                Color::Rgb(40, 40, 40),    // #282828
-                Color::Rgb(251, 241, 199), // #FBF1C7
             ),
             (
                 "iceberg",
