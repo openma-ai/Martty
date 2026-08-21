@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
+import { installTuiOverlay } from '../npm/lib/tui-overlay.js'
 
 const presetsPlugin = await import(pathToFileURL(
   path.join(import.meta.dirname, '../npm/lib/tui-presets.js'),
@@ -80,4 +81,45 @@ test('UI presets compose plugin mounts, switch atomically, and persist selection
   assert.equal(restored.active(), 'deepseek', 'registered preferred preset restores on startup')
   restored.dispose()
   rmSync(root, { recursive: true, force: true })
+})
+
+test('/ui without arguments opens a native preset selector', async () => {
+  assert.equal(typeof presetsPlugin.installTuiPresets, 'function')
+  if (typeof presetsPlugin.installTuiPresets !== 'function') return
+
+  const notifications = []
+  const commands = commandService()
+  const overlay = installTuiOverlay({}, {
+    notify(method, params) {
+      notifications.push({ method, params })
+    },
+  })
+  const service = presetsPlugin.installTuiPresets({
+    tuiCommands: commands,
+    tuiOverlay: overlay,
+  })
+  service.register({ id: 'default', label: 'Martty' }, () => () => {})
+  service.register({ id: 'deepseek', label: 'DeepSeek' }, () => () => {})
+
+  await commands.run('')
+
+  assert.deepEqual(overlay.active(), {
+    kind: 'slider',
+    id: 'ui-preset',
+    title: 'UI preset',
+    min: 0,
+    max: 1,
+    step: 1,
+    marks: [
+      { value: 0, id: 'default', label: 'Martty' },
+      { value: 1, id: 'deepseek', label: 'DeepSeek' },
+    ],
+    snapToMarks: true,
+    value: 0,
+  })
+
+  await overlay.dispatch({ protocol: 0, id: 'ui-preset', event: 'submit', value: 1 })
+  assert.equal(service.active(), 'deepseek')
+  assert.equal(notifications.at(-1).params.overlay, null)
+  service.dispose()
 })

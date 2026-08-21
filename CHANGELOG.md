@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The project follows
   persistent `/ui` choice. Builtin `default` (Martty) and `deepseek` presets
   each fill independent `welcome.hero` and `welcome.info` slots; dynamic
   Client Plugins can register additional compositions through `tuiPresets`.
+- Bare `/ui` now opens a native preset selector. The composer also reserves
+  the empty stats footer row until session usage arrives, avoiding a layout
+  jump after the first response.
 - The composer is now one rounded box: the cap row (`Tip` / plugin input
   dock / `·` workspace title) and the entire input surface (input well +
   meta row) share a single rounded rectangle, so the input text is fully

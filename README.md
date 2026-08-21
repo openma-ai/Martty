@@ -248,7 +248,8 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 独立 slot 构成：居中的 `welcome.hero`（`logo + hint`）和左下的
 `welcome.info`（版本、模型、workspace、session、凭据、访问说明与帮助）。两套
 preset 当前复用同一套动态信息 renderer，但该区域可由插件独立替换。
-`/ui deepseek` 打开经典 DeepSeek Harness 大鲸鱼与 wordmark，`/ui default`
+`/ui` 打开原生 UI Preset 选择器；也可直接用 `/ui deepseek` 打开经典
+DeepSeek Harness 大鲸鱼与 wordmark，`/ui default`
 切回 Martty；选择持久化到 `dsh-tui-settings.json`，不写入对话记录。Martty 的
 `MAR` 使用海洋蓝白渐变，`TTY` 使用终端主题的黑/白前景色。
 

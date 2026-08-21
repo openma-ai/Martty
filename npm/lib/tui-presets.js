@@ -5,7 +5,7 @@ import path from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 
 export const name = 'tui-presets'
-export const inject = ['tuiCommands']
+export const inject = ['tuiCommands', 'tuiOverlay']
 
 const ID = /^[a-z0-9][a-z0-9-]*$/
 
@@ -65,6 +65,7 @@ export function installTuiPresets(ctx, options = {}) {
   let preferredId = typeof saved === 'string' && ID.test(saved) ? saved : 'default'
   let activeEntry
   let releaseActive
+  let presetSelector
   let disposed = false
 
   function mount(entry) {
@@ -175,7 +176,32 @@ export function installTuiPresets(ctx, options = {}) {
   }, async (args = '') => {
     const id = args.trim().toLowerCase()
     if (id.length === 0) {
-      throw new Error(`usage: /ui <${list().map((entry) => entry.id).join('|')}>`)
+      const choices = list()
+      const selected = Math.max(0, choices.findIndex((entry) => entry.id === active()))
+      presetSelector?.close()
+      presetSelector = ctx.tuiOverlay.openSlider({
+        id: 'ui-preset',
+        title: 'UI preset',
+        min: 0,
+        max: Math.max(1, choices.length - 1),
+        step: 1,
+        marks: choices.map((entry, index) => ({
+          value: index,
+          id: entry.id,
+          label: entry.label,
+        })),
+        snapToMarks: true,
+        value: selected,
+      }, {
+        onSubmit(_value, mark) {
+          presetSelector = undefined
+          if (mark?.id !== undefined) activate(mark.id)
+        },
+        onCancel() {
+          presetSelector = undefined
+        },
+      })
+      return
     }
     activate(id)
   })
@@ -184,6 +210,8 @@ export function installTuiPresets(ctx, options = {}) {
     if (disposed) return
     disposed = true
     stopCommand?.()
+    presetSelector?.close()
+    presetSelector = undefined
     releaseActive?.()
     activeEntry = undefined
     releaseActive = undefined

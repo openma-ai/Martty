@@ -76,8 +76,8 @@ transcript accumulator。没有 Client 树的运行（demo、独立 painter）�
 
 `tuiPresets` 把多个独立 UI Plugin contribution 组合成一个可持久化选择；它不是
 Theme 的别名。`ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 可同时注册
-Theme、slot、pet 或其他 UI contribution，并返回统一 disposer。用户通过
-`/ui <id>` 切换，选择写入 `dsh-tui-settings.json`，重启后恢复。
+Theme、slot、pet 或其他 UI contribution，并返回统一 disposer。`/ui` 打开原生
+选择器，也可用 `/ui <id>` 直接切换；选择写入 `dsh-tui-settings.json`，重启后恢复。
 
 内置 `default`（Martty）和 `deepseek` 两个 UI Preset 都装配两个 single root slot：
 

@@ -54,11 +54,16 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     desired.max(minimum).min(maximum)
 }
 
-/// Height of the composer stats dock row: 1 when it fits and the slot has
-/// nodes, else 0. Shared by the frame layout and the kitty pixel sync so
-/// the pet anchors to the box bottom in both places.
+/// Height of the composer stats dock row: 1 when it fits and the stats slot is
+/// mounted, even before it has data; else 0. Shared by the frame layout and
+/// the kitty pixel sync so the pet anchors to the box bottom in both places.
 pub fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u16 {
-    if !child_view && main_height >= 20 && slot_has_nodes(app, "conversation.composer.dock") {
+    if !child_view
+        && main_height >= 20
+        && app
+            .slot_snapshots
+            .contains_key("conversation.composer.dock")
+    {
         1
     } else {
         0
@@ -2516,6 +2521,32 @@ mod tests {
         assert!(footer.contains("Cache hit 65%"), "{footer}");
         assert!(footer.contains("Input 1.8K tok"), "{footer}");
         assert!(footer.contains("Output 412 tok"), "{footer}");
+    }
+
+    #[test]
+    fn empty_stats_slot_still_reserves_the_composer_footer_row() {
+        let mut app = test_app();
+        app.show_banner = false;
+        let _ = dump_frame(&mut app, 100, 24);
+        let without_footer = app.chat_view.area.height;
+        app.slot_snapshots.insert(
+            "conversation.composer.dock".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": []
+            }))
+            .expect("empty stats slot snapshot"),
+        );
+
+        let _ = dump_frame(&mut app, 100, 24);
+
+        assert_eq!(
+            app.chat_view.area.height + 1,
+            without_footer,
+            "the future status row stays reserved before stats arrive"
+        );
     }
 
     #[test]

@@ -52,8 +52,9 @@ facts only, also without touching token/timing accumulators.
 `tuiPresets` composes several independent UI Plugin contributions into one
 saved choice; it is not an alias for Theme. The `mount` callback passed to
 `ctx.tuiPresets.register({ id, label }, mount)` may register a Theme, slots,
-pet, or other UI contributions and returns one disposer. `/ui <id>` switches
-the composition and persists its id in `dsh-tui-settings.json`.
+pet, or other UI contributions and returns one disposer. `/ui` opens the native
+selector; `/ui <id>` switches directly and persists its id in
+`dsh-tui-settings.json`.
 
 The builtin `default` (Martty) and `deepseek` UI Presets both fill two single
 root slots:

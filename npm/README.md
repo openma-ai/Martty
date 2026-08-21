@@ -85,7 +85,7 @@ dsh-tui --demo-skin
   platform-native modifier bindings, mouse selection, and inline-expanded tools.
 - Dark/light themes, clipboard routing for local, tmux, and SSH sessions, plus
   the optional `/liang` pixel companion.
-- Persistent UI Presets selected with `/ui`: builtin Martty and the classic
+- Persistent UI Presets selected with the native `/ui` picker (or `/ui <id>`): builtin Martty and the classic
   DeepSeek Harness composition, both assembled from independent welcome Hero
   and information slots without writing to the transcript.
 - A root `chrome.right` plugin rail for validated TuiNode trees, with live
