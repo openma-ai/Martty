@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- New gallery palette pack `kanagawa` (dark from Kanagawa Wave, light from
+  Kanagawa Lotus), sourced from terminalcolors.com/themes/kanagawa. It
+  registers at Client boot as a sibling insert row and is switchable via
+  `/theme`.
 - New gallery palette pack `github` (dark from GitHub Dark, the second token
   map from GitHub Dark Dimmed), sourced from terminalcolors.com/themes/github.
   It registers at Client boot as a sibling insert row and is switchable via

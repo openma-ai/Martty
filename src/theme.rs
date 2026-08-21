@@ -714,6 +714,7 @@ mod tests {
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
             "github" => include_str!("../docs/fixtures/github.v0.json"),
+            "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
@@ -761,6 +762,14 @@ mod tests {
                 Color::Rgb(83, 155, 245), // #539BF5 GitHub Dark Dimmed blue
                 Color::Rgb(1, 4, 9),      // #010409
                 Color::Rgb(28, 33, 40),   // #1C2128
+            ),
+            (
+                "kanagawa",
+                "Kanagawa",
+                Color::Rgb(126, 156, 216), // #7E9CD8 Kanagawa Wave blue
+                Color::Rgb(77, 105, 155),  // #4D699B Kanagawa Lotus blue
+                Color::Rgb(31, 31, 40),    // #1F1F28
+                Color::Rgb(242, 236, 188), // #F2ECBC
             ),
             (
                 "everforest",
