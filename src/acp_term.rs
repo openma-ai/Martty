@@ -232,10 +232,30 @@ mod tests {
             .expect("spawn echo");
         let status = broker.wait(&id).await;
         assert_eq!(status.exit_code, Some(0));
-        let (output, truncated, _) = broker.output(&id);
+        // The reader thread can still be draining the pipe after the process
+        // exits; poll briefly instead of asserting on a possibly-empty buffer.
+        let (output, truncated, _) = wait_for_text(&broker, &id, "acp-term").await;
         assert!(output.contains("acp-term"), "output: {output:?}");
         assert!(!truncated);
         broker.release(&id);
+    }
+
+    /// Poll `broker.output` until `needle` appears or a short deadline passes,
+    /// returning the final snapshot. Process exit and pipe EOF are separate
+    /// events observed by different threads, so the buffer may briefly lag.
+    async fn wait_for_text(
+        broker: &TerminalBroker,
+        id: &str,
+        needle: &str,
+    ) -> (String, bool, Option<TerminalExitStatus>) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = broker.output(id);
+            if snapshot.0.contains(needle) || tokio::time::Instant::now() >= deadline {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
