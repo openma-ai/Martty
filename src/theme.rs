@@ -729,9 +729,9 @@ mod tests {
                 "ayu",
                 "Ayu",
                 Color::Rgb(83, 189, 250), // #53BDFA Ayu dark blue
-                Color::Rgb(109, 203, 250), // #6DCBFA Ayu Mirage blue
+                Color::Rgb(49, 153, 225),  // #3199E1 Ayu Light blue
                 Color::Rgb(11, 14, 20),   // #0B0E14
-                Color::Rgb(31, 36, 48),   // #1F2430
+                Color::Rgb(248, 249, 250), // #F8F9FA
             ),
             (
                 "catppuccin",

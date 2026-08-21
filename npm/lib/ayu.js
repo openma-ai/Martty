@@ -1,7 +1,7 @@
 /**
  * Gallery palette pack `ayu`. Registers complete token maps: dark from the
- * Ayu dark variant, the second map from Ayu Mirage — both dark-ish variants
- * of the Ayu family (terminalcolors.com/themes/ayu). Does not activate:
+ * Ayu dark variant, light from Ayu Light
+ * (terminalcolors.com/themes/ayu). Does not activate:
  * `/theme` covers it. `inject = ['tuiTheme']`: sibling profile row, not
  * `ctx.plugin` inside the runner.
  */

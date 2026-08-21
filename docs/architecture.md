@@ -125,7 +125,8 @@ Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
 `/theme` 是特殊的单选 Plugin 开关，启动目标 Plugin 并停止当前 Theme Plugin，因而
 palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。`dsh-tui --demo`
 保持 `default`；`--demo-skin` 仍是静态 gallery 演示路径。常驻 gallery 包
-`ayu`（dark=Ayu、第二张表=Ayu Mirage）、`catppuccin`（dark=Catppuccin Mocha、light=Catppuccin
+`ayu`（dark=Ayu、light=Ayu
+Light）、`catppuccin`（dark=Catppuccin Mocha、light=Catppuccin
 Latte）、`kanagawa`（dark=Kanagawa Wave、light=Kanagawa
 Lotus）与 `everforest` / `iceberg` /
 `solarized`（均为 dark+light 双变体），色值取自
