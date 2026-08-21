@@ -8522,6 +8522,7 @@ mod palette_tests {
             "one" => include_str!("../docs/fixtures/one.v0.json"),
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
+            "github" => include_str!("../docs/fixtures/github.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
@@ -8630,8 +8631,8 @@ mod palette_tests {
     fn slash_theme_switches_between_gallery_packs() {
         let (mut app, ctl, _rx) = test_app();
         for id in [
-            "one", "ayu", "catppuccin", "everforest", "gruvbox", "iceberg", "night-owl",
-            "one-half", "seoul256", "solarized",
+            "one", "ayu", "catppuccin", "github", "everforest", "gruvbox", "iceberg",
+            "night-owl", "one-half", "seoul256", "solarized",
         ] {
             app.handle(
                 AppEvent::Rpc {

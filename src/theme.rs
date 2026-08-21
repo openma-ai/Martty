@@ -713,6 +713,7 @@ mod tests {
             "one" => include_str!("../docs/fixtures/one.v0.json"),
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
+            "github" => include_str!("../docs/fixtures/github.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
@@ -752,6 +753,14 @@ mod tests {
                 Color::Rgb(140, 170, 238), // #8CAAEE Catppuccin Frappe blue
                 Color::Rgb(30, 30, 46),    // #1E1E2E
                 Color::Rgb(48, 52, 70),    // #303446
+            ),
+            (
+                "github",
+                "GitHub",
+                Color::Rgb(88, 166, 255), // #58A6FF GitHub Dark blue
+                Color::Rgb(83, 155, 245), // #539BF5 GitHub Dark Dimmed blue
+                Color::Rgb(1, 4, 9),      // #010409
+                Color::Rgb(28, 33, 40),   // #1C2128
             ),
             (
                 "everforest",

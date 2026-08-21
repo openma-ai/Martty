@@ -355,6 +355,7 @@ const GALLERY = [
   ['one', 'One'],
   ['ayu', 'Ayu'],
   ['catppuccin', 'Catppuccin'],
+  ['github', 'GitHub'],
   ['everforest', 'Everforest'],
   ['gruvbox', 'Gruvbox'],
   ['iceberg', 'Iceberg'],

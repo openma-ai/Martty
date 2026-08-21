@@ -126,7 +126,8 @@ Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
 palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。`dsh-tui --demo`
 保持 `default`；`--demo-skin` 仍是静态 gallery 演示路径。常驻 gallery 包
 `ayu`（dark=Ayu、第二张表=Ayu Mirage）、`catppuccin`（dark=Catppuccin
-Mocha、第二张表=Catppuccin Frappe）、`one`（dark=One Dark、light=One
+Mocha、第二张表=Catppuccin Frappe）、`github`（dark=GitHub Dark、第二张表
+=GitHub Dark Dimmed）、`one`（dark=One Dark、light=One
 Light）与 `everforest` / `gruvbox` / `iceberg` / `night-owl` / `one-half` /
 `seoul256` / `solarized`（均为 dark+light 双变体），色值取自
 [terminalcolors.com](https://terminalcolors.com/themes/)，随 Client boot
