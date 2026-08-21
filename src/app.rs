@@ -192,8 +192,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "theme",
-        usage: "/theme [dark|light|id]",
-        desc: "toggle mode or switch palette pack",
+        usage: "/theme [id]",
+        desc: "switch theme plugin · ctrl+t toggles dark/light",
     },
     SlashCommand {
         name: "plugins",
@@ -1424,14 +1424,6 @@ impl App {
     fn apply_theme_arg(&mut self, arg: &str, ctl: &Controller) {
         match arg {
             "" => self.open_theme_picker(),
-            "dark" => {
-                self.theme = self.theme.with_mode(crate::theme::Mode::Dark);
-                self.show_tip(format!("theme: {} dark", self.active_palette_id));
-            }
-            "light" => {
-                self.theme = self.theme.with_mode(crate::theme::Mode::Light);
-                self.show_tip(format!("theme: {} light", self.active_palette_id));
-            }
             id => {
                 if self.palettes.iter().any(|p| p.id == id) {
                     self.select_palette(id, ctl);
@@ -1704,22 +1696,21 @@ impl App {
                 plain("on", "enable plan mode"),
                 plain("off", "disable plan mode"),
             ],
-            "theme" => {
-                let mut choices = vec![
-                    plain("dark", "dark appearance"),
-                    plain("light", "light appearance"),
-                ];
-                choices.extend(self.palettes.iter().filter(|palette| palette.loaded).map(
-                    |palette| {
-                        (
-                            palette.id.clone(),
-                            palette.label.clone(),
-                            "palette pack".to_string(),
-                        )
-                    },
-                ));
-                choices
-            }
+            "theme" => self
+                .palettes
+                .iter()
+                .map(|palette| {
+                    (
+                        palette.id.clone(),
+                        palette.label.clone(),
+                        if palette.loaded {
+                            "theme plugin".to_string()
+                        } else {
+                            "theme plugin · stopped".to_string()
+                        },
+                    )
+                })
+                .collect(),
             "auth" => self
                 .auth
                 .methods
@@ -1859,10 +1850,6 @@ impl App {
                                 matches!((snapshot.rev, current.rev), (Some(next), Some(previous)) if next <= previous)
                             });
                             if !stale {
-                                if matches!(snapshot.slot.as_str(), "welcome.hero" | "welcome.info")
-                                {
-                                    self.show_banner = true;
-                                }
                                 self.slot_snapshots.insert(snapshot.slot.clone(), snapshot);
                             }
                         }
@@ -3231,6 +3218,23 @@ impl App {
     }
 
     fn handle_picker_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Theme)
+            && matches!(
+                crate::input::classify(
+                    &key,
+                    crate::input::KeyCtx {
+                        input_empty: self.input.buf.is_empty(),
+                    },
+                ),
+                Some(Action::ToggleTheme)
+            )
+        {
+            self.dispatch(Action::ToggleTheme, ctl);
+            return;
+        }
         let Some(picker) = &mut self.picker else {
             return;
         };
@@ -8551,6 +8555,31 @@ mod palette_tests {
     }
 
     #[test]
+    fn ctrl_t_toggles_mode_while_theme_picker_stays_open() {
+        let (mut app, ctl, _rx) = test_app();
+        app.run_slash("theme", "", &ctl);
+        let picker = app.picker.as_ref().expect("theme picker opens");
+        assert!(
+            picker.title.contains("ctrl+t"),
+            "theme picker keeps the dark/light shortcut visible"
+        );
+
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert!(
+            app.picker.is_some(),
+            "toggling mode must not close the picker"
+        );
+    }
+
+    #[test]
     fn tui_palette_without_activate_registers_but_does_not_switch() {
         let (mut app, ctl, _rx) = test_app();
         app.handle(
@@ -8676,6 +8705,40 @@ mod palette_tests {
     }
 
     #[test]
+    fn slash_theme_options_match_the_picker_catalog() {
+        let (mut app, ctl, _rx) = test_app();
+        let mut loaded = ember_params(false);
+        loaded["owner"] = json!({ "pluginId": "night-lime-1" });
+        loaded["loaded"] = json!(true);
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: loaded,
+            },
+            &ctl,
+        );
+        let mut stopped = ember_params(false);
+        stopped["owner"] = json!({ "pluginId": "night-lime-1" });
+        stopped["loaded"] = json!(false);
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: stopped,
+            },
+            &ctl,
+        );
+
+        app.input.set("/theme ".into());
+        let completions = app
+            .slash_matches()
+            .into_iter()
+            .filter_map(|entry| entry.completion)
+            .collect::<Vec<_>>();
+
+        assert_eq!(completions, ["/theme default", "/theme ember"]);
+    }
+
+    #[test]
     fn theme_picker_can_leave_and_return_to_a_dynamic_plugin_pack() {
         let (mut app, ctl, _rx) = test_app();
         app.handle(
@@ -8709,25 +8772,6 @@ mod palette_tests {
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
         assert_eq!(app.active_palette_id, "ember");
-        assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
-    }
-
-    #[test]
-    fn slash_theme_dark_light_stay_in_active_pack() {
-        let (mut app, ctl, _rx) = test_app();
-        app.handle(
-            AppEvent::Rpc {
-                method: crate::cordis::THEME_UPDATE.into(),
-                params: ember_params(true),
-            },
-            &ctl,
-        );
-        app.run_slash("theme", "light", &ctl);
-        assert_eq!(app.active_palette_id, "ember");
-        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
-        assert_eq!(app.theme.brand, Color::Rgb(217, 106, 30));
-        app.run_slash("theme", "dark", &ctl);
-        assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
         assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
     }
 
