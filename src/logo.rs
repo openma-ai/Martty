@@ -1,7 +1,7 @@
 //! The Martty lockup as terminal art.
 //!
 //! `MARTTY` is figlet `ansi_shadow` (the same font family the old
-//! DEEPSEEK wordmark used). `MAR` carries the theme's brand-blue gradient;
+//! DEEPSEEK wordmark used). `MAR` carries a blue-white ocean gradient;
 //! `TTY` uses the terminal foreground (white in dark mode, black in light
 //! mode). Wide terminals get the block logo, narrower ones degrade to the
 //! `small` figlet variant, then to plain bold text.
@@ -9,7 +9,7 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::theme::{lerp, Theme};
+use crate::theme::{lerp, Mode, Theme, DEEPSEEK_200, DEEPSEEK_50};
 
 /// figlet `ansi_shadow`, 54 columns.
 pub const MARTTY: [&str; 6] = [
@@ -45,7 +45,10 @@ fn split_logo_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let pad = (width as usize).saturating_sub(art_width) / 2;
-    let (ocean_top, ocean_bottom) = (theme.brand_soft, theme.brand);
+    let (ocean_top, ocean_bottom) = match theme.mode {
+        Mode::Dark => (DEEPSEEK_50, theme.brand),
+        Mode::Light => (theme.brand, DEEPSEEK_200),
+    };
     let last = rows.len().saturating_sub(1).max(1);
     rows.iter()
         .enumerate()
@@ -159,8 +162,12 @@ mod tests {
                 if lines.len() == 1 {
                     assert_eq!(lines[0].spans[1].style.fg, Some(theme.brand));
                 } else {
-                    assert_eq!(lines[0].spans[1].style.fg, Some(theme.brand_soft));
-                    assert_eq!(lines.last().unwrap().spans[1].style.fg, Some(theme.brand));
+                    let (top, bottom) = match theme.mode {
+                        crate::theme::Mode::Dark => (crate::theme::DEEPSEEK_50, theme.brand),
+                        crate::theme::Mode::Light => (theme.brand, crate::theme::DEEPSEEK_200),
+                    };
+                    assert_eq!(lines[0].spans[1].style.fg, Some(top));
+                    assert_eq!(lines.last().unwrap().spans[1].style.fg, Some(bottom));
                 }
             }
         }

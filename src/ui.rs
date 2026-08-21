@@ -1969,7 +1969,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
 /// `app.show_banner` is set; it dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let theme = &app.theme;
-    let mut out = vec![Line::default(), Line::default()];
+    let mut out = vec![Line::default(), Line::default(), Line::default()];
     out.extend(logo::martty_logo_lines(theme, width));
     out.push(Line::default());
 
@@ -2093,6 +2093,7 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             .to_string(),
         Style::default().fg(theme.caption),
     )));
+    out.extend([Line::default(), Line::default(), Line::default()]);
     out
 }
 
@@ -2627,7 +2628,7 @@ mod tests {
     }
 
     #[test]
-    fn welcome_block_starts_two_rows_below_the_chat_top() {
+    fn welcome_block_has_three_rows_of_symmetric_vertical_padding() {
         let app = test_app();
         let lines = banner_lines(&app, 84);
         let plain = |line: &Line<'_>| {
@@ -2639,7 +2640,12 @@ mod tests {
 
         assert_eq!(plain(&lines[0]), "");
         assert_eq!(plain(&lines[1]), "");
-        assert!(plain(&lines[2]).contains('█'), "logo begins after two rows");
+        assert_eq!(plain(&lines[2]), "");
+        assert!(plain(&lines[3]).contains('█'), "logo begins after three rows");
+        assert!(plain(&lines[lines.len() - 4]).contains("/help"));
+        assert_eq!(plain(&lines[lines.len() - 3]), "");
+        assert_eq!(plain(&lines[lines.len() - 2]), "");
+        assert_eq!(plain(&lines[lines.len() - 1]), "");
     }
 
     #[test]
