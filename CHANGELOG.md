@@ -14,10 +14,6 @@ All notable changes to this project are documented here. The project follows
 - New gallery palette pack `one` (dark from One Dark, light from One Light),
   sourced from terminalcolors.com/themes/one. It registers at Client boot
   as a sibling insert row and is switchable via `/theme`.
-- New gallery palette pack `ghostty` (dark from Ghostty Default Style Dark,
-  light from the Tomorrow theme it is built on), sourced from the ghostty
-  directory of mbadolato/iTerm2-Color-Schemes. It registers at Client boot
-  as a sibling insert row and is switchable via `/theme`.
 - New gallery palette packs `ayu` (dark from Ayu, light from Ayu Light),
   `nord` (dark from Nord, light from Nord Light) and `nvim` (dark from
   Nvim Dark, light from Nvim Light), sourced from the alacritty directory of

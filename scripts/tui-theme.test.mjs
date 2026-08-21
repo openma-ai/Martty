@@ -355,7 +355,6 @@ const GALLERY = [
   ['ayu', 'Ayu'],
   ['nord', 'Nord'],
   ['nvim', 'Nvim'],
-  ['ghostty', 'Ghostty'],
   ['one', 'One'],
   ['everforest', 'Everforest'],
   ['gruvbox', 'Gruvbox'],

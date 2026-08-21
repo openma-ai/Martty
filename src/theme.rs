@@ -713,7 +713,6 @@ mod tests {
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
             "nord" => include_str!("../docs/fixtures/nord.v0.json"),
             "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
-            "ghostty" => include_str!("../docs/fixtures/ghostty.v0.json"),
             "one" => include_str!("../docs/fixtures/one.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
@@ -754,14 +753,6 @@ mod tests {
                 Color::Rgb(0, 76, 115),    // #004C73 Nvim Light blue
                 Color::Rgb(20, 22, 27),    // #14161B
                 Color::Rgb(224, 226, 234), // #E0E2EA
-            ),
-            (
-                "ghostty",
-                "Ghostty",
-                Color::Rgb(130, 162, 190), // #82A2BE Ghostty Default Style Dark blue
-                Color::Rgb(66, 113, 174),  // #4271AE Tomorrow blue
-                Color::Rgb(40, 44, 52),    // #282C34
-                Color::Rgb(255, 255, 255), // #FFFFFF
             ),
             (
                 "one",

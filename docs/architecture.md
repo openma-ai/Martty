@@ -126,10 +126,9 @@ Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
 palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。`dsh-tui --demo`
 保持 `default`；`--demo-skin` 仍是静态 gallery 演示路径。常驻 gallery 包
 `ayu`（dark=Ayu、light=Ayu Light）、`nord`（dark=Nord、light=Nord Light）、
-`nvim`（dark=Nvim Dark、light=Nvim Light）、`ghostty`（dark=Ghostty Default
-Style Dark、light=Tomorrow）、`one`（dark=One Dark、light=One Light）与
-`everforest` / `gruvbox` / `iceberg` / `night-owl` / `one-half` / `seoul256` /
-`solarized`（均为 dark+light 双变体），色值取自
+`nvim`（dark=Nvim Dark、light=Nvim Light）、`one`（dark=One Dark、light=One
+Light）与 `everforest` / `gruvbox` / `iceberg` / `night-owl` / `one-half` /
+`seoul256` / `solarized`（均为 dark+light 双变体），色值取自
 [mbadolato/iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)
 与 [terminalcolors.com](https://terminalcolors.com/themes/)，随 Client boot
 以 sibling insert 行注册，`/theme` 直接可切。
