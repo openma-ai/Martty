@@ -33,6 +33,14 @@ All notable changes to this project are documented here. The project follows
   bottom-right corner. The `/logo` command stays removed — the banner is
   the Martty lockup.
 
+### Fixed
+
+- Switching `/ui` presets no longer returns an active conversation to the
+  Welcome screen; preset slot updates now change only the Welcome content.
+- `/theme` completion now matches its Theme Plugin picker, including stopped
+  plugins that can be restored. Dark/light mode remains on `Ctrl+T`, which now
+  also works while the Theme picker is open.
+
 ### Changed
 
 - `/plan-view` 的审阅界面重做：`items` 型 plan 现在以单条 markdown 任务

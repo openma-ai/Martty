@@ -595,10 +595,6 @@ impl Theme {
         }
     }
 
-    pub fn with_mode(&self, mode: Mode) -> Self {
-        Self::from_maps(mode, self.dark, self.light)
-    }
-
     /// Success accent used for finished tool glyphs and the idle dot.
     pub fn ok_soft(&self) -> Color {
         self.ok

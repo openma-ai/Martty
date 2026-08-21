@@ -2921,7 +2921,6 @@ mod tests {
     #[test]
     fn welcome_hero_slot_replaces_only_the_martty_lockup() {
         let mut app = test_app();
-        app.show_banner = false;
         let (ctl, _commands) = crate::controller::test_controller();
         app.handle(
             crate::bus::AppEvent::Rpc {
@@ -2948,7 +2947,10 @@ mod tests {
             &ctl,
         );
 
-        assert!(app.show_banner, "/ui deepseek restores the welcome banner");
+        assert!(
+            app.show_banner,
+            "preset changes keep an existing Welcome visible"
+        );
         let frame = dump_frame(&mut app, 140, 60);
 
         assert!(frame.contains("▄▄▄███▀"), "XL whale:\n{frame}");
@@ -2966,9 +2968,54 @@ mod tests {
     }
 
     #[test]
-    fn welcome_info_slot_replaces_only_the_native_information_region() {
+    fn welcome_slot_updates_do_not_hide_an_existing_conversation() {
         let mut app = test_app();
         app.show_banner = false;
+        app.transcript.push_notice(
+            crate::transcript::NoticeLevel::Info,
+            "conversation remains visible".into(),
+        );
+        let (ctl, _commands) = crate::controller::test_controller();
+
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "slot": "welcome.hero",
+                    "rev": 1,
+                    "nodes": [
+                        {
+                            "id": "deepseek-logo:logo",
+                            "kind": "logo",
+                            "name": "deepseek"
+                        },
+                        {
+                            "id": "deepseek-logo:hint",
+                            "kind": "text",
+                            "text": "Into the Unknown",
+                            "tone": "fg_tertiary"
+                        }
+                    ]
+                }),
+            },
+            &ctl,
+        );
+
+        assert!(
+            !app.show_banner,
+            "UI preset changes must not re-enter Welcome"
+        );
+        let frame = dump_frame(&mut app, 140, 60);
+        assert!(
+            frame.contains("conversation remains visible"),
+            "conversation remains rendered after the preset slot changes:\n{frame}"
+        );
+    }
+
+    #[test]
+    fn welcome_info_slot_replaces_only_the_native_information_region() {
+        let mut app = test_app();
         let (ctl, _commands) = crate::controller::test_controller();
         app.handle(
             crate::bus::AppEvent::Rpc {
@@ -2990,7 +3037,7 @@ mod tests {
 
         assert!(
             app.show_banner,
-            "an info contribution restores the welcome screen"
+            "preset changes keep an existing Welcome visible"
         );
         let frame = dump_frame(&mut app, 140, 60);
         assert!(
