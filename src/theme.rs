@@ -710,9 +710,6 @@ mod tests {
 
     fn fixture_json(name: &str) -> serde_json::Value {
         match name {
-            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
-            "nord" => include_str!("../docs/fixtures/nord.v0.json"),
-            "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
             "one" => include_str!("../docs/fixtures/one.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
@@ -730,30 +727,6 @@ mod tests {
     #[test]
     fn gallery_fixtures_parse_both_modes() {
         for (name, label, dark_brand, light_brand, dark_bg, light_bg) in [
-            (
-                "ayu",
-                "Ayu",
-                Color::Rgb(83, 189, 250),  // #53BDFA Ayu blue
-                Color::Rgb(49, 153, 225),  // #3199E1 Ayu Light blue
-                Color::Rgb(11, 14, 20),    // #0B0E14
-                Color::Rgb(248, 249, 250), // #F8F9FA
-            ),
-            (
-                "nord",
-                "Nord",
-                Color::Rgb(129, 161, 193), // #81A1C1 Nord blue (both modes)
-                Color::Rgb(129, 161, 193), // #81A1C1
-                Color::Rgb(46, 52, 64),    // #2E3440
-                Color::Rgb(229, 233, 240), // #E5E9F0
-            ),
-            (
-                "nvim",
-                "Nvim",
-                Color::Rgb(166, 219, 255), // #A6DBFF Nvim Dark blue
-                Color::Rgb(0, 76, 115),    // #004C73 Nvim Light blue
-                Color::Rgb(20, 22, 27),    // #14161B
-                Color::Rgb(224, 226, 234), // #E0E2EA
-            ),
             (
                 "one",
                 "One",

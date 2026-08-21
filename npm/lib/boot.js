@@ -15,9 +15,6 @@ import { apply as applyShell } from './index.js'
 import { resolveStackedAgent } from './agent.js'
 import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
-import { apply as applyAyu, inject as ayuInject } from './ayu.js'
-import { apply as applyNord, inject as nordInject } from './nord.js'
-import { apply as applyNvim, inject as nvimInject } from './nvim.js'
 import { apply as applyOne, inject as oneInject } from './one.js'
 import { apply as applyEverforest, inject as everforestInject } from './everforest.js'
 import { apply as applyGruvbox, inject as gruvboxInject } from './gruvbox.js'
@@ -60,9 +57,6 @@ export async function bootClient(options = {}) {
   const presetConfig = { settingsPath }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
-    await ctx.plugin({ name: 'tui-theme-ayu', inject: ayuInject, apply: applyAyu })
-    await ctx.plugin({ name: 'tui-theme-nord', inject: nordInject, apply: applyNord })
-    await ctx.plugin({ name: 'tui-theme-nvim', inject: nvimInject, apply: applyNvim })
     await ctx.plugin({ name: 'tui-theme-one', inject: oneInject, apply: applyOne })
     await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
     await ctx.plugin({ name: 'tui-theme-gruvbox', inject: gruvboxInject, apply: applyGruvbox })
@@ -117,9 +111,6 @@ export async function bootClient(options = {}) {
     )
   } else {
     applyTheme(ctx, presetConfig)
-    applyAyu(ctx)
-    applyNord(ctx)
-    applyNvim(ctx)
     applyOne(ctx)
     applyEverforest(ctx)
     applyGruvbox(ctx)

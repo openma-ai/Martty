@@ -8519,9 +8519,6 @@ mod palette_tests {
 
     fn gallery_params(id: &str, activate: bool) -> serde_json::Value {
         let fixture = match id {
-            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
-            "nord" => include_str!("../docs/fixtures/nord.v0.json"),
-            "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
             "one" => include_str!("../docs/fixtures/one.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
@@ -8599,17 +8596,17 @@ mod palette_tests {
     }
 
     #[test]
-    fn gallery_palette_rpc_activates_ayu_and_toggles_modes() {
+    fn gallery_palette_rpc_activates_everforest_and_toggles_modes() {
         let (mut app, ctl, _rx) = test_app();
         app.handle(
             AppEvent::Rpc {
                 method: crate::cordis::THEME_UPDATE.into(),
-                params: gallery_params("ayu", true),
+                params: gallery_params("everforest", true),
             },
             &ctl,
         );
-        assert_eq!(app.active_palette_id, "ayu");
-        assert_eq!(app.theme.brand, Color::Rgb(83, 189, 250)); // #53BDFA Ayu blue
+        assert_eq!(app.active_palette_id, "everforest");
+        assert_eq!(app.theme.brand, Color::Rgb(127, 187, 179)); // #7FBBB3 Everforest dark blue
         app.handle(
             AppEvent::Term(Event::Key(KeyEvent::new(
                 KeyCode::Char('t'),
@@ -8617,12 +8614,12 @@ mod palette_tests {
             ))),
             &ctl,
         );
-        assert_eq!(app.active_palette_id, "ayu");
+        assert_eq!(app.active_palette_id, "everforest");
         assert_eq!(app.theme.mode, crate::theme::Mode::Light);
-        assert_eq!(app.theme.brand, Color::Rgb(49, 153, 225)); // #3199E1 Ayu Light blue
+        assert_eq!(app.theme.brand, Color::Rgb(58, 148, 197)); // #3A94C5 Everforest light blue
         let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
         assert!(
-            tip.contains("ayu") && tip.contains("light"),
+            tip.contains("everforest") && tip.contains("light"),
             "tip should name the pack, got {tip:?}"
         );
     }
@@ -8631,8 +8628,8 @@ mod palette_tests {
     fn slash_theme_switches_between_gallery_packs() {
         let (mut app, ctl, _rx) = test_app();
         for id in [
-            "ayu", "nord", "nvim", "one", "everforest", "gruvbox", "iceberg",
-            "night-owl", "one-half", "seoul256", "solarized",
+            "one", "everforest", "gruvbox", "iceberg", "night-owl", "one-half", "seoul256",
+            "solarized",
         ] {
             app.handle(
                 AppEvent::Rpc {
@@ -8643,32 +8640,6 @@ mod palette_tests {
             );
         }
         assert_eq!(app.active_palette_id, "default");
-        app.run_slash("theme", "nord", &ctl);
-        assert_eq!(app.active_palette_id, "nord");
-        // Nord keeps the same blue in both modes; toggling must stay in-pack.
-        assert_eq!(app.theme.brand, Color::Rgb(129, 161, 193)); // #81A1C1
-        app.handle(
-            AppEvent::Term(Event::Key(KeyEvent::new(
-                KeyCode::Char('t'),
-                crossterm::event::KeyModifiers::CONTROL,
-            ))),
-            &ctl,
-        );
-        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
-        assert_eq!(app.theme.brand, Color::Rgb(129, 161, 193)); // #81A1C1 still
-        app.run_slash("theme", "nvim", &ctl);
-        assert_eq!(app.active_palette_id, "nvim");
-        // Mode (Light) persists across pack switches, so nvim shows its light map.
-        assert_eq!(app.theme.brand, Color::Rgb(0, 76, 115)); // #004C73 Nvim Light blue
-        app.handle(
-            AppEvent::Term(Event::Key(KeyEvent::new(
-                KeyCode::Char('t'),
-                crossterm::event::KeyModifiers::CONTROL,
-            ))),
-            &ctl,
-        );
-        assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
-        assert_eq!(app.theme.brand, Color::Rgb(166, 219, 255)); // #A6DBFF Nvim Dark blue
         app.run_slash("theme", "one", &ctl);
         assert_eq!(app.active_palette_id, "one");
         // Mode (Dark) persists, so one shows its dark map.
