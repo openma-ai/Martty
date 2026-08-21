@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
@@ -306,6 +307,39 @@ test('list includes builtin default before any register', () => {
   const theme = installTuiTheme(makeCtx())
   assert.deepEqual(theme.list(), [{ id: 'default', label: 'Default' }])
   assert.equal(theme.active(), 'default')
+})
+
+test('explicit theme selection persists separately from temporary Plugin preview', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-theme-settings-'))
+  const settingsPath = path.join(root, 'dsh-tui-settings.json')
+  try {
+    writeFileSync(settingsPath, JSON.stringify({ language: 'zh', uiPreset: 'deepseek' }))
+    const theme = installTuiTheme(makeCtx(), { settingsPath })
+    const ember = loadEmber()
+    theme.register(ember)
+
+    const preview = theme.registerOwned('preview-plugin', {
+      ...ember,
+      id: 'preview',
+      label: 'Preview',
+    })
+    assert.equal(theme.active(), 'preview')
+    assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).theme, undefined)
+    preview()
+
+    theme.activate('ember')
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')), {
+      language: 'zh',
+      uiPreset: 'deepseek',
+      theme: 'ember',
+    })
+
+    const restored = installTuiTheme(makeCtx(), { settingsPath })
+    assert.equal(restored.preferred(), 'ember')
+    assert.equal(restored.active(), 'default', 'the saved Plugin is not active before it is loaded')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('exportInspectTokens lists every closed token as #RRGGBB', () => {

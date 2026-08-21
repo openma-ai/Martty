@@ -31,6 +31,7 @@ test('one TUI install adds no duplicate Base loader entries', () => {
     assert.equal(dump.status, 0, dump.stderr)
     assert.equal(dump.stdout.match(/^- id: timer$/gm)?.length, 1)
     assert.equal(dump.stdout.match(/^- id: hmr$/gm)?.length, 1)
+    assert.equal(dump.stdout.match(/^- id: tui-client-plugins$/gm)?.length, 1)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

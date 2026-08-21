@@ -76,6 +76,16 @@ export async function applyClientHalf(clientCode, env) {
     }
     throw error
   }
+  return applyClientPlugin(plugin, env)
+}
+
+/**
+ * Apply an already imported Client plugin through the same restricted TUI facade as code.client.
+ * @param {unknown} plugin
+ * @param {{ pluginId?: string, tuiTheme?: object, tuiSlots?: object, tuiCommands?: object, tuiOverlay?: object, acpSessionConfig?: object, acpSessionPlan?: object, acpSessionStats?: object, acpSessionStatus?: object, timer?: object, invoke?: Function }} env
+ * @returns {Promise<{ waitingFor: string[], dispose: () => void }>}
+ */
+export async function applyClientPlugin(plugin, env) {
   const evaluated = normalizePlugin(plugin)
   const inject = evaluated.inject ?? []
   for (const name of inject) {

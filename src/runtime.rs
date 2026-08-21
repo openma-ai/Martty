@@ -1,6 +1,51 @@
 //! Shared launch/display configuration for the ACP client and demo painter.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub fn martty_home_from(
+    martty_home: Option<&str>,
+    dsh_home: Option<&str>,
+    user_home: &str,
+) -> PathBuf {
+    if let Some(home) = martty_home.filter(|value| !value.is_empty()) {
+        return PathBuf::from(home);
+    }
+    if let Some(home) = dsh_home.filter(|value| !value.is_empty()) {
+        return Path::new(home).join(".martty");
+    }
+    Path::new(user_home).join(".martty")
+}
+
+pub fn martty_home() -> PathBuf {
+    let martty = std::env::var("MARTTY_HOME").ok();
+    let dsh = std::env::var("DSH_HOME").ok();
+    let user = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    martty_home_from(martty.as_deref(), dsh.as_deref(), &user)
+}
+
+pub fn default_session_root() -> PathBuf {
+    martty_home().join("sessions")
+}
+
+pub fn settings_path(session_root: &str) -> PathBuf {
+    if Path::new(session_root) == default_session_root() {
+        martty_home().join("settings.json")
+    } else {
+        Path::new(session_root).join("settings.json")
+    }
+}
+
+pub fn legacy_settings_path(session_root: &str) -> PathBuf {
+    if Path::new(session_root) == default_session_root() {
+        let user = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        Path::new(&user)
+            .join(".dsh-tui")
+            .join("sessions")
+            .join("dsh-tui-settings.json")
+    } else {
+        Path::new(session_root).join("dsh-tui-settings.json")
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {

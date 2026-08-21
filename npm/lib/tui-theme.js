@@ -7,8 +7,8 @@
  * flushed from `bindNotify`.
  */
 
-import { readFileSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute } from 'node:path'
 import { CORDIS_METHODS } from './cordis-protocol.js'
 
 export const name = 'tui-theme'
@@ -76,6 +76,24 @@ const BACKGROUND_FIELDS = new Set(['source', 'fit', 'anchor', 'opacity'])
 const BACKGROUND_SOURCE_FIELDS = new Set(['kind', 'path', 'mediaType', 'base64'])
 const BACKGROUND_ANCHOR_FIELDS = new Set(['x', 'y'])
 const PROTOCOL = 0
+
+function readSettings(settingsPath) {
+  if (typeof settingsPath !== 'string' || settingsPath.length === 0) return {}
+  try {
+    const value = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function writePreferred(settingsPath, id) {
+  if (typeof settingsPath !== 'string' || settingsPath.length === 0) return
+  const settings = readSettings(settingsPath)
+  settings.theme = id
+  mkdirSync(dirname(settingsPath), { recursive: true })
+  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+}
 
 /**
  * Validate a palette against tui-palette protocol 0 (closed token names).
@@ -207,13 +225,18 @@ function validateTokenMap(map, which) {
  * `register` grows the catalog (like adding an agent preset). `/theme` and
  * `activate` switch which pack covers. Builtin `default` is never mutated.
  * @param {object} ctx
- * @param {{ notify?: (method: string, params: object) => void }} [options]
- * @returns {{ register: Function, activate: Function, list: Function, active: Function, subscribe: Function, observeSelected: Function, exportInspectTokens: Function, bindNotify: Function, flush: Function }}
+ * @param {{ notify?: (method: string, params: object) => void, settingsPath?: string }} [options]
+ * @returns {{ register: Function, activate: Function, list: Function, active: Function, preferred: Function, subscribe: Function, observeSelected: Function, exportInspectTokens: Function, bindNotify: Function, flush: Function }}
  */
 export function installTuiTheme(ctx, options = {}) {
   const palettes = new Map()
   const queue = []
   const listeners = new Set()
+  const settingsPath = options.settingsPath
+  const savedTheme = readSettings(settingsPath).theme
+  let preferredId = typeof savedTheme === 'string' && savedTheme.length > 0
+    ? savedTheme
+    : 'default'
   let send = typeof options.notify === 'function' ? options.notify : undefined
   let activeId = 'default'
   let activationRevision = 0
@@ -271,6 +294,8 @@ export function installTuiTheme(ctx, options = {}) {
 
   function activate(id) {
     select(id, true)
+    preferredId = id
+    writePreferred(settingsPath, id)
   }
 
   function observeSelected(params) {
@@ -279,6 +304,8 @@ export function installTuiTheme(ctx, options = {}) {
     }
     if (params.protocol !== PROTOCOL) return false
     select(params.id, false)
+    preferredId = params.id
+    writePreferred(settingsPath, params.id)
     return true
   }
 
@@ -319,7 +346,7 @@ export function installTuiTheme(ctx, options = {}) {
         ...(owner === undefined ? {} : { owner: { pluginId: owner } }),
       })
       if (cover) {
-        activate(validated.id)
+        select(validated.id, true)
         leaseRevision = activationRevision
       }
       return () => {
@@ -331,9 +358,9 @@ export function installTuiTheme(ctx, options = {}) {
           const restoreId = previousId !== undefined && palettes.get(previousId)?.loaded === true
             ? previousId
             : 'default'
-          activate(restoreId)
+          select(restoreId, true)
         } else if (wasActive) {
-          activate('default')
+          select('default', true)
         }
         if (owner === undefined) {
           palettes.delete(validated.id)
@@ -403,6 +430,10 @@ export function installTuiTheme(ctx, options = {}) {
     return activeId
   }
 
+  function preferred() {
+    return preferredId
+  }
+
   function owner(id) {
     return palettes.get(id)?.owner
   }
@@ -440,6 +471,7 @@ export function installTuiTheme(ctx, options = {}) {
     activate,
     list,
     active,
+    preferred,
     owner,
     isLoaded,
     subscribe,
@@ -458,6 +490,6 @@ export function installTuiTheme(ctx, options = {}) {
 }
 
 /** Cordis plugin entry: provide the client-tree theme registry. */
-export function apply(ctx) {
-  installTuiTheme(ctx)
+export function apply(ctx, options) {
+  installTuiTheme(ctx, options)
 }

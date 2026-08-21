@@ -295,7 +295,12 @@ def workspace_slug(workspace: Path) -> str:
 
 def session_roots(configured: Path) -> list[Path]:
     dsh_home = Path(os.environ.get("DSH_HOME", str(Path.home() / ".dsh")))
-    roots = [configured, dsh_home / "sessions", Path.home() / ".dsh-tui" / "sessions"]
+    roots = [
+        configured,
+        dsh_home / "sessions",
+        Path.home() / ".martty" / "sessions",
+        Path.home() / ".dsh-tui" / "sessions",
+    ]
     return list(dict.fromkeys(path.resolve() for path in roots))
 
 

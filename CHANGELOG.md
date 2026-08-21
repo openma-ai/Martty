@@ -66,6 +66,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The bundled ACP runtime is now `0.4.17-beta.0`, where ACP profiles own
+  their complete `agent-presets` and `cordis-host-runner` service closure.
+  Permission switching and command execution therefore stay compatible
+  across current dsh hosts without a TUI-side host monkeypatch.
 - The plan review window (the ACP elicitation form the agent opens with
   `exit_plan_mode`) now renders the plan markdown through the full markdown
   pipeline instead of truncating raw source lines: headings lose their `#`,

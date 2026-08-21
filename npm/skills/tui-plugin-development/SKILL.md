@@ -18,8 +18,10 @@ skill for shared Cordis behavior and for any genuine Host or Web half.
    assets: asset contents do not determine which TUI Providers own the UI.
 2. Query only the smallest Client Providers that own the requested behavior,
    using the exact methods shown by the list.
-3. For an existing `@pluginId`, call `cordis_inspect_self` once; skip it for a
-   new Plugin.
+3. For an existing temporary `@pluginId`, call `cordis_inspect_self` once. To
+   continue a durable Creator artifact after restart, call `tui_plugin_list`
+   and `tui_plugin_read` instead, then use its exact `code.client` as the base
+   of a new temporary preview Plugin.
 4. Write plain JavaScript in `code.client`. Add `code.host` only when the task
    genuinely owns Host data or operations.
 5. Call `cordis_define` once, then `cordis_run` once with the returned exact
@@ -28,17 +30,32 @@ skill for shared Cordis behavior and for any genuine Host or Web half.
 6. If run reports `awaiting-approval` or `starting`, stop the Tool flow and let
    later state updates finish activation. Reply with one short status sentence;
    do not summarize the implementation while approval is pending.
-7. After the later state update confirms activation, report success and stop.
-   Do not re-query Providers merely to verify effects that activation already
-   confirmed; query again only for a concrete runtime diagnostic.
+7. After the later state update confirms activation, persist a new or modified
+   UI Preset or Theme Plugin with `tui_plugin_save`, unless the user explicitly
+   requested a temporary preview. Use the returned exact `pluginId` and
+   `packageId`; use a stable `artifactId`, the matching `kind`, and
+   `replace: true` only when updating an artifact already read from disk.
+8. Report success only after `tui_plugin_save` returns `saved`, including its
+   exact path. Do not call a temporary dynamic Plugin durable. Other dynamic
+   TUI Plugins remain process-local unless a separate shipping path was
+   explicitly requested.
 
-The normal new-plugin trajectory is therefore one list, one query per needed
-Provider, one define, and one run. Once inspect returns a sufficient live
+The normal preview trajectory is therefore one list, one query per needed
+Provider, one define, and one run. A durable UI Preset or Theme Plugin adds one
+save after successful activation. Once inspect returns a sufficient live
 contract, author immediately; do not re-prove it from generic Cordis concepts.
 
-`define` stores an immutable Package; `run` activates it. Stop/update/unload
-dispose the owning Client Plugin effects. Never depend on a value returned by
-`apply()` as the disposer; register effects through the inspected Cordis APIs.
+`define` stores an immutable Package only in the current process; `run`
+activates it. Neither operation persists it across restart. `tui_plugin_save`
+copies the successful Client source into the TUI-owned authoring root; use
+`tui_plugin_read` to continue development later and `tui_plugin_remove` to
+delete it. Stop/update/unload dispose the owning Client Plugin effects. Never
+depend on a value returned by `apply()` as the disposer; register effects
+through the inspected Cordis APIs.
+
+The authoring root is `$MARTTY_HOME/plugins`; `MARTTY_HOME` resolves from the
+explicit environment variable, then `$DSH_HOME/.martty`, then `~/.martty`.
+User selections live separately in `$MARTTY_HOME/settings.json`.
 
 ## Inspect is the authority
 
@@ -88,8 +105,11 @@ compose only in the Plugin code. The services do not imply one another:
   option and enters the same Plugin seat.
 - **UI Presets:** use `tuiPresets.register({ id, label }, mount)` when the user
   wants one saved `/ui` choice to mount several UI contributions together.
-  The synchronous mount callback returns one disposer. A UI Preset composes
-  Theme, slots, pet, or other UI Plugins; it is not another name for Theme.
+  The synchronous mount callback returns one disposer. A UI Preset owns
+  structural UI contributions such as slots, chrome, or a pet. It does not
+  register, select, clone, or generate a Theme: `/ui`, `/theme`, and dark/light
+  are independent state dimensions. A preset may document a recommended
+  Theme, but recommendation is not runtime ownership.
 - **Commands:** register a local slash command. Registration publishes slash
   completion and keeps invocation out of the ACP prompt. Its availability is
   the registration's lifetime; Commands does not know about themes, overlays,

@@ -507,6 +507,59 @@ test('dynamic Client halves can subscribe to ACP session stats', async () => {
   delete globalThis.__dshStatsLatest
 })
 
+test('/theme starts and stops durable local Theme Plugins without asking the Agent', async () => {
+  const theme = installTuiTheme(makeCtx())
+  const colors = Object.fromEntries(TOKEN_NAMES.map((name) => [name, '#224466']))
+  const paper = {
+    id: 'paper-lantern',
+    label: 'Paper Lantern',
+    dark: colors,
+    light: colors,
+  }
+  const owner = 'tui-local:paper-lantern'
+  theme.registerOwned(owner, paper)()
+
+  const lifecycle = []
+  let release
+  const localPlugins = {
+    has(pluginId) {
+      return pluginId === owner
+    },
+    isLoaded(pluginId) {
+      return pluginId === owner && release !== undefined
+    },
+    async start(pluginId) {
+      lifecycle.push(`start:${pluginId}`)
+      release = theme.registerOwned(owner, paper)
+    },
+    async stop(pluginId) {
+      lifecycle.push(`stop:${pluginId}`)
+      release?.()
+      release = undefined
+    },
+  }
+  const remoteCalls = []
+  const client = attachTuiClient({
+    ctx: makeCtx(),
+    tuiTheme: theme,
+    localPlugins,
+    requestAgent(method, params) {
+      remoteCalls.push({ method, params })
+      return Promise.resolve({ ok: true })
+    },
+  })
+
+  await client.selectTheme({ protocol: 0, agentId: 'agent-1', id: 'paper-lantern' })
+  assert.equal(theme.active(), 'paper-lantern')
+  assert.deepEqual(lifecycle, [`start:${owner}`])
+  assert.equal(remoteCalls.some(({ method }) => method === CORDIS_METHODS.pluginStart), false)
+
+  await client.selectTheme({ protocol: 0, agentId: 'agent-1', id: 'default' })
+  assert.equal(theme.active(), 'default')
+  assert.deepEqual(lifecycle, [`start:${owner}`, `stop:${owner}`])
+  assert.equal(remoteCalls.some(({ method }) => method === CORDIS_METHODS.pluginStop), false)
+})
+
 test('/theme replaces one dynamic Client Plugin with another as a single lifecycle', async () => {
   const theme = installTuiTheme(makeCtx())
   const commands = installTuiCommands(makeCtx())

@@ -32,7 +32,12 @@ registerHooks({
 })
 
 const runner = await import(pathToFileURL(runnerPath).href)
-const { bootClient } = await import(pathToFileURL(bootPath).href)
+const {
+  bootClient,
+  migrateLegacyUiSettings,
+  parseClientPluginsEnv,
+  uiSettingsPath,
+} = await import(pathToFileURL(bootPath).href)
 const { installTuiTheme } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-theme.js')).href
 )
@@ -54,6 +59,9 @@ const { installAcpClientEvents } = await import(
 const { installAcpSessionPlan } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'acp-session-plan.js')).href
 )
+const { createTuiPluginStore } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-plugin-store.js')).href
+)
 const { selectNativeBinary } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'spawn-tui.js')).href
 )
@@ -73,6 +81,48 @@ test('a source checkout prefers its current debug painter over a stale packaged 
       selectNativeBinary({ envBin: '/missing/override', devBin: debug, packagedBin: packaged }),
       debug,
     )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Martty settings live under the branded home with explicit environment precedence', () => {
+  assert.equal(
+    uiSettingsPath([], { MARTTY_HOME: '/opt/martty', DSH_HOME: '/opt/dsh' }, '/Users/test'),
+    path.join('/opt/martty', 'settings.json'),
+  )
+  assert.equal(
+    uiSettingsPath([], { DSH_HOME: '/opt/dsh' }, '/Users/test'),
+    path.join('/opt/dsh', '.martty', 'settings.json'),
+  )
+  assert.equal(
+    uiSettingsPath([], {}, '/Users/test'),
+    path.join('/Users/test', '.martty', 'settings.json'),
+  )
+  assert.equal(
+    uiSettingsPath(['--session-root', '/tmp/isolated'], {}, '/Users/test'),
+    path.join('/tmp/isolated', 'settings.json'),
+  )
+})
+
+test('legacy UI settings copy into Martty home without overwriting either side', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-settings-migration-'))
+  try {
+    const legacy = path.join(root, 'legacy', 'dsh-tui-settings.json')
+    const current = path.join(root, '.martty', 'settings.json')
+    mkdirSync(path.dirname(legacy), { recursive: true })
+    writeFileSync(legacy, '{"uiPreset":"deepseek","theme":"ember"}\n')
+
+    assert.equal(migrateLegacyUiSettings(current, [legacy]), true)
+    assert.deepEqual(JSON.parse(readFileSync(current, 'utf8')), {
+      uiPreset: 'deepseek',
+      theme: 'ember',
+    })
+    assert.equal(existsSync(legacy), true, 'migration must preserve legacy settings')
+
+    writeFileSync(current, '{"theme":"custom"}\n')
+    assert.equal(migrateLegacyUiSettings(current, [legacy]), false)
+    assert.equal(JSON.parse(readFileSync(current, 'utf8')).theme, 'custom')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -148,6 +198,98 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
     )
   } finally {
     restore()
+  }
+})
+
+test('Client boot rehydrates Creator-authored UI Presets from the durable user root', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  const home = mkdtempSync(path.join(tmpdir(), 'dsh-tui-client-artifacts-'))
+  let ctx
+  try {
+    const artifactRoot = path.join(home, '.tui-plugins')
+    createTuiPluginStore({ root: artifactRoot }).save({
+      id: 'focused-ui',
+      kind: 'ui-preset',
+      name: 'Focused UI',
+      purpose: 'Focused startup layout',
+      source: { pluginId: 'ui-1', packageId: 'dyn-1' },
+      clientCode: `return {
+        inject: ['tuiPresets'],
+        apply(ctx) {
+          return ctx.tuiPresets.register({ id: 'focused', label: 'Focused' }, () => () => {})
+        },
+      }`,
+    })
+
+    ctx = await bootClient({
+      stream: { stdin: fakeStream(), stdout: fakeStream() },
+      extraArgs: [],
+      settingsPath: path.join(home, 'dsh-tui-settings.json'),
+      artifactRoot,
+    })
+
+    assert.equal(typeof ctx.get('tuiLocalPlugins')?.list, 'function')
+    assert.ok(ctx.get('tuiPresets').list().some(({ id }) => id === 'focused'))
+    assert.deepEqual(ctx.get('tuiLocalPlugins').list(), [{
+      artifactId: 'focused-ui',
+      pluginId: 'tui-local:focused-ui',
+      kind: 'ui-preset',
+      loaded: true,
+    }])
+  } finally {
+    await ctx?.dispose?.()
+    runner.resetShellForTests()
+    restore()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Client boot mounts installed package entries received from the Host registry', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  const home = mkdtempSync(path.join(tmpdir(), 'dsh-tui-package-entries-'))
+  let ctx
+  try {
+    const entry = path.join(home, 'installed-ui.mjs')
+    writeFileSync(entry, `
+      export const inject = ['tuiPresets']
+      export function apply(ctx) {
+        return ctx.tuiPresets.register(
+          { id: 'installed', label: 'Installed package' },
+          () => () => {},
+        )
+      }
+    `)
+    const packagePlugins = [{
+      id: 'installed-ui',
+      kind: 'ui-preset',
+      entry: pathToFileURL(entry).href,
+    }]
+    assert.equal(typeof parseClientPluginsEnv, 'function')
+    if (typeof parseClientPluginsEnv !== 'function') return
+    assert.deepEqual(parseClientPluginsEnv(JSON.stringify(packagePlugins)), packagePlugins)
+
+    ctx = await bootClient({
+      stream: { stdin: fakeStream(), stdout: fakeStream() },
+      extraArgs: [],
+      settingsPath: path.join(home, 'dsh-tui-settings.json'),
+      artifactRoot: path.join(home, '.tui-plugins'),
+      packagePlugins,
+    })
+
+    assert.ok(ctx.get('tuiPresets').list().some(({ id }) => id === 'installed'))
+    assert.deepEqual(ctx.get('tuiLocalPlugins').list(), [{
+      artifactId: 'installed-ui',
+      pluginId: 'tui-package:installed-ui',
+      kind: 'ui-preset',
+      loaded: true,
+    }])
+  } finally {
+    await ctx?.dispose?.()
+    runner.resetShellForTests()
+    restore()
+    rmSync(home, { recursive: true, force: true })
   }
 })
 
@@ -555,6 +697,21 @@ test('hot-reloaded shell modules keep exactly one TTY painter', async () => {
     )
   } finally {
     first.resetShellForTests()
+    restore()
+  }
+})
+
+test('test shell reset retracts its process-exit listener', async () => {
+  runner.resetShellForTests()
+  const restore = ensureTestNative()
+  const before = process.listenerCount('exit')
+  try {
+    await runner.apply(makeCtx())
+    assert.equal(process.listenerCount('exit'), before + 1)
+    runner.resetShellForTests()
+    assert.equal(process.listenerCount('exit'), before)
+  } finally {
+    runner.resetShellForTests()
     restore()
   }
 })

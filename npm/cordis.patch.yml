@@ -20,6 +20,9 @@
   disabled: true
 
 - insert:
+    - id: tui-client-plugins
+      name: '@openma/deepseek-harness-tui/client-plugin-registry'
+
     - id: tui-acp-host
       name: '@openma/deepseek-harness-tui/acp-host'
 

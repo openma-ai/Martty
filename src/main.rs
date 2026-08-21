@@ -44,7 +44,7 @@ use crossterm::terminal::{
 use crate::app::{App, RunState};
 use crate::bus::{AppEvent, Cmd};
 use crate::controller::Controller;
-use crate::runtime::RuntimeConfig;
+use crate::runtime::{default_session_root, RuntimeConfig};
 
 const HELP: &str = "\
 dsh-tui — terminal-native ACP client UI
@@ -54,7 +54,7 @@ USAGE:
 
 OPTIONS:
   -w, --workspace <dir>     agent workspace (default: cwd)
-      --session-root <dir>  session JSONL root (default: ~/.dsh-tui/sessions)
+      --session-root <dir>  session JSONL root (default: $MARTTY_HOME/sessions)
       --session-id <id>     resume/continue a durable session id
       --provider <id>       provider route (default: deepseek-official)
       --model <id>          model id (default: $DSH_MODEL or deepseek-v4-flash)
@@ -198,10 +198,7 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
     };
     let session_root = match &args.session_root {
         Some(r) => r.clone(),
-        None => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            format!("{home}/.dsh-tui/sessions")
-        }
+        None => default_session_root().to_string_lossy().into_owned(),
     };
     std::fs::create_dir_all(&session_root).ok();
 
@@ -719,6 +716,26 @@ mod cli_args_tests {
     fn help_mentions_demo_skin() {
         assert!(HELP.contains("--demo-skin"));
         assert!(HELP.contains("--demo"));
+    }
+
+    #[test]
+    fn martty_home_precedence_owns_the_default_session_root() {
+        assert_eq!(
+            crate::runtime::martty_home_from(Some("/opt/martty"), Some("/opt/dsh"), "/Users/test",),
+            PathBuf::from("/opt/martty")
+        );
+        assert_eq!(
+            crate::runtime::martty_home_from(None, Some("/opt/dsh"), "/Users/test"),
+            PathBuf::from("/opt/dsh/.martty")
+        );
+        assert_eq!(
+            crate::runtime::martty_home_from(None, None, "/Users/test"),
+            PathBuf::from("/Users/test/.martty")
+        );
+        assert_eq!(
+            crate::runtime::martty_home_from(None, None, "/Users/test").join("sessions"),
+            PathBuf::from("/Users/test/.martty/sessions")
+        );
     }
 
     #[test]

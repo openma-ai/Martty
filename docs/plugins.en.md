@@ -52,13 +52,17 @@ facts only, also without touching token/timing accumulators.
 `tuiPresets` composes several independent UI Plugin contributions into one
 saved choice. It lives on the Client tree, separate from Agent Presets that
 compose Host/Agent capabilities, and is not an alias for Theme. The `mount`
-callback passed to `ctx.tuiPresets.register({ id, label }, mount)` may register
-a Theme, slots, pet, or other UI contributions and returns one disposer. `/ui`
+callback passed to `ctx.tuiPresets.register({ id, label }, mount)` composes only
+structural UI contributions such as slots, chrome, or a pet and returns one
+disposer. It does not register, select, or generate a Theme: `/ui`, `/theme`,
+and dark/light are independent state dimensions. `/ui`
 opens the native single-select form, `/ui ` reuses the slash menu above the
 composer for candidates, and `/ui <id>` switches directly. The id persists in
-`dsh-tui-settings.json`. Creator can inspect `UiPresets` and adjacent Client
+`$MARTTY_HOME/settings.json`. Creator can inspect `UiPresets` and adjacent Client
 services, generate a `code.client` Package that calls `tuiPresets.register`,
-and save/mount it; the new preset then appears in both selection paths.
+and preview it with `cordis_define/run`. Those operations are process-local;
+after a successful run, `tui_plugin_save` must write it under
+`$MARTTY_HOME/plugins/<artifact-id>/plugin.json` for restart recovery.
 
 The builtin `default` (Martty) and `deepseek` UI Presets both fill two single
 root slots:
@@ -92,7 +96,9 @@ Builtin `default` remains the cold bluish skin and cannot be replaced or removed
 `ctrl+t` only toggles dark/light inside the current theme. `/theme` is a special
 **single-select Theme Plugin switch**: selecting an id starts its owning Client
 Plugin and stops the previously selected Theme Plugin; selecting `default` stops
-the current dynamic Theme Plugin.
+the current dynamic Theme Plugin. Explicit selection persists beside
+`uiPreset` in `$MARTTY_HOME/settings.json`; temporary Creator previews and automatic
+fallbacks do not rewrite that preference.
 
 A Theme Plugin may register a palette, commands, overlays, slots, timers,
 transactions, and Package-private RPC together. None uses a theme condition or
@@ -247,24 +253,56 @@ Plugin modules do not receive: the TTY, stdin, raw mode, kitty escapes, ratatui,
 
 Nodes must not contain RGB; color only by token name. RGB appears only in a palette pack's `dark`/`light` tables.
 
-## Load
+## Persistence and loading
+
+TUI merges builtins, installed package entries, and Creator artifacts into the
+same `/ui` and `/theme` catalogs. Install a third-party package with
+`dsh plugin --profile tui add <package-or-path>`. Its Host registrar registers
+an absolute Client module entry with `tuiClientPlugins`; the Host runner sends
+only that serialized directory to the separate Client process. Creator
+artifacts live under `$MARTTY_HOME/plugins` and are managed by
+`tui_plugin_list/read/save/remove`. Installed packages win same-id conflicts.
+
+`MARTTY_HOME` resolves from the explicit environment variable, then
+`$DSH_HOME/.martty`, then `~/.martty`. On first startup, legacy artifacts and
+settings are copied forward without deleting the source or overwriting current
+Martty data.
+
+An installed package exports a small Host registrar:
+
+```js
+export const inject = ['tuiClientPlugins']
+export function apply(ctx) {
+  return ctx.tuiClientPlugins.register({
+    id: 'paper-lantern',
+    kind: 'theme',
+    entry: new URL('./client.js', import.meta.url).href,
+  })
+}
+```
+
+Its `client.js` exports an ordinary Cordis Client `inject` / `apply` module.
+The package bundle patch inserts only the registrar on the Host profile; no
+Host fiber, service, or plugin tree is synchronized to the Client.
 
 Cordis has **no** parent pointer from one plugin instance onto another.
 `tui-theme`, palette packs, `tui-cordis-client-runner`, and `tui-runner` are
-**sibling inserts** in the profile.
+peer lifecycles in the Client tree.
 
 The protocol that waits on the TUI capability is the service name:
 
 1. `tui-theme` and `tui-slots` provide `ctx.tuiTheme` and `ctx.tuiSlots`.
 2. `tui-cordis-client-runner` injects both, publishes inspect, and evaluates dynamic `code.client`.
-3. Third-party plugins inject the service they use and stay PENDING until it exists.
-4. Cordis owns static disposers; the Client runner owns dynamic contributions.
+3. Third-party Client modules inject the service they use and stay PENDING until it exists.
+4. Package and Creator modules use the same restricted Client facade and lifecycle manager.
 
 Do not stack third parties with `ctx.plugin(ember)` inside the runner. The
 composition mounts third-party packages as siblings. Web
 Web `ctx.slots` and terminal `ctx.tuiSlots` are different services.
 
-Local packages use `dsh plugin add ./path` and load **package exports**. A newly inserted row needs a TUI restart or later `/refresh`. Hot-swap of an already-mounted palette ships by phase.
+Local packages use `dsh plugin --profile tui add ./path` and load **package
+exports**. A new registrar needs a TUI restart or later `/refresh`. Hot-swap of
+an already-mounted palette ships by phase.
 
 ## Later
 

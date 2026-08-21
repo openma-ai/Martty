@@ -67,8 +67,8 @@ try {
   const dryRun = process.argv.includes('--dry-run')
   if (!rawVersion) throw new Error('usage: release.mjs <version> [--dry-run]')
 
-  const match = rawVersion.match(/^v?(\d+\.\d+\.\d+)$/)
-  if (!match) throw new Error(`invalid version: ${rawVersion} (expected X.Y.Z)`)
+  const match = rawVersion.match(/^v?(\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?)$/)
+  if (!match) throw new Error(`invalid version: ${rawVersion} (expected X.Y.Z or X.Y.Z-{alpha,beta,rc}.N)`)
   const version = match[1]
   const tag = `v${version}`
 

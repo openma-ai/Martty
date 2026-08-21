@@ -257,7 +257,7 @@ preset 当前复用同一套动态信息 renderer，但该区域可由插件独�
 `/ui` 打开原生 UI Preset 单选表单；输入 `/ui ` 会在 composer 上方复用 slash
 菜单显示候选。也可直接用 `/ui deepseek` 打开经典
 DeepSeek Harness 大鲸鱼与 wordmark，`/ui default`
-切回 Martty；选择持久化到 `dsh-tui-settings.json`，不写入对话记录。Martty 的
+切回 Martty；选择持久化到 `$MARTTY_HOME/settings.json`，不写入对话记录。Martty 的
 `MAR` 使用海洋蓝白渐变，`TTY` 使用终端主题的黑/白前景色。
 
 ### UI Preset 与 Agent Preset
@@ -267,15 +267,15 @@ DeepSeek Harness 大鲸鱼与 wordmark，`/ui default`
 
 | | Agent Preset | UI Preset |
 |---|---|---|
-| 组合什么 | Host/Agent 的 system prompt、工具、skills 与运行能力 | Client UI 的 theme、slot、pet、command 与 overlay |
+| 组合什么 | Host/Agent 的 system prompt、工具、skills 与运行能力 | Client UI 的 slot、pet、chrome 等结构性贡献 |
 | 切换入口 | `/agent` | `/ui` |
 | 当前内置 | standard、code、minimal、cordis 等 Agent 组合 | `default`（Martty）、`deepseek` |
-| 持久化 | 会话/Agent 选择 | `dsh-tui-settings.json` 中的界面选择 |
+| 持久化 | 会话/Agent 选择 | `$MARTTY_HOME/settings.json` 中的界面选择 |
 
 Creator 模式可以 inspect `UiPresets`、`Theme`、`Slots`、`Commands` 和 `Overlay`
 的真实契约，生成包含 `code.client` 的动态 Package，并在其中调用
 `tuiPresets.register({ id, label }, mount)` 创建新的 UI Preset。`mount` 组合该
-Preset 所需的 theme、欢迎页 slot、pet 或其他 UI contribution；Package 保存并挂载后，
+Preset 所需的欢迎页 slot、pet 或其他结构性 UI contribution；Package 保存并挂载后，
 新 Preset 自动进入 `/ui` 表单和 `/ui ` 上拉候选，也沿用同一套切换、持久化与卸载
 生命周期。Creator 创建的是普通 Client Plugin 组合，不会取得 TTY、绝对坐标或绕过
 slot/overlay 协议。
