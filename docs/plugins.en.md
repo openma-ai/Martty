@@ -50,12 +50,16 @@ facts only, also without touching token/timing accumulators.
 ## Built-in Client Plugin: `deepseek-logo`
 
 `deepseek-logo` injects only `tuiCommands` and `tuiSlots` and registers the
-local `/deepseeklogo` command. Invoking it occupies the single `welcome.hero`
-slot and replaces the Martty Hero in place with the classic “DeepSeek Harness
-+ whale” ASCII lockup. Session facts and the help row remain unchanged. The
-artwork, wordmark, and command lifecycle all belong to this Client Plugin; it
-never enters the ACP prompt or transcript and does not restore `/logo` as a
-Rust builtin.
+local `/deepseeklogo` command. Invoking it selects the `deepseek` UI preset and
+occupies the single `welcome.hero` slot with two semantic nodes: `logo + hint`.
+Session facts and the help row remain unchanged. The Rust painter reuses the
+original responsive whale/wordmark primitive and owns horizontal centering,
+whole-block vertical centering, and balanced outer padding; the Plugin owns
+preset activation and lifecycle. `uiPreset` is persisted in
+`dsh-tui-settings.json` and survives restart. It never enters the ACP prompt
+or transcript.
+`/deepseeklogo martty` restores the builtin `martty` preset and replaces the
+persisted selection.
 
 ## Open: `tuiTheme`
 

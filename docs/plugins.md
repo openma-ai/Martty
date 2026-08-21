@@ -75,10 +75,12 @@ transcript accumulator。没有 Client 树的运行（demo、独立 painter）�
 ## 内置 Client Plugin：`deepseek-logo`
 
 `deepseek-logo` 只注入 `tuiCommands` 与 `tuiSlots`，注册本地
-`/deepseeklogo`。执行后占用 single `welcome.hero` 槽位，以旧版
-“DeepSeek Harness + 大鲸鱼”ASCII lockup 原位替换 Martty Hero；版本、模型、会话
-与帮助行保持不变。鲸鱼素材、wordmark 与命令生命周期全部属于该 Client Plugin；
-它不进入 ACP prompt 或 transcript，也不把 `/logo` 重新做成 Rust builtin。
+`/deepseeklogo`。执行后选择 `deepseek` UI preset，并以 `logo + hint` 两个语义节点
+占用 single `welcome.hero` 槽位；版本、模型、会话与帮助行保持不变。Rust painter
+复用旧版响应式鲸鱼/wordmark 绘制 primitive，并统一负责水平居中、整体垂直居中和
+上下等距；插件负责 preset 的激活与生命周期。当前 `uiPreset` 持久化到
+`dsh-tui-settings.json`，重启后继续生效。它不进入 ACP prompt 或 transcript。
+`/deepseeklogo martty` 可恢复内置 `martty` preset，并覆盖持久化选择。
 
 ## 当前可调用：`tuiTheme`
 

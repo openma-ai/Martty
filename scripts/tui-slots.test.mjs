@@ -141,7 +141,7 @@ test('conversation docks are additive slots with independent live snapshots', ()
   assert.deepEqual(sent.at(-1).params.nodes, [])
 })
 
-test('welcome.hero is a single root replacement with terminal-native ascii', () => {
+test('welcome.hero is a single root preset with a logo and hint', () => {
   assert.equal(typeof slotsPlugin.installTuiSlots, 'function')
   if (typeof slotsPlugin.installTuiSlots !== 'function') return
 
@@ -155,7 +155,10 @@ test('welcome.hero is a single root replacement with terminal-native ascii', () 
 
   const hero = ctx.tuiSlots.register(
     { name: 'welcome.hero', id: 'deepseek-logo' },
-    [{ id: 'whale', kind: 'ascii', lines: ['▄███▄'], tone: 'brand' }],
+    [
+      { id: 'logo', kind: 'logo', name: 'deepseek' },
+      { id: 'hint', kind: 'text', text: 'Into the Unknown', tone: 'fg_tertiary' },
+    ],
   )
 
   assert.deepEqual(
@@ -168,7 +171,13 @@ test('welcome.hero is a single root replacement with terminal-native ascii', () 
     },
   )
   assert.deepEqual(sent.at(-1).params.nodes, [
-    { id: 'deepseek-logo:whale', kind: 'ascii', lines: ['▄███▄'], tone: 'brand' },
+    { id: 'deepseek-logo:logo', kind: 'logo', name: 'deepseek' },
+    {
+      id: 'deepseek-logo:hint',
+      kind: 'text',
+      text: 'Into the Unknown',
+      tone: 'fg_tertiary',
+    },
   ])
   assert.throws(
     () => ctx.tuiSlots.register(

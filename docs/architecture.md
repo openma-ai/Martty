@@ -42,7 +42,7 @@ Client 进程：独立 Cordis root
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
   deepseek-logo 注入 tuiCommands + tuiSlots，注册 /deepseeklogo 命令；
-               旧 DeepSeek Harness 鲸鱼占用 single welcome.hero 槽位
+               deepseek UI preset 以 logo + hint 占用 single welcome.hero
   acp-session-status 提供 acpSessionStatus（连接/服务端/认证/会话/
                模型/effort/权限/plan/agent 等运行状态事实）
   tui-slots    提供 tuiSlots，声明 welcome.hero / chrome.right /
@@ -88,7 +88,7 @@ tui-slots     TuiNode 树 → welcome.hero / chrome.right / input dock / compose
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
-deepseek-logo 旧 DeepSeek Harness 鲸鱼素材 → /deepseeklogo 原位替换 welcome.hero
+deepseek-logo deepseek UI preset → /deepseeklogo 原位替换 welcome.hero
 acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/
               effort/权限/plan/agent —— 不累计 token 或耗时（那是
               acpSessionStats 的职责）
@@ -128,8 +128,10 @@ Token **名**封闭，见 [plugins.md](plugins.md)。内置 `default` 的色值�
 `ctrl+t` 切当前主题的 dark/light。`/theme` 切整个 Theme Plugin。kitty 宠物是 RGBA
 精灵，不随 token 重上色；启动锁屏的 `MAR` 读海洋渐变，`TTY` 读终端前景黑/白。
 旧 DeepSeek Harness 鲸鱼由 `deepseek-logo` Client Plugin 通过 `/deepseeklogo`
-写入 single `welcome.hero` 槽位，原位替换 Martty lockup；Rust painter 只渲染它提交的
-ASCII `TuiNode`，会话信息与帮助行不变。
+选择 `deepseek` UI preset，并向 single `welcome.hero` 写入 `logo + hint` 两个语义
+`TuiNode`。Rust painter 复用原版响应式绘制 primitive，统一负责内部几何、水平居中与
+整个欢迎块的垂直居中；会话信息与帮助行不变。选择写入 `dsh-tui-settings.json`，
+重启后恢复；`martty` 始终是内置 fallback preset。
 
 ## 明确不做
 

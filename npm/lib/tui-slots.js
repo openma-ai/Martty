@@ -55,6 +55,8 @@ const THEME_TOKENS = new Set([
 
 const NODE_FIELDS = Object.freeze({
   ascii: { required: ['id', 'kind', 'lines'], optional: ['tone'] },
+  logo: { required: ['id', 'kind', 'name'], optional: [] },
+  text: { required: ['id', 'kind', 'text'], optional: ['tone'] },
   group: { required: ['id', 'kind', 'children'], optional: ['title', 'tone'] },
   markdown: { required: ['id', 'kind', 'text'], optional: ['streaming'] },
   reasoning: { required: ['id', 'kind', 'text', 'done'], optional: ['seconds'] },
@@ -121,6 +123,17 @@ function validateNode(node, path, ids) {
         throw new Error(`tuiSlots: ${path}.lines must be a non-empty array`)
       }
       node.lines.forEach((line, index) => string(line, `${path}.lines[${index}]`))
+      if (node.tone !== undefined && !THEME_TOKENS.has(node.tone)) {
+        throw new Error(`tuiSlots: ${path}.tone must be a theme token`)
+      }
+      break
+    case 'logo':
+      if (node.name !== 'deepseek') {
+        throw new Error(`tuiSlots: ${path}.name must be a registered logo preset`)
+      }
+      break
+    case 'text':
+      string(node.text, `${path}.text`)
       if (node.tone !== undefined && !THEME_TOKENS.has(node.tone)) {
         throw new Error(`tuiSlots: ${path}.tone must be a theme token`)
       }

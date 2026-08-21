@@ -11,6 +11,7 @@ mod clipboard;
 mod controller;
 mod cordis;
 mod demo;
+mod deepseek_logo;
 mod elicitation;
 mod events;
 mod input;

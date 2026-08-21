@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde::Deserialize;
 use serde_json::Value;
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
 use crate::transcript::wrap;
@@ -36,6 +37,16 @@ pub enum TuiNode {
     Ascii {
         id: String,
         lines: Vec<String>,
+        #[serde(default)]
+        tone: Option<String>,
+    },
+    Logo {
+        id: String,
+        name: String,
+    },
+    Text {
+        id: String,
+        text: String,
         #[serde(default)]
         tone: Option<String>,
     },
@@ -115,6 +126,8 @@ impl TuiNode {
     fn id(&self) -> &str {
         match self {
             Self::Ascii { id, .. }
+            | Self::Logo { id, .. }
+            | Self::Text { id, .. }
             | Self::Group { id, .. }
             | Self::Markdown { id, .. }
             | Self::Reasoning { id, .. }
@@ -149,6 +162,17 @@ fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), St
                 if lines.is_empty() {
                     return Err("tui ascii lines must not be empty".into());
                 }
+                if tone.as_deref().is_some_and(theme_color_name_invalid) {
+                    return Err(format!(
+                        "unknown tui theme token: {}",
+                        tone.as_deref().unwrap_or("")
+                    ));
+                }
+            }
+            TuiNode::Logo { name, .. } if name != "deepseek" => {
+                return Err(format!("unknown tui logo preset: {name}"));
+            }
+            TuiNode::Text { tone, .. } => {
                 if tone.as_deref().is_some_and(theme_color_name_invalid) {
                     return Err(format!(
                         "unknown tui theme token: {}",
@@ -229,6 +253,15 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
         return Ok(None);
     }
     validate_node_tree(&snapshot.nodes)?;
+    if snapshot.slot == "welcome.hero"
+        && !snapshot.nodes.is_empty()
+        && !matches!(
+            snapshot.nodes.as_slice(),
+            [TuiNode::Logo { .. }, TuiNode::Text { .. }]
+        )
+    {
+        return Err("welcome.hero must contain one logo followed by one hint text".into());
+    }
     Ok(Some(snapshot))
 }
 
@@ -289,6 +322,18 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
                 .as_deref()
                 .map(|name| token_color(theme, name))
                 .unwrap_or(theme.fg)),
+        ),
+        TuiNode::Logo { name, .. } if name == "deepseek" => {
+            crate::deepseek_logo::lines(theme, width as u16)
+        }
+        TuiNode::Logo { .. } => Vec::new(),
+        TuiNode::Text { text, tone, .. } => styled_wrapped(
+            text,
+            width,
+            Style::default().fg(tone
+                .as_deref()
+                .map(|name| token_color(theme, name))
+                .unwrap_or(theme.fg_secondary)),
         ),
         TuiNode::Group {
             title,
@@ -529,4 +574,38 @@ pub fn render_nodes(nodes: &[TuiNode], theme: &Theme, width: usize) -> Vec<Line<
 
 pub fn render(snapshot: &SlotSnapshot, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     render_nodes(&snapshot.nodes, theme, width)
+}
+
+fn centered(width: usize, mut line: Line<'static>) -> Line<'static> {
+    let content_width = line
+        .spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>();
+    line.spans.insert(
+        0,
+        Span::raw(" ".repeat(width.saturating_sub(content_width) / 2)),
+    );
+    line
+}
+
+/// Render the structural `logo + hint` contract of `welcome.hero`.
+/// Logo painters own their internal geometry; the compositor owns the gap
+/// and centers the hint independently below it.
+pub fn render_welcome_hero(
+    snapshot: &SlotSnapshot,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let [logo, hint] = snapshot.nodes.as_slice() else {
+        return Vec::new();
+    };
+    let mut lines = render_node(logo, theme, width);
+    lines.push(Line::default());
+    lines.extend(
+        render_node(hint, theme, width)
+            .into_iter()
+            .map(|line| centered(width, line)),
+    );
+    lines
 }

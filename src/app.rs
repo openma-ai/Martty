@@ -23,7 +23,7 @@ use crate::bus::{
 use crate::controller::Controller;
 use crate::events::parse_notification;
 use crate::input::Action;
-use crate::locale::{Locale, LocaleSettings};
+use crate::locale::{Locale, UiSettings};
 use crate::runtime::RuntimeConfig;
 use crate::theme::Theme;
 use crate::transcript::{clamp_str, NoticeLevel, Transcript};
@@ -798,6 +798,9 @@ pub struct App {
     pub locale: Locale,
     pub palettes: Vec<crate::theme::PalettePack>,
     pub active_palette_id: String,
+    /// Persisted welcome preset. `martty` is builtin; other presets are
+    /// selected by Client Plugins and painted through `welcome.hero`.
+    pub ui_preset: String,
     /// Latest compositor-private snapshots, keyed by declared Client slot.
     pub slot_snapshots: HashMap<String, crate::slots::SlotSnapshot>,
     pub transcript: Transcript,
@@ -1127,12 +1130,14 @@ impl App {
     ) -> Self {
         let palettes = vec![crate::theme::PalettePack::builtin_default()];
         let theme = palettes[0].theme(theme.mode);
-        let locale = Self::load_locale(&cfg);
+        let settings = Self::load_settings(&cfg);
+        let locale = settings.language;
         App {
             theme,
             locale,
             palettes,
             active_palette_id: "default".into(),
+            ui_preset: settings.ui_preset,
             slot_snapshots: HashMap::new(),
             transcript: Transcript::new(session_id.clone()),
             subagents: Vec::new(),
@@ -1593,6 +1598,20 @@ impl App {
                                 matches!((snapshot.rev, current.rev), (Some(next), Some(previous)) if next <= previous)
                             });
                             if !stale {
+                                if snapshot.slot == "welcome.hero" {
+                                    self.ui_preset = snapshot
+                                        .nodes
+                                        .first()
+                                        .and_then(|node| match node {
+                                            crate::slots::TuiNode::Logo { name, .. } => {
+                                                Some(name.clone())
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or_else(|| "martty".into());
+                                    self.show_banner = true;
+                                    self.save_settings();
+                                }
                                 self.slot_snapshots.insert(snapshot.slot.clone(), snapshot);
                             }
                         }
@@ -2392,21 +2411,21 @@ impl App {
         std::path::Path::new(&cfg.session_root).join("dsh-tui-settings.json")
     }
 
-    fn load_locale(cfg: &RuntimeConfig) -> Locale {
+    fn load_settings(cfg: &RuntimeConfig) -> UiSettings {
         std::fs::read_to_string(Self::locale_settings_path(cfg))
             .ok()
-            .and_then(|text| serde_json::from_str::<LocaleSettings>(&text).ok())
-            .map(|settings| settings.language)
+            .and_then(|text| serde_json::from_str::<UiSettings>(&text).ok())
             .unwrap_or_default()
     }
 
-    fn save_locale(&self) {
+    fn save_settings(&self) {
         let path = Self::locale_settings_path(&self.cfg);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(text) = serde_json::to_string_pretty(&LocaleSettings {
+        if let Ok(text) = serde_json::to_string_pretty(&UiSettings {
             language: self.locale,
+            ui_preset: self.ui_preset.clone(),
         }) {
             let _ = std::fs::write(path, text);
         }
@@ -2425,7 +2444,7 @@ impl App {
             return;
         };
         self.locale = next;
-        self.save_locale();
+        self.save_settings();
         self.show_tip(match next {
             Locale::En => "Language switched to English",
             Locale::Zh => "界面语言已切换为中文",

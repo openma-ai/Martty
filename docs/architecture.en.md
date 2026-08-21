@@ -42,7 +42,7 @@ Client process: independent Cordis root
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
   deepseek-logo   injects tuiCommands + tuiSlots; registers /deepseeklogo;
-                  the classic whale occupies the single welcome.hero slot
+                  the deepseek UI preset contributes logo + hint to welcome.hero
   acp-session-status  provides acpSessionStatus (connection/server/auth/
                   session/model/effort/permission/plan/agent run-state facts)
   tui-slots       provides tuiSlots; declares welcome.hero / chrome.right /
@@ -89,7 +89,7 @@ tui-slots             TuiNode trees → welcome.hero / chrome.right / input dock
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
-deepseek-logo         classic whale → /deepseeklogo in-place welcome.hero replacement
+deepseek-logo         deepseek UI preset → /deepseeklogo in-place welcome.hero replacement
 acp-session-status    standard ACP run-state projection: connection/server/auth/
                       session/model/effort/permission/plan/agent — no token or
                       timing accumulation (acpSessionStats owns that)
@@ -130,9 +130,12 @@ Token **names** are closed; see [plugins.md](plugins.en.md). Built-in `default` 
 Theme Plugin. Kitty pet sprites are RGBA and do not recolor. In the startup
 lockup, `MAR` reads the ocean gradient while `TTY` uses terminal foreground
 (white in dark mode, black in light mode). The classic DeepSeek Harness whale
-is owned by the `deepseek-logo` Client Plugin. `/deepseeklogo` places its ASCII
-nodes in the single `welcome.hero` slot, replacing only the Martty lockup while
-the Rust painter keeps the session facts and help row intact.
+is selected by the `deepseek-logo` Client Plugin. `/deepseeklogo` places two
+semantic nodes, `logo + hint`, in the single `welcome.hero` slot. The Rust
+painter reuses the original responsive primitive and owns its geometry plus
+whole-welcome vertical centering, while keeping session facts and the help row
+intact. The selected `uiPreset` survives restart; builtin `martty` is the
+fallback preset.
 
 ## Out of scope
 

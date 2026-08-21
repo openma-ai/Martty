@@ -907,7 +907,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         area.height,
     );
     let mut owners: Vec<Option<usize>> = Vec::new();
-    let banner_count;
+    let mut banner_count;
     let mut lines = if app.show_banner {
         let banner = banner_lines(app, inner.width);
         banner_count = banner.len();
@@ -921,6 +921,18 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let layout = app
         .displayed_transcript()
         .layout(&theme, inner.width, app.spinner(), thumbs);
+    if app.show_banner && layout.lines.is_empty() && lines.len() < inner.height as usize {
+        let remaining = inner.height as usize - lines.len();
+        let top = remaining / 2;
+        let bottom = remaining - top;
+        let mut centered_lines = Vec::with_capacity(inner.height as usize);
+        centered_lines.resize(top, Line::default());
+        centered_lines.append(&mut lines);
+        centered_lines.resize(centered_lines.len() + bottom, Line::default());
+        lines = centered_lines;
+        owners.resize(lines.len(), None);
+        banner_count = lines.len();
+    }
     lines.extend(layout.lines);
     owners.extend(layout.owners);
     // Active work rides as the transcript's last line — hugging the newest
@@ -1969,22 +1981,29 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
 /// `app.show_banner` is set; it dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let theme = &app.theme;
-    let mut out = vec![
-        Line::default(),
-        Line::default(),
-        Line::default(),
-        Line::default(),
-    ];
+    let mut out = Vec::new();
     if let Some(hero) = app
         .slot_snapshots
         .get("welcome.hero")
         .filter(|snapshot| !snapshot.nodes.is_empty())
     {
-        out.extend(
-            crate::slots::render(hero, theme, width as usize)
-                .into_iter()
-                .map(|line| centered(width, line.spans)),
-        );
+        out.extend(crate::slots::render_welcome_hero(
+            hero,
+            theme,
+            width as usize,
+        ));
+    } else if app.ui_preset == "deepseek" {
+        out.extend(crate::deepseek_logo::lines(theme, width));
+        out.push(Line::default());
+        out.push(centered(
+            width,
+            vec![Span::styled(
+                app.locale.tr("Into the Unknown", "探索未知").to_string(),
+                Style::default()
+                    .fg(theme.fg_tertiary)
+                    .add_modifier(Modifier::BOLD),
+            )],
+        ));
     } else {
         out.extend(logo::martty_logo_lines(theme, width));
         out.push(Line::default());
@@ -2110,12 +2129,6 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             .to_string(),
         Style::default().fg(theme.caption),
     )));
-    out.extend([
-        Line::default(),
-        Line::default(),
-        Line::default(),
-        Line::default(),
-    ]);
     out
 }
 
@@ -2650,34 +2663,35 @@ mod tests {
     }
 
     #[test]
-    fn welcome_block_has_four_rows_of_symmetric_vertical_padding() {
-        let app = test_app();
-        let lines = banner_lines(&app, 84);
-        let plain = |line: &Line<'_>| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        };
+    fn empty_welcome_screen_has_balanced_outer_vertical_padding() {
+        let mut app = test_app();
+        let _ = dump_frame(&mut app, 120, 50);
+        let first_content = app
+            .chat_view
+            .lines
+            .iter()
+            .position(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let last_content = app
+            .chat_view
+            .lines
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let top = first_content;
+        let bottom = app.chat_view.area.height as usize - last_content - 1;
 
-        assert_eq!(plain(&lines[0]), "");
-        assert_eq!(plain(&lines[1]), "");
-        assert_eq!(plain(&lines[2]), "");
-        assert_eq!(plain(&lines[3]), "");
         assert!(
-            plain(&lines[4]).contains('█'),
-            "logo begins after four rows"
+            top.abs_diff(bottom) <= 1,
+            "welcome block must be vertically centered: top={top}, bottom={bottom}"
         );
-        assert!(plain(&lines[lines.len() - 5]).contains("/help"));
-        assert_eq!(plain(&lines[lines.len() - 4]), "");
-        assert_eq!(plain(&lines[lines.len() - 3]), "");
-        assert_eq!(plain(&lines[lines.len() - 2]), "");
-        assert_eq!(plain(&lines[lines.len() - 1]), "");
     }
 
     #[test]
     fn welcome_hero_slot_replaces_only_the_martty_lockup() {
         let mut app = test_app();
+        let cfg = app.cfg.clone();
+        app.show_banner = false;
         let (ctl, _commands) = crate::controller::test_controller();
         app.handle(
             crate::bus::AppEvent::Rpc {
@@ -2688,16 +2702,15 @@ mod tests {
                 "rev": 1,
                 "nodes": [
                     {
-                        "id": "deepseek-logo:whale",
-                        "kind": "ascii",
-                        "lines": ["▄█████████████████▄▄"],
-                        "tone": "brand"
+                        "id": "deepseek-logo:logo",
+                        "kind": "logo",
+                        "name": "deepseek"
                     },
                     {
-                        "id": "deepseek-logo:wordmark",
-                        "kind": "ascii",
-                        "lines": ["DEEPSEEK", "H A R N E S S", "Into the Unknown"],
-                        "tone": "fg_secondary"
+                        "id": "deepseek-logo:hint",
+                        "kind": "text",
+                        "text": "Into the Unknown",
+                        "tone": "fg_tertiary"
                     }
                 ]
                 }),
@@ -2705,13 +2718,12 @@ mod tests {
             &ctl,
         );
 
-        let frame = dump_frame(&mut app, 100, 40);
+        assert!(app.show_banner, "/deepseeklogo restores the welcome banner");
+        let frame = dump_frame(&mut app, 140, 60);
 
-        assert!(
-            frame.contains("▄█████████████████▄▄"),
-            "whale hero:\n{frame}"
-        );
-        assert!(frame.contains("H A R N E S S"), "wordmark:\n{frame}");
+        assert!(frame.contains("▄▄▄███▀"), "XL whale:\n{frame}");
+        assert!(frame.contains('░'), "hollow HARNESS:\n{frame}");
+        assert!(frame.contains("Into the Unknown"), "tagline:\n{frame}");
         assert!(
             !frame.contains("https://martty.sh"),
             "Martty hero replaced:\n{frame}"
@@ -2720,6 +2732,70 @@ mod tests {
         assert!(
             frame.contains("/help commands"),
             "help row remains:\n{frame}"
+        );
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut restarted = App::new(
+            Theme::dark(),
+            cfg,
+            "persisted-hero".into(),
+            true,
+            false,
+            tx,
+        );
+        assert_eq!(restarted.ui_preset, "deepseek");
+        let restarted_frame = dump_frame(&mut restarted, 140, 60);
+        assert!(
+            restarted_frame.contains("Into the Unknown") && restarted_frame.contains('░'),
+            "the selected UI preset survives restart:\n{restarted_frame}"
+        );
+    }
+
+    #[test]
+    fn deepseek_hero_preserves_the_original_whale_geometry() {
+        let mut app = test_app();
+        app.slot_snapshots.insert(
+            "welcome.hero".into(),
+            serde_json::from_value(serde_json::json!({
+                "protocol": 0,
+                "slot": "welcome.hero",
+                "rev": 1,
+                "nodes": [
+                    { "id": "deepseek-logo:logo", "kind": "logo", "name": "deepseek" },
+                    {
+                        "id": "deepseek-logo:hint",
+                        "kind": "text",
+                        "text": "Into the Unknown",
+                        "tone": "fg_tertiary"
+                    }
+                ]
+            }))
+            .expect("DeepSeek hero snapshot"),
+        );
+        let plain = banner_lines(&app, 140)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let first = plain
+            .iter()
+            .find(|line| line.contains("▄▄▄███▀"))
+            .expect("first XL whale row");
+        let second = plain
+            .iter()
+            .find(|line| line.contains("▄▄████████"))
+            .expect("second XL whale row");
+        let first_x = first.find('▄').expect("first whale pixel");
+        let second_x = second.find('▄').expect("second whale pixel");
+
+        assert_eq!(first_x - second_x, 13, "all whale rows share one outer pad");
+        assert!(
+            plain.iter().any(|line| line.contains('█') && line.contains('░')),
+            "wide wordmark keeps solid DEEPSEEK beside hollow HARNESS"
         );
     }
 

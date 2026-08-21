@@ -245,8 +245,10 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 界面内使用 `/help` 查看命令，使用 `/keys` 查看完整快捷键。
 
 `/deepseeklogo` 会通过内置 Client Plugin 打开经典的 DeepSeek Harness 大鲸鱼
-与 wordmark；它是 overlay，不会写入对话记录。新版启动锁屏中 `MAR` 使用海洋
-蓝白渐变，`TTY` 使用终端主题的黑/白前景色。
+与 wordmark；这是由 `logo + hint` 组成的 `deepseek` UI preset，不是 overlay，
+也不会写入对话记录。选择会写入 `dsh-tui-settings.json`，下次启动继续使用；
+`/deepseeklogo martty` 可切回内置 preset。`martty` 的 `MAR` 使用海洋蓝白渐变，
+`TTY` 使用终端主题的黑/白前景色。
 
 <p align="center">
   <img src="assets/screenshots/skills-menu.png" width="720"

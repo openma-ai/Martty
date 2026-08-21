@@ -94,8 +94,23 @@ impl Locale {
 
 pub const AMBIENT_TIP_COUNT: usize = 8;
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+fn default_ui_preset() -> String {
+    "martty".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LocaleSettings {
+pub struct UiSettings {
     pub language: Locale,
+    #[serde(rename = "uiPreset")]
+    pub ui_preset: String,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            language: Locale::default(),
+            ui_preset: default_ui_preset(),
+        }
+    }
 }

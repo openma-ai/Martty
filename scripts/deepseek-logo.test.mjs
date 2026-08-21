@@ -37,16 +37,26 @@ test('the DeepSeek logo Client Plugin replaces the welcome hero in place', () =>
     name: 'deepseeklogo',
     description: 'Replace the welcome hero with classic DeepSeek Harness',
   })
+  command.handler('martty')
+  assert.equal(hero, undefined, 'martty can clear a selection restored by the painter')
   command.handler()
 
   assert.deepEqual(hero.options, { name: 'welcome.hero', id: 'deepseek-logo' })
-  assert.equal(hero.nodes.length, 2)
-  assert.deepEqual(hero.nodes.map((node) => node.kind), ['ascii', 'ascii'])
-  assert.equal(hero.nodes[0].tone, 'brand')
-  assert.ok(hero.nodes[0].lines.some((line) => line.includes('▄█████████████████▄▄')))
-  assert.ok(hero.nodes[1].lines.some((line) => line.includes('___  ___ ___ ___')))
-  assert.ok(hero.nodes[1].lines.includes('H A R N E S S'))
-  assert.ok(hero.nodes[1].lines.includes('Into the Unknown'))
+  assert.deepEqual(hero.nodes, [
+    { id: 'logo', kind: 'logo', name: 'deepseek' },
+    {
+      id: 'hint',
+      kind: 'text',
+      text: 'Into the Unknown',
+      tone: 'fg_tertiary',
+    },
+  ])
+
+  command.handler('martty')
+  assert.equal(hero, undefined, 'martty restores the builtin UI preset')
+
+  command.handler('deepseek')
+  assert.equal(hero.options.id, 'deepseek-logo', 'deepseek can be selected again')
 
   stop()
   assert.equal(command, undefined)
