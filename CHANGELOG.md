@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- New gallery palette pack `catppuccin` (dark from Catppuccin Mocha, the
+  second token map from Catppuccin Frappe), sourced from
+  terminalcolors.com/themes/catppuccin. It registers at Client boot as a
+  sibling insert row and is switchable via `/theme`.
 - New gallery palette pack `ayu` (dark from the Ayu dark variant, the second
   token map from Ayu Mirage), sourced from terminalcolors.com/themes/ayu.
   It registers at Client boot as a sibling insert row and is switchable via

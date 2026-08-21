@@ -17,6 +17,7 @@ import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
 import { apply as applyOne, inject as oneInject } from './one.js'
 import { apply as applyAyu, inject as ayuInject } from './ayu.js'
+import { apply as applyCatppuccin, inject as catppuccinInject } from './catppuccin.js'
 import { apply as applyEverforest, inject as everforestInject } from './everforest.js'
 import { apply as applyGruvbox, inject as gruvboxInject } from './gruvbox.js'
 import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
@@ -60,6 +61,7 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
     await ctx.plugin({ name: 'tui-theme-one', inject: oneInject, apply: applyOne })
     await ctx.plugin({ name: 'tui-theme-ayu', inject: ayuInject, apply: applyAyu })
+    await ctx.plugin({ name: 'tui-theme-catppuccin', inject: catppuccinInject, apply: applyCatppuccin })
     await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
     await ctx.plugin({ name: 'tui-theme-gruvbox', inject: gruvboxInject, apply: applyGruvbox })
     await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
@@ -115,6 +117,7 @@ export async function bootClient(options = {}) {
     applyTheme(ctx, presetConfig)
     applyOne(ctx)
     applyAyu(ctx)
+    applyCatppuccin(ctx)
     applyEverforest(ctx)
     applyGruvbox(ctx)
     applyIceberg(ctx)

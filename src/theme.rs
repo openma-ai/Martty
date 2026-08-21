@@ -712,6 +712,7 @@ mod tests {
         match name {
             "one" => include_str!("../docs/fixtures/one.v0.json"),
             "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
+            "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
@@ -743,6 +744,14 @@ mod tests {
                 Color::Rgb(109, 203, 250), // #6DCBFA Ayu Mirage blue
                 Color::Rgb(11, 14, 20),   // #0B0E14
                 Color::Rgb(31, 36, 48),   // #1F2430
+            ),
+            (
+                "catppuccin",
+                "Catppuccin",
+                Color::Rgb(137, 180, 250), // #89B4FA Catppuccin Mocha blue
+                Color::Rgb(140, 170, 238), // #8CAAEE Catppuccin Frappe blue
+                Color::Rgb(30, 30, 46),    // #1E1E2E
+                Color::Rgb(48, 52, 70),    // #303446
             ),
             (
                 "everforest",
