@@ -75,18 +75,23 @@ function viewNodes(plan) {
   if (plan.kind === 'file') {
     return [{ id: 'file', kind: 'notice', level: 'info', text: plan.uri }]
   }
-  return plan.entries.map((entry, index) => ({
-    id: `step-${index + 1}`,
-    kind: 'generic',
-    title: entry.content,
-    body: entry.priority ? `priority · ${entry.priority}` : '',
-    ...nodeStatus(entry.status),
-  }))
-}
-
-function nodeStatus(status) {
-  if (status === 'completed') return { status: 'ok' }
-  if (status === 'in_progress') return { status: 'running' }
-  if (status === 'cancelled' || status === 'failed') return { status: 'err' }
-  return {}
+  // Items render as one markdown node: a task-list review the transcript
+  // pipeline can fully render (headings, bold, strikethrough).
+  const total = plan.entries.length
+  const completed = plan.entries.filter((entry) => entry.status === 'completed').length
+  const lines = [`## Plan · ${completed}/${total}`, '']
+  for (const entry of plan.entries) {
+    const content = entry.content.replace(/\s*\n\s*/g, ' ')
+    let item
+    if (entry.status === 'completed') {
+      item = `- [x] ${content}`
+    } else if (entry.status === 'cancelled' || entry.status === 'failed') {
+      item = `- [ ] ~~${content}~~`
+    } else {
+      item = entry.status === 'in_progress' ? `- [ ] **${content}**` : `- [ ] ${content}`
+    }
+    if (entry.priority) item += ` · priority · ${entry.priority}`
+    lines.push(item)
+  }
+  return [{ id: 'content', kind: 'markdown', text: lines.join('\n') }]
 }

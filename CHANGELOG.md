@@ -5,8 +5,80 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- The composer is now one rounded box: the cap row (`Tip` / plugin input
+  dock / `·` workspace title) and the entire input surface (input well +
+  meta row) share a single rounded rectangle, so the input text is fully
+  enclosed by the frame. The cap is exactly one row — the plugin input
+  dock (PLAN summary) wins the row over the tip line whenever both could
+  appear, so PLAN + TIP never stack. The meta row (agent / permission /
+  model chips) rides the box's bottom border (`╰⚙ … ╯`) instead of an
+  inner row, so the box costs no extra rows and the input well is taller.
+  The running-state glow now replaces the box's left border. Short
+  terminals (below the cap threshold) keep the previous borderless
+  composer.
+- The composer stats dock is back: `conversation.composer.dock` (the
+  `Cache hit` / token / TTFT readout) rides below the composer box on
+  terminals tall enough, fed by the restored built-in `stats-view`
+  Client Plugin; the `/liang` pet command and its pixel companion (kitty
+  sprites + half-block fallback) are back too, perched inside the box's
+  bottom-right corner. The `/logo` command stays removed — the banner is
+  the Martty lockup.
+
+### Changed
+
+- `/plan-view` 的审阅界面重做：`items` 型 plan 现在以单条 markdown 任务
+  列表节点渲染（`## Plan · n/m` 标题、`- [x]`/`- [ ]` 状态框、进行中
+  加粗、取消/失败删除线、priority 后缀），走完整 markdown 管线；审阅
+  面板在宽终端上可扩到 2/3 屏宽（原 84 列封顶），滚动与关闭语义不变。
+
+- The composer meta row now leads each chip with a small dot (`· Standard
+  · Workspace Write …`) instead of emoji glyphs (`⚙ ⛨ ⚖ ⌁`); color still
+  carries the meaning (full access turns warn).
+- `/help`, `/session`, and `/keys` now share one output style: each
+  renders through the transcript's markdown pipeline as `## name` with
+  single-column markdown lists: one `- label · value` item per fact or
+  binding, grouped by `###` for the keys map.
+- `/session` shows the full turn profile folded from the same ACP facts
+  as `acpSessionStats`: turns, steps, LLM vs tool time, TTFT average,
+  and output throughput, with token counts compacted to K/M.
+- New `/status` command: a compact single-list readout of the run state
+  plus ACP facts (agent connection, authenticate state, session binding,
+  server banner) and the key session facts (model, effort, agent,
+  permission, plan, tokens, turns/steps, LLM/tool time, TTFT average,
+  throughput). Live runs render it through the built-in `status-view`
+  Client Plugin overlay: run-state facts come from the new
+  `acpSessionStatus` Client service, and every token/turn/step/timing
+  figure comes from `acpSessionStats.current()` — the same snapshot the
+  composer stats dock renders, so the two readouts can never drift apart.
+  The Rust painter no longer reads its own transcript accumulators for
+  `/status` (a lean fallback keeps demo/standalone runs working with
+  run-state facts only); `/session` keeps the full runtime detail, and
+  both show the reasoning effort when set.
+
 ### Fixed
 
+- The plan review window (the ACP elicitation form the agent opens with
+  `exit_plan_mode`) now renders the plan markdown through the full markdown
+  pipeline instead of truncating raw source lines: headings lose their `#`,
+  task-list checkboxes become `✓`/`○` status glyphs, tables and code blocks
+  keep their layout. The detail pane scrolls with PageUp/PageDown/End and
+  the mouse wheel, the stored offset is normalized to the visible content so
+  scrolling back up works after `End` (previously it stayed pinned at the
+  bottom), and the Approve / Keep planning answers stay pinned below the
+  pane; the title bar hints the scroll keys when the plan overflows it.
+- The plan review (`/plan-view`) task list no longer reads as raw markdown:
+  `- [x]` / `- [ ]` checkboxes render as status glyphs (`✓` in the ok color
+  for completed items, `○` in the caption color for open ones) through the
+  full markdown pipeline — the same applies to task lists in agent replies.
+  Continuation lines keep hanging under the shorter glyph prefix.
+- The plugin view overlay scrolls with the mouse wheel (previously wheel
+  silently scrolled the chat underneath), and arrow keys scroll even when
+  the terminal reports them with modifier bits (kitty keyboard protocol).
+  `End` jumps to the bottom and overscroll clamps to the last content row
+  instead of showing blank space; the title bar now hints
+  `↑↓/wheel scroll · esc close`.
 - Local `!` commands now share one shell for the lifetime of the TUI session,
   so working-directory changes, exported variables, and other shell state
   persist across invocations. Commands remain client-local and start in the
@@ -24,12 +96,20 @@ All notable changes to this project are documented here. The project follows
   keep wrapping. The selected row is now highlighted across its full width
   (soft chip background behind marker, label, meta and the row tail — the
   meta text steps up from caption gray on the highlighted row) instead of
-  only the label column. The scrolling viewport now comes from
-  `tui-widget-list` (the one new crate; it shares ratatui's
-  `ratatui-core`/`ratatui-widgets` crates, so there is no duplicate widget
-  tree).
+  only the label column. The picker viewport now comes from ratatui's own
+  `Table`/`TableState` (selection column, full-row highlight, and
+  follow-window scrolling), replacing the separate `tui-widget-list`
+  dependency.
 
 ### Changed
+
+- The startup banner now shows the **Martty** lockup (figlet `ansi_shadow`
+  block logo on wide terminals, degrading to the small figlet variant and
+  then plain text) tinted with the brand belly tone, and the hero line
+  shows the project URL `https://martty.sh` instead of the old whale +
+  slogan. The TUI's block-ASCII whale art and its generator
+  (`src/logo_data.rs`, `scripts/gen_logo.py`) were removed; the website's
+  own whale visualization keeps its data.
 
 - `/keys` is no longer a hand-written text wall: the shortcut map is now
   derived from the keymap table (`src/input/keymap.rs`) and rendered as

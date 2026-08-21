@@ -686,10 +686,9 @@ pub const MOUSE_ROWS: &[MouseRow] = &[
     },
 ];
 
-/// Render the `/keys` map as markdown: one GFM table per group. The
-/// transcript renders it through the markdown pipeline, so tables get
-/// box-drawing frames and truncate (with an ellipsis) instead of wrapping
-/// when the terminal is narrow.
+/// Render the `/keys` map as a single-column markdown list: one `### group`
+/// heading, then one `- chords [ctx] · description` item per binding. The
+/// transcript renders it through the markdown pipeline like `/help`.
 pub fn keys_markdown(zh: bool, mac: bool) -> String {
     let mut out = String::new();
     out.push_str(if zh {
@@ -704,34 +703,29 @@ pub fn keys_markdown(zh: bool, mac: bool) -> String {
                 out.push('\n');
             }
             out.push_str(&format!("### {}\n\n", row.group.title(zh)));
-            out.push_str(&table_head(zh));
             last_group = Some(row.group);
         }
         let ctx = row.ctx.tag(zh);
         let desc = if zh { row.desc_zh } else { row.desc_en };
-        let chords = row.chords(mac).join(" · ");
-        // Cells are plain text: no `|` anywhere in chords/descriptions.
-        out.push_str(&format!("| `{chords}` | {ctx} | {desc} |\n"));
+        let chords = row.chords(mac).join(" / ");
+        // One list item per binding: `chords [ctx] · description`.
+        let ctx_suffix = if ctx.is_empty() {
+            String::new()
+        } else {
+            format!(" {ctx}")
+        };
+        out.push_str(&format!("- {chords}{ctx_suffix} · {desc}\n"));
     }
     out.push('\n');
     out.push_str(&format!("### {}\n\n", KeyGroup::Mouse.title(zh)));
-    out.push_str(&table_head(zh));
     for row in MOUSE_ROWS {
         out.push_str(&format!(
-            "| `{}` |  | {} |\n",
-            row.chords.join(" · "),
+            "- {} · {}\n",
+            row.chords.join(" / "),
             if zh { row.desc_zh } else { row.desc_en }
         ));
     }
     out
-}
-
-fn table_head(zh: bool) -> String {
-    if zh {
-        "| 键 | 上下文 | 说明 |\n| --- | --- | --- |\n".to_string()
-    } else {
-        "| key | ctx | description |\n| --- | --- | --- |\n".to_string()
-    }
 }
 
 #[cfg(test)]
@@ -1025,20 +1019,25 @@ mod tests {
             for mac in [false, true] {
                 let md = keys_markdown(zh, mac);
                 assert!(!md.is_empty());
-                let mut saw_table = false;
+                let mut saw_line = false;
+                let mut in_group = false;
                 for line in md.lines() {
                     let trimmed = line.trim();
-                    if !trimmed.starts_with('|') {
+                    if trimmed.starts_with("### ") {
+                        in_group = true;
                         continue;
                     }
-                    saw_table = true;
-                    let cells = trimmed.split('|').count();
-                    assert_eq!(
-                        cells, 5,
-                        "table row must have 3 cells (leading/trailing pipes make 5 fields): {line:?}\n{md}"
+                    if !in_group || trimmed.is_empty() {
+                        continue;
+                    }
+                    saw_line = true;
+                    assert!(
+                        trimmed.contains(" · "),
+                        "binding line must be `chords · description`: {line:?}\n{md}"
                     );
+                    assert!(!trimmed.contains('|'), "no table cells: {line:?}");
                 }
-                assert!(saw_table, "no table rows in:\n{md}");
+                assert!(saw_line, "no binding lines in:\n{md}");
             }
         }
     }

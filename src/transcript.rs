@@ -136,7 +136,8 @@ pub struct UsageTotals {
 }
 
 /// Native transcript timing/step facts used by session state and tests. The
-/// visible stats row is owned by the Client-side `stats-view` plugin.
+/// LLM usage/timing details surface through `/session` (and the Client-side
+/// `acpSessionStats` service for plugins), not a persistent status row.
 #[derive(Default, Clone, Copy)]
 pub struct SessionStats {
     pub turns: u64,

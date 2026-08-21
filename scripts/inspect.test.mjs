@@ -13,6 +13,8 @@ import * as overlayPlugin from '../npm/lib/tui-overlay.js'
 import * as configPlugin from '../npm/lib/acp-session-config.js'
 import * as planPlugin from '../npm/lib/acp-session-plan.js'
 import * as statsPlugin from '../npm/lib/acp-session-stats.js'
+import * as statusPlugin from '../npm/lib/acp-session-status.js'
+import * as eventsPlugin from '../npm/lib/acp-client-events.js'
 
 const { installAcpSessionConfig } = configPlugin
 const { installAcpSessionPlan } = planPlugin
@@ -26,6 +28,7 @@ const {
   planInspectProvider,
   slotInspectProvider,
   statsInspectProvider,
+  statusInspectProvider,
   themeInspectProvider,
 } = inspectPlugin
 const { installTuiSlots } = slotsPlugin
@@ -241,6 +244,24 @@ test('Stats.current reports the standard ACP usage and timing projection', () =>
   assert.equal(described.current.usage.input, 0)
   assert.deepEqual(described.api.inject, ['acpSessionStats'])
   assert.equal(described.api.current.call, 'ctx.acpSessionStats.current()')
+  assert.match(described.api.subscribe.call, /subscribe/)
+})
+
+test('Status.current reports the non-statistics ACP run-state facts', () => {
+  assert.equal(typeof statusInspectProvider, 'function')
+  if (typeof statusInspectProvider !== 'function') return
+  const status = statusPlugin.installAcpSessionStatus(makeCtx(), {
+    events: { register: () => () => {} },
+    sessionConfig: {
+      list: () => [],
+      subscribe: () => () => {},
+    },
+  })
+  const described = statusInspectProvider(status).query('current')
+  assert.equal(described.current.state, 'idle')
+  assert.equal(described.current.connection, 'connecting')
+  assert.deepEqual(described.api.inject, ['acpSessionStatus'])
+  assert.equal(described.api.current.call, 'ctx.acpSessionStatus.current()')
   assert.match(described.api.subscribe.call, /subscribe/)
 })
 
@@ -1022,6 +1043,8 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   await ctx.plugin(configPlugin)
   await ctx.plugin(planPlugin)
   await ctx.plugin(statsPlugin)
+  await ctx.plugin(eventsPlugin)
+  await ctx.plugin(statusPlugin)
   await ctx.plugin(inspectPlugin)
 
   const runner = ctx.get('tuiCordisClientRunner')
@@ -1040,7 +1063,7 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(calls[0].method, '_dsh/cordis/inspect/sync')
   assert.deepEqual(calls[0].params.providers.map((provider) => provider.id), [
-    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats',
+    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats', 'Status',
   ])
 
   await runner.onHost({
@@ -1078,6 +1101,13 @@ test('runner waits for sibling ACP Session services and opens them to dynamic Cl
     'the inspect runner must also wait for standard ACP Session statistics',
   )
   await ctx.plugin(statsPlugin)
+  assert.equal(
+    ctx.get('tuiCordisClientRunner'),
+    undefined,
+    'the inspect runner must also wait for the run-state status service',
+  )
+  await ctx.plugin(eventsPlugin)
+  await ctx.plugin(statusPlugin)
   await inspectFiber
   const config = ctx.get('acpSessionConfig')
   config.observeClient({ jsonrpc: '2.0', id: 71, method: 'session/new', params: {} })
@@ -1125,7 +1155,7 @@ test('runner waits for sibling ACP Session services and opens them to dynamic Cl
   await new Promise((resolve) => setTimeout(resolve, 0))
 
   assert.deepEqual(calls[0].params.providers.map((provider) => provider.id), [
-    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats',
+    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats', 'Status',
   ])
 
   await runner.onHost({
@@ -1174,6 +1204,8 @@ test('disposing the sibling runner unloads its running Client halves', async () 
   await ctx.plugin(configPlugin)
   await ctx.plugin(planPlugin)
   await ctx.plugin(statsPlugin)
+  await ctx.plugin(eventsPlugin)
+  await ctx.plugin(statusPlugin)
   const fiber = ctx.plugin(inspectPlugin)
   await fiber
   const runner = ctx.get('tuiCordisClientRunner')
@@ -1230,6 +1262,8 @@ test('approved code.client mounts as a child Cordis fiber', async () => {
   await ctx.plugin(configPlugin)
   await ctx.plugin(planPlugin)
   await ctx.plugin(statsPlugin)
+  await ctx.plugin(eventsPlugin)
+  await ctx.plugin(statusPlugin)
   await ctx.plugin(inspectPlugin)
   const mounted = []
   ctx.on('internal/plugin', (fiber) => mounted.push(fiber.name))

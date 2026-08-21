@@ -601,3 +601,8 @@ mod tests {
         assert_eq!(image_dims(&transmitted_png(out)), Some((192, 115)));
     }
 }
+
+/// The XS half-block whale — the pet's fallback art for terminals without
+/// a pixel protocol (drawn by `ui::draw_pet_chars` with a brand gradient).
+/// Formerly part of the generated `logo_data.rs`, now owned by the pet.
+pub const WHALE_XS: [&str; 3] = ["▄███▄█▄▄", "█ ▀████", "▀█▄▄██"];

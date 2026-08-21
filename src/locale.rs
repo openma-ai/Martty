@@ -58,7 +58,6 @@ impl Locale {
             "session" => "显示会话和运行时信息",
             "auth" => "ACP 登录（Backchat authenticate）",
             "lang" => "切换界面语言",
-            "logo" => "让鲸鱼重新出现",
             "liang" => "召唤小难梁 — 🤫 空闲 · ⌨︎ 工作中",
             "quit" => "退出 dsh-tui",
             _ => fallback,

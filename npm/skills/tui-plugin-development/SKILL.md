@@ -62,6 +62,7 @@ Use the narrowest capability:
 | Current ACP Session option | advertised config-option Provider | `acpSessionConfig` |
 | Current structured ACP Plan | `Plans` | `acpSessionPlan` |
 | Current ACP Session statistics | `Stats` | `acpSessionStats` |
+| Current ACP run-state facts | `Status` | `acpSessionStatus` |
 
 A transient control is not a side panel. When the user did not request
 persistent content, do not query Slots or mount `chrome.right`.
@@ -92,7 +93,8 @@ compose only in the Plugin code. The services do not imply one another:
   asked for persistent shell UI. Use stable node ids and update the existing
   contribution instead of creating parallel panels. Select the live seat from
   `Slots.list`: all current seats aggregate contributors. Use
-  `conversation.input.dock` for content needing its own line and keep
+  `conversation.input.dock` for content needing its own line (it owns the
+  single cap row and displaces the tip line while present) and keep
   `conversation.composer.dock` contributions compact.
 - **Overlays:** open a transient native control only in response to the
   interaction that needs it. A command is one possible trigger, not part of

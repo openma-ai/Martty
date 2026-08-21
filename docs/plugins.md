@@ -4,7 +4,7 @@
 
 **当前开放：** 配色包、根级右栏 `chrome.right`、composer 上方的
 `conversation.input.dock`、composer 下方的 `conversation.composer.dock`、本地命令/
-语义 overlay，以及标准 ACP 当前 Session 的配置、Plan 与统计目录。三个 Slot 都是
+语义 overlay，以及标准 ACP 当前 Session 的配置、Plan、统计与运行状态目录。三个 Slot 都是
 可叠加的 list seat，接收结构化 `TuiNode` 树，不进入会话日志。
 
 ## 当前可调用：`acpSessionConfig`
@@ -42,7 +42,10 @@ export function apply(ctx) {
 
 内置 `plan-view` Client Plugin 正是普通消费者：它占用
 `conversation.input.dock` 显示当前
-进度摘要，并注册本地 `/plan-view`，通过 `tuiOverlay.openView()` 打开完整清单。
+进度摘要，并注册本地 `/plan-view`，通过 `tuiOverlay.openView()` 打开审阅清单——
+条目以单条 markdown **任务列表**节点呈现（`## Plan · 完成/总数` 标题、
+`- [x]`/`- [ ]` 状态框、进行中加粗、取消/失败删除线、priority 后缀），
+由转录的 markdown 管线完整渲染；宽终端上审阅面板可扩到 2/3 屏宽。
 `/plan` 仍由 agent 的标准 command / mode 语义处理，两者不冲突。
 
 ## 当前可调用：`acpSessionStats`
@@ -50,8 +53,24 @@ export function apply(ctx) {
 `acpSessionStats` 从标准 ACP prompt response usage、文本/思考首 token、tool call 与
 resume usage 更新折叠当前 Session 的 token、cache、turn、step、LLM、tool、TTFT 与
 吞吐统计，提供 `current()` 和 `subscribe(listener)`。内置 `stats-view` Client Plugin
-只是它的默认消费者，向 `conversation.composer.dock` 注入紧凑统计行；Rust 壳不再
+是它的默认消费者，向 `conversation.composer.dock` 注入紧凑统计行；Rust 壳不再
 直接拥有这块业务 UI。动态插件也可以注入同一服务并选择自己的呈现方式。
+
+## 当前可调用：`acpSessionStatus`
+
+`acpSessionStatus` 从标准 ACP initialize / authenticate / session / session/update /
+session.event 流量折叠 `/status` 需要的非统计运行状态：state（idle/starting/
+running）、connection、server、auth、session 绑定、model、effort、permission、
+plan 与 agent preset，提供 `current()` 和 `subscribe(listener)`。它**不**累计任何
+token 或耗时——统计只有 `acpSessionStats` 这一套口径。
+
+内置 `status-view` Client Plugin 正是普通消费者：它注册本地 `/status` 命令，用
+`tuiOverlay.openView()` 打开一个 markdown 状态视图——运行状态事实取自
+`acpSessionStatus.current()`，token/turn/step/LLM/tool/TTFT/rate 全部取自
+`acpSessionStats.current()`（与 composer dock 里的 `stats-view` 同一快照来源，
+两处读数不会漂移）。Rust painter 只渲染序列化后的 `TuiNode`，不读自己的
+transcript accumulator。没有 Client 树的运行（demo、独立 painter）由 Rust 的
+精简 fallback 只画运行状态与 ACP 事实，同样不读 token/耗时累计器。
 
 ## 当前可调用：`tuiTheme`
 
@@ -148,9 +167,10 @@ export function apply(ctx) {
 contribution 内稳定即可，聚合器会用 contribution id 做命名空间。
 
 两个 composer dock 使用相同 API，只需把 `name` 改为对应 slot。需要独立一行或可能
-换行的 Plan、任务、Goal 放 `conversation.input.dock`；环境统计等紧凑读数放
-`conversation.composer.dock`。完整内容应由本地 command 打开 overlay，而不是把
-多行内容塞进紧凑统计席。
+换行的 Plan、任务、Goal 放 `conversation.input.dock`（占 cap 行，与 Tip 竞争同一行、
+优先于 Tip）；环境统计等紧凑读数放 `conversation.composer.dock`（内置 stats-view
+插件就是默认消费者）。完整内容应由本地 command 打开 overlay，而不是把多行内容塞进
+紧凑统计席。
 
 ## 当前可调用：`tuiOverlay`
 

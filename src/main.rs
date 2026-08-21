@@ -16,7 +16,6 @@ mod events;
 mod input;
 mod locale;
 mod logo;
-mod logo_data;
 mod markdown;
 mod pet;
 mod proto;
@@ -403,7 +402,17 @@ fn main() -> Result<()> {
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
                 let _ = backdrop.sync(&mut std::io::stdout(), app.active_background(), area);
                 let working = !matches!(app.state, RunState::Idle);
-                let want = ui::pet_rect(area, &app).map(|r| (r, working));
+                // Same anchor math as ui::draw: the pet sits inside the
+                // composer box, above the stats dock when it is shown.
+                let dock_h =
+                    ui::composer_dock_height(&app, area.height, app.active_subagent.is_some());
+                let pet_area = ratatui::layout::Rect::new(
+                    0,
+                    0,
+                    size.width,
+                    size.height.saturating_sub(dock_h),
+                );
+                let want = ui::pet_rect(pet_area, &app).map(|r| (r, working));
                 let _ = pet.sync(&mut std::io::stdout(), want);
                 // Sync image thumbnails (chat + composer attachment strip)
                 // against the freshly drawn viewport.
@@ -518,7 +527,7 @@ fn install_termination_handler(_tx: mpsc::Sender<AppEvent>) -> Result<()> {
 fn restore_terminal() {
     let mut stdout = std::io::stdout();
     if pet::kitty_supported() {
-        // Drop any pet placement (panic-safe: also runs from the hook).
+        // Drop any kitty placement (panic-safe: also runs from the hook).
         let _ = stdout.write_all(pet::KITTY_DELETE_ALL.as_bytes());
     }
     let _ = execute!(stdout, PopKeyboardEnhancementFlags);
