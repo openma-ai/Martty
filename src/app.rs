@@ -4085,6 +4085,7 @@ impl App {
             self.input.history.push(line);
             self.input.clear();
             self.slash_sel = 0;
+            self.show_banner = false;
             ctl.send(Cmd::InvokePluginCommand {
                 name: entry.name.clone(),
                 args: rest,
@@ -4125,6 +4126,7 @@ impl App {
             "clear" => {
                 self.transcript.clear();
                 self.sel = None;
+                self.show_banner = false;
                 self.transcript.push_notice(
                     NoticeLevel::Info,
                     self.locale.tr("scrollback cleared", "滚动区已清空").into(),
@@ -4435,6 +4437,9 @@ impl App {
     }
 
     fn push_help(&mut self) {
+        // The welcome banner hides the scrollback; content pushed under it
+        // would stay invisible until the next prompt dismisses the banner.
+        self.show_banner = false;
         if self.locale == Locale::Zh {
             let text = "\
 ## help
@@ -4514,6 +4519,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
     }
 
     fn push_session_info(&mut self) {
+        self.show_banner = false;
         let creds = if self.demo {
             "demo mode (no API calls)".to_string()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Configured {
@@ -4623,6 +4629,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
     /// reads no `Transcript.usage`/`stats` accumulator, so the two surfaces
     /// can never drift apart.
     fn push_status_info(&mut self) {
+        self.show_banner = false;
         let state = match self.state {
             RunState::Idle => self.locale.tr("idle", "空闲").to_string(),
             RunState::Starting => self.locale.tr("starting", "启动中").to_string(),
@@ -4762,6 +4769,7 @@ impl App {
             if !builtin && (self.plugin_command_active(&name) || acp_client_command) {
                 self.input.history.push(text);
                 self.input.clear();
+                self.show_banner = false;
                 ctl.send(Cmd::InvokePluginCommand { name, args: arg });
                 return;
             }
@@ -4781,6 +4789,7 @@ impl App {
             if !cmd.is_empty() {
                 self.input.history.push(text.clone());
                 self.input.clear();
+                self.show_banner = false;
                 self.run_local_shell(cmd);
             }
             return;
@@ -9115,5 +9124,41 @@ mod right_slot_tests {
             panic!("/session should be a markdown notice, got {:?}", last.kind);
         };
         assert!(!text.contains("- effort ·"), "{text}");
+    }
+
+    #[test]
+    fn slash_commands_dismiss_the_welcome_banner_so_their_output_shows() {
+        // The welcome banner hides the scrollback entirely; a command the
+        // user actually runs must leave it or its output stays invisible
+        // until the next prompt dismisses the banner (regression).
+        let (mut app, ctl, _rx) = test_app();
+        assert!(app.show_banner, "fresh app starts on the welcome banner");
+
+        app.run_slash("help", "", &ctl);
+        assert!(!app.show_banner, "/help must dismiss the banner");
+        assert!(
+            !app.transcript.cells.is_empty(),
+            "/help pushes its output into the scrollback"
+        );
+
+        // The typed paths (`/cmd` enter and the `!` shell) leave the banner
+        // too, so their output is not swallowed either.
+        let (mut typed, ctl2, _rx2) = test_app();
+        typed.input.set("/session".into());
+        typed.submit(&ctl2);
+        assert!(!typed.show_banner, "typed /session must dismiss the banner");
+
+        let (mut shell, ctl3, _rx3) = test_app();
+        shell.input.set("!echo hello".into());
+        shell.submit(&ctl3);
+        assert!(!shell.show_banner, "typed !shell must dismiss the banner");
+        assert!(
+            shell
+                .transcript
+                .cells
+                .iter()
+                .any(|c| { matches!(c.kind, crate::transcript::CellKind::Shell { .. }) }),
+            "the shell cell lands in the scrollback"
+        );
     }
 }

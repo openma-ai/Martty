@@ -66,6 +66,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The welcome banner no longer swallows command output: `/help`, `/session`,
+  `/status`, `/clear`, `!shell` and plugin commands run while the banner is
+  showing now dismiss it, so their scrollback output is visible immediately
+  instead of only after the next prompt. Transient commands like `/liang`
+  keep the banner.
 - Permission switching (`/permission`, shift+tab) no longer fails when the
   profile's dsh is newer than the bundled ACP adapter
   (`@deepseek-ai/dsh` >= 0.1.1-rc.1): `dsh-permission-presets` records an
