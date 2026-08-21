@@ -71,6 +71,16 @@ test('bumps all package versions, commits, and tags', (t) => {
   assert.equal(git(root, ['status', '--porcelain']), '')
 })
 
+test('bumps and tags a beta prerelease', (t) => {
+  const root = fixture(t)
+  const result = run(root, '0.2.17-beta.0')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(readFileSync(path.join(root, 'npm', 'package.json'), 'utf8')).version, '0.2.17-beta.0')
+  assert.match(readFileSync(path.join(root, 'Cargo.toml'), 'utf8'), /^version = "0\.2\.17-beta\.0"$/m)
+  assert.equal(git(root, ['log', '-1', '--format=%s']), 'release: v0.2.17-beta.0')
+  assert.equal(git(root, ['tag', '--list']), 'v0.2.17-beta.0')
+})
+
 test('accepts a v-prefixed version and dry-run changes nothing', (t) => {
   const root = fixture(t)
   const result = run(root, 'v0.3.0', ['--dry-run'])
