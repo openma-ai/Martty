@@ -2793,8 +2793,8 @@ mod tests {
                         json!({
                             "protocol": 0,
                             "commands": [{
-                                "name": "deepseeklogo",
-                                "description": "Open the classic DeepSeek Harness whale"
+                                "name": "ui",
+                                "description": "Switch UI preset"
                             }]
                         }),
                     )?)
@@ -2830,7 +2830,7 @@ mod tests {
                 Err(error) => panic!("bus disconnected: {error}"),
             }
         }
-        assert_eq!(catalog.unwrap()["commands"][0]["name"], "deepseeklogo");
+        assert_eq!(catalog.unwrap()["commands"][0]["name"], "ui");
 
         let _ = cmd_tx.send(Cmd::Shutdown);
         let _ = client.await;

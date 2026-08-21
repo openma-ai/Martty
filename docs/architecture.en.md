@@ -34,18 +34,19 @@ A server plugin that any client should see is projected into standard ACP (comma
 Host process: Base Cordis + ACP plugin
         │ TUI Client child stdin/stdout (ACP)
 Client process: independent Cordis root
-  client plugins  sibling insert + inject ['tuiTheme' / 'tuiSlots']
+  client plugins  sibling insert + inject ['tuiTheme' / 'tuiPresets' / 'tuiSlots']
   Client runner   injects Client services and runs dsh-tool-cordis code.client
   TUI shell       injects acpClient plus Client services; owns only the TTY
   plan-view       injects acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
   stats-view      injects acpSessionStats + tuiSlots
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
-  deepseek-logo   injects tuiCommands + tuiSlots; registers /deepseeklogo;
-                  the deepseek UI preset contributes logo + hint to welcome.hero
+  tui-presets     provides tuiPresets; owns persistent /ui composition selection
+  martty-preset   default UI Preset → welcome.hero + welcome.info
+  deepseek-logo   injects tuiPresets + tuiSlots; registers the deepseek UI Preset
   acp-session-status  provides acpSessionStatus (connection/server/auth/
                   session/model/effort/permission/plan/agent run-state facts)
-  tui-slots       provides tuiSlots; declares welcome.hero / chrome.right /
+  tui-slots       provides tuiSlots; declares welcome.hero / welcome.info / chrome.right /
                   conversation.input.dock / conversation.composer.dock
   tui-theme       provides tuiTheme
   acp-client      attaches Host stdio, provides acpClient
@@ -83,13 +84,16 @@ Client inspect/run channel.
 
 ```text
 Third-party plugins   sibling insert + inject ['tuiTheme'] → palette register
+                      sibling insert + inject ['tuiPresets'] → UI composition register
                       sibling insert + inject ['tuiSlots'] → slot register
 tui-theme             palette → Theme registry
-tui-slots             TuiNode trees → welcome.hero / chrome.right / input dock / composer dock registry
+tui-presets           several UI contributions → persistent /ui composition
+tui-slots             TuiNode trees → welcome.hero / welcome.info / chrome.right / input dock / composer dock registry
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
-deepseek-logo         deepseek UI preset → /deepseeklogo in-place welcome.hero replacement
+martty-preset         default UI Preset → Martty Hero + native dynamic information
+deepseek-logo         deepseek UI Preset → DeepSeek Hero + native dynamic information
 acp-session-status    standard ACP run-state projection: connection/server/auth/
                       session/model/effort/permission/plan/agent — no token or
                       timing accumulation (acpSessionStats owns that)
@@ -129,13 +133,14 @@ Token **names** are closed; see [plugins.md](plugins.en.md). Built-in `default` 
 `ctrl+t` toggles dark/light inside the current theme. `/theme` switches the whole
 Theme Plugin. Kitty pet sprites are RGBA and do not recolor. In the startup
 lockup, `MAR` reads the ocean gradient while `TTY` uses terminal foreground
-(white in dark mode, black in light mode). The classic DeepSeek Harness whale
-is selected by the `deepseek-logo` Client Plugin. `/deepseeklogo` places two
-semantic nodes, `logo + hint`, in the single `welcome.hero` slot. The Rust
-painter reuses the original responsive primitive and owns its geometry plus
-whole-welcome vertical centering, while keeping session facts and the help row
-intact. The selected `uiPreset` survives restart; builtin `martty` is the
-fallback preset.
+(white in dark mode, black in light mode). A UI Preset is a composition of UI
+Plugins, not a Theme alias. Both builtin `default` (Martty) and `deepseek`
+fill `welcome.hero` and `welcome.info`: the first is the centered `logo + hint`
+brand region; the second is the lower-left version/model/workspace/session/
+credential/access/help region. Both currently reuse the native dynamic info
+renderer, while the slot remains independently replaceable. The Rust painter
+reuses the original responsive whale primitive and owns whole-welcome vertical
+centering. `/ui deepseek` and `/ui default` switch the saved composition.
 
 ## Out of scope
 

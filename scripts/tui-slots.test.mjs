@@ -141,7 +141,7 @@ test('conversation docks are additive slots with independent live snapshots', ()
   assert.deepEqual(sent.at(-1).params.nodes, [])
 })
 
-test('welcome.hero is a single root preset with a logo and hint', () => {
+test('welcome hero and info are independent single root seats', () => {
   assert.equal(typeof slotsPlugin.installTuiSlots, 'function')
   if (typeof slotsPlugin.installTuiSlots !== 'function') return
 
@@ -179,6 +179,22 @@ test('welcome.hero is a single root preset with a logo and hint', () => {
       tone: 'fg_tertiary',
     },
   ])
+  const info = ctx.tuiSlots.register(
+    { name: 'welcome.info', id: 'session-info' },
+    [{ id: 'info', kind: 'welcomeinfo' }],
+  )
+  assert.deepEqual(
+    ctx.tuiSlots.list().find((slot) => slot.name === 'welcome.info'),
+    {
+      name: 'welcome.info',
+      kind: 'single',
+      scope: 'root',
+      occupants: [{ id: 'session-info', order: 0 }],
+    },
+  )
+  assert.deepEqual(sent.at(-1).params.nodes, [
+    { id: 'session-info:info', kind: 'welcomeinfo' },
+  ])
   assert.throws(
     () => ctx.tuiSlots.register(
       { name: 'welcome.hero', id: 'second' },
@@ -188,6 +204,7 @@ test('welcome.hero is a single root preset with a logo and hint', () => {
   )
 
   hero.dispose()
+  info.dispose()
   assert.deepEqual(sent.at(-1).params.nodes, [])
 })
 

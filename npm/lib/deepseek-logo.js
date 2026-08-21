@@ -1,35 +1,12 @@
-/** Built-in Client Plugin: the classic DeepSeek Harness whale lockup. */
+/** Built-in Client Plugin: the classic DeepSeek Harness UI Preset. */
 
 export const name = 'deepseek-logo'
-export const inject = ['tuiCommands', 'tuiSlots']
+export const inject = ['tuiPresets', 'tuiSlots']
 
 export function apply(ctx) {
-  let hero
-  const stopCommand = ctx.tuiCommands.register({
-    name: 'deepseeklogo',
-    description: 'Replace the welcome hero with classic DeepSeek Harness',
-  }, async (args = '') => {
-    const preset = args.trim().toLowerCase()
-    if (['martty', 'default', 'off'].includes(preset)) {
-      if (hero !== undefined) {
-        hero.dispose()
-        hero = undefined
-      } else {
-        // A persisted DeepSeek selection can outlive this process-local
-        // handle. Publish an empty snapshot once to select builtin Martty.
-        ctx.tuiSlots.register(
-          { name: 'welcome.hero', id: 'deepseek-logo-reset' },
-          [],
-        ).dispose()
-      }
-      return
-    }
-    if (preset !== '' && preset !== 'deepseek') {
-      throw new Error('usage: /deepseeklogo [deepseek|martty]')
-    }
-    if (hero !== undefined) return
-    hero = ctx.tuiSlots.register(
-      { name: 'welcome.hero', id: 'deepseek-logo' },
+  return ctx.tuiPresets.register({ id: 'deepseek', label: 'DeepSeek' }, () => {
+    const hero = ctx.tuiSlots.register(
+      { name: 'welcome.hero', id: 'deepseek-hero' },
       [
         { id: 'logo', kind: 'logo', name: 'deepseek' },
         {
@@ -40,9 +17,13 @@ export function apply(ctx) {
         },
       ],
     )
+    const info = ctx.tuiSlots.register(
+      { name: 'welcome.info', id: 'deepseek-info' },
+      [{ id: 'info', kind: 'welcomeinfo' }],
+    )
+    return () => {
+      info.dispose()
+      hero.dispose()
+    }
   })
-  return () => {
-    hero?.dispose()
-    stopCommand?.()
-  }
 }

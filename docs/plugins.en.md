@@ -47,19 +47,27 @@ transcript accumulators for this command. Runs without a Client tree (demo,
 standalone painter) keep a lean Rust fallback that renders run-state and ACP
 facts only, also without touching token/timing accumulators.
 
-## Built-in Client Plugin: `deepseek-logo`
+## UI Presets and the two welcome slots
 
-`deepseek-logo` injects only `tuiCommands` and `tuiSlots` and registers the
-local `/deepseeklogo` command. Invoking it selects the `deepseek` UI preset and
-occupies the single `welcome.hero` slot with two semantic nodes: `logo + hint`.
-Session facts and the help row remain unchanged. The Rust painter reuses the
-original responsive whale/wordmark primitive and owns horizontal centering,
-whole-block vertical centering, and balanced outer padding; the Plugin owns
-preset activation and lifecycle. `uiPreset` is persisted in
-`dsh-tui-settings.json` and survives restart. It never enters the ACP prompt
-or transcript.
-`/deepseeklogo martty` restores the builtin `martty` preset and replaces the
-persisted selection.
+`tuiPresets` composes several independent UI Plugin contributions into one
+saved choice; it is not an alias for Theme. The `mount` callback passed to
+`ctx.tuiPresets.register({ id, label }, mount)` may register a Theme, slots,
+pet, or other UI contributions and returns one disposer. `/ui <id>` switches
+the composition and persists its id in `dsh-tui-settings.json`.
+
+The builtin `default` (Martty) and `deepseek` UI Presets both fill two single
+root slots:
+
+- `welcome.hero`: the centered brand region, structured as `logo + hint`;
+- `welcome.info`: the lower-left version, model, workspace, session,
+  credential, access, and help region.
+
+Both currently reuse the native dynamic information renderer, but that region
+is independently replaceable. `deepseek-logo` only registers the `deepseek`
+preset; it owns no special slash command. Use `/ui deepseek` and `/ui default`.
+The Rust painter keeps the original responsive whale/wordmark primitive and
+owns centering and balanced outer padding. Switching never enters the ACP
+prompt or transcript.
 
 ## Open: `tuiTheme`
 

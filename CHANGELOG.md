@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- UI Presets now compose multiple UI Plugin contributions behind one
+  persistent `/ui` choice. Builtin `default` (Martty) and `deepseek` presets
+  each fill independent `welcome.hero` and `welcome.info` slots; dynamic
+  Client Plugins can register additional compositions through `tuiPresets`.
 - The composer is now one rounded box: the cap row (`Tip` / plugin input
   dock / `·` workspace title) and the entire input surface (input well +
   meta row) share a single rounded rectangle, so the input text is fully

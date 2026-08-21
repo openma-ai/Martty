@@ -10,6 +10,7 @@ import * as slotsPlugin from '../npm/lib/tui-slots.js'
 import * as themePlugin from '../npm/lib/tui-theme.js'
 import * as commandsPlugin from '../npm/lib/tui-commands.js'
 import * as overlayPlugin from '../npm/lib/tui-overlay.js'
+import * as presetsPlugin from '../npm/lib/tui-presets.js'
 import * as configPlugin from '../npm/lib/acp-session-config.js'
 import * as planPlugin from '../npm/lib/acp-session-plan.js'
 import * as statsPlugin from '../npm/lib/acp-session-stats.js'
@@ -30,10 +31,12 @@ const {
   statsInspectProvider,
   statusInspectProvider,
   themeInspectProvider,
+  uiPresetInspectProvider,
 } = inspectPlugin
 const { installTuiSlots } = slotsPlugin
-const { installTuiTheme, TOKEN_NAMES } = themePlugin
 const { installTuiCommands } = commandsPlugin
+const { installTuiPresets } = presetsPlugin
+const { installTuiTheme, TOKEN_NAMES } = themePlugin
 const { installTuiOverlay } = overlayPlugin
 
 function makeCtx() {
@@ -134,6 +137,7 @@ test('Slots.list reports root shell contracts for dynamic Client plugins', () =>
 
   assert.deepEqual(listed.slots, [
     { name: 'welcome.hero', kind: 'single', scope: 'root', occupants: [] },
+    { name: 'welcome.info', kind: 'single', scope: 'root', occupants: [] },
     { name: 'chrome.right', kind: 'list', scope: 'root', occupants: [] },
     { name: 'conversation.input.dock', kind: 'list', scope: 'session', occupants: [] },
     { name: 'conversation.composer.dock', kind: 'list', scope: 'session', occupants: [] },
@@ -147,6 +151,21 @@ test('Slots.list reports root shell contracts for dynamic Client plugins', () =>
   assert.ok(listed.nodeKinds.includes('markdown'))
   assert.ok(listed.nodeKinds.includes('terminal'))
   assert.ok(listed.nodeKinds.includes('group'))
+})
+
+test('UiPresets.list reports the composition registration contract', () => {
+  assert.equal(typeof uiPresetInspectProvider, 'function')
+  const commands = installTuiCommands(makeCtx())
+  const presets = installTuiPresets({ tuiCommands: commands })
+  presets.register({ id: 'default', label: 'Martty' }, () => () => {})
+
+  const listed = uiPresetInspectProvider(presets).query('list')
+  assert.equal(listed.active, 'default')
+  assert.deepEqual(listed.presets, [{ id: 'default', label: 'Martty' }])
+  assert.deepEqual(listed.apply.inject, ['tuiPresets'])
+  assert.equal(listed.apply.register.call, 'ctx.tuiPresets.register({ id, label }, mount)')
+  assert.match(listed.apply.register.mount, /multiple UI contributions/i)
+  presets.dispose()
 })
 
 test('Commands.list reports current commands and the dynamic Client registration contract', () => {
@@ -354,6 +373,42 @@ test('dynamic Client halves can mount, update, and dispose chrome.right content'
   ])
   applied.dispose()
   assert.deepEqual(sent.at(-1).params.nodes, [])
+})
+
+test('dynamic UI plugins can register a composed UI preset with owned lifecycle', async () => {
+  const ctx = makeCtx()
+  const slots = installTuiSlots(ctx)
+  const commands = installTuiCommands(ctx)
+  const presets = installTuiPresets({ tuiCommands: commands })
+  const applied = await applyClientHalf(
+    `return {
+      inject: ['tuiPresets', 'tuiSlots'],
+      apply(ctx) {
+        ctx.tuiPresets.register({ id: 'ocean', label: 'Ocean' }, () => {
+          const panel = ctx.tuiSlots.register(
+            { name: 'welcome.info', id: 'ocean-info' },
+            [{ id: 'copy', kind: 'text', text: 'Ocean preset' }],
+          )
+          return () => panel.dispose()
+        })
+      },
+    }`,
+    { tuiPresets: presets, tuiSlots: slots },
+  )
+
+  assert.deepEqual(presets.list(), [{ id: 'ocean', label: 'Ocean' }])
+  assert.equal(presets.active(), 'ocean')
+  assert.deepEqual(
+    slots.list().find((slot) => slot.name === 'welcome.info').occupants,
+    [{ id: 'ocean-info', order: 0 }],
+  )
+  applied.dispose()
+  assert.deepEqual(presets.list(), [])
+  assert.deepEqual(
+    slots.list().find((slot) => slot.name === 'welcome.info').occupants,
+    [],
+  )
+  presets.dispose()
 })
 
 test('dynamic Client commands and overlays share the Plugin lifecycle', async () => {
@@ -1040,6 +1095,7 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   await ctx.plugin(themePlugin)
   await ctx.plugin(slotsPlugin)
   await ctx.plugin(commandsPlugin)
+  await ctx.plugin(presetsPlugin)
   await ctx.plugin(overlayPlugin)
   await ctx.plugin(configPlugin)
   await ctx.plugin(planPlugin)
@@ -1064,7 +1120,7 @@ test('the TUI Cordis Client runner mounts as a sibling service and answers Clien
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(calls[0].method, '_dsh/cordis/inspect/sync')
   assert.deepEqual(calls[0].params.providers.map((provider) => provider.id), [
-    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats', 'Status',
+    'Theme', 'UiPresets', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats', 'Status',
   ])
 
   await runner.onHost({
@@ -1081,6 +1137,7 @@ test('runner waits for sibling ACP Session services and opens them to dynamic Cl
   await ctx.plugin(themePlugin)
   await ctx.plugin(slotsPlugin)
   await ctx.plugin(commandsPlugin)
+  await ctx.plugin(presetsPlugin)
   await ctx.plugin(overlayPlugin)
   const inspectFiber = ctx.plugin(inspectPlugin)
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -1156,7 +1213,7 @@ test('runner waits for sibling ACP Session services and opens them to dynamic Cl
   await new Promise((resolve) => setTimeout(resolve, 0))
 
   assert.deepEqual(calls[0].params.providers.map((provider) => provider.id), [
-    'Theme', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats', 'Status',
+    'Theme', 'UiPresets', 'Slots', 'Commands', 'Overlay', 'ConfigOptions', 'Plans', 'Stats', 'Status',
   ])
 
   await runner.onHost({
@@ -1201,6 +1258,7 @@ test('disposing the sibling runner unloads its running Client halves', async () 
   await ctx.plugin(themePlugin)
   await ctx.plugin(slotsPlugin)
   await ctx.plugin(commandsPlugin)
+  await ctx.plugin(presetsPlugin)
   await ctx.plugin(overlayPlugin)
   await ctx.plugin(configPlugin)
   await ctx.plugin(planPlugin)
@@ -1259,6 +1317,7 @@ test('approved code.client mounts as a child Cordis fiber', async () => {
   await ctx.plugin(themePlugin)
   await ctx.plugin(slotsPlugin)
   await ctx.plugin(commandsPlugin)
+  await ctx.plugin(presetsPlugin)
   await ctx.plugin(overlayPlugin)
   await ctx.plugin(configPlugin)
   await ctx.plugin(planPlugin)

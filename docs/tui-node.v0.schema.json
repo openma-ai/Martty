@@ -16,6 +16,8 @@
     },
     "slot": {
       "enum": [
+        "welcome.hero",
+        "welcome.info",
         "chrome.right",
         "conversation.input.dock",
         "conversation.composer.dock"
@@ -58,6 +60,18 @@
     },
     "TuiNode": {
       "oneOf": [
+        {
+          "$ref": "#/$defs/Ascii"
+        },
+        {
+          "$ref": "#/$defs/Logo"
+        },
+        {
+          "$ref": "#/$defs/WelcomeInfo"
+        },
+        {
+          "$ref": "#/$defs/Text"
+        },
         {
           "$ref": "#/$defs/Group"
         },
@@ -113,6 +127,51 @@
         "args": {
           "type": "string"
         }
+      }
+    },
+    "Ascii": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "lines"],
+      "properties": {
+        "id": { "$ref": "#/$defs/NodeId" },
+        "kind": { "const": "ascii" },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "tone": { "$ref": "#/$defs/ThemeToken" }
+      }
+    },
+    "Logo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/NodeId" },
+        "kind": { "const": "logo" },
+        "name": { "enum": ["martty", "deepseek"] }
+      }
+    },
+    "WelcomeInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "$ref": "#/$defs/NodeId" },
+        "kind": { "const": "welcomeinfo" }
+      }
+    },
+    "Text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "text"],
+      "properties": {
+        "id": { "$ref": "#/$defs/NodeId" },
+        "kind": { "const": "text" },
+        "text": { "type": "string" },
+        "tone": { "$ref": "#/$defs/ThemeToken" }
       }
     },
     "Group": {

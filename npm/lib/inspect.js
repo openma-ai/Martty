@@ -9,7 +9,7 @@ import { CORDIS_METHODS } from './cordis-protocol.js'
 
 export const name = 'tui-cordis-client-runner'
 export const inject = [
-  'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay', 'acpSessionConfig',
+  'tuiTheme', 'tuiPresets', 'tuiSlots', 'tuiCommands', 'tuiOverlay', 'acpSessionConfig',
   'acpSessionPlan', 'acpSessionStats', 'acpSessionStatus',
 ]
 
@@ -135,9 +135,43 @@ export function themeInspectProvider(tuiTheme) {
   }
 }
 
+/** Describe saved compositions of several independent TUI contributions. */
+export function uiPresetInspectProvider(tuiPresets) {
+  return {
+    manifest: {
+      id: 'UiPresets',
+      description:
+        'Saved UI compositions. One preset mounts several UI contributions as one lifecycle.',
+      methods: [{
+        name: 'list',
+        description: 'List registered UI Presets and the composition registration contract.',
+        inputSchema: EMPTY_INPUT,
+        outputSchema: ANY_OUTPUT,
+      }],
+    },
+    query(method) {
+      if (method !== 'list') throw new Error(`unknown UiPresets inspect method "${method}"`)
+      return {
+        active: tuiPresets.active(),
+        presets: tuiPresets.list(),
+        apply: {
+          inject: ['tuiPresets'],
+          register: {
+            call: 'ctx.tuiPresets.register({ id, label }, mount)',
+            mount:
+              'A synchronous callback that mounts multiple UI contributions and returns one disposer.',
+          },
+          selection: '/ui <id>',
+          persistence: 'The selected id survives restart in dsh-tui-settings.json.',
+        },
+      }
+    },
+  }
+}
+
 const TUI_NODE_KINDS = Object.freeze([
-  'group', 'markdown', 'reasoning', 'user', 'generic', 'terminal', 'diff',
-  'image', 'notice', 'unknown',
+  'ascii', 'logo', 'welcomeinfo', 'text', 'group', 'markdown', 'reasoning',
+  'user', 'generic', 'terminal', 'diff', 'image', 'notice', 'unknown',
 ])
 
 /** Describe the root TUI shell slots available to a dynamic Client half. */
@@ -168,7 +202,8 @@ export function slotInspectProvider(tuiSlots) {
           update: 'const panel = register(...); panel.update(nextNodes)',
           dispose: 'Return panel.dispose from inject; plugin unload removes the pane immediately.',
           note:
-            'chrome.right is a root list slot; conversation.input.dock is the additive row above '
+            'welcome.hero and welcome.info are independent single root regions; '
+            + 'chrome.right is a root list slot; conversation.input.dock is the additive row above '
             + 'the composer; conversation.composer.dock is the additive compact row below it. '
             + 'Node ids are stable inside one contribution; '
             + 'the compositor namespaces them by contribution id. Compose group/markdown/reasoning/'
@@ -633,6 +668,7 @@ async function mountClientHalf(
   pluginId,
   clientCode,
   tuiTheme,
+  tuiPresets,
   tuiSlots,
   tuiCommands,
   tuiOverlay,
@@ -646,7 +682,7 @@ async function mountClientHalf(
   if (typeof ctx.plugin !== 'function') {
     return applyClientHalf(clientCode, {
       pluginId,
-      tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+      tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
       acpSessionStats, acpSessionStatus, timer, invoke,
     })
   }
@@ -658,7 +694,7 @@ async function mountClientHalf(
     apply: async () => {
       applied = await applyClientHalf(clientCode, {
         pluginId,
-        tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+        tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
         acpSessionStats, acpSessionStatus, timer, invoke,
       })
       return applied.dispose
@@ -697,12 +733,13 @@ async function mountClientHalf(
  */
 export function attachTuiClient(opts) {
   const {
-    ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+    ctx, tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
     acpSessionStats, acpSessionStatus,
     requestAgent,
   } = opts
   const providers = [
     themeInspectProvider(tuiTheme),
+    ...(tuiPresets === undefined ? [] : [uiPresetInspectProvider(tuiPresets)]),
     ...(tuiSlots === undefined ? [] : [slotInspectProvider(tuiSlots)]),
     ...(tuiCommands === undefined ? [] : [commandInspectProvider(tuiCommands)]),
     ...(tuiOverlay === undefined ? [] : [overlayInspectProvider(tuiOverlay)]),
@@ -801,6 +838,7 @@ export function attachTuiClient(opts) {
         request.pluginId,
         typeof code === 'string' ? code : '',
         tuiTheme,
+        tuiPresets,
         tuiSlots,
         tuiCommands,
         tuiOverlay,
@@ -970,6 +1008,7 @@ export function attachTuiClient(opts) {
 /** Mount the TUI counterpart of the Web Cordis Client runner. */
 export function apply(ctx) {
   const tuiTheme = ctx.tuiTheme ?? ctx.get?.('tuiTheme')
+  const tuiPresets = ctx.tuiPresets ?? ctx.get?.('tuiPresets')
   const tuiSlots = ctx.tuiSlots ?? ctx.get?.('tuiSlots')
   const tuiCommands = ctx.tuiCommands ?? ctx.get?.('tuiCommands')
   const tuiOverlay = ctx.tuiOverlay ?? ctx.get?.('tuiOverlay')
@@ -982,7 +1021,7 @@ export function apply(ctx) {
     bindTransport(requestAgent) {
       client?.dispose()
       client = attachTuiClient({
-        ctx, tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
+        ctx, tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
         acpSessionStats, acpSessionStatus,
         requestAgent,
       })

@@ -11,6 +11,7 @@ export const inject = []
 
 export const SLOT_NAMES = Object.freeze([
   'welcome.hero',
+  'welcome.info',
   'chrome.right',
   'conversation.input.dock',
   'conversation.composer.dock',
@@ -18,6 +19,7 @@ export const SLOT_NAMES = Object.freeze([
 
 const SLOT_DEFINITIONS = Object.freeze({
   'welcome.hero': Object.freeze({ kind: 'single', scope: 'root' }),
+  'welcome.info': Object.freeze({ kind: 'single', scope: 'root' }),
   'chrome.right': Object.freeze({ kind: 'list', scope: 'root' }),
   'conversation.input.dock': Object.freeze({ kind: 'list', scope: 'session' }),
   'conversation.composer.dock': Object.freeze({ kind: 'list', scope: 'session' }),
@@ -56,6 +58,7 @@ const THEME_TOKENS = new Set([
 const NODE_FIELDS = Object.freeze({
   ascii: { required: ['id', 'kind', 'lines'], optional: ['tone'] },
   logo: { required: ['id', 'kind', 'name'], optional: [] },
+  welcomeinfo: { required: ['id', 'kind'], optional: [] },
   text: { required: ['id', 'kind', 'text'], optional: ['tone'] },
   group: { required: ['id', 'kind', 'children'], optional: ['title', 'tone'] },
   markdown: { required: ['id', 'kind', 'text'], optional: ['streaming'] },
@@ -128,9 +131,11 @@ function validateNode(node, path, ids) {
       }
       break
     case 'logo':
-      if (node.name !== 'deepseek') {
-        throw new Error(`tuiSlots: ${path}.name must be a registered logo preset`)
+      if (!['martty', 'deepseek'].includes(node.name)) {
+        throw new Error(`tuiSlots: ${path}.name must be a built-in logo primitive`)
       }
+      break
+    case 'welcomeinfo':
       break
     case 'text':
       string(node.text, `${path}.text`)

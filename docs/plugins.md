@@ -72,15 +72,23 @@ token 或耗时——统计只有 `acpSessionStats` 这一套口径。
 transcript accumulator。没有 Client 树的运行（demo、独立 painter）由 Rust 的
 精简 fallback 只画运行状态与 ACP 事实，同样不读 token/耗时累计器。
 
-## 内置 Client Plugin：`deepseek-logo`
+## UI Preset 与两个欢迎页 slot
 
-`deepseek-logo` 只注入 `tuiCommands` 与 `tuiSlots`，注册本地
-`/deepseeklogo`。执行后选择 `deepseek` UI preset，并以 `logo + hint` 两个语义节点
-占用 single `welcome.hero` 槽位；版本、模型、会话与帮助行保持不变。Rust painter
-复用旧版响应式鲸鱼/wordmark 绘制 primitive，并统一负责水平居中、整体垂直居中和
-上下等距；插件负责 preset 的激活与生命周期。当前 `uiPreset` 持久化到
-`dsh-tui-settings.json`，重启后继续生效。它不进入 ACP prompt 或 transcript。
-`/deepseeklogo martty` 可恢复内置 `martty` preset，并覆盖持久化选择。
+`tuiPresets` 把多个独立 UI Plugin contribution 组合成一个可持久化选择；它不是
+Theme 的别名。`ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 可同时注册
+Theme、slot、pet 或其他 UI contribution，并返回统一 disposer。用户通过
+`/ui <id>` 切换，选择写入 `dsh-tui-settings.json`，重启后恢复。
+
+内置 `default`（Martty）和 `deepseek` 两个 UI Preset 都装配两个 single root slot：
+
+- `welcome.hero`：居中的品牌区，结构为 `logo + hint`；
+- `welcome.info`：左下的版本、模型、workspace、session、凭据、访问说明与帮助区。
+
+两个 preset 当前复用原生动态 info renderer，但它已经是可独立替换的 slot。
+`deepseek-logo` 仅注册 `deepseek` preset，不再拥有专用 slash command；使用
+`/ui deepseek` 和 `/ui default` 切换。Rust painter 复用旧版响应式鲸鱼/wordmark
+primitive，并负责水平居中、整个欢迎块垂直居中与上下等距。切换不进入 ACP prompt
+或 transcript。
 
 ## 当前可调用：`tuiTheme`
 

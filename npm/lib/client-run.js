@@ -2,7 +2,7 @@
  * Evaluate a Cordis `code.client` function body on the TUI client tree.
  *
  * Same closure convention as the web runner: the source is an async function
- * body that returns a plugin. Open services include `tuiTheme`, `tuiSlots`,
+ * body that returns a plugin. Open services include `tuiTheme`, `tuiPresets`, `tuiSlots`,
  * `acpSessionConfig`, `acpSessionPlan`, `acpSessionStats`, `acpSessionStatus`,
  * and lifecycle-owned `timer`; `host.call` reaches this
  * Package's Host half.
@@ -11,6 +11,7 @@
 
 const ALLOWED_INJECT = new Set([
   'tuiTheme',
+  'tuiPresets',
   'tuiSlots',
   'tuiCommands',
   'tuiOverlay',
@@ -86,7 +87,7 @@ export async function applyClientHalf(clientCode, env) {
     }
     if (!ALLOWED_INJECT.has(name)) {
       throw new Error(
-        `TUI Client inject "${name}" is not open. Open services: tuiTheme, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan, acpSessionStats, acpSessionStatus, timer.`,
+        `TUI Client inject "${name}" is not open. Open services: tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan, acpSessionStats, acpSessionStatus, timer.`,
       )
     }
   }
@@ -133,6 +134,7 @@ function normalizePlugin(value) {
 
 function restrictedCtx(env, own, inject) {
   const sourceTheme = env.tuiTheme
+  const sourcePresets = env.tuiPresets
   const sourceSlots = env.tuiSlots
   const sourceCommands = env.tuiCommands
   const sourceOverlay = env.tuiOverlay
@@ -181,6 +183,19 @@ function restrictedCtx(env, own, inject) {
         },
         list() {
           return sourceSlots.list()
+        },
+      }
+  const tuiPresets = sourcePresets === undefined
+    ? undefined
+    : {
+        register(options, mount) {
+          return own(sourcePresets.register(options, mount))
+        },
+        list() {
+          return sourcePresets.list()
+        },
+        active() {
+          return sourcePresets.active()
         },
       }
   const tuiCommands = sourceCommands === undefined
@@ -279,6 +294,7 @@ function restrictedCtx(env, own, inject) {
       }
   return {
     tuiTheme,
+    tuiPresets,
     tuiSlots,
     tuiCommands,
     tuiOverlay,
@@ -291,6 +307,7 @@ function restrictedCtx(env, own, inject) {
     timeout: timer?.timeout,
     get(name) {
       if (name === 'tuiTheme') return tuiTheme
+      if (name === 'tuiPresets') return tuiPresets
       if (name === 'tuiSlots') return tuiSlots
       if (name === 'tuiCommands') return tuiCommands
       if (name === 'tuiOverlay') return tuiOverlay

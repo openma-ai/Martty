@@ -95,7 +95,7 @@ impl Locale {
 pub const AMBIENT_TIP_COUNT: usize = 8;
 
 fn default_ui_preset() -> String {
-    "martty".into()
+    "default".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

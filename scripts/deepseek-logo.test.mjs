@@ -3,62 +3,74 @@ import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
-const deepseekLogo = await import(pathToFileURL(
+const deepseek = await import(pathToFileURL(
   path.join(import.meta.dirname, '../npm/lib/deepseek-logo.js'),
 ).href).catch(() => ({}))
+const martty = await import(pathToFileURL(
+  path.join(import.meta.dirname, '../npm/lib/martty-preset.js'),
+).href).catch(() => ({}))
 
-test('the DeepSeek logo Client Plugin replaces the welcome hero in place', () => {
-  assert.deepEqual(deepseekLogo.inject, ['tuiCommands', 'tuiSlots'])
-  assert.equal(typeof deepseekLogo.apply, 'function')
-  if (typeof deepseekLogo.apply !== 'function') return
-
-  let command
-  let hero
-  const stop = deepseekLogo.apply({
-    tuiCommands: {
-      register(options, handler) {
-        command = { options, handler }
-        return () => { command = undefined }
+function capturePreset(plugin) {
+  let registered
+  const slots = []
+  const stop = plugin.apply({
+    tuiPresets: {
+      register(options, mount) {
+        registered = { options, mount }
+        return () => { registered = undefined }
       },
     },
     tuiSlots: {
       register(options, nodes) {
-        hero = { options, nodes }
-        return {
-          dispose() {
-            hero = undefined
-          },
-        }
+        const contribution = { options, nodes }
+        slots.push(contribution)
+        return { dispose() { slots.splice(slots.indexOf(contribution), 1) } }
       },
     },
   })
+  return { registered, slots, stop }
+}
 
-  assert.deepEqual(command.options, {
-    name: 'deepseeklogo',
-    description: 'Replace the welcome hero with classic DeepSeek Harness',
-  })
-  command.handler('martty')
-  assert.equal(hero, undefined, 'martty can clear a selection restored by the painter')
-  command.handler()
+test('Martty and DeepSeek UI presets fill the Hero and information regions', () => {
+  assert.deepEqual(martty.inject, ['tuiPresets', 'tuiSlots'])
+  assert.deepEqual(deepseek.inject, ['tuiPresets', 'tuiSlots'])
 
-  assert.deepEqual(hero.options, { name: 'welcome.hero', id: 'deepseek-logo' })
-  assert.deepEqual(hero.nodes, [
-    { id: 'logo', kind: 'logo', name: 'deepseek' },
+  const builtin = capturePreset(martty)
+  assert.deepEqual(builtin.registered.options, { id: 'default', label: 'Martty' })
+  const unmountMartty = builtin.registered.mount()
+  assert.deepEqual(builtin.slots, [
     {
-      id: 'hint',
-      kind: 'text',
-      text: 'Into the Unknown',
-      tone: 'fg_tertiary',
+      options: { name: 'welcome.hero', id: 'martty-hero' },
+      nodes: [
+        { id: 'logo', kind: 'logo', name: 'martty' },
+        { id: 'hint', kind: 'text', text: 'https://martty.sh', tone: 'fg_tertiary' },
+      ],
+    },
+    {
+      options: { name: 'welcome.info', id: 'martty-info' },
+      nodes: [{ id: 'info', kind: 'welcomeinfo' }],
     },
   ])
+  unmountMartty()
+  assert.deepEqual(builtin.slots, [])
 
-  command.handler('martty')
-  assert.equal(hero, undefined, 'martty restores the builtin UI preset')
-
-  command.handler('deepseek')
-  assert.equal(hero.options.id, 'deepseek-logo', 'deepseek can be selected again')
-
-  stop()
-  assert.equal(command, undefined)
-  assert.equal(hero, undefined)
+  const classic = capturePreset(deepseek)
+  assert.deepEqual(classic.registered.options, { id: 'deepseek', label: 'DeepSeek' })
+  const unmountDeepseek = classic.registered.mount()
+  assert.deepEqual(classic.slots, [
+    {
+      options: { name: 'welcome.hero', id: 'deepseek-hero' },
+      nodes: [
+        { id: 'logo', kind: 'logo', name: 'deepseek' },
+        { id: 'hint', kind: 'text', text: 'Into the Unknown', tone: 'fg_tertiary' },
+      ],
+    },
+    {
+      options: { name: 'welcome.info', id: 'deepseek-info' },
+      nodes: [{ id: 'info', kind: 'welcomeinfo' }],
+    },
+  ])
+  unmountDeepseek()
+  classic.stop()
+  builtin.stop()
 })

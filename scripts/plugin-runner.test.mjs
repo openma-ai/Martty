@@ -134,7 +134,7 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
       true,
     )
     assert.equal(
-      ctx.get('tuiCommands')?.list().some((command) => command.name === 'deepseeklogo'),
+      ctx.get('tuiCommands')?.list().some((command) => command.name === 'ui'),
       true,
       'the classic DeepSeek logo is a default Client Plugin command',
     )
@@ -320,7 +320,7 @@ test('shell republishes Client commands after the agent enables the Cordis plane
   try {
     const ctx = makeCtx()
     ctx.tuiCommands.register(
-      { name: 'deepseeklogo', description: 'Open the classic DeepSeek Harness whale' },
+      { name: 'ui', description: 'Switch UI preset' },
       () => {},
     )
     await runner.apply(ctx)
@@ -349,8 +349,8 @@ test('shell republishes Client commands after the agent enables the Cordis plane
       .map((line) => JSON.parse(line))
       .filter((entry) => entry.method === '_dsh/cordis/tui/commands/update')
     assert.deepEqual(updates.at(-1)?.params.commands, [{
-      name: 'deepseeklogo',
-      description: 'Open the classic DeepSeek Harness whale',
+      name: 'ui',
+      description: 'Switch UI preset',
     }])
   } finally {
     restore()

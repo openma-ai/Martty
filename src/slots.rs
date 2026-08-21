@@ -44,6 +44,9 @@ pub enum TuiNode {
         id: String,
         name: String,
     },
+    Welcomeinfo {
+        id: String,
+    },
     Text {
         id: String,
         text: String,
@@ -127,6 +130,7 @@ impl TuiNode {
         match self {
             Self::Ascii { id, .. }
             | Self::Logo { id, .. }
+            | Self::Welcomeinfo { id, .. }
             | Self::Text { id, .. }
             | Self::Group { id, .. }
             | Self::Markdown { id, .. }
@@ -169,8 +173,8 @@ fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), St
                     ));
                 }
             }
-            TuiNode::Logo { name, .. } if name != "deepseek" => {
-                return Err(format!("unknown tui logo preset: {name}"));
+            TuiNode::Logo { name, .. } if !matches!(name.as_str(), "martty" | "deepseek") => {
+                return Err(format!("unknown tui logo primitive: {name}"));
             }
             TuiNode::Text { tone, .. } => {
                 if tone.as_deref().is_some_and(theme_color_name_invalid) {
@@ -248,7 +252,11 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
     }
     if !matches!(
         snapshot.slot.as_str(),
-        "welcome.hero" | "chrome.right" | "conversation.input.dock" | "conversation.composer.dock"
+        "welcome.hero"
+            | "welcome.info"
+            | "chrome.right"
+            | "conversation.input.dock"
+            | "conversation.composer.dock"
     ) {
         return Ok(None);
     }
@@ -326,7 +334,10 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
         TuiNode::Logo { name, .. } if name == "deepseek" => {
             crate::deepseek_logo::lines(theme, width as u16)
         }
-        TuiNode::Logo { .. } => Vec::new(),
+        TuiNode::Logo { name, .. } if name == "martty" => {
+            crate::logo::martty_logo_lines(theme, width as u16)
+        }
+        TuiNode::Logo { .. } | TuiNode::Welcomeinfo { .. } => Vec::new(),
         TuiNode::Text { text, tone, .. } => styled_wrapped(
             text,
             width,

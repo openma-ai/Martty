@@ -34,18 +34,20 @@ Server 插件要让任意 client 看见：投影成标准 ACP（命令、config�
 Host 进程：Base Cordis + ACP plugin
         │ TUI Client 子进程的标准 stdin/stdout（ACP）
 Client 进程：独立 Cordis root
-  第三方插件   sibling insert + inject ['tuiTheme' / 'tuiSlots']
-  Client runner inject ['tuiTheme', 'tuiSlots', ...]，执行 dsh-tool-cordis 的 code.client
+  第三方插件   sibling insert + inject ['tuiTheme' / 'tuiPresets' / 'tuiSlots']
+  Client runner inject ['tuiTheme', 'tuiPresets', 'tuiSlots', ...]，执行 dsh-tool-cordis 的 code.client
   TUI 壳       注入 acpClient 与 Client services，只占 TTY
   plan-view    注入 acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
   stats-view   注入 acpSessionStats + tuiSlots
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
-  deepseek-logo 注入 tuiCommands + tuiSlots，注册 /deepseeklogo 命令；
-               deepseek UI preset 以 logo + hint 占用 single welcome.hero
+  tui-presets  提供 tuiPresets，注册持久化 /ui 选择与组合生命周期
+  martty-preset default UI Preset，组合 welcome.hero + welcome.info
+  deepseek-logo 注入 tuiPresets + tuiSlots，注册 deepseek UI Preset；
+               组合 DeepSeek welcome.hero + 动态 welcome.info
   acp-session-status 提供 acpSessionStatus（连接/服务端/认证/会话/
                模型/effort/权限/plan/agent 等运行状态事实）
-  tui-slots    提供 tuiSlots，声明 welcome.hero / chrome.right /
+  tui-slots    提供 tuiSlots，声明 welcome.hero / welcome.info / chrome.right /
                conversation.input.dock / conversation.composer.dock
   tui-theme    提供 tuiTheme
   acp-client   attach Host stdio，提供 acpClient
@@ -82,13 +84,16 @@ Client inspect/run 通道。
 
 ```text
 第三方插件    sibling insert + inject ['tuiTheme'] → 配色 register
+              sibling insert + inject ['tuiPresets'] → UI 组合 register
               sibling insert + inject ['tuiSlots'] → slot register
 tui-theme     配色表 → Theme registry
-tui-slots     TuiNode 树 → welcome.hero / chrome.right / input dock / composer dock registry
+tui-presets   多个 UI contribution → 持久化 /ui 单选组合
+tui-slots     TuiNode 树 → welcome.hero / welcome.info / chrome.right / input dock / composer dock registry
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
-deepseek-logo deepseek UI preset → /deepseeklogo 原位替换 welcome.hero
+martty-preset default UI Preset → Martty Hero + 原生动态信息区
+deepseek-logo deepseek UI Preset → DeepSeek Hero + 原生动态信息区
 acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/
               effort/权限/plan/agent —— 不累计 token 或耗时（那是
               acpSessionStats 的职责）
@@ -127,11 +132,13 @@ Token **名**封闭，见 [plugins.md](plugins.md)。内置 `default` 的色值�
 
 `ctrl+t` 切当前主题的 dark/light。`/theme` 切整个 Theme Plugin。kitty 宠物是 RGBA
 精灵，不随 token 重上色；启动锁屏的 `MAR` 读海洋渐变，`TTY` 读终端前景黑/白。
-旧 DeepSeek Harness 鲸鱼由 `deepseek-logo` Client Plugin 通过 `/deepseeklogo`
-选择 `deepseek` UI preset，并向 single `welcome.hero` 写入 `logo + hint` 两个语义
-`TuiNode`。Rust painter 复用原版响应式绘制 primitive，统一负责内部几何、水平居中与
-整个欢迎块的垂直居中；会话信息与帮助行不变。选择写入 `dsh-tui-settings.json`，
-重启后恢复；`martty` 始终是内置 fallback preset。
+UI Preset 是 UI Plugin 的组合，不等同于 Theme。`default`（Martty）与
+`deepseek` 都同时装配 `welcome.hero` 和 `welcome.info`：前者是居中的
+`logo + hint` 品牌区，后者是左下的版本、模型、workspace、session、凭据、访问说明
+与帮助区。两套 preset 当前复用同一个原生动态 info renderer，但该区域可以独立被
+插件替换。旧 DeepSeek Harness 鲸鱼仍复用原版响应式 primitive。Rust 负责内部几何、
+水平居中与整个欢迎块的垂直居中；`/ui deepseek` / `/ui default` 切换并持久化到
+`dsh-tui-settings.json`。
 
 ## 明确不做
 

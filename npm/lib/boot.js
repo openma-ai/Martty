@@ -7,6 +7,8 @@
  */
 
 import { apply as applyAcpClient } from './acp-client.js'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import { apply as applyCordisClientRunner } from './inspect.js'
 import { apply as applyShell } from './index.js'
 import { resolveStackedAgent } from './agent.js'
@@ -14,6 +16,8 @@ import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
+import { apply as applyPresets, inject as presetsInject } from './tui-presets.js'
+import { apply as applyMarttyPreset, inject as marttyPresetInject } from './martty-preset.js'
 import { apply as applyPlanView, inject as planViewInject } from './plan-view.js'
 import { apply as applyStatsView, inject as statsViewInject } from './stats-view.js'
 import { apply as applySessionStatus, inject as sessionStatusInject } from './acp-session-status.js'
@@ -32,11 +36,16 @@ export async function bootClient(options = {}) {
   const acpConfig = options.stream !== undefined
     ? { stream: options.stream }
     : { agent: options.agent ?? resolveStackedAgent() }
+  const presetConfig = {
+    settingsPath: options.settingsPath ?? uiSettingsPath(options.extraArgs ?? []),
+  }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme })
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
+    await ctx.plugin({ name: 'tui-presets', inject: presetsInject, apply: applyPresets }, presetConfig)
+    await ctx.plugin({ name: 'martty-preset', inject: marttyPresetInject, apply: applyMarttyPreset })
     await ctx.plugin({ name: 'acp-client', inject: [], apply: applyAcpClient }, acpConfig)
     await ctx.plugin({ name: 'plan-view', inject: planViewInject, apply: applyPlanView })
     await ctx.plugin({ name: 'stats-view', inject: statsViewInject, apply: applyStatsView })
@@ -46,7 +55,7 @@ export async function bootClient(options = {}) {
     await ctx.plugin({
       name: 'tui-cordis-client-runner',
       inject: [
-        'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay', 'acpSessionConfig',
+        'tuiTheme', 'tuiPresets', 'tuiSlots', 'tuiCommands', 'tuiOverlay', 'acpSessionConfig',
         'acpSessionPlan', 'acpSessionStats', 'acpSessionStatus',
       ],
       apply: applyCordisClientRunner,
@@ -67,6 +76,8 @@ export async function bootClient(options = {}) {
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
+    applyPresets(ctx, presetConfig)
+    applyMarttyPreset(ctx)
     applyAcpClient(ctx, acpConfig)
     applyPlanView(ctx)
     applyStatsView(ctx)
@@ -77,6 +88,15 @@ export async function bootClient(options = {}) {
     await applyShell(ctx, { extraArgs: options.extraArgs ?? [], tty: options.tty })
   }
   return ctx
+}
+
+export function uiSettingsPath(extraArgs = []) {
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    if (extraArgs[index] === '--session-root' && typeof extraArgs[index + 1] === 'string') {
+      return path.join(extraArgs[index + 1], 'dsh-tui-settings.json')
+    }
+  }
+  return path.join(homedir(), '.dsh-tui', 'sessions', 'dsh-tui-settings.json')
 }
 
 /**

@@ -798,8 +798,8 @@ pub struct App {
     pub locale: Locale,
     pub palettes: Vec<crate::theme::PalettePack>,
     pub active_palette_id: String,
-    /// Persisted welcome preset. `martty` is builtin; other presets are
-    /// selected by Client Plugins and painted through `welcome.hero`.
+    /// Persisted UI Preset id. The Client compositor owns activation; Rust
+    /// keeps this only as a startup fallback before slot snapshots arrive.
     pub ui_preset: String,
     /// Latest compositor-private snapshots, keyed by declared Client slot.
     pub slot_snapshots: HashMap<String, crate::slots::SlotSnapshot>,
@@ -1598,19 +1598,9 @@ impl App {
                                 matches!((snapshot.rev, current.rev), (Some(next), Some(previous)) if next <= previous)
                             });
                             if !stale {
-                                if snapshot.slot == "welcome.hero" {
-                                    self.ui_preset = snapshot
-                                        .nodes
-                                        .first()
-                                        .and_then(|node| match node {
-                                            crate::slots::TuiNode::Logo { name, .. } => {
-                                                Some(name.clone())
-                                            }
-                                            _ => None,
-                                        })
-                                        .unwrap_or_else(|| "martty".into());
+                                if matches!(snapshot.slot.as_str(), "welcome.hero" | "welcome.info")
+                                {
                                     self.show_banner = true;
-                                    self.save_settings();
                                 }
                                 self.slot_snapshots.insert(snapshot.slot.clone(), snapshot);
                             }
@@ -2423,9 +2413,10 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        let current = Self::load_settings(&self.cfg);
         if let Ok(text) = serde_json::to_string_pretty(&UiSettings {
             language: self.locale,
-            ui_preset: self.ui_preset.clone(),
+            ui_preset: current.ui_preset,
         }) {
             let _ = std::fs::write(path, text);
         }
@@ -3817,7 +3808,7 @@ impl App {
                 } else {
                     "小难梁去隆基市场买卡了 — /liang 再次召唤"
                 };
-                self.transcript.push_notice(NoticeLevel::Info, msg.into());
+                self.show_tip(msg);
             }
             "theme" => self.apply_theme_arg(arg, ctl),
             "plugins" => {
@@ -5482,6 +5473,11 @@ mod mode_tests {
     #[test]
     fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
         let cfg = test_cfg();
+        std::fs::write(
+            App::locale_settings_path(&cfg),
+            r#"{"language":"en","uiPreset":"deepseek"}"#,
+        )
+        .expect("seed UI preset selection");
         let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
         let (ctl, _commands) = crate::controller::test_controller();
         let mut app = App::new(
@@ -5508,6 +5504,38 @@ mod mode_tests {
         assert!(
             frame.replace(' ', "").contains("描述你想构建的内容"),
             "{frame}"
+        );
+        assert_eq!(restarted.ui_preset, "deepseek", "/lang preserves UI Preset");
+    }
+
+    #[test]
+    fn liang_toggle_is_transient_and_keeps_the_empty_welcome_centered() {
+        let (mut app, ctl, _rx) = test_app();
+
+        app.run_slash("liang", "off", &ctl);
+
+        assert!(!app.pet_visible);
+        assert!(
+            app.transcript.cells.is_empty(),
+            "a local pet toggle must not become conversation history"
+        );
+        let _ = crate::ui::dump_frame(&mut app, 140, 60);
+        let first = app
+            .chat_view
+            .lines
+            .iter()
+            .position(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let last = app
+            .chat_view
+            .lines
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let bottom = app.chat_view.area.height as usize - last - 1;
+        assert!(
+            first.abs_diff(bottom) <= 1,
+            "closing Liang must not top-align the welcome: top={first}, bottom={bottom}"
         );
     }
 

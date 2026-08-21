@@ -56,6 +56,7 @@ Use the narrowest capability:
 | Need | Inspect family | Runtime service |
 | --- | --- | --- |
 | Palette registration/activation | `Theme` | `tuiTheme` |
+| Saved composition of several UI contributions | `UiPresets` | `tuiPresets` |
 | Persistent terminal content | `Slots` | `tuiSlots` |
 | Local slash command | `Commands` | `tuiCommands` |
 | Transient slider or node view | `Overlay` | `tuiOverlay` |
@@ -85,6 +86,10 @@ compose only in the Plugin code. The services do not imply one another:
   in that one Plugin. Never read/subscribe to active theme or implement a
   theme condition yourself. Immediate preview uses the inspected registration
   option and enters the same Plugin seat.
+- **UI Presets:** use `tuiPresets.register({ id, label }, mount)` when the user
+  wants one saved `/ui` choice to mount several UI contributions together.
+  The synchronous mount callback returns one disposer. A UI Preset composes
+  Theme, slots, pet, or other UI Plugins; it is not another name for Theme.
 - **Commands:** register a local slash command. Registration publishes slash
   completion and keeps invocation out of the ACP prompt. Its availability is
   the registration's lifetime; Commands does not know about themes, overlays,

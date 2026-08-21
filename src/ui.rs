@@ -921,7 +921,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let layout = app
         .displayed_transcript()
         .layout(&theme, inner.width, app.spinner(), thumbs);
-    if app.show_banner && layout.lines.is_empty() && lines.len() < inner.height as usize {
+    if app.show_banner && lines.len() < inner.height as usize {
         let remaining = inner.height as usize - lines.len();
         let top = remaining / 2;
         let bottom = remaining - top;
@@ -933,8 +933,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         owners.resize(lines.len(), None);
         banner_count = lines.len();
     }
-    lines.extend(layout.lines);
-    owners.extend(layout.owners);
+    if !app.show_banner {
+        lines.extend(layout.lines);
+        owners.extend(layout.owners);
+    }
     // Active work rides as the transcript's last line — hugging the newest
     // message (no separator; it scrolls with the list). Idle draws nothing.
     if !app.show_banner {
@@ -2021,6 +2023,29 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     out.push(Line::default());
 
+    if let Some(info) = app
+        .slot_snapshots
+        .get("welcome.info")
+        .filter(|snapshot| !snapshot.nodes.is_empty())
+    {
+        if matches!(
+            info.nodes.as_slice(),
+            [crate::slots::TuiNode::Welcomeinfo { .. }]
+        ) {
+            out.extend(welcome_info_lines(app));
+        } else {
+            out.extend(crate::slots::render(info, theme, width as usize));
+        }
+    } else {
+        out.extend(welcome_info_lines(app));
+    }
+    out
+}
+
+fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
+    let theme = &app.theme;
+    let mut out = Vec::new();
+
     let kv = |k: &str, v: String| -> Line<'static> {
         Line::from(vec![
             Span::styled(format!("  {k:<10}"), Style::default().fg(theme.caption)),
@@ -2688,9 +2713,45 @@ mod tests {
     }
 
     #[test]
+    fn welcome_and_conversation_are_two_states_without_a_mixed_third_state() {
+        let mut app = test_app();
+        app.transcript.push_notice(
+            crate::transcript::NoticeLevel::Info,
+            "local UI notice".into(),
+        );
+
+        let frame = dump_frame(&mut app, 140, 60);
+
+        assert!(
+            frame.contains("https://martty.sh"),
+            "Welcome is visible:\n{frame}"
+        );
+        assert!(
+            !frame.contains("local UI notice"),
+            "transcript must not share the Welcome state:\n{frame}"
+        );
+        let first = app
+            .chat_view
+            .lines
+            .iter()
+            .position(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let last = app
+            .chat_view
+            .lines
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let bottom = app.chat_view.area.height as usize - last - 1;
+        assert!(
+            first.abs_diff(bottom) <= 1,
+            "Welcome remains centered: top={first}, bottom={bottom}"
+        );
+    }
+
+    #[test]
     fn welcome_hero_slot_replaces_only_the_martty_lockup() {
         let mut app = test_app();
-        let cfg = app.cfg.clone();
         app.show_banner = false;
         let (ctl, _commands) = crate::controller::test_controller();
         app.handle(
@@ -2718,7 +2779,7 @@ mod tests {
             &ctl,
         );
 
-        assert!(app.show_banner, "/deepseeklogo restores the welcome banner");
+        assert!(app.show_banner, "/ui deepseek restores the welcome banner");
         let frame = dump_frame(&mut app, 140, 60);
 
         assert!(frame.contains("▄▄▄███▀"), "XL whale:\n{frame}");
@@ -2733,21 +2794,51 @@ mod tests {
             frame.contains("/help commands"),
             "help row remains:\n{frame}"
         );
+    }
 
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let mut restarted = App::new(
-            Theme::dark(),
-            cfg,
-            "persisted-hero".into(),
-            true,
-            false,
-            tx,
+    #[test]
+    fn welcome_info_slot_replaces_only_the_native_information_region() {
+        let mut app = test_app();
+        app.show_banner = false;
+        let (ctl, _commands) = crate::controller::test_controller();
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "slot": "welcome.info",
+                    "rev": 1,
+                    "nodes": [{
+                        "id": "custom-info:copy",
+                        "kind": "text",
+                        "text": "Custom welcome information",
+                        "tone": "fg_secondary"
+                    }]
+                }),
+            },
+            &ctl,
         );
-        assert_eq!(restarted.ui_preset, "deepseek");
-        let restarted_frame = dump_frame(&mut restarted, 140, 60);
+
         assert!(
-            restarted_frame.contains("Into the Unknown") && restarted_frame.contains('░'),
-            "the selected UI preset survives restart:\n{restarted_frame}"
+            app.show_banner,
+            "an info contribution restores the welcome screen"
+        );
+        let frame = dump_frame(&mut app, 140, 60);
+        assert!(
+            frame.contains("https://martty.sh"),
+            "Hero remains:\n{frame}"
+        );
+        assert!(
+            frame.contains("Custom welcome information"),
+            "custom info:\n{frame}"
+        );
+        assert!(
+            !frame.contains("dsh-tui"),
+            "native version row replaced:\n{frame}"
+        );
+        assert!(
+            !frame.contains("/help commands"),
+            "native help row replaced:\n{frame}"
         );
     }
 
@@ -2794,8 +2885,58 @@ mod tests {
 
         assert_eq!(first_x - second_x, 13, "all whale rows share one outer pad");
         assert!(
-            plain.iter().any(|line| line.contains('█') && line.contains('░')),
+            plain
+                .iter()
+                .any(|line| line.contains('█') && line.contains('░')),
             "wide wordmark keeps solid DEEPSEEK beside hollow HARNESS"
+        );
+    }
+
+    #[test]
+    fn composed_deepseek_preset_keeps_balanced_outer_padding() {
+        let mut app = test_app();
+        for (slot, nodes) in [
+            (
+                "welcome.hero",
+                serde_json::json!([
+                    { "id": "deepseek:logo", "kind": "logo", "name": "deepseek" },
+                    { "id": "deepseek:hint", "kind": "text", "text": "Into the Unknown" }
+                ]),
+            ),
+            (
+                "welcome.info",
+                serde_json::json!([{ "id": "deepseek:info", "kind": "welcomeinfo" }]),
+            ),
+        ] {
+            app.slot_snapshots.insert(
+                slot.into(),
+                serde_json::from_value(serde_json::json!({
+                    "protocol": 0,
+                    "slot": slot,
+                    "rev": 1,
+                    "nodes": nodes
+                }))
+                .expect("preset slot snapshot"),
+            );
+        }
+
+        let _ = dump_frame(&mut app, 140, 60);
+        let first = app
+            .chat_view
+            .lines
+            .iter()
+            .position(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let last = app
+            .chat_view
+            .lines
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .expect("welcome content");
+        let bottom = app.chat_view.area.height as usize - last - 1;
+        assert!(
+            first.abs_diff(bottom) <= 1,
+            "composed welcome must be centered: top={first}, bottom={bottom}"
         );
     }
 
