@@ -14,6 +14,8 @@ import { apply as applyShell } from './index.js'
 import { resolveStackedAgent } from './agent.js'
 import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
+import { apply as applyGruvbox, inject as gruvboxInject } from './gruvbox.js'
+import { apply as applyOneDarkPro, inject as oneDarkProInject } from './one-dark-pro.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
 import { apply as applyPresets, inject as presetsInject } from './tui-presets.js'
@@ -41,6 +43,8 @@ export async function bootClient(options = {}) {
   }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme })
+    await ctx.plugin({ name: 'tui-theme-gruvbox', inject: gruvboxInject, apply: applyGruvbox })
+    await ctx.plugin({ name: 'tui-theme-one-dark-pro', inject: oneDarkProInject, apply: applyOneDarkPro })
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
@@ -73,6 +77,8 @@ export async function bootClient(options = {}) {
     )
   } else {
     applyTheme(ctx)
+    applyGruvbox(ctx)
+    applyOneDarkPro(ctx)
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)

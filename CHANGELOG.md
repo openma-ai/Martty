@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- New gallery palette packs `gruvbox` (dark from Gruvbox Dark, light from
+  Gruvbox Light, sourced from ricardodantas/ratatui-themes) and
+  `one-dark-pro` (dark from One Dark, light from One Light, sourced from
+  nathanbuchar/atom-one-dark-terminal). Both register at Client boot as
+  sibling insert rows and are switchable via `/theme`.
 - UI Presets now compose multiple UI Plugin contributions behind one
   persistent `/ui` choice. Builtin `default` (Martty) and `deepseek` presets
   each fill independent `welcome.hero` and `welcome.info` slots; dynamic

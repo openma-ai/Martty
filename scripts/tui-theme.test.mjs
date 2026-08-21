@@ -316,3 +316,58 @@ test('exportInspectTokens lists every closed token as #RRGGBB', () => {
   assert.equal(tokens[0].requiresLightAndDark, true)
   assert.ok(tokens.every((token) => typeof token.name === 'string' && token.name.length > 0))
 })
+
+test('npm gruvbox and one-dark-pro palettes match docs/fixtures v0.json', () => {
+  for (const [npmName, fixtureName] of [
+    ['gruvbox.json', 'gruvbox.v0.json'],
+    ['one-dark-pro.json', 'one-dark-pro.v0.json'],
+  ]) {
+    const npm = JSON.parse(
+      readFileSync(path.join(repoRoot, 'npm/lib/palettes', npmName), 'utf8'),
+    )
+    const docs = JSON.parse(readFileSync(path.join(repoRoot, 'docs/fixtures', fixtureName), 'utf8'))
+    assert.deepEqual(npm, docs)
+  }
+})
+
+test('gruvbox and one-dark-pro plugins register without covering', async () => {
+  const gruvbox = await import(pathToFileURL(path.join(repoRoot, 'npm/lib/gruvbox.js')).href)
+  const oneDark = await import(pathToFileURL(path.join(repoRoot, 'npm/lib/one-dark-pro.js')).href)
+  assert.deepEqual(gruvbox.inject, ['tuiTheme'])
+  assert.deepEqual(oneDark.inject, ['tuiTheme'])
+  const ctx = makeCtx()
+  const theme = installTuiTheme(ctx)
+  gruvbox.apply(ctx)
+  oneDark.apply(ctx)
+  assert.equal(theme.active(), 'default')
+  const ids = theme.list().map((p) => p.id)
+  assert.ok(ids.includes('gruvbox'), `catalog ${ids.join(', ')}`)
+  assert.ok(ids.includes('one-dark-pro'), `catalog ${ids.join(', ')}`)
+  theme.activate('gruvbox')
+  assert.equal(theme.active(), 'gruvbox')
+  theme.activate('one-dark-pro')
+  assert.equal(theme.active(), 'one-dark-pro')
+  theme.activate('default')
+  assert.equal(theme.active(), 'default')
+})
+
+test('disposing static palette fibers unregisters their palettes', async () => {
+  const { Context } = await import(cordisUrl)
+  const gruvbox = await import(pathToFileURL(path.join(repoRoot, 'npm/lib/gruvbox.js')).href)
+  const oneDark = await import(pathToFileURL(path.join(repoRoot, 'npm/lib/one-dark-pro.js')).href)
+  const ctx = new Context()
+  await ctx.plugin(themePlugin)
+  const gruvboxFiber = ctx.plugin(gruvbox)
+  const oneDarkFiber = ctx.plugin(oneDark)
+  await gruvboxFiber
+  await oneDarkFiber
+  assert.ok(ctx.tuiTheme.list().some((palette) => palette.id === 'gruvbox'))
+  assert.ok(ctx.tuiTheme.list().some((palette) => palette.id === 'one-dark-pro'))
+
+  await gruvboxFiber.dispose()
+  assert.ok(!ctx.tuiTheme.list().some((palette) => palette.id === 'gruvbox'))
+  assert.ok(ctx.tuiTheme.list().some((palette) => palette.id === 'one-dark-pro'))
+
+  await oneDarkFiber.dispose()
+  assert.deepEqual(ctx.tuiTheme.list(), [{ id: 'default', label: 'Default' }])
+})

@@ -8472,6 +8472,12 @@ mod palette_tests {
         json!({"protocol": 0, "palette": palette, "activate": activate})
     }
 
+    fn one_dark_pro_params(activate: bool) -> serde_json::Value {
+        let palette: serde_json::Value =
+            serde_json::from_str(include_str!("../docs/fixtures/one-dark-pro.v0.json")).unwrap();
+        json!({"protocol": 0, "palette": palette, "activate": activate})
+    }
+
     #[test]
     fn starts_on_default_pack() {
         let (app, _ctl, _rx) = test_app();
@@ -8507,6 +8513,30 @@ mod palette_tests {
             tip.contains("ember") && tip.contains("light"),
             "tip should name the pack, got {tip:?}"
         );
+    }
+
+    #[test]
+    fn tui_palette_rpc_activates_one_dark_pro() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: one_dark_pro_params(true),
+            },
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "one-dark-pro");
+        assert_eq!(app.theme.brand, Color::Rgb(97, 175, 239)); // #61AFEF One Dark blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "one-dark-pro");
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(64, 120, 242)); // #4078F2 One Light blue
     }
 
     #[test]

@@ -713,6 +713,45 @@ mod tests {
     }
 
     #[test]
+    fn gruvbox_fixture_parses_both_modes() {
+        let pack = PalettePack::from_json(
+            &serde_json::from_str(include_str!("../docs/fixtures/gruvbox.v0.json")).unwrap(),
+        )
+        .expect("gruvbox fixture");
+        assert_eq!(pack.id, "gruvbox");
+        assert_eq!(pack.label, "Gruvbox");
+        let dark = pack.theme(Mode::Dark);
+        let light = pack.theme(Mode::Light);
+        assert_eq!(dark.mode, Mode::Dark);
+        assert_eq!(light.mode, Mode::Light);
+        assert_eq!(dark.brand, Color::Rgb(250, 189, 47)); // #FABD2F Gruvbox Dark accent
+        assert_eq!(light.brand, Color::Rgb(181, 118, 20)); // #B57614 Gruvbox light-mode accent
+        assert_eq!(dark.bg, Color::Rgb(40, 40, 40)); // #282828
+        assert_eq!(light.bg, Color::Rgb(251, 241, 199)); // #FBF1C7
+        // Toggling stays inside the pack's own maps.
+        assert_eq!(dark.toggled().brand, light.brand);
+    }
+
+    #[test]
+    fn one_dark_pro_fixture_parses_both_modes() {
+        let pack = PalettePack::from_json(
+            &serde_json::from_str(include_str!("../docs/fixtures/one-dark-pro.v0.json")).unwrap(),
+        )
+        .expect("one-dark-pro fixture");
+        assert_eq!(pack.id, "one-dark-pro");
+        assert_eq!(pack.label, "One Dark Pro");
+        let dark = pack.theme(Mode::Dark);
+        let light = pack.theme(Mode::Light);
+        assert_eq!(dark.mode, Mode::Dark);
+        assert_eq!(light.mode, Mode::Light);
+        assert_eq!(dark.brand, Color::Rgb(97, 175, 239)); // #61AFEF One Dark blue
+        assert_eq!(light.brand, Color::Rgb(64, 120, 242)); // #4078F2 One Light blue
+        assert_eq!(dark.bg, Color::Rgb(30, 33, 39)); // #1E2127
+        assert_eq!(light.bg, Color::Rgb(249, 249, 249)); // #F9F9F9
+        assert_eq!(dark.toggled().brand, light.brand);
+    }
+
+    #[test]
     fn palette_parses_an_optional_png_background() {
         let mut value = ember_json();
         value["background"] = serde_json::json!({
