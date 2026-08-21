@@ -186,6 +186,23 @@ fn acp_err(err: AcpError) -> anyhow::Error {
     anyhow::anyhow!("{err}")
 }
 
+/// Actionable hint for a failed permission switch, keyed off the host error.
+///
+/// dsh >= 0.1.1-rc.1 rejects a `permission/preset` event whose data is not
+/// losslessly JSON-serializable (the bundled ACP adapter appended
+/// `origin: undefined`); the TUI bundle's `dsh-tui-permission-compat` host
+/// plugin fixes that on the profile path, so this hints at a host that runs
+/// without the compat layer (e.g. a standalone `dsh-acp`).
+fn permission_switch_failure_hint(message: &str) -> &'static str {
+    if message.contains("permission/preset") && message.contains("non-JSON-serializable") {
+        " — host rejected the permission/preset event: the profile's dsh is newer than the bundled ACP adapter; update Martty (dsh-tui-permission-compat) or pin @deepseek-ai/dsh to 0.1.0-rc.8"
+    } else if message.contains("unknown mode") || message.contains("unknown permission preset") {
+        " — /permission opens the preset picker"
+    } else {
+        ""
+    }
+}
+
 pub(crate) fn initialize_request() -> InitializeRequest {
     InitializeRequest::new(ProtocolVersion::V1)
         .client_info(Implementation::new("dsh-tui", env!("CARGO_PKG_VERSION")))
@@ -1860,6 +1877,10 @@ where
                                     );
                                 }
                                 Err(err) => {
+                                    // Config-option "mode" is the fallback
+                                    // switch surface on hosts where
+                                    // session/set_mode is not the active one;
+                                    // both routes share the host applyMode.
                                     let _ = cx
                                         .send_request(SetSessionConfigOptionRequest::new(
                                             sid,
@@ -1868,9 +1889,13 @@ where
                                         ))
                                         .block_task()
                                         .await;
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                                        "permission → {preset} ({err})"
-                                    ))));
+                                    let message = acp_error_message(&err);
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                                        format!(
+                                            "permission switch failed: {message}{}",
+                                            permission_switch_failure_hint(&message)
+                                        ),
+                                    )));
                                 }
                             }
                         }
@@ -2325,6 +2350,26 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn permission_switch_failure_hint_maps_host_rejections() {
+        // dsh >= 0.1.1-rc.1 rejecting the undefined origin gets the compat hint.
+        let new_dsh = permission_switch_failure_hint(
+            "session event \"permission/preset\" carries non-JSON-serializable data",
+        );
+        assert!(new_dsh.contains("dsh-tui-permission-compat"), "{new_dsh}");
+        assert!(new_dsh.contains("0.1.0-rc.8"), "{new_dsh}");
+
+        // Unknown presets keep the picker hint.
+        let unknown = permission_switch_failure_hint("Invalid params: unknown mode: nope");
+        assert!(
+            unknown.contains("/permission opens the preset picker"),
+            "{unknown}"
+        );
+
+        // Anything else stays unadorned.
+        assert_eq!(permission_switch_failure_hint("some other failure"), "");
+    }
 
     #[test]
     fn dynamic_plugin_inventory_uses_the_backend_current_package_and_run_state() {

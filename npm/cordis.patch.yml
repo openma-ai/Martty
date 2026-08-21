@@ -23,6 +23,12 @@
     - id: tui-acp-host
       name: '@openma/deepseek-harness-tui/acp-host'
 
+    # Keeps session/set_mode working when the profile's dsh is newer than the
+    # bundled ACP adapter: defaults the permission/preset origin so the event
+    # data stays losslessly JSON-serializable (dsh >= 0.1.1-rc.1).
+    - id: tui-permission-compat
+      name: '@openma/deepseek-harness-tui/dsh-compat'
+
     - id: tui-host-creator
       name: '@openma/deepseek-harness-tui/creator-overlay'
 

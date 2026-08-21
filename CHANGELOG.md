@@ -66,6 +66,25 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Permission switching (`/permission`, shift+tab) no longer fails when the
+  profile's dsh is newer than the bundled ACP adapter
+  (`@deepseek-ai/dsh` >= 0.1.1-rc.1): `dsh-permission-presets` records an
+  `origin` on every live switch and `dsh-session` rejects event data holding
+  `undefined`, which broke `session/set_mode` with
+  `session event "permission/preset" carries non-JSON-serializable data`. The
+  new `dsh-tui-permission-compat` host plugin defaults the adapter's omitted
+  origin to `"selection"`, keeping the switch working on both new and old
+  dsh. A failed switch is now reported as a warning with an actionable hint
+  instead of a success notice.
+- Harness slash commands no longer fail on `@deepseek-ai/dsh` >= 0.1.0-rc.8:
+  `dsh-commands` changed `execute` to take a composer-images argument, and
+  the bundled ACP adapter's three-argument calls made every command
+  (`/plan` via the `collaboration_mode` config option, plus typed
+  `/compact`, `/goal`, `/permission`, `/plan`) die with
+  `Cannot read properties of undefined (reading 'aborted')`. The same
+  `dsh-tui-permission-compat` plugin detects the legacy call shape and
+  inserts the empty images batch; the legacy three-parameter signature
+  passes through untouched.
 - The plan review window (the ACP elicitation form the agent opens with
   `exit_plan_mode`) now renders the plan markdown through the full markdown
   pipeline instead of truncating raw source lines: headings lose their `#`,
