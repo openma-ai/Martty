@@ -1,7 +1,7 @@
 /**
  * Gallery palette pack `catppuccin`. Registers complete token maps: dark
- * from the Catppuccin Mocha variant, the second map from Catppuccin Frappe —
- * both dark-ish variants of the Catppuccin family
+ * from the Catppuccin Mocha variant, light from Catppuccin Latte
+ * (terminalcolors.com/themes/catppuccin)
  * (terminalcolors.com/themes/catppuccin). Does not activate: `/theme`
  * covers it. `inject = ['tuiTheme']`: sibling profile row, not `ctx.plugin`
  * inside the runner.

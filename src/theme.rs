@@ -737,9 +737,9 @@ mod tests {
                 "catppuccin",
                 "Catppuccin",
                 Color::Rgb(137, 180, 250), // #89B4FA Catppuccin Mocha blue
-                Color::Rgb(140, 170, 238), // #8CAAEE Catppuccin Frappe blue
+                Color::Rgb(30, 102, 245),  // #1E66F5 Catppuccin Latte blue
                 Color::Rgb(30, 30, 46),    // #1E1E2E
-                Color::Rgb(48, 52, 70),    // #303446
+                Color::Rgb(239, 241, 245), // #EFF1F5
             ),
             (
                 "kanagawa",
