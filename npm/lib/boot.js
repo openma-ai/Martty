@@ -25,7 +25,6 @@ import { apply as applyGruvbox, inject as gruvboxInject } from './gruvbox.js'
 import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
 import { apply as applyNightOwl, inject as nightOwlInject } from './night-owl.js'
 import { apply as applyOneHalf, inject as oneHalfInject } from './one-half.js'
-import { apply as applySeoul256, inject as seoul256Inject } from './seoul256.js'
 import { apply as applySolarized, inject as solarizedInject } from './solarized.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
@@ -71,7 +70,6 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
     await ctx.plugin({ name: 'tui-theme-night-owl', inject: nightOwlInject, apply: applyNightOwl })
     await ctx.plugin({ name: 'tui-theme-one-half', inject: oneHalfInject, apply: applyOneHalf })
-    await ctx.plugin({ name: 'tui-theme-seoul256', inject: seoul256Inject, apply: applySeoul256 })
     await ctx.plugin({ name: 'tui-theme-solarized', inject: solarizedInject, apply: applySolarized })
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
@@ -129,7 +127,6 @@ export async function bootClient(options = {}) {
     applyIceberg(ctx)
     applyNightOwl(ctx)
     applyOneHalf(ctx)
-    applySeoul256(ctx)
     applySolarized(ctx)
     applySlots(ctx)
     applyCommands(ctx)

@@ -362,7 +362,6 @@ const GALLERY = [
   ['iceberg', 'Iceberg'],
   ['night-owl', 'Night Owl'],
   ['one-half', 'One Half'],
-  ['seoul256', 'Seoul256'],
   ['solarized', 'Solarized'],
 ]
 

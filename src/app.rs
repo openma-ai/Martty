@@ -8529,7 +8529,6 @@ mod palette_tests {
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
             "night-owl" => include_str!("../docs/fixtures/night-owl.v0.json"),
             "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
-            "seoul256" => include_str!("../docs/fixtures/seoul256.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown gallery fixture {id}"),
         };
@@ -8633,7 +8632,7 @@ mod palette_tests {
         let (mut app, ctl, _rx) = test_app();
         for id in [
             "one", "ayu", "catppuccin", "github", "kanagawa", "everforest", "gruvbox",
-            "iceberg", "night-owl", "one-half", "seoul256", "solarized",
+            "iceberg", "night-owl", "one-half", "solarized",
         ] {
             app.handle(
                 AppEvent::Rpc {

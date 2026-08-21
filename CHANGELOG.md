@@ -24,7 +24,7 @@ All notable changes to this project are documented here. The project follows
   It registers at Client boot as a sibling insert row and is switchable via
   `/theme`.
 - New gallery palette packs `everforest`, `gruvbox`, `iceberg`, `night-owl`,
-  `one-half`, `seoul256` and `solarized` (each with complete dark and light
+  `one-half` and `solarized` (each with complete dark and light
   variant maps), sourced from terminalcolors.com/themes. They register at
   Client boot as sibling insert rows and are switchable via `/theme`.
 - New gallery palette pack `one` (dark from One Dark, light from One Light),

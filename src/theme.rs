@@ -720,7 +720,6 @@ mod tests {
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
             "night-owl" => include_str!("../docs/fixtures/night-owl.v0.json"),
             "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
-            "seoul256" => include_str!("../docs/fixtures/seoul256.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown fixture {name}"),
         }
@@ -810,14 +809,6 @@ mod tests {
                 Color::Rgb(1, 132, 188),   // #0184BC
                 Color::Rgb(40, 44, 52),    // #282C34
                 Color::Rgb(250, 250, 250), // #FAFAFA
-            ),
-            (
-                "seoul256",
-                "Seoul256",
-                Color::Rgb(133, 173, 212), // #85ADD4
-                Color::Rgb(95, 135, 174),  // #5F87AE
-                Color::Rgb(58, 58, 58),    // #3A3A3A
-                Color::Rgb(218, 218, 218), // #DADADA
             ),
             (
                 "solarized",
