@@ -715,6 +715,13 @@ mod tests {
             "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
             "ghostty" => include_str!("../docs/fixtures/ghostty.v0.json"),
             "one" => include_str!("../docs/fixtures/one.v0.json"),
+            "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
+            "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
+            "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
+            "night-owl" => include_str!("../docs/fixtures/night-owl.v0.json"),
+            "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
+            "seoul256" => include_str!("../docs/fixtures/seoul256.v0.json"),
+            "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown fixture {name}"),
         }
         .parse::<serde_json::Value>()
@@ -759,10 +766,66 @@ mod tests {
             (
                 "one",
                 "One",
-                Color::Rgb(97, 175, 239), // #61AFEF One Dark blue
-                Color::Rgb(47, 90, 243),  // #2F5AF3 One Light blue
-                Color::Rgb(40, 44, 52),   // #282C34
+                Color::Rgb(97, 175, 239),  // #61AFEF One Dark blue
+                Color::Rgb(47, 90, 243),   // #2F5AF3 One Light blue
+                Color::Rgb(40, 44, 52),    // #282C34
                 Color::Rgb(248, 248, 248), // #F8F8F8
+            ),
+            (
+                "everforest",
+                "Everforest",
+                Color::Rgb(127, 187, 179), // #7FBBB3
+                Color::Rgb(58, 148, 197),  // #3A94C5
+                Color::Rgb(45, 53, 59),    // #2D353B
+                Color::Rgb(253, 246, 227), // #FDF6E3
+            ),
+            (
+                "gruvbox",
+                "Gruvbox",
+                Color::Rgb(69, 133, 136),  // #458588 (both modes)
+                Color::Rgb(69, 133, 136),  // #458588
+                Color::Rgb(40, 40, 40),    // #282828
+                Color::Rgb(251, 241, 199), // #FBF1C7
+            ),
+            (
+                "iceberg",
+                "Iceberg",
+                Color::Rgb(132, 160, 198), // #84A0C6
+                Color::Rgb(45, 83, 158),   // #2D539E
+                Color::Rgb(22, 24, 33),    // #161821
+                Color::Rgb(232, 233, 236), // #E8E9EC
+            ),
+            (
+                "night-owl",
+                "Night Owl",
+                Color::Rgb(130, 170, 255), // #82AAFF
+                Color::Rgb(40, 142, 215),  // #288ED7
+                Color::Rgb(1, 22, 39),     // #011627
+                Color::Rgb(246, 246, 246), // #F6F6F6
+            ),
+            (
+                "one-half",
+                "One Half",
+                Color::Rgb(97, 175, 239),  // #61AFEF
+                Color::Rgb(1, 132, 188),   // #0184BC
+                Color::Rgb(40, 44, 52),    // #282C34
+                Color::Rgb(250, 250, 250), // #FAFAFA
+            ),
+            (
+                "seoul256",
+                "Seoul256",
+                Color::Rgb(133, 173, 212), // #85ADD4
+                Color::Rgb(95, 135, 174),  // #5F87AE
+                Color::Rgb(58, 58, 58),    // #3A3A3A
+                Color::Rgb(218, 218, 218), // #DADADA
+            ),
+            (
+                "solarized",
+                "Solarized",
+                Color::Rgb(38, 139, 210),  // #268BD2 (both modes)
+                Color::Rgb(38, 139, 210),  // #268BD2
+                Color::Rgb(0, 43, 54),     // #002B36
+                Color::Rgb(253, 246, 227), // #FDF6E3
             ),
         ] {
             let pack = PalettePack::from_json(&fixture_json(name)).expect("gallery fixture");

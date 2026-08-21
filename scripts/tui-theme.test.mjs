@@ -357,6 +357,13 @@ const GALLERY = [
   ['nvim', 'Nvim'],
   ['ghostty', 'Ghostty'],
   ['one', 'One'],
+  ['everforest', 'Everforest'],
+  ['gruvbox', 'Gruvbox'],
+  ['iceberg', 'Iceberg'],
+  ['night-owl', 'Night Owl'],
+  ['one-half', 'One Half'],
+  ['seoul256', 'Seoul256'],
+  ['solarized', 'Solarized'],
 ]
 
 test('npm gallery palettes match docs/fixtures v0.json', () => {

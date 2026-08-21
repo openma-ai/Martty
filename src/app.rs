@@ -8524,6 +8524,13 @@ mod palette_tests {
             "nvim" => include_str!("../docs/fixtures/nvim.v0.json"),
             "ghostty" => include_str!("../docs/fixtures/ghostty.v0.json"),
             "one" => include_str!("../docs/fixtures/one.v0.json"),
+            "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
+            "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
+            "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
+            "night-owl" => include_str!("../docs/fixtures/night-owl.v0.json"),
+            "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
+            "seoul256" => include_str!("../docs/fixtures/seoul256.v0.json"),
+            "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown gallery fixture {id}"),
         };
         let palette: serde_json::Value = serde_json::from_str(fixture).unwrap();
@@ -8624,7 +8631,10 @@ mod palette_tests {
     #[test]
     fn slash_theme_switches_between_gallery_packs() {
         let (mut app, ctl, _rx) = test_app();
-        for id in ["ayu", "nord", "nvim", "ghostty", "one"] {
+        for id in [
+            "ayu", "nord", "nvim", "ghostty", "one", "everforest", "gruvbox", "iceberg",
+            "night-owl", "one-half", "seoul256", "solarized",
+        ] {
             app.handle(
                 AppEvent::Rpc {
                     method: crate::cordis::THEME_UPDATE.into(),
@@ -8685,6 +8695,10 @@ mod palette_tests {
         );
         assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
         assert_eq!(app.theme.brand, Color::Rgb(97, 175, 239)); // #61AFEF One Dark blue
+        app.run_slash("theme", "solarized", &ctl);
+        assert_eq!(app.active_palette_id, "solarized");
+        // Solarized keeps the same blue in both modes.
+        assert_eq!(app.theme.brand, Color::Rgb(38, 139, 210)); // #268BD2
     }
 
     #[test]

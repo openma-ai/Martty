@@ -20,6 +20,13 @@ import { apply as applyNord, inject as nordInject } from './nord.js'
 import { apply as applyNvim, inject as nvimInject } from './nvim.js'
 import { apply as applyGhostty, inject as ghosttyInject } from './ghostty.js'
 import { apply as applyOne, inject as oneInject } from './one.js'
+import { apply as applyEverforest, inject as everforestInject } from './everforest.js'
+import { apply as applyGruvbox, inject as gruvboxInject } from './gruvbox.js'
+import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
+import { apply as applyNightOwl, inject as nightOwlInject } from './night-owl.js'
+import { apply as applyOneHalf, inject as oneHalfInject } from './one-half.js'
+import { apply as applySeoul256, inject as seoul256Inject } from './seoul256.js'
+import { apply as applySolarized, inject as solarizedInject } from './solarized.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
 import { apply as applyPresets, inject as presetsInject } from './tui-presets.js'
@@ -59,6 +66,13 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-theme-nvim', inject: nvimInject, apply: applyNvim })
     await ctx.plugin({ name: 'tui-theme-ghostty', inject: ghosttyInject, apply: applyGhostty })
     await ctx.plugin({ name: 'tui-theme-one', inject: oneInject, apply: applyOne })
+    await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
+    await ctx.plugin({ name: 'tui-theme-gruvbox', inject: gruvboxInject, apply: applyGruvbox })
+    await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
+    await ctx.plugin({ name: 'tui-theme-night-owl', inject: nightOwlInject, apply: applyNightOwl })
+    await ctx.plugin({ name: 'tui-theme-one-half', inject: oneHalfInject, apply: applyOneHalf })
+    await ctx.plugin({ name: 'tui-theme-seoul256', inject: seoul256Inject, apply: applySeoul256 })
+    await ctx.plugin({ name: 'tui-theme-solarized', inject: solarizedInject, apply: applySolarized })
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
@@ -110,6 +124,13 @@ export async function bootClient(options = {}) {
     applyNvim(ctx)
     applyGhostty(ctx)
     applyOne(ctx)
+    applyEverforest(ctx)
+    applyGruvbox(ctx)
+    applyIceberg(ctx)
+    applyNightOwl(ctx)
+    applyOneHalf(ctx)
+    applySeoul256(ctx)
+    applySolarized(ctx)
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
