@@ -1969,7 +1969,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
 /// `app.show_banner` is set; it dives on the first real prompt.
 fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let theme = &app.theme;
-    let mut out = vec![Line::default()];
+    let mut out = vec![Line::default(), Line::default()];
     out.extend(logo::martty_logo_lines(theme, width));
     out.push(Line::default());
 
@@ -2624,6 +2624,22 @@ mod tests {
             !dump_frame(&mut app, 84, 40).contains("██████"),
             "whale dives once the banner is dismissed"
         );
+    }
+
+    #[test]
+    fn welcome_block_starts_two_rows_below_the_chat_top() {
+        let app = test_app();
+        let lines = banner_lines(&app, 84);
+        let plain = |line: &Line<'_>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        assert_eq!(plain(&lines[0]), "");
+        assert_eq!(plain(&lines[1]), "");
+        assert!(plain(&lines[2]).contains('█'), "logo begins after two rows");
     }
 
     #[test]
