@@ -718,7 +718,6 @@ mod tests {
             "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
             "gruvbox" => include_str!("../docs/fixtures/gruvbox.v0.json"),
             "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
-            "night-owl" => include_str!("../docs/fixtures/night-owl.v0.json"),
             "one-half" => include_str!("../docs/fixtures/one-half.v0.json"),
             "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
             _ => panic!("unknown fixture {name}"),
@@ -793,14 +792,6 @@ mod tests {
                 Color::Rgb(45, 83, 158),   // #2D539E
                 Color::Rgb(22, 24, 33),    // #161821
                 Color::Rgb(232, 233, 236), // #E8E9EC
-            ),
-            (
-                "night-owl",
-                "Night Owl",
-                Color::Rgb(130, 170, 255), // #82AAFF
-                Color::Rgb(40, 142, 215),  // #288ED7
-                Color::Rgb(1, 22, 39),     // #011627
-                Color::Rgb(246, 246, 246), // #F6F6F6
             ),
             (
                 "one-half",

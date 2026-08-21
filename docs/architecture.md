@@ -129,7 +129,7 @@ palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。
 Mocha、第二张表=Catppuccin Frappe）、`github`（dark=GitHub Dark、第二张表
 =GitHub Dark Dimmed）、`kanagawa`（dark=Kanagawa Wave、light=Kanagawa
 Lotus）、`one`（dark=One Dark、light=One
-Light）与 `everforest` / `gruvbox` / `iceberg` / `night-owl` / `one-half` /
+Light）与 `everforest` / `gruvbox` / `iceberg` / `one-half` /
 `solarized`（均为 dark+light 双变体），色值取自
 [terminalcolors.com](https://terminalcolors.com/themes/)，随 Client boot
 以 sibling insert 行注册，`/theme` 直接可切。

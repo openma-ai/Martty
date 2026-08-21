@@ -360,7 +360,6 @@ const GALLERY = [
   ['everforest', 'Everforest'],
   ['gruvbox', 'Gruvbox'],
   ['iceberg', 'Iceberg'],
-  ['night-owl', 'Night Owl'],
   ['one-half', 'One Half'],
   ['solarized', 'Solarized'],
 ]

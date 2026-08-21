@@ -23,7 +23,7 @@ All notable changes to this project are documented here. The project follows
   token map from Ayu Mirage), sourced from terminalcolors.com/themes/ayu.
   It registers at Client boot as a sibling insert row and is switchable via
   `/theme`.
-- New gallery palette packs `everforest`, `gruvbox`, `iceberg`, `night-owl`,
+- New gallery palette packs `everforest`, `gruvbox`, `iceberg`,
   `one-half` and `solarized` (each with complete dark and light
   variant maps), sourced from terminalcolors.com/themes. They register at
   Client boot as sibling insert rows and are switchable via `/theme`.
