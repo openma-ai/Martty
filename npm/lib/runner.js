@@ -12,7 +12,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-tui-runner'
-export const inject = ['loader', 'acpServer', 'cmdlineArgs', 'appExit']
+export const inject = ['loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins']
 
 const clientEntry = fileURLToPath(new URL('./client-process.js', import.meta.url))
 const requireFromTui = createRequire(import.meta.url)
@@ -44,7 +44,10 @@ export async function apply(ctx) {
       // ACP owns the Client process's stdin/stdout. Its fd 3/4 retain the
       // user's terminal for the Rust painter spawned inside that process.
       stdio: ['pipe', 'pipe', 'inherit', process.stdin, process.stdout],
-      env: process.env,
+      env: {
+        ...process.env,
+        DSH_TUI_CLIENT_PLUGINS_V0: JSON.stringify(ctx.tuiClientPlugins.list()),
+      },
     },
   )
   const agentToClient = child.stdin

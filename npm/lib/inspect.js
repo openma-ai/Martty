@@ -162,7 +162,7 @@ export function uiPresetInspectProvider(tuiPresets) {
               'A synchronous callback that mounts multiple UI contributions and returns one disposer.',
           },
           selection: '/ui <id>',
-          persistence: 'The selected id survives restart in dsh-tui-settings.json.',
+          persistence: 'The selected id survives restart in $MARTTY_HOME/settings.json.',
         },
       }
     },
@@ -754,6 +754,7 @@ async function mountClientHalf(
  *   acpSessionPlan?: object,
  *   acpSessionStats?: object,
  *   acpSessionStatus?: object,
+ *   localPlugins?: object,
  *   requestAgent: (method: string, params?: object) => Promise<unknown>,
  * }} opts
  * @returns {{ onHost: (message: object) => void }}
@@ -761,7 +762,7 @@ async function mountClientHalf(
 export function attachTuiClient(opts) {
   const {
     ctx, tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
-    acpSessionStats, acpSessionStatus,
+    acpSessionStats, acpSessionStatus, localPlugins,
     requestAgent,
   } = opts
   const providers = [
@@ -779,6 +780,19 @@ export function attachTuiClient(opts) {
   /** @type {Map<string, () => void>} */
   const loaded = new Map()
   const pendingThemeSelections = new Map()
+
+  async function stopOwner(agentId, pluginId) {
+    if (localPlugins?.has?.(pluginId) === true) {
+      await localPlugins.stop(pluginId)
+      return
+    }
+    const stopped = await requestAgent(CORDIS_METHODS.pluginStop, { agentId, pluginId })
+    if (stopped?.ok === false) {
+      throw new Error(typeof stopped.message === 'string'
+        ? stopped.message
+        : `failed to stop theme Plugin "${pluginId}"`)
+    }
+  }
 
   function sync() {
     void requestAgent(CORDIS_METHODS.inspectSync, { providers: providers.map((provider) => provider.manifest) }).catch(() => {
@@ -905,15 +919,7 @@ export function attachTuiClient(opts) {
         && previousThemeOwner !== undefined
         && previousThemeOwner !== selectedThemeOwner) {
         try {
-          const stopped = await requestAgent(CORDIS_METHODS.pluginStop, {
-            agentId: request.agentId,
-            pluginId: previousThemeOwner,
-          })
-          if (stopped?.ok === false) {
-            throw new Error(typeof stopped.message === 'string'
-              ? stopped.message
-              : `failed to stop theme Plugin "${previousThemeOwner}"`)
-          }
+          await stopOwner(request.agentId, previousThemeOwner)
         } catch (error) {
           if (loaded.get(request.pluginId) === applied.dispose) {
             loaded.delete(request.pluginId)
@@ -981,19 +987,31 @@ export function attachTuiClient(opts) {
     const previousOwner = tuiTheme.owner?.(previousId)
     const targetOwner = tuiTheme.owner?.(request.id)
 
+    if (targetOwner !== undefined && localPlugins?.has?.(targetOwner) === true) {
+      if (localPlugins.isLoaded?.(targetOwner) !== true) {
+        await localPlugins.start(targetOwner)
+      }
+      if (tuiTheme.isLoaded?.(request.id) !== true) {
+        throw new Error(`local theme Plugin "${targetOwner}" did not load palette "${request.id}"`)
+      }
+      tuiTheme.activate(request.id)
+      if (previousOwner !== undefined && previousOwner !== targetOwner) {
+        try {
+          await stopOwner(request.agentId, previousOwner)
+        } catch (error) {
+          await localPlugins.stop(targetOwner)
+          if (tuiTheme.isLoaded?.(previousId) === true) tuiTheme.activate(previousId)
+          throw error
+        }
+      }
+      return { ok: true, status: 'selected', id: request.id }
+    }
+
     if (targetOwner === undefined || loaded.has(targetOwner)) {
       tuiTheme.activate(request.id)
       if (previousOwner !== undefined && previousOwner !== targetOwner) {
         try {
-          const stopped = await requestAgent(CORDIS_METHODS.pluginStop, {
-            agentId: request.agentId,
-            pluginId: previousOwner,
-          })
-          if (stopped?.ok === false) {
-            throw new Error(typeof stopped.message === 'string'
-              ? stopped.message
-              : `failed to stop theme Plugin "${previousOwner}"`)
-          }
+          await stopOwner(request.agentId, previousOwner)
         } catch (error) {
           if (tuiTheme.isLoaded?.(previousId) === true) tuiTheme.activate(previousId)
           throw error
@@ -1043,13 +1061,14 @@ export function apply(ctx) {
   const acpSessionPlan = ctx.acpSessionPlan ?? ctx.get?.('acpSessionPlan')
   const acpSessionStats = ctx.acpSessionStats ?? ctx.get?.('acpSessionStats')
   const acpSessionStatus = ctx.acpSessionStatus ?? ctx.get?.('acpSessionStatus')
+  const localPlugins = ctx.get?.('tuiLocalPlugins')
   let client
   const service = {
     bindTransport(requestAgent) {
       client?.dispose()
       client = attachTuiClient({
         ctx, tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
-        acpSessionStats, acpSessionStatus,
+        acpSessionStats, acpSessionStatus, localPlugins,
         requestAgent,
       })
       const attached = client

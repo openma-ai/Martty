@@ -298,7 +298,7 @@ The welcome surface is a composable UI Preset. Built-in `default` (Martty) and
 `deepseek` each mount a centered `welcome.hero` (`logo + hint`) and a separate
 dynamic `welcome.info` slot. `/ui` opens the native select form, `/ui ` reuses
 the upward slash menu for candidates, and the choice persists in
-`dsh-tui-settings.json`.
+`$MARTTY_HOME/settings.json`.
 
 ### UI Preset vs Agent Preset
 
@@ -307,16 +307,16 @@ composition—but they live on different Cordis trees and remain separate:
 
 | | Agent Preset | UI Preset |
 |---|---|---|
-| Composes | Host/Agent system prompt, tools, skills, and runtime capabilities | Client UI themes, slots, pets, commands, and overlays |
+| Composes | Host/Agent system prompt, tools, skills, and runtime capabilities | Client UI slots, pets, chrome, and other structural contributions |
 | Switch with | `/agent` | `/ui` |
 | Built-ins | Agent compositions such as standard, code, minimal, and cordis | `default` (Martty) and `deepseek` |
-| Persistence | Session/Agent selection | UI selection in `dsh-tui-settings.json` |
+| Persistence | Session/Agent selection | UI selection in `$MARTTY_HOME/settings.json` |
 
 Creator mode can inspect the real `UiPresets`, `Theme`, `Slots`, `Commands`,
 and `Overlay` contracts, generate a dynamic Package with `code.client`, and
 call `tuiPresets.register({ id, label }, mount)` to create a new UI Preset.
-The mount callback composes that Preset's theme, welcome slots, pet, or other UI
-contributions. Once the Package is saved and mounted, the new Preset appears in
+The mount callback composes that Preset's welcome slots, pet, or other structural
+UI contributions. Once the Package is saved and mounted, the new Preset appears in
 both the `/ui` form and `/ui ` candidates and shares the same switching,
 persistence, and unload lifecycle. Creator produces an ordinary Client Plugin
 composition; it does not receive the TTY, absolute coordinates, or a way around

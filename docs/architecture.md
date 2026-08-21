@@ -32,7 +32,9 @@ Server 插件要让任意 client 看见：投影成标准 ACP（命令、config�
 
 ```text
 Host 进程：Base Cordis + ACP plugin
+  tui-client-plugin-registry 收集已安装 package 的绝对 Client entry
         │ TUI Client 子进程的标准 stdin/stdout（ACP）
+        │ runner 另以 JSON 环境快照传递 Client entry 目录（不传 Cordis 对象）
 Client 进程：独立 Cordis root
   第三方插件   sibling insert + inject ['tuiTheme' / 'tuiPresets' / 'tuiSlots']
   Client runner inject ['tuiTheme', 'tuiPresets', 'tuiSlots', ...]，执行 dsh-tool-cordis 的 code.client
@@ -50,6 +52,8 @@ Client 进程：独立 Cordis root
   tui-slots    提供 tuiSlots，声明 welcome.hero / welcome.info / chrome.right /
                conversation.input.dock / conversation.composer.dock
   tui-theme    提供 tuiTheme
+  tui-local-plugins 合并已安装 package entries 与 $MARTTY_HOME/plugins，
+               恢复 UI Preset，并按 /theme owner 启停 Theme Plugin
   acp-client   attach Host stdio，提供 acpClient
         │ Client 进程 fd 3/4 仅传 TTY
   Rust painter stdin/stdout 占 TTY；自己的 fd 3/4 是 compositor mux
@@ -138,7 +142,19 @@ UI Preset 是 UI Plugin 的组合，不等同于 Theme。`default`（Martty）�
 与帮助区。两套 preset 当前复用同一个原生动态 info renderer，但该区域可以独立被
 插件替换。旧 DeepSeek Harness 鲸鱼仍复用原版响应式 primitive。Rust 负责内部几何、
 水平居中与整个欢迎块的垂直居中；`/ui deepseek` / `/ui default` 切换并持久化到
-`dsh-tui-settings.json`。
+`$MARTTY_HOME/settings.json`。
+
+Creator 的 `cordis_define/run` Package 属于 Session 进程内预览。显式保存后，Client
+源码以 `$MARTTY_HOME/plugins/<artifact-id>/plugin.json` 为磁盘真源；Client 启动时
+重新发现。第三方 package 则继续由 dsh profile 安装，其 Host registrar 只向
+`tuiClientPlugins` 登记 `{ id, kind, entry }`，runner 把这个可序列化快照交给独立
+Client import。两类来源进入同一个 lifecycle manager；同 id 时安装 package 优先。
+UI Preset 只组合结构性 UI contribution，不拥有 Theme；保存的 `uiPreset`、`theme`
+和 dark/light 相互独立。
+
+`MARTTY_HOME` 依次取显式环境变量、`$DSH_HOME/.martty`、`~/.martty`。默认 Session
+根是 `$MARTTY_HOME/sessions`。旧 settings、Creator artifacts 与 Session 根只作为
+非破坏迁移/发现来源保留。
 
 ## 明确不做
 

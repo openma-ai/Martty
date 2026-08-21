@@ -76,12 +76,14 @@ transcript accumulator。没有 Client 树的运行（demo、独立 painter）�
 
 `tuiPresets` 把多个独立 UI Plugin contribution 组合成一个可持久化选择；它与
 组合 Host/Agent 能力的 Agent Preset 分属 Client/Host 两棵树，也不是 Theme 的别名。
-`ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 可同时注册 Theme、slot、pet
-或其他 UI contribution，并返回统一 disposer。`/ui` 打开原生单选表单，`/ui ` 复用
+`ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 只组合结构性 UI
+contribution（slot、chrome、pet 等），并返回统一 disposer；它不注册、选择或生成
+Theme。`/ui`、`/theme` 与 dark/light 是三个独立状态维度。`/ui` 打开原生单选表单，`/ui ` 复用
 composer 上方的 slash 菜单列出候选，也可用 `/ui <id>` 直接切换；选择写入
-`dsh-tui-settings.json`，重启后恢复。Creator 可以 inspect `UiPresets` 与相邻 Client
-服务，生成调用 `tuiPresets.register` 的 `code.client` Package；保存并挂载后，新
-preset 自动进入这两个选择入口。
+`$MARTTY_HOME/settings.json`，重启后恢复。Creator 可以 inspect `UiPresets` 与相邻 Client
+服务，生成调用 `tuiPresets.register` 的 `code.client` Package；`cordis_define/run`
+只做当前进程预览，成功后必须由 `tui_plugin_save` 写入
+`$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，新 preset 才会在重启后恢复。
 
 内置 `default`（Martty）和 `deepseek` 两个 UI Preset 都装配两个 single root slot：
 
@@ -111,7 +113,8 @@ Token 名封闭：
 内置 `default` 仍是现在的冷蓝灰皮，永远不能替换或删除。`ctrl+t` 只在当前主题的
 dark/light 之间切。`/theme` 是一个特殊的 **Theme Plugin 单选开关**：选择一个 id
 会启动它所属的 Client Plugin，并停止此前选中的 Theme Plugin；选择 `default` 会
-停止当前动态 Theme Plugin。
+停止当前动态 Theme Plugin。显式选择的 theme id 与 `uiPreset` 并列写入
+`$MARTTY_HOME/settings.json`；临时 Creator 预览和自动回退不会改写用户选择。
 
 一个 Theme Plugin 可以同时注册 palette、command、overlay、slot、timer、事务和
 Package 内 RPC。它们不写主题条件，也不订阅 active theme；它们只是同一个 Cordis
@@ -263,22 +266,56 @@ return {
 
 节点上不得写 RGB；着色只能引用 token 名。RGB 只出现在配色包的 `dark`/`light` 表里。
 
-## 加载
+## 持久化与加载
+
+TUI 合并三个来源，按 builtin、已安装 package、Creator artifact 的顺序装入同一
+`/ui` 与 `/theme` catalog：
+
+1. builtin 随 TUI 包发布；
+2. 第三方 package 由 `dsh plugin --profile tui add <package-or-path>` 安装，其 Host
+   registrar 向 `tuiClientPlugins` 登记绝对 Client entry；Host runner 只把这份 JSON
+   清单交给独立 Client 进程；
+3. Creator artifact 位于 `$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，由
+   `tui_plugin_list/read/save/remove` 管理。已安装 package 与本地 artifact 同 id 时，
+   package 优先，本地项作为 shadowed diagnostic 保留而不执行。
+
+`MARTTY_HOME` 的解析顺序是显式环境变量、`$DSH_HOME/.martty`、`~/.martty`。
+旧 `$DSH_HOME/.tui-plugins` 与 `~/.dsh-tui/sessions/dsh-tui-settings.json` 在首次启动时
+只复制到新位置；不删除旧数据，也不覆盖已经存在的 Martty 数据。
+
+第三方包的 Host registrar 是普通 Cordis 插件：
+
+```js
+export const inject = ['tuiClientPlugins']
+export function apply(ctx) {
+  return ctx.tuiClientPlugins.register({
+    id: 'paper-lantern',
+    kind: 'theme',
+    entry: new URL('./client.js', import.meta.url).href,
+  })
+}
+```
+
+`client.js` 导出普通的 `inject` / `apply` Client Plugin。包自己的 bundle patch 把
+registrar 插入 Host profile；registrar 只登记可序列化 entry，不把 Host fiber、服务或
+插件树同步给 Client。
 
 Cordis **没有**「挂在某个插件实例下面」的父子指针。`tui-theme`、配色包、
-`tui-cordis-client-runner` 和 `tui-runner` 在 profile 里是 **平级 insert**。
+`tui-cordis-client-runner` 和 `tui-runner` 在 Client 树里是平级生命周期。
 
 真正等 TUI 能力的协议是服务名：
 
 1. `tui-theme` / `tui-slots` 分别提供 `ctx.tuiTheme` / `ctx.tuiSlots`。
 2. `tui-cordis-client-runner` 注入两者，向 Host 发布 inspect 目录并执行动态 `code.client`。
-3. 第三方插件声明对应 inject；服务不在就 PENDING，不靠 yaml 行序。
-4. 静态插件的 disposer 由 Cordis 收集，动态插件的贡献由 Client runner 收集。
+3. 第三方 Client module 声明对应 inject；服务不在就 PENDING，不靠 Host yaml 行序。
+4. package 与 Creator artifact 都经过相同的受限 Client facade；Theme owner 的
+   start/stop 与 UI Preset 的常驻 catalog 生命周期由 Client manager 收集。
 
 不要在 runner 里 `ctx.plugin(ember)` 来叠第三方。第三方包由组合层作为 sibling
 挂载。Web 的 `ctx.slots` 与终端的 `ctx.tuiSlots` 是不同服务。
 
-本地包走 `dsh plugin add ./path`，加载 **package exports**。新 insert 一行要重开 TUI 或以后的 `/refresh`。已挂配色包改源码后的热换按阶段落地。
+本地包走 `dsh plugin --profile tui add ./path`，加载 **package exports**。新 registrar
+要重开 TUI 或以后的 `/refresh`。已挂配色包改源码后的热换按阶段落地。
 
 ## 后续
 

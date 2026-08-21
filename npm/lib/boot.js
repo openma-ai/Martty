@@ -7,6 +7,7 @@
  */
 
 import { apply as applyAcpClient } from './acp-client.js'
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { apply as applyCordisClientRunner } from './inspect.js'
@@ -23,12 +24,17 @@ import { apply as applyStatsView, inject as statsViewInject } from './stats-view
 import { apply as applySessionStatus, inject as sessionStatusInject } from './acp-session-status.js'
 import { apply as applyStatusView, inject as statusViewInject } from './status-view.js'
 import { apply as applyDeepseekLogo, inject as deepseekLogoInject } from './deepseek-logo.js'
+import { createTuiPluginStore, marttyHome } from './tui-plugin-store.js'
+import { installTuiLocalPlugins } from './tui-local-plugins.js'
 
 /**
  * @param {object} [options]
  * @param {{ command: string, args?: string[] }} [options.agent]
  * @param {{ stdin: import('node:stream').Writable, stdout: import('node:stream').Readable, child?: import('node:child_process').ChildProcess }} [options.stream]
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
+ * @param {string} [options.settingsPath]
+ * @param {string} [options.artifactRoot]
+ * @param {Array<{ id: string, kind: 'theme' | 'ui-preset', entry: string }>} [options.packagePlugins]
  */
 export async function bootClient(options = {}) {
   const { Context } = await import('@deepseek-ai/cordis')
@@ -36,11 +42,13 @@ export async function bootClient(options = {}) {
   const acpConfig = options.stream !== undefined
     ? { stream: options.stream }
     : { agent: options.agent ?? resolveStackedAgent() }
-  const presetConfig = {
-    settingsPath: options.settingsPath ?? uiSettingsPath(options.extraArgs ?? []),
+  const settingsPath = options.settingsPath ?? uiSettingsPath(options.extraArgs ?? [])
+  if (options.settingsPath === undefined) {
+    migrateLegacyUiSettings(settingsPath, legacyUiSettingsPaths(options.extraArgs ?? []))
   }
+  const presetConfig = { settingsPath }
   if (typeof ctx.plugin === 'function') {
-    await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme })
+    await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
@@ -52,6 +60,20 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'acp-session-status', inject: sessionStatusInject, apply: applySessionStatus })
     await ctx.plugin({ name: 'status-view', inject: statusViewInject, apply: applyStatusView })
     await ctx.plugin({ name: 'deepseek-logo', inject: deepseekLogoInject, apply: applyDeepseekLogo })
+    const localPlugins = installTuiLocalPlugins(ctx, {
+      store: createTuiPluginStore({ root: options.artifactRoot }),
+      packages: options.packagePlugins ?? [],
+      tuiTheme: ctx.get('tuiTheme'),
+      tuiPresets: ctx.get('tuiPresets'),
+      tuiSlots: ctx.get('tuiSlots'),
+      tuiCommands: ctx.get('tuiCommands'),
+      tuiOverlay: ctx.get('tuiOverlay'),
+      acpSessionConfig: ctx.get('acpSessionConfig'),
+      acpSessionPlan: ctx.get('acpSessionPlan'),
+      acpSessionStats: ctx.get('acpSessionStats'),
+      acpSessionStatus: ctx.get('acpSessionStatus'),
+    })
+    await localPlugins.discover()
     await ctx.plugin({
       name: 'tui-cordis-client-runner',
       inject: [
@@ -72,7 +94,7 @@ export async function bootClient(options = {}) {
       { extraArgs: options.extraArgs ?? [], tty: options.tty },
     )
   } else {
-    applyTheme(ctx)
+    applyTheme(ctx, presetConfig)
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
@@ -84,19 +106,100 @@ export async function bootClient(options = {}) {
     applySessionStatus(ctx)
     applyStatusView(ctx)
     applyDeepseekLogo(ctx)
+    const localPlugins = installTuiLocalPlugins(ctx, {
+      store: createTuiPluginStore({ root: options.artifactRoot }),
+      packages: options.packagePlugins ?? [],
+      tuiTheme: ctx.tuiTheme,
+      tuiPresets: ctx.tuiPresets,
+      tuiSlots: ctx.tuiSlots,
+      tuiCommands: ctx.tuiCommands,
+      tuiOverlay: ctx.tuiOverlay,
+      acpSessionConfig: ctx.acpSessionConfig,
+      acpSessionPlan: ctx.acpSessionPlan,
+      acpSessionStats: ctx.acpSessionStats,
+      acpSessionStatus: ctx.acpSessionStatus,
+    })
+    await localPlugins.discover()
     applyCordisClientRunner(ctx)
     await applyShell(ctx, { extraArgs: options.extraArgs ?? [], tty: options.tty })
   }
   return ctx
 }
 
-export function uiSettingsPath(extraArgs = []) {
+/** Parse the Host registry snapshot passed across the process boundary. */
+export function parseClientPluginsEnv(value) {
+  if (value === undefined || value === '') return []
+  let parsed
+  try {
+    parsed = JSON.parse(value)
+  } catch (error) {
+    throw new Error(`dsh-tui: invalid installed Client plugin registry JSON: ${error.message}`)
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('dsh-tui: installed Client plugin registry must be an array')
+  }
+  return parsed.map((entry, index) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`dsh-tui: installed Client plugin entry ${index} must be an object`)
+    }
+    if (typeof entry.id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(entry.id)) {
+      throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid id`)
+    }
+    if (!['theme', 'ui-preset'].includes(entry.kind)) {
+      throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid kind`)
+    }
+    if (typeof entry.entry !== 'string') {
+      throw new Error(`dsh-tui: installed Client plugin entry ${index} has no file entry`)
+    }
+    let url
+    try {
+      url = new URL(entry.entry)
+    } catch {
+      throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid file entry`)
+    }
+    if (url.protocol !== 'file:') {
+      throw new Error(`dsh-tui: installed Client plugin entry ${index} must use a file URL`)
+    }
+    return { id: entry.id, kind: entry.kind, entry: url.href }
+  })
+}
+
+export function uiSettingsPath(extraArgs = [], env = process.env, userHome = homedir()) {
   for (let index = 0; index < extraArgs.length; index += 1) {
     if (extraArgs[index] === '--session-root' && typeof extraArgs[index + 1] === 'string') {
-      return path.join(extraArgs[index + 1], 'dsh-tui-settings.json')
+      return path.join(extraArgs[index + 1], 'settings.json')
     }
   }
-  return path.join(homedir(), '.dsh-tui', 'sessions', 'dsh-tui-settings.json')
+  return path.join(marttyHome(env, userHome), 'settings.json')
+}
+
+export function legacyUiSettingsPaths(extraArgs = [], userHome = homedir()) {
+  const paths = []
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    if (extraArgs[index] === '--session-root' && typeof extraArgs[index + 1] === 'string') {
+      paths.push(path.join(extraArgs[index + 1], 'dsh-tui-settings.json'))
+      break
+    }
+  }
+  paths.push(path.join(userHome, '.dsh-tui', 'sessions', 'dsh-tui-settings.json'))
+  return [...new Set(paths)]
+}
+
+export function migrateLegacyUiSettings(settingsPath, legacyPaths) {
+  if (existsSync(settingsPath)) return false
+  for (const legacyPath of legacyPaths) {
+    if (!existsSync(legacyPath)) continue
+    try {
+      const value = JSON.parse(readFileSync(legacyPath, 'utf8'))
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
+      mkdirSync(path.dirname(settingsPath), { recursive: true })
+      copyFileSync(legacyPath, settingsPath, constants.COPYFILE_EXCL)
+      return true
+    } catch {
+      // A malformed or racing legacy file must not block TUI startup.
+    }
+  }
+  return false
 }
 
 /**

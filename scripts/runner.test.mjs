@@ -68,7 +68,39 @@ const { restoreHostTty, shouldQuitOnPainterExit } = await import(
 )
 
 test('profile runner waits for the Host ACP server and launcher lifecycle', () => {
-  assert.deepEqual(runner.inject, ['loader', 'acpServer', 'cmdlineArgs', 'appExit'])
+  assert.deepEqual(runner.inject, [
+    'loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins',
+  ])
+})
+
+test('profile runner serializes installed package entries into the Client process', async () => {
+  runner.resetProfileRunnerForTests?.()
+  profileHarness.reset()
+  const entries = [{
+    id: 'paper-lantern',
+    kind: 'theme',
+    entry: 'file:///opt/example/paper-lantern.js',
+  }]
+  const ctx = {
+    loader: {
+      async import() {
+        return { nodeAcpStream: profileHarness.nodeAcpStream }
+      },
+    },
+    acpServer: profileHarness.makeServer('host-plugin'),
+    cmdlineArgs: { get: () => [] },
+    appExit() {},
+    tuiClientPlugins: { list: () => entries.map((entry) => ({ ...entry })) },
+    effect() {},
+  }
+
+  await runner.apply(ctx)
+
+  const spawned = profileHarness.state.clientSpawns[0]
+  assert.deepEqual(
+    JSON.parse(spawned.options.env.DSH_TUI_CLIENT_PLUGINS_V0),
+    entries,
+  )
 })
 
 test('profile runner connects Host ACP to a separate TUI Client process', async () => {
@@ -86,6 +118,7 @@ test('profile runner connects Host ACP to a separate TUI Client process', async 
     },
     acpServer: profileHarness.makeServer('host-plugin'),
     cmdlineArgs: { get: () => ['--workspace', '/tmp/eval'] },
+    tuiClientPlugins: { list: () => [] },
     appExit() {
       throw new Error('scoped appExit accessor must not own process shutdown')
     },
@@ -132,6 +165,7 @@ test('independent runner fibers own independent Client processes', async () => {
     },
     acpServer: profileHarness.makeServer(owner),
     cmdlineArgs: { get: () => [] },
+    tuiClientPlugins: { list: () => [] },
     appExit() {},
     effect(callback) {
       effects.push(callback())
@@ -165,6 +199,7 @@ test('a failed ACP connection retracts the Client process it already spawned', a
       },
     },
     cmdlineArgs: { get: () => [] },
+    tuiClientPlugins: { list: () => [] },
     appExit() {},
     effect() {},
   }
@@ -199,6 +234,7 @@ test('Client exit requests app shutdown before ACP cleanup settles', async () =>
     },
     acpServer: { connect: () => connection },
     cmdlineArgs: { get: () => [] },
+    tuiClientPlugins: { list: () => [] },
     appExit() {
       throw new Error('scoped appExit accessor must not own process shutdown')
     },

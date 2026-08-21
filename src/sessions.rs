@@ -40,15 +40,21 @@ pub fn workspace_slug(workspace: &str) -> String {
 
 /// Candidate session roots, existing ones only: the configured root plus
 /// the local dsh store.
-fn session_roots(cfg_root: &str) -> Vec<PathBuf> {
+fn session_roots_from(cfg_root: &str, home: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from(cfg_root)];
-    if let Ok(home) = std::env::var("HOME") {
-        roots.push(Path::new(&home).join(".dsh").join("sessions"));
+    if let Some(home) = home {
+        roots.push(home.join(".dsh").join("sessions"));
+        roots.push(home.join(".dsh-tui").join("sessions"));
     }
     roots.sort();
     roots.dedup();
     roots.retain(|r| r.is_dir());
     roots
+}
+
+fn session_roots(cfg_root: &str) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    session_roots_from(cfg_root, home.as_deref())
 }
 
 /// The session log inside one session directory, preferring the live
@@ -304,6 +310,22 @@ mod tests {
         );
         assert_eq!(sessions[1].title, None);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn legacy_dsh_tui_sessions_remain_discoverable_after_the_martty_move() {
+        let home =
+            std::env::temp_dir().join(format!("martty-legacy-sessions-{}", std::process::id()));
+        let current = home.join(".martty/sessions");
+        let legacy = home.join(".dsh-tui/sessions");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        let roots = session_roots_from(current.to_str().unwrap(), Some(&home));
+
+        assert!(roots.contains(&current));
+        assert!(roots.contains(&legacy));
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

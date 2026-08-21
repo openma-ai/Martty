@@ -57,6 +57,20 @@ The package carries ACP as a runtime dependency and exports its Creator Host
 overlay internally. The profile bundle mounts both on the Host Base tree;
 neither enters the Client tree. Creator adds TUI plugin guidance to the
 existing `cordis` preset and does not use ACP for skill registration.
+Creator-authored UI Presets and Theme Plugins preview as process-local dynamic
+Packages, then persist explicitly under `$MARTTY_HOME/plugins` through
+`tui_plugin_save`; `tui_plugin_read` resumes authoring after restart.
+
+`MARTTY_HOME` resolves explicitly first, then to `$DSH_HOME/.martty`, then to
+`~/.martty`. UI choices live in `$MARTTY_HOME/settings.json`. On first use,
+legacy Creator artifacts and settings are copied forward without deleting or
+overwriting the old files.
+
+Third-party TUI plugins remain ordinary installed packages. Their Host-side
+registrar contributes an absolute Client module entry to `tuiClientPlugins`;
+the Host runner serializes only that directory into the separate Client
+process. Package entries and Creator artifacts share one Client lifecycle
+manager, with installed packages winning same-id conflicts.
 
 Node and Rust use inherited pipes on Unix and an authenticated loopback TCP
 socket on Windows. This compositor channel carries theme/render data only;

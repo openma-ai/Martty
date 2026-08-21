@@ -24,7 +24,7 @@ use crate::controller::Controller;
 use crate::events::parse_notification;
 use crate::input::Action;
 use crate::locale::{Locale, UiSettings};
-use crate::runtime::RuntimeConfig;
+use crate::runtime::{legacy_settings_path, settings_path, RuntimeConfig};
 use crate::theme::Theme;
 use crate::transcript::{clamp_str, NoticeLevel, Transcript};
 
@@ -2665,14 +2665,35 @@ impl App {
     }
 
     fn locale_settings_path(cfg: &RuntimeConfig) -> std::path::PathBuf {
-        std::path::Path::new(&cfg.session_root).join("dsh-tui-settings.json")
+        settings_path(&cfg.session_root)
     }
 
     fn load_settings(cfg: &RuntimeConfig) -> UiSettings {
-        std::fs::read_to_string(Self::locale_settings_path(cfg))
+        let current = Self::locale_settings_path(cfg);
+        if let Some(settings) = std::fs::read_to_string(&current)
             .ok()
             .and_then(|text| serde_json::from_str::<UiSettings>(&text).ok())
-            .unwrap_or_default()
+        {
+            return settings;
+        }
+        if current.exists() {
+            return UiSettings::default();
+        }
+        let legacy = legacy_settings_path(&cfg.session_root);
+        let Some((text, settings)) = std::fs::read_to_string(legacy).ok().and_then(|text| {
+            serde_json::from_str::<UiSettings>(&text)
+                .ok()
+                .map(|settings| (text, settings))
+        }) else {
+            return UiSettings::default();
+        };
+        if let Some(dir) = current.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if !current.exists() {
+            let _ = std::fs::write(current, text);
+        }
+        settings
     }
 
     fn save_settings(&self) {
@@ -2680,11 +2701,13 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let current = Self::load_settings(&self.cfg);
-        if let Ok(text) = serde_json::to_string_pretty(&UiSettings {
-            language: self.locale,
-            ui_preset: current.ui_preset,
-        }) {
+        let mut current: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .filter(|value: &serde_json::Value| value.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        current["language"] = serde_json::json!(self.locale);
+        if let Ok(text) = serde_json::to_string_pretty(&current) {
             let _ = std::fs::write(path, text);
         }
     }
@@ -5841,9 +5864,10 @@ mod mode_tests {
     #[test]
     fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
         let cfg = test_cfg();
+        let legacy = std::path::Path::new(&cfg.session_root).join("dsh-tui-settings.json");
         std::fs::write(
-            App::locale_settings_path(&cfg),
-            r#"{"language":"en","uiPreset":"deepseek"}"#,
+            &legacy,
+            r#"{"language":"en","uiPreset":"deepseek","theme":"ember"}"#,
         )
         .expect("seed UI preset selection");
         let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
@@ -5874,6 +5898,23 @@ mod mode_tests {
             "{frame}"
         );
         assert_eq!(restarted.ui_preset, "deepseek", "/lang preserves UI Preset");
+        let current = std::path::Path::new(&restarted.cfg.session_root).join("settings.json");
+        assert!(
+            current.is_file(),
+            "legacy settings migrate to the Martty filename"
+        );
+        assert!(
+            legacy.is_file(),
+            "migration preserves the legacy settings file"
+        );
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(current).expect("read migrated Martty settings"),
+        )
+        .unwrap();
+        assert_eq!(
+            saved["theme"], "ember",
+            "/lang preserves Client-owned settings"
+        );
     }
 
     #[test]

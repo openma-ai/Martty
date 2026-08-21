@@ -30,16 +30,23 @@ const shellStateKey = Symbol.for('@openma/deepseek-harness-tui/shell-state')
  *   livePainter: null | ({ muxed: boolean } & Awaited<ReturnType<typeof spawnPluginTui>>),
  *   startingPainter: null | Promise<{ muxed: boolean } & Awaited<ReturnType<typeof spawnPluginTui>>>,
  *   refuseRespawn: boolean,
+ *   processExitListener: null | (() => void),
  * }}
  */
 const shellState = globalThis[shellStateKey] ??= {
   livePainter: null,
   startingPainter: null,
   refuseRespawn: false,
+  processExitListener: null,
 }
+if (shellState.processExitListener === undefined) shellState.processExitListener = null
 
 /** Drop the sticky painter so tests can apply() more than once in-process. */
 export function resetShellForTests() {
+  if (shellState.processExitListener !== null) {
+    process.off('exit', shellState.processExitListener)
+    shellState.processExitListener = null
+  }
   shellState.livePainter = null
   shellState.startingPainter = null
   shellState.refuseRespawn = false
@@ -150,6 +157,10 @@ export async function applyShell(ctx, options = {}) {
         shellState.livePainter = live
         const { child } = live
         child.on('exit', (code, signal) => {
+          if (shellState.processExitListener === processExitListener) {
+            process.off('exit', processExitListener)
+            shellState.processExitListener = null
+          }
           try {
             agent.child?.kill('SIGTERM')
           } catch {
@@ -165,13 +176,15 @@ export async function applyShell(ctx, options = {}) {
           console.error(`dsh-tui: ${err.message}`)
           process.exit(1)
         })
-        process.once('exit', () => {
+        const processExitListener = () => {
           try {
             child.kill('SIGTERM')
           } catch {
             // already gone
           }
-        })
+        }
+        shellState.processExitListener = processExitListener
+        process.once('exit', processExitListener)
         return live
       })()
     }

@@ -82,10 +82,13 @@ test('Host entries resolve ACP from the TUI dependency graph through the profile
     acpServer: { connect: () => connection },
     cmdlineArgs: { get: () => [] },
     appExit() {},
+    tuiClientPlugins: { list: () => [] },
     effect() {},
   })
 
-  assert.deepEqual(runner.inject, ['loader', 'acpServer', 'cmdlineArgs', 'appExit'])
+  assert.deepEqual(runner.inject, [
+    'loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins',
+  ])
   assert.deepEqual(imports, [
     ownAcpPlugin,
     ownAcpBridge,
