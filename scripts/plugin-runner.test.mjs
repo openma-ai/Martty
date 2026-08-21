@@ -133,6 +133,11 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
       ctx.get('tuiCommands')?.list().some((command) => command.name === 'plan-view'),
       true,
     )
+    assert.equal(
+      ctx.get('tuiCommands')?.list().some((command) => command.name === 'deepseeklogo'),
+      true,
+      'the classic DeepSeek logo is a default Client Plugin command',
+    )
     assert.deepEqual(
       ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.input.dock')?.occupants,
       [{ id: 'plan-view', order: 0 }],

@@ -244,6 +244,10 @@ Unix 上 Node 与 Rust 使用 fd 3/4，Windows 使用带随机 token 的 loopbac
 
 界面内使用 `/help` 查看命令，使用 `/keys` 查看完整快捷键。
 
+`/deepseeklogo` 会通过内置 Client Plugin 打开经典的 DeepSeek Harness 大鲸鱼
+与 wordmark；它是 overlay，不会写入对话记录。新版启动锁屏中 `MAR` 使用海洋
+蓝白渐变，`TTY` 使用终端主题的黑/白前景色。
+
 <p align="center">
   <img src="assets/screenshots/skills-menu.png" width="720"
        alt="内置命令与 host skills 共享的斜杠菜单" />

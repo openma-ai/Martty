@@ -41,6 +41,8 @@ Client 进程：独立 Cordis root
   stats-view   注入 acpSessionStats + tuiSlots
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
+  deepseek-logo 注入 tuiCommands + tuiOverlay，注册 /deepseeklogo 命令；
+               旧 DeepSeek Harness 鲸鱼只作为序列化 markdown TuiNode
   acp-session-status 提供 acpSessionStatus（连接/服务端/认证/会话/
                模型/effort/权限/plan/agent 等运行状态事实）
   tui-slots    提供 tuiSlots，声明 chrome.right / conversation.input.dock /
@@ -86,6 +88,7 @@ tui-slots     TuiNode 树 → chrome.right / input dock / composer dock snapshot
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
+deepseek-logo 旧 DeepSeek Harness 鲸鱼素材 → /deepseeklogo markdown overlay
 acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/
               effort/权限/plan/agent —— 不累计 token 或耗时（那是
               acpSessionStats 的职责）
@@ -123,7 +126,9 @@ palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。
 Token **名**封闭，见 [plugins.md](plugins.md)。内置 `default` 的色值仍是冷蓝灰。配色包可以（也必须）为全部 token 提供 `#RRGGBB`。对话节点以后若开放，节点上仍然只写 token 名，不写 RGB。
 
 `ctrl+t` 切当前主题的 dark/light。`/theme` 切整个 Theme Plugin。kitty 宠物是 RGBA
-精灵，不随 token 重上色；鲸鱼 banner 的渐变读 Theme，会变。
+精灵，不随 token 重上色；启动锁屏的 `MAR` 读海洋渐变，`TTY` 读终端前景黑/白。
+旧 DeepSeek Harness 鲸鱼由 `deepseek-logo` Client Plugin 通过 `/deepseeklogo` 打开，
+Rust painter 只渲染它提交的 markdown `TuiNode`。
 
 ## 明确不做
 

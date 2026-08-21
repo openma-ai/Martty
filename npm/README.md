@@ -85,6 +85,8 @@ dsh-tui --demo-skin
   platform-native modifier bindings, mouse selection, and inline-expanded tools.
 - Dark/light themes, clipboard routing for local, tmux, and SSH sessions, plus
   the optional `/liang` pixel companion.
+- A built-in `/deepseeklogo` Client Plugin that opens the classic DeepSeek
+  Harness whale as a semantic overlay without writing to the transcript.
 - A root `chrome.right` plugin rail for validated TuiNode trees, with live
   update/unload and Client inspect support for Creator-authored plugins.
 - Lifecycle-owned local commands and native slider overlays, plus transactions

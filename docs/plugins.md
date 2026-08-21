@@ -72,6 +72,14 @@ token 或耗时——统计只有 `acpSessionStats` 这一套口径。
 transcript accumulator。没有 Client 树的运行（demo、独立 painter）由 Rust 的
 精简 fallback 只画运行状态与 ACP 事实，同样不读 token/耗时累计器。
 
+## 内置 Client Plugin：`deepseek-logo`
+
+`deepseek-logo` 只注入 `tuiCommands` 与 `tuiOverlay`，注册本地
+`/deepseeklogo`。执行后通过 `tuiOverlay.openView()` 打开旧版
+“DeepSeek Harness + 大鲸鱼”markdown 画面。鲸鱼素材、wordmark 与命令生命周期
+全部属于该 Client Plugin；它不进入 ACP prompt 或 transcript，也不把 `/logo`
+重新做成 Rust builtin。Rust painter 只消费序列化后的 `TuiNode`。
+
 ## 当前可调用：`tuiTheme`
 
 `palette` 必须符合 [tui-palette.v0.schema.json](tui-palette.v0.schema.json)。

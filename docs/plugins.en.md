@@ -47,6 +47,15 @@ transcript accumulators for this command. Runs without a Client tree (demo,
 standalone painter) keep a lean Rust fallback that renders run-state and ACP
 facts only, also without touching token/timing accumulators.
 
+## Built-in Client Plugin: `deepseek-logo`
+
+`deepseek-logo` injects only `tuiCommands` and `tuiOverlay` and registers the
+local `/deepseeklogo` command. Invoking it opens the classic “DeepSeek Harness
++ whale” markdown lockup through `tuiOverlay.openView()`. The artwork,
+wordmark, and command lifecycle all belong to this Client Plugin. It never
+enters the ACP prompt or transcript and does not restore `/logo` as a Rust
+builtin; the Rust painter only consumes the serialized `TuiNode`.
+
 ## Open: `tuiTheme`
 
 `palette` must match [tui-palette.v0.schema.json](tui-palette.v0.schema.json).

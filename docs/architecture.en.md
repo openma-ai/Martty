@@ -41,6 +41,8 @@ Client process: independent Cordis root
   stats-view      injects acpSessionStats + tuiSlots
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
+  deepseek-logo   injects tuiCommands + tuiOverlay; registers /deepseeklogo;
+                  the classic whale is a serialized markdown TuiNode
   acp-session-status  provides acpSessionStatus (connection/server/auth/
                   session/model/effort/permission/plan/agent run-state facts)
   tui-slots       provides tuiSlots; declares chrome.right /
@@ -87,6 +89,7 @@ tui-slots             TuiNode trees → chrome.right / input dock / composer doc
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
+deepseek-logo         classic DeepSeek Harness whale → /deepseeklogo markdown overlay
 acp-session-status    standard ACP run-state projection: connection/server/auth/
                       session/model/effort/permission/plan/agent — no token or
                       timing accumulation (acpSessionStats owns that)
@@ -124,8 +127,11 @@ Control uses existing ACP methods (including `authenticate`, matching Backchat's
 Token **names** are closed; see [plugins.md](plugins.en.md). Built-in `default` keeps the cold bluish values. A palette pack may (and must) supply `#RRGGBB` for every token. When conversation nodes open later, nodes still name tokens; they do not carry RGB.
 
 `ctrl+t` toggles dark/light inside the current theme. `/theme` switches the whole
-Theme Plugin. Kitty pet sprites are RGBA and do not recolor; the whale banner
-gradient reads Theme and does.
+Theme Plugin. Kitty pet sprites are RGBA and do not recolor. In the startup
+lockup, `MAR` reads the ocean gradient while `TTY` uses terminal foreground
+(white in dark mode, black in light mode). The classic DeepSeek Harness whale
+is owned by the `deepseek-logo` Client Plugin and opens through `/deepseeklogo`;
+the Rust painter only renders its markdown `TuiNode`.
 
 ## Out of scope
 

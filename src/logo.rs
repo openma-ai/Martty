@@ -1,15 +1,15 @@
 //! The Martty lockup as terminal art.
 //!
 //! `MARTTY` is figlet `ansi_shadow` (the same font family the old
-//! DEEPSEEK wordmark used), tinted with the whale-belly tone so the
-//! banner keeps its brand gradient; wide terminals get the block logo,
-//! narrower ones degrade to the `small` figlet variant, then to plain
-//! bold text.
+//! DEEPSEEK wordmark used). `MAR` carries the whale's ocean gradient;
+//! `TTY` uses the terminal foreground (white in dark mode, black in light
+//! mode). Wide terminals get the block logo, narrower ones degrade to the
+//! `small` figlet variant, then to plain bold text.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::theme::Theme;
+use crate::theme::{lerp, Theme};
 
 /// figlet `ansi_shadow`, 54 columns.
 pub const MARTTY: [&str; 6] = [
@@ -30,44 +30,63 @@ pub const MARTTY_SMALL: [&str; 5] = [
     "                         |__/ ",
 ];
 
-/// Martty logo rows, belly-tinted and centered to `width`. Wide terminals
-/// get the block `ansi_shadow` lockup; narrower ones degrade to the small
-/// figlet variant, then to plain bold text.
+fn split_row(row: &str, at: usize) -> (String, String) {
+    let mut chars = row.chars();
+    let mar = chars.by_ref().take(at).collect();
+    let tty = chars.collect();
+    (mar, tty)
+}
+
+fn split_logo_lines(
+    rows: &[&str],
+    split: usize,
+    art_width: usize,
+    theme: &Theme,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let pad = (width as usize).saturating_sub(art_width) / 2;
+    let (ocean_top, ocean_bottom) = theme.whale_gradient();
+    let last = rows.len().saturating_sub(1).max(1);
+    rows.iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let (mar, tty) = split_row(row, split);
+            let ocean = lerp(ocean_top, ocean_bottom, row_index as f32 / last as f32);
+            Line::from(vec![
+                Span::raw(" ".repeat(pad)),
+                Span::styled(mar, Style::default().fg(ocean)),
+                Span::styled(tty, Style::default().fg(theme.fg)),
+            ])
+        })
+        .collect()
+}
+
+/// Martty logo rows, split into ocean-gradient `MAR` and terminal-ink `TTY`,
+/// centered to `width`. Wide terminals get the block `ansi_shadow` lockup;
+/// narrower ones degrade to the small figlet variant, then plain bold text.
 pub fn martty_logo_lines(theme: &Theme, width: u16) -> Vec<Line<'static>> {
-    let (_, belly) = theme.whale_gradient();
-    let ink = Style::default().fg(belly);
     if width < 56 {
         if width >= 34 {
-            let pad = (width as usize).saturating_sub(30) / 2;
-            return MARTTY_SMALL
-                .iter()
-                .map(|row| {
-                    Line::from(vec![
-                        Span::raw(" ".repeat(pad)),
-                        Span::styled((*row).to_string(), ink),
-                    ])
-                })
-                .collect();
+            return split_logo_lines(&MARTTY_SMALL, 16, 30, theme, width);
         }
         if width >= 8 {
             let pad = (width as usize).saturating_sub(8) / 2;
+            let (ocean, _) = theme.whale_gradient();
             return vec![Line::from(vec![
                 Span::raw(" ".repeat(pad)),
-                Span::styled("MARTTY".to_string(), ink.add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "MAR".to_string(),
+                    Style::default().fg(ocean).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "TTY".to_string(),
+                    Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+                ),
             ])];
         }
         return Vec::new();
     }
-    let pad = (width as usize).saturating_sub(54) / 2;
-    MARTTY
-        .iter()
-        .map(|row| {
-            Line::from(vec![
-                Span::raw(" ".repeat(pad)),
-                Span::styled((*row).to_string(), ink),
-            ])
-        })
-        .collect()
+    split_logo_lines(&MARTTY, 27, 54, theme, width)
 }
 
 #[cfg(test)]
@@ -86,27 +105,6 @@ mod tests {
         }
         for row in MARTTY_SMALL {
             assert_eq!(row.chars().count(), 30, "{row}");
-        }
-    }
-
-    /// The logo is tinted like the whale's belly (gradient bottom stop)
-    /// at every breakpoint, in both themes.
-    #[test]
-    fn martty_tint_matches_belly() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let (_, belly) = theme.whale_gradient();
-            for width in [8u16, 40, 80, 140] {
-                for line in martty_logo_lines(&theme, width) {
-                    for span in line.spans.iter().filter(|s| !s.content.trim().is_empty()) {
-                        assert_eq!(
-                            span.style.fg,
-                            Some(belly),
-                            "width {width}: {:?}",
-                            span.content
-                        );
-                    }
-                }
-            }
         }
     }
 
@@ -139,5 +137,49 @@ mod tests {
             martty_logo_lines(&theme, 6).is_empty(),
             "nothing below 8 cols"
         );
+    }
+
+    /// MAR keeps the old whale's ocean gradient while TTY follows the
+    /// terminal foreground (white in dark mode, black in light mode).
+    #[test]
+    fn martty_separates_ocean_mar_from_terminal_tty() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let (ocean_top, ocean_bottom) = theme.whale_gradient();
+            for width in [16u16, 40, 80] {
+                let lines = martty_logo_lines(&theme, width);
+                let last = lines.len().saturating_sub(1).max(1);
+                for (row, line) in lines.iter().enumerate() {
+                    let visible = line
+                        .spans
+                        .iter()
+                        .filter(|span| span.style.fg.is_some())
+                        .collect::<Vec<_>>();
+                    assert_eq!(visible.len(), 2, "MAR + TTY spans at width {width}");
+                    let expected_ocean =
+                        crate::theme::lerp(ocean_top, ocean_bottom, row as f32 / last as f32);
+                    assert_eq!(visible[0].style.fg, Some(expected_ocean), "MAR row {row}");
+                    assert_eq!(visible[1].style.fg, Some(theme.fg), "TTY row {row}");
+                }
+            }
+        }
+
+        let theme = Theme::dark();
+        let wide = martty_logo_lines(&theme, 80);
+        let wide_ink = wide[0]
+            .spans
+            .iter()
+            .filter(|span| span.style.fg.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(wide_ink[0].content, "███╗   ███╗ █████╗ ██████╗ ");
+        assert_eq!(wide_ink[1].content, "████████╗████████╗██╗   ██╗");
+
+        let medium = martty_logo_lines(&theme, 40);
+        let medium_ink = medium[0]
+            .spans
+            .iter()
+            .filter(|span| span.style.fg.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(medium_ink[0].content, " __  __         ");
+        assert_eq!(medium_ink[1].content, " _   _        ");
     }
 }

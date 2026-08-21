@@ -18,6 +18,7 @@ import { apply as applyPlanView, inject as planViewInject } from './plan-view.js
 import { apply as applyStatsView, inject as statsViewInject } from './stats-view.js'
 import { apply as applySessionStatus, inject as sessionStatusInject } from './acp-session-status.js'
 import { apply as applyStatusView, inject as statusViewInject } from './status-view.js'
+import { apply as applyDeepseekLogo, inject as deepseekLogoInject } from './deepseek-logo.js'
 
 /**
  * @param {object} [options]
@@ -41,6 +42,7 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'stats-view', inject: statsViewInject, apply: applyStatsView })
     await ctx.plugin({ name: 'acp-session-status', inject: sessionStatusInject, apply: applySessionStatus })
     await ctx.plugin({ name: 'status-view', inject: statusViewInject, apply: applyStatusView })
+    await ctx.plugin({ name: 'deepseek-logo', inject: deepseekLogoInject, apply: applyDeepseekLogo })
     await ctx.plugin({
       name: 'tui-cordis-client-runner',
       inject: [
@@ -70,6 +72,7 @@ export async function bootClient(options = {}) {
     applyStatsView(ctx)
     applySessionStatus(ctx)
     applyStatusView(ctx)
+    applyDeepseekLogo(ctx)
     applyCordisClientRunner(ctx)
     await applyShell(ctx, { extraArgs: options.extraArgs ?? [], tty: options.tty })
   }
