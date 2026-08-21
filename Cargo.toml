@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-tui"
-version = "0.2.15"
+version = "0.2.16"
 edition = "2021"
 description = "Terminal-native ACP client UI with a Cordis client plugin tree"
 license = "MIT"
