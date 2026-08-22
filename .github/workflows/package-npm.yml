@@ -176,7 +176,6 @@ jobs:
       - name: Pack npm packages
         run: |
           mkdir -p dist
-          npm pack ./npm --pack-destination dist
           node scripts/package-alias.mjs npm npm-martty martty
           npm pack ./npm-martty --pack-destination dist
       - uses: actions/upload-artifact@v7
@@ -218,7 +217,6 @@ jobs:
           esac
           echo "publishing with dist-tag: $DIST_TAG"
           npm publish ./dist/martty-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
-          npm publish ./dist/openma-deepseek-harness-tui-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
 
   release:
     name: Create GitHub release

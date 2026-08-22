@@ -16,7 +16,7 @@ test('release jobs are gated to the current canonical repository', () => {
   )
 })
 
-test('release workflow packages and publishes both npm names', () => {
+test('release workflow packages and publishes only martty', () => {
   assert.match(
     workflow,
     /cache: npm\n\s+cache-dependency-path: npm\/package-lock\.json/,
@@ -28,7 +28,8 @@ test('release workflow packages and publishes both npm names', () => {
   assert.match(workflow, /package-alias\.mjs npm npm-martty martty/)
   assert.match(workflow, /npm pack \.\/npm-martty --pack-destination dist/)
   assert.match(workflow, /npm publish \.\/dist\/martty-\[0-9\]\*\.tgz/)
-  assert.match(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui-\[0-9\]\*\.tgz/)
+  assert.doesNotMatch(workflow, /npm pack \.\/npm --pack-destination dist/)
+  assert.doesNotMatch(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui/)
 })
 
 test('Windows CI boots an installed profile through the real Node loader', () => {
