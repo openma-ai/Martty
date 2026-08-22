@@ -338,6 +338,10 @@ fn main() -> Result<()> {
     // The composer pet: real pixels (kitty graphics) where the terminal can,
     // half-block art (drawn by ui) where it can't.
     app.pet_pixels = pet::kitty_supported();
+    // ":branch" after the project path in the composer cap. Seeded here;
+    // `App::tick` re-checks on a throttle and `!` shell commands refresh
+    // immediately, so mid-session checkouts stay in sync.
+    app.git_branch = ui::head_branch(&app.cfg.workspace);
     let mut pet = pet::Pet::new(app.pet_pixels);
     let mut backdrop = pet::Backdrop::new(app.pet_pixels);
     // User-image thumbnails in the chat scrollback (kitty graphics, PNG only).
@@ -588,6 +592,7 @@ fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
     let theme = ui::theme_for(&args.theme);
     let mut app = App::new(theme, cfg, "dsh-demo".into(), true, false, bus_tx.clone());
+    app.git_branch = ui::head_branch(&app.cfg.workspace);
 
     // Run one scripted demo turn synchronously through the real pipeline.
     app.transcript

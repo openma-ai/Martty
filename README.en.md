@@ -394,7 +394,8 @@ idle, typing at a tiny terminal during a turn. Terminals with kitty graphics
 protocol support, including Ghostty, Kitty, and WezTerm, get RGBA sprites;
 others fall back to a half-block whale. The pet hides below 60 columns.
 
-Use `/liang on` or `/liang off` to control it explicitly.
+Use `/liang on` or `/liang off` to control it explicitly. He is off by
+default; run `/liang on` to summon him.
 
 <p align="center">
   <img src="assets/screenshots/liang.png" width="640"

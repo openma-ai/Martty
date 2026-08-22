@@ -50,3 +50,31 @@ fn local_shell_state_persists_between_invocations() {
     drop(app);
     let _ = std::fs::remove_dir_all(workspace);
 }
+
+#[test]
+fn shell_done_refreshes_the_cap_git_branch_label() {
+    let workspace = std::env::temp_dir().join(format!("martty-shell-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (mut app, _rx) = test_app(&workspace);
+
+    // A stale label from startup; the temp workspace is not a git repo, so
+    // the forced re-check after a `!` command must clear it.
+    app.git_branch = Some("stale-branch".into());
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        AppEvent::ShellDone {
+            id: 1,
+            code: Some(0),
+            output: "".into(),
+        },
+        &ctl,
+    );
+    assert_eq!(
+        app.git_branch, None,
+        "a session shell command must re-check the workspace branch"
+    );
+
+    drop(app);
+    let _ = std::fs::remove_dir_all(workspace);
+}

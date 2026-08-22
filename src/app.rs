@@ -40,6 +40,10 @@ struct CtrlCQuitChord {
     required: u8,
 }
 const TIP_TTL: Duration = Duration::from_secs(4);
+/// How often the composer cap re-checks the workspace git branch (tick
+/// cadence). Catches checkouts done by the agent or in another terminal;
+/// `!git checkout` in the session shell refreshes immediately instead.
+const GIT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Some terminal layers incorrectly wrap Kitty/CSI-u key reports in
 /// bracketed-paste markers. Crossterm then exposes the key bytes as a paste,
@@ -905,10 +909,18 @@ pub struct App {
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
     pub show_banner: bool,
     /// Pixel-art Liang at the composer's right edge (`/liang` toggles him).
+    /// Off by default — `/liang on` summons him.
     pub pet_visible: bool,
     /// True when the terminal speaks the kitty graphics protocol: image
     /// thumbnails and the background layer emit real pixels (set by `main`).
     pub pet_pixels: bool,
+    /// Current git branch of the workspace, shown after the project path in
+    /// the composer cap when git is available and the terminal is wide
+    /// enough. Seeded at startup, then re-checked on a throttled tick and
+    /// right after each session shell command (`None` otherwise).
+    pub git_branch: Option<String>,
+    /// Last time the workspace git branch was re-checked (tick throttle).
+    git_check_at: Instant,
     pub run_started: Option<Instant>,
     pub spinner_idx: usize,
     pub scroll_up: usize, // lines above the bottom; 0 = follow
@@ -1251,8 +1263,10 @@ impl App {
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
-            pet_visible: true,
+            pet_visible: false,
             pet_pixels: false,
+            git_branch: None,
+            git_check_at: Instant::now(),
             run_started: None,
             spinner_idx: 0,
             scroll_up: 0,
@@ -1339,7 +1353,26 @@ impl App {
         &mut self.transcript
     }
 
+    /// Re-detect the workspace git branch for the composer cap label. One
+    /// in-process read of `.git/HEAD` (no subprocess), at most every
+    /// `GIT_CHECK_INTERVAL` — unless forced right after a session shell
+    /// command, when the user may have just run `!git checkout …`.
+    fn refresh_git_branch(&mut self, force: bool) {
+        if !force && self.git_check_at.elapsed() < GIT_CHECK_INTERVAL {
+            return;
+        }
+        self.git_check_at = Instant::now();
+        let branch = crate::ui::head_branch(&self.cfg.workspace);
+        if branch != self.git_branch {
+            self.git_branch = branch;
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn tick(&mut self) {
+        // The cap's ":branch" label tracks mid-session checkouts (agent
+        // `bash` tool, another terminal) on a throttled cadence.
+        self.refresh_git_branch(false);
         if self.state != RunState::Idle
             || self.transcript.streaming()
             || self
@@ -2331,6 +2364,9 @@ impl App {
                     self.transcript.finish_shell(cell, code, output);
                     self.needs_redraw = true;
                 }
+                // `!git checkout …` in the session shell moves the branch —
+                // refresh the composer cap label right away.
+                self.refresh_git_branch(true);
             }
         }
     }

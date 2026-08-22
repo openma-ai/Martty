@@ -155,6 +155,8 @@ Cordis 模式里的 Plugin 默认只属于当前进程。验证完成后，可�
 临时 Plugin → 验证当前 Package → 保存或打包 → 启动时加载
 ```
 
+可用 `/liang on`、`/liang off` 显式控制。缺省关闭，`/liang on` 召唤。
+
 Client-only Plugin 可以直接走短路径：
 
 ```text

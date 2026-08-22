@@ -706,27 +706,19 @@ fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
 
 /// The composer card fallback for short terminals (no cap row fits): a
 /// borderless tinted surface (panel bg) that owns the status row and the
-/// input well. A brand-blue edge bar glows while working. `pet_pad`
-/// columns at the right stay text-free for the whale pet. Tall enough
-/// terminals get `draw_composer_box` instead — the same surface wrapped
-/// in the rounded frame that also carries the cap row.
+/// input well. The amber prompt owns the working indicator now (the old
+/// brand-blue edge bar glow is gone). `pet_pad` columns at the right stay
+/// text-free for the whale pet. Tall enough terminals get
+/// `draw_composer_box` instead — the same surface wrapped in the rounded
+/// frame that also carries the cap row.
 fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
-    let running = !matches!(app.state, RunState::Idle);
 
     // Surface fill: contrast against the chat bg does the framing.
     f.render_widget(
         Block::default().style(Style::default().bg(theme.panel)),
         area,
     );
-    // Left edge bar: the working "glow" (the old border used to do this).
-    if running {
-        let bar: Vec<Line> = (0..area.height).map(|_| Line::from("▎")).collect();
-        f.render_widget(
-            Paragraph::new(bar).style(Style::default().fg(theme.brand)),
-            Rect::new(area.x, area.y, 1, area.height),
-        );
-    }
 
     let inner = Rect::new(
         area.x + 1,
@@ -931,7 +923,7 @@ fn status_title(app: &App) -> Line<'static> {
 
 /// Contextual shortcut hints — a tiny state machine over (run state ×
 /// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty falls back to the `^K keys` discovery hint.
+/// immediately. Idle+empty falls back to the `^k keys` discovery hint.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
     let key = Style::default()
@@ -949,7 +941,7 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
             ("esc", app.locale.tr("interrupt", "中断")),
         ],
         // Idle, empty: point at the full shortcut list.
-        (false, true) => vec![("^K", app.locale.tr("keys", "快捷键"))],
+        (false, true) => vec![("^k", app.locale.tr("keys", "快捷键"))],
         // Idle with a draft: enter's meaning follows the prefix.
         (false, false) if app.input.buf.starts_with('/') => {
             vec![("⏎", app.locale.tr("command", "命令"))]
@@ -1127,7 +1119,7 @@ fn compact_node_spans(
         }
         spans.push(Span::styled(
             title.clone(),
-            Style::default().fg(theme.fg_secondary),
+            Style::default().fg(theme.fg_tertiary),
         ));
         return Some(spans);
     }
@@ -1327,14 +1319,52 @@ fn compact_workspace(path: &str, max_width: usize) -> String {
     format!("…{suffix}")
 }
 
+/// Parse the current branch from the workspace's `.git/HEAD` without
+/// spawning git (":branch" rides after the project path in the composer
+/// cap, colon-tight). `ref: refs/heads/<branch>` → Some(branch); a raw
+/// commit hash (detached HEAD), a missing `.git`, or a missing HEAD →
+/// None. Handles worktrees and submodules whose `.git` is a `gitdir:`
+/// pointer file; relative pointers resolve against the `.git` file's
+/// parent. The TUI workspace is a regular checkout, so GIT_DIR-style
+/// layouts are not supported — git itself is never invoked.
+pub fn head_branch(workspace: &str) -> Option<String> {
+    let dot_git = std::path::Path::new(workspace).join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else if dot_git.is_file() {
+        let pointer = std::fs::read_to_string(&dot_git).ok()?;
+        let p = std::path::Path::new(pointer.strip_prefix("gitdir:")?.trim());
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            dot_git.parent()?.join(p)
+        }
+    } else {
+        return None;
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.strip_prefix("ref: refs/heads/")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {
     let title_width = (area_width / 2).clamp(8, 64);
     let path_width = title_width.saturating_sub(4);
-    Line::from(Span::styled(
-        format!(" · {} ", compact_workspace(&app.cfg.workspace, path_width)),
-        Style::default().fg(app.theme.caption),
-    ))
-    .right_aligned()
+    let mut text = format!(" · {} ", compact_workspace(&app.cfg.workspace, path_width));
+    // The git branch follows the project path, colon-tight ("path:branch"),
+    // only when both still fit the cap budget — narrow terminals keep just
+    // the path.
+    if let Some(branch) = &app.git_branch {
+        let branch_tag = format!(":{branch} ");
+        if text.width() - 1 + branch_tag.width() <= title_width {
+            text.pop(); // drop the space between the path and the colon
+            text.push_str(&branch_tag);
+        }
+    }
+    Line::from(Span::styled(text, Style::default().fg(app.theme.caption)))
+        .right_aligned()
 }
 
 fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'static> {
@@ -1374,7 +1404,6 @@ fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'
 /// border while a turn runs.
 fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
-    let running = !matches!(app.state, RunState::Idle);
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
     let workspace = workspace_cap_title(app, area.width as usize);
     let workspace_width = span_widths(&workspace.spans);
@@ -1428,16 +1457,6 @@ fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
             }
             x = x.saturating_add(section_width);
         }
-    }
-
-    // Running glow: the brand bar replaces the left border (corners and
-    // both title rows stay intact).
-    if running {
-        let bar: Vec<Line> = (0..inner.height).map(|_| Line::from("▎")).collect();
-        f.render_widget(
-            Paragraph::new(bar).style(Style::default().fg(theme.brand)),
-            Rect::new(area.x, area.y + 1, 1, inner.height),
-        );
     }
 
     // The pet keeps clear of the text: content is inset from the right
@@ -1551,10 +1570,13 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let prompt = "❯ ";
     let pw = prompt.width();
+    // The prompt doubles as the working indicator that used to be the brand
+    // glow bar: amber while working, brand blue when idle (issue #27).
+    let working = !matches!(app.state, RunState::Idle);
     let prompt_span = Span::styled(
         prompt.to_string(),
         Style::default()
-            .fg(theme.brand)
+            .fg(if working { theme.warn } else { theme.brand })
             .add_modifier(Modifier::BOLD),
     );
 
@@ -2471,7 +2493,6 @@ pub fn theme_for(name: &str) -> Theme {
 #[cfg(test)]
 #[path = "../tests/unit/ui__tests.rs"]
 mod tests;
-
 
 #[cfg(test)]
 #[path = "../tests/unit/ui__rpc_probe.rs"]

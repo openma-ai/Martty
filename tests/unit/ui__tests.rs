@@ -112,6 +112,116 @@ fn composer_cap_preserves_the_workspace_tail_on_narrow_terminals() {
 }
 
 #[test]
+fn composer_cap_shows_git_branch_after_the_project_path() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.cfg.workspace = "/work/acme/martty".into();
+    app.git_branch = Some("ui-tweak".into());
+
+    let frame = dump_frame(&mut app, 120, 20);
+    let cap = frame
+        .lines()
+        .find(|line| line.contains("Tip"))
+        .expect("composer cap");
+    assert!(cap.contains("· /work/acme/martty:ui-tweak"), "{cap}");
+
+    // No git (or not a repository): path only, no branch tag.
+    app.git_branch = None;
+    let frame = dump_frame(&mut app, 120, 20);
+    let cap = frame
+        .lines()
+        .find(|line| line.contains("Tip"))
+        .expect("composer cap");
+    assert!(cap.contains("· /work/acme/martty"), "{cap}");
+    assert!(!cap.contains("martty:"), "{cap}");
+}
+
+#[test]
+fn composer_cap_drops_git_branch_on_narrow_terminals() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.cfg.workspace = "/work/acme/martty".into();
+    app.git_branch = Some("a-long-branch-name".into());
+
+    let frame = dump_frame(&mut app, 60, 20);
+    let cap = frame
+        .lines()
+        .find(|line| line.contains("Tip"))
+        .expect("composer cap");
+    assert!(
+        !cap.contains(":a-long-branch-name"),
+        "branch must yield when the terminal is narrow: {cap}"
+    );
+    assert!(cap.contains("· /work/acme/martty"), "{cap}");
+}
+
+#[test]
+fn head_branch_parses_a_regular_repo_head() {
+    let root = fresh_root();
+    let git = std::path::Path::new(&root).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert_eq!(crate::ui::head_branch(&root), Some("main".into()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn head_branch_detached_head_has_no_branch() {
+    let root = fresh_root();
+    let git = std::path::Path::new(&root).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "9fceb32d0f2d1d2f1d0f2d3a4b5c6d7e8f9a0b1c2\n").unwrap();
+    assert_eq!(crate::ui::head_branch(&root), None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn head_branch_follows_a_gitdir_pointer_file() {
+    let root = fresh_root();
+    // Real `git worktree add` layout: the worktree holds only a `.git`
+    // file pointing at the main repo's `.git/worktrees/<name>` gitdir.
+    let gitdir = std::path::Path::new(&root).join("main/.git/worktrees/wt");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+    let worktree = std::path::Path::new(&root).join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", gitdir.display()),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::ui::head_branch(&worktree.to_string_lossy()),
+        Some("feature/x".into())
+    );
+
+    // Submodules write a relative pointer, resolved against `.git`'s parent.
+    let sub = std::path::Path::new(&root).join("sub");
+    std::fs::create_dir_all(sub.join("modules/m")).unwrap();
+    std::fs::write(sub.join("modules/m/HEAD"), "ref: refs/heads/dev\n").unwrap();
+    std::fs::write(sub.join(".git"), "gitdir: ./modules/m\n").unwrap();
+    assert_eq!(
+        crate::ui::head_branch(&sub.to_string_lossy()),
+        Some("dev".into())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn head_branch_without_git_or_head_means_no_branch() {
+    let root = fresh_root();
+    // No `.git` at all: not a repository.
+    assert_eq!(crate::ui::head_branch(&root), None);
+    // `.git` present but HEAD missing (fresh `git init` always writes
+    // HEAD, so this is a corrupt/partial checkout).
+    let git = std::path::Path::new(&root).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    assert_eq!(crate::ui::head_branch(&root), None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn active_image_background_clears_only_the_base_canvas() {
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -206,7 +316,7 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 
     assert_eq!(flat_line(status_title(&app)), "");
     let pending = flat_spans(status_right(&app));
-    assert!(pending.contains("^K keys"), "{pending}");
+    assert!(pending.contains("^k keys"), "{pending}");
     assert!(!pending.contains("deepseek-chat"), "{pending}");
     assert!(!pending.contains("high"), "{pending}");
 
@@ -316,7 +426,7 @@ fn meta_row_hints_follow_the_state_machine() {
     };
     let mut app = test_app();
     // idle · empty → discovery hint
-    assert!(flat(context_hints(&app)).contains("^K keys"));
+    assert!(flat(context_hints(&app)).contains("^k keys"));
     // idle · draft → enter sends
     app.input.set("hello".into());
     let s = flat(context_hints(&app));
@@ -867,6 +977,9 @@ fn composed_deepseek_preset_keeps_balanced_outer_padding() {
 fn pet_rect_geometry() {
     let mut app = test_app();
     let area = Rect::new(0, 0, 100, 34);
+    // Off by default (issue #37): `/liang on` summons him.
+    assert_eq!(pet_rect(area, &app), None, "liang is off by default");
+    app.pet_visible = true;
     // 34 rows → 5-row composer → 4-row pet (192:208 sprite → 7 cols),
     // inset one row/column so the rounded box border stays intact.
     assert_eq!(pet_rect(area, &app), Some(Rect::new(92, 29, 7, 4)));
@@ -884,6 +997,7 @@ fn pet_rect_geometry() {
 #[test]
 fn pet_rides_above_the_stats_dock() {
     let mut app = test_app();
+    app.pet_visible = true;
     app.slot_snapshots.insert(
         "conversation.composer.dock".into(),
         serde_json::from_value(serde_json::json!({
@@ -916,6 +1030,7 @@ fn pet_rides_above_the_stats_dock() {
 #[test]
 fn pet_stays_inside_the_box_when_the_stats_dock_shows() {
     let mut app = test_app();
+    app.pet_visible = true;
     app.show_banner = false;
     app.slot_snapshots.insert(
         "conversation.composer.dock".into(),
@@ -945,6 +1060,7 @@ fn pet_stays_inside_the_box_when_the_stats_dock_shows() {
 #[test]
 fn pet_falls_back_to_half_blocks_and_toggles() {
     let mut app = test_app();
+    app.pet_visible = true;
     app.show_banner = false;
     // pet_pixels=false (no kitty graphics): XS art at the right edge,
     // inside the box border.
@@ -1644,4 +1760,64 @@ fn select_overlay_preview_wraps_and_caps_three_lines() {
     for line in preview {
         assert!(line.width() <= 34, "preview line fits the box:\n{frame}");
     }
+}
+
+#[test]
+fn composer_glow_bar_is_gone_and_prompt_tints_while_working() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = app.theme;
+
+    // Idle: the prompt stays brand blue.
+    app.state = crate::app::RunState::Idle;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let prompt_cell = buf
+        .content
+        .iter()
+        .find(|cell| cell.symbol() == "❯")
+        .expect("composer prompt");
+    assert_eq!(prompt_cell.fg, theme.brand, "idle prompt stays brand blue");
+
+    // Working: the glow bar (brand `▎` column) is gone and the prompt
+    // turns amber — the old glow's indicator role (issue #27).
+    app.state = crate::app::RunState::Running;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    for cell in buf.content.iter() {
+        assert_ne!(cell.symbol(), "▎", "glow bar must not render while running");
+    }
+    let prompt_cell = buf
+        .content
+        .iter()
+        .find(|cell| cell.symbol() == "❯")
+        .expect("composer prompt");
+    assert_eq!(prompt_cell.fg, theme.warn, "working prompt turns amber");
+}
+
+#[test]
+fn composer_dock_title_uses_the_tertiary_tone() {
+    let app = test_app();
+    let theme = app.theme;
+    let node = crate::slots::TuiNode::Generic {
+        id: "stats".into(),
+        title: "1.2k tokens".into(),
+        body: String::new(),
+        status: Some("ok".into()),
+        action: None,
+    };
+    let spans = compact_node_spans(&node, &theme, 60).expect("generic spans");
+    let title = spans
+        .iter()
+        .find(|s| s.content == "1.2k tokens")
+        .expect("title span");
+    assert_eq!(
+        title.style.fg,
+        Some(theme.fg_tertiary),
+        "dock text sits one tone lighter"
+    );
 }
