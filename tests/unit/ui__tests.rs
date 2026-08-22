@@ -156,6 +156,72 @@ fn composer_cap_drops_git_branch_on_narrow_terminals() {
 }
 
 #[test]
+fn head_branch_parses_a_regular_repo_head() {
+    let root = fresh_root();
+    let git = std::path::Path::new(&root).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert_eq!(crate::ui::head_branch(&root), Some("main".into()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn head_branch_detached_head_has_no_branch() {
+    let root = fresh_root();
+    let git = std::path::Path::new(&root).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "9fceb32d0f2d1d2f1d0f2d3a4b5c6d7e8f9a0b1c2\n").unwrap();
+    assert_eq!(crate::ui::head_branch(&root), None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn head_branch_follows_a_gitdir_pointer_file() {
+    let root = fresh_root();
+    // Real `git worktree add` layout: the worktree holds only a `.git`
+    // file pointing at the main repo's `.git/worktrees/<name>` gitdir.
+    let gitdir = std::path::Path::new(&root).join("main/.git/worktrees/wt");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+    let worktree = std::path::Path::new(&root).join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", gitdir.display()),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::ui::head_branch(&worktree.to_string_lossy()),
+        Some("feature/x".into())
+    );
+
+    // Submodules write a relative pointer, resolved against `.git`'s parent.
+    let sub = std::path::Path::new(&root).join("sub");
+    std::fs::create_dir_all(sub.join("modules/m")).unwrap();
+    std::fs::write(sub.join("modules/m/HEAD"), "ref: refs/heads/dev\n").unwrap();
+    std::fs::write(sub.join(".git"), "gitdir: ./modules/m\n").unwrap();
+    assert_eq!(
+        crate::ui::head_branch(&sub.to_string_lossy()),
+        Some("dev".into())
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn head_branch_without_git_or_head_means_no_branch() {
+    let root = fresh_root();
+    // No `.git` at all: not a repository.
+    assert_eq!(crate::ui::head_branch(&root), None);
+    // `.git` present but HEAD missing (fresh `git init` always writes
+    // HEAD, so this is a corrupt/partial checkout).
+    let git = std::path::Path::new(&root).join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    assert_eq!(crate::ui::head_branch(&root), None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn active_image_background_clears_only_the_base_canvas() {
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;

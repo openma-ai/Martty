@@ -1319,23 +1319,34 @@ fn compact_workspace(path: &str, max_width: usize) -> String {
     format!("…{suffix}")
 }
 
-/// Best-effort current git branch of the workspace (":branch" rides after
-/// the project path in the composer cap, colon-tight). None when git is
-/// missing, the workspace is not a repository, or HEAD is detached. One
-/// tiny subprocess at startup, then at most every few seconds on the UI
-/// tick plus right after each session shell command — never per frame.
-pub fn detect_git_branch(workspace: &str) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["branch", "--show-current"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
+/// Parse the current branch from the workspace's `.git/HEAD` without
+/// spawning git (":branch" rides after the project path in the composer
+/// cap, colon-tight). `ref: refs/heads/<branch>` → Some(branch); a raw
+/// commit hash (detached HEAD), a missing `.git`, or a missing HEAD →
+/// None. Handles worktrees and submodules whose `.git` is a `gitdir:`
+/// pointer file; relative pointers resolve against the `.git` file's
+/// parent. The TUI workspace is a regular checkout, so GIT_DIR-style
+/// layouts are not supported — git itself is never invoked.
+pub fn head_branch(workspace: &str) -> Option<String> {
+    let dot_git = std::path::Path::new(workspace).join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else if dot_git.is_file() {
+        let pointer = std::fs::read_to_string(&dot_git).ok()?;
+        let p = std::path::Path::new(pointer.strip_prefix("gitdir:")?.trim());
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            dot_git.parent()?.join(p)
+        }
+    } else {
         return None;
-    }
-    let branch = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (!branch.is_empty()).then_some(branch)
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.strip_prefix("ref: refs/heads/")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {

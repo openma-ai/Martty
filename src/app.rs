@@ -1351,15 +1351,15 @@ impl App {
     }
 
     /// Re-detect the workspace git branch for the composer cap label. One
-    /// tiny `git` subprocess, at most every `GIT_CHECK_INTERVAL` — unless
-    /// forced right after a session shell command, when the user may have
-    /// just run `!git checkout …`.
+    /// in-process read of `.git/HEAD` (no subprocess), at most every
+    /// `GIT_CHECK_INTERVAL` — unless forced right after a session shell
+    /// command, when the user may have just run `!git checkout …`.
     fn refresh_git_branch(&mut self, force: bool) {
         if !force && self.git_check_at.elapsed() < GIT_CHECK_INTERVAL {
             return;
         }
         self.git_check_at = Instant::now();
-        let branch = crate::ui::detect_git_branch(&self.cfg.workspace);
+        let branch = crate::ui::head_branch(&self.cfg.workspace);
         if branch != self.git_branch {
             self.git_branch = branch;
             self.needs_redraw = true;
