@@ -126,7 +126,7 @@ function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
 function installTui(home) {
   const result = runDsh(home, [
     'plugin', '--profile', 'tui', 'add', '@openma/deepseek-harness-tui',
-  ])
+  ], repoRoot, 300_000)
   requireOk(result, 'install TUI')
 }
 
@@ -241,6 +241,6 @@ test('one TUI command handles the complete profile installation matrix', async (
       smokeProfile(home)
     })
   } finally {
-    rmSync(root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 })
