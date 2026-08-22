@@ -338,7 +338,9 @@ fn main() -> Result<()> {
     // The composer pet: real pixels (kitty graphics) where the terminal can,
     // half-block art (drawn by ui) where it can't.
     app.pet_pixels = pet::kitty_supported();
-    // " : branch" after the project path in the composer cap, when available.
+    // " : branch" after the project path in the composer cap. Seeded here;
+    // `App::tick` re-checks on a throttle and `!` shell commands refresh
+    // immediately, so mid-session checkouts stay in sync.
     app.git_branch = ui::detect_git_branch(&app.cfg.workspace);
     let mut pet = pet::Pet::new(app.pet_pixels);
     let mut backdrop = pet::Backdrop::new(app.pet_pixels);

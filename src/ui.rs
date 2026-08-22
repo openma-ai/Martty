@@ -1321,8 +1321,9 @@ fn compact_workspace(path: &str, max_width: usize) -> String {
 
 /// Best-effort current git branch of the workspace (" : branch" rides after
 /// the project path in the composer cap). None when git is missing, the
-/// workspace is not a repository, or HEAD is detached. One subprocess at
-/// startup, never per frame.
+/// workspace is not a repository, or HEAD is detached. One tiny subprocess
+/// at startup, then at most every few seconds on the UI tick plus right
+/// after each session shell command — never per frame.
 pub fn detect_git_branch(workspace: &str) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
