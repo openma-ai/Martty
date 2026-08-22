@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const packageRoot = path.join(repoRoot, 'npm')
@@ -79,7 +80,7 @@ function preparePackages(root) {
   const manifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
   manifest.dependencies = {
     ...manifest.dependencies,
-    '@openma/deepseek-harness-acp': `file:${acp}`,
+    '@openma/deepseek-harness-acp': pathToFileURL(acp).href,
   }
   writeFileSync(
     path.join(fixture, 'package.json'),
@@ -120,7 +121,7 @@ function localDependencyOverrides() {
   scanNodeModules(path.join(packageRoot, 'node_modules'))
 
   packageDirs.delete('@openma/deepseek-harness-acp')
-  return [...packageDirs].map(([name, directory]) => [name, `file:${directory}`])
+  return [...packageDirs].map(([name, directory]) => [name, pathToFileURL(directory).href])
 }
 
 function writeWorkspaceOverride(home, packages) {
@@ -128,8 +129,8 @@ function writeWorkspaceOverride(home, packages) {
   mkdirSync(dir, { recursive: true })
   const localDependencies = localDependencyOverrides()
   const overrides = [
-    ['@openma/deepseek-harness-acp', `file:${packages.acp}`],
-    ['@openma/deepseek-harness-tui', `file:${packages.tui}`],
+    ['@openma/deepseek-harness-acp', pathToFileURL(packages.acp).href],
+    ['@openma/deepseek-harness-tui', pathToFileURL(packages.tui).href],
   ]
   writeFileSync(
     path.join(dir, 'pnpm-workspace.yaml'),
@@ -264,7 +265,7 @@ test('one TUI command handles the complete profile installation matrix', async (
       const home = path.join(root, 'with-acp')
       writeWorkspaceOverride(home, packages)
       initExistingProfile(home)
-      installAcp(home, `file:${packages.acp}`)
+      installAcp(home, pathToFileURL(packages.acp).href)
       installTui(home)
       assertSingleTuiBundle(home)
       assert.equal(
