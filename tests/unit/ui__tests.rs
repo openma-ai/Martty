@@ -123,7 +123,7 @@ fn composer_cap_shows_git_branch_after_the_project_path() {
         .lines()
         .find(|line| line.contains("Tip"))
         .expect("composer cap");
-    assert!(cap.contains("· /work/acme/martty : ui-tweak"), "{cap}");
+    assert!(cap.contains("· /work/acme/martty:ui-tweak"), "{cap}");
 
     // No git (or not a repository): path only, no branch tag.
     app.git_branch = None;
@@ -133,7 +133,7 @@ fn composer_cap_shows_git_branch_after_the_project_path() {
         .find(|line| line.contains("Tip"))
         .expect("composer cap");
     assert!(cap.contains("· /work/acme/martty"), "{cap}");
-    assert!(!cap.contains(" : "), "{cap}");
+    assert!(!cap.contains("martty:"), "{cap}");
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn composer_cap_drops_git_branch_on_narrow_terminals() {
         .find(|line| line.contains("Tip"))
         .expect("composer cap");
     assert!(
-        !cap.contains(" : a-long-branch-name"),
+        !cap.contains(":a-long-branch-name"),
         "branch must yield when the terminal is narrow: {cap}"
     );
     assert!(cap.contains("· /work/acme/martty"), "{cap}");

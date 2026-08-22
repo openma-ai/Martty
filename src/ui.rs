@@ -1319,11 +1319,11 @@ fn compact_workspace(path: &str, max_width: usize) -> String {
     format!("…{suffix}")
 }
 
-/// Best-effort current git branch of the workspace (" : branch" rides after
-/// the project path in the composer cap). None when git is missing, the
-/// workspace is not a repository, or HEAD is detached. One tiny subprocess
-/// at startup, then at most every few seconds on the UI tick plus right
-/// after each session shell command — never per frame.
+/// Best-effort current git branch of the workspace (":branch" rides after
+/// the project path in the composer cap, colon-tight). None when git is
+/// missing, the workspace is not a repository, or HEAD is detached. One
+/// tiny subprocess at startup, then at most every few seconds on the UI
+/// tick plus right after each session shell command — never per frame.
 pub fn detect_git_branch(workspace: &str) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -1342,11 +1342,13 @@ fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {
     let title_width = (area_width / 2).clamp(8, 64);
     let path_width = title_width.saturating_sub(4);
     let mut text = format!(" · {} ", compact_workspace(&app.cfg.workspace, path_width));
-    // The git branch follows the project path only when both still fit the
-    // cap budget — narrow terminals keep just the path.
+    // The git branch follows the project path, colon-tight ("path:branch"),
+    // only when both still fit the cap budget — narrow terminals keep just
+    // the path.
     if let Some(branch) = &app.git_branch {
-        let branch_tag = format!(": {branch} ");
-        if text.width() + branch_tag.width() <= title_width {
+        let branch_tag = format!(":{branch} ");
+        if text.width() - 1 + branch_tag.width() <= title_width {
+            text.pop(); // drop the space between the path and the colon
             text.push_str(&branch_tag);
         }
     }

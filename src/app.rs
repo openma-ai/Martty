@@ -1367,7 +1367,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        // The cap's " : branch" label tracks mid-session checkouts (agent
+        // The cap's ":branch" label tracks mid-session checkouts (agent
         // `bash` tool, another terminal) on a throttled cadence.
         self.refresh_git_branch(false);
         if self.state != RunState::Idle
