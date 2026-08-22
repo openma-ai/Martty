@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -91,9 +92,45 @@ function profileDir(home) {
   return path.join(home, 'profiles', 'tui')
 }
 
-function writeWorkspaceOverride(home, tuiPackage) {
+function localDependencyOverrides() {
+  if (process.env.DSH_TUI_LOCAL_DEPS !== '1') return []
+
+  const packageDirs = new Map()
+  const scanNodeModules = (nodeModules) => {
+    if (!existsSync(nodeModules)) return
+    for (const entry of readdirSync(nodeModules, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      const entryPath = path.join(nodeModules, entry.name)
+      const candidates = entry.name.startsWith('@')
+        ? readdirSync(entryPath, { withFileTypes: true })
+          .filter((child) => child.isDirectory())
+          .map((child) => path.join(entryPath, child.name))
+        : [entryPath]
+      for (const directory of candidates) {
+        const packageJson = path.join(directory, 'package.json')
+        if (!existsSync(packageJson)) continue
+        const { name } = JSON.parse(readFileSync(packageJson, 'utf8'))
+        if (typeof name === 'string' && !packageDirs.has(name)) {
+          packageDirs.set(name, directory)
+        }
+        scanNodeModules(path.join(directory, 'node_modules'))
+      }
+    }
+  }
+  scanNodeModules(path.join(packageRoot, 'node_modules'))
+
+  packageDirs.delete('@openma/deepseek-harness-acp')
+  return [...packageDirs].map(([name, directory]) => [name, `file:${directory}`])
+}
+
+function writeWorkspaceOverride(home, packages) {
   const dir = profileDir(home)
   mkdirSync(dir, { recursive: true })
+  const localDependencies = localDependencyOverrides()
+  const overrides = [
+    ['@openma/deepseek-harness-acp', `file:${packages.acp}`],
+    ['@openma/deepseek-harness-tui', `file:${packages.tui}`],
+  ]
   writeFileSync(
     path.join(dir, 'pnpm-workspace.yaml'),
     [
@@ -103,10 +140,35 @@ function writeWorkspaceOverride(home, tuiPackage) {
       'nodeLinker: hoisted',
       'autoInstallPeers: false',
       'overrides:',
-      `  "@openma/deepseek-harness-tui": ${JSON.stringify(`file:${tuiPackage}`)}`,
+      ...overrides.map(([name, specifier]) => (
+        `  ${JSON.stringify(name)}: ${JSON.stringify(specifier)}`
+      )),
       '',
     ].join('\n'),
   )
+  if (localDependencies.length > 0) {
+    const localSpecifiers = Object.fromEntries([...localDependencies, ...overrides])
+    writeFileSync(
+      path.join(dir, '.pnpmfile.cjs'),
+      [
+        `const localSpecifiers = ${JSON.stringify(localSpecifiers, null, 2)}`,
+        '',
+        'module.exports = {',
+        '  hooks: {',
+        '    readPackage(pkg) {',
+        "      for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {",
+        '        for (const name of Object.keys(pkg[section] ?? {})) {',
+        '          if (localSpecifiers[name]) pkg[section][name] = localSpecifiers[name]',
+        '        }',
+        '      }',
+        '      return pkg',
+        '    },',
+        '  },',
+        '}',
+        '',
+      ].join('\n'),
+    )
+  }
 }
 
 function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
@@ -180,7 +242,7 @@ test('one TUI command handles the complete profile installation matrix', async (
   try {
     await matrixCase('missing', 'profile does not exist', () => {
       const home = path.join(root, 'missing')
-      writeWorkspaceOverride(home, packages.tui)
+      writeWorkspaceOverride(home, packages)
       assert.equal(existsSync(path.join(profileDir(home), 'package.json')), false)
       installTui(home)
       assertSingleTuiBundle(home)
@@ -190,7 +252,7 @@ test('one TUI command handles the complete profile installation matrix', async (
 
     await matrixCase('base-only', 'profile exists without ACP or TUI', () => {
       const home = path.join(root, 'base-only')
-      writeWorkspaceOverride(home, packages.tui)
+      writeWorkspaceOverride(home, packages)
       initExistingProfile(home)
       installTui(home)
       assertSingleTuiBundle(home)
@@ -200,7 +262,7 @@ test('one TUI command handles the complete profile installation matrix', async (
 
     await matrixCase('current-acp', 'profile already has current ACP', () => {
       const home = path.join(root, 'with-acp')
-      writeWorkspaceOverride(home, packages.tui)
+      writeWorkspaceOverride(home, packages)
       initExistingProfile(home)
       installAcp(home, `file:${packages.acp}`)
       installTui(home)
@@ -216,7 +278,7 @@ test('one TUI command handles the complete profile installation matrix', async (
 
     await matrixCase('twice', 'installing TUI twice is idempotent', () => {
       const home = path.join(root, 'twice')
-      writeWorkspaceOverride(home, packages.tui)
+      writeWorkspaceOverride(home, packages)
       installTui(home)
       installTui(home)
       assertSingleTuiBundle(home)
@@ -226,7 +288,7 @@ test('one TUI command handles the complete profile installation matrix', async (
 
     await matrixCase('old-acp', 'a pinned old ACP remains owned by the profile but does not block TUI', () => {
       const home = path.join(root, 'old-acp')
-      writeWorkspaceOverride(home, packages.tui)
+      writeWorkspaceOverride(home, packages)
       initExistingProfile(home)
       installAcp(home, '@openma/deepseek-harness-acp@0.4.8')
       assert.equal(manifest(home).dependencies['@openma/deepseek-harness-acp'], '0.4.8')
@@ -241,6 +303,10 @@ test('one TUI command handles the complete profile installation matrix', async (
       smokeProfile(home)
     })
   } finally {
-    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    if (process.env.DSH_TUI_KEEP_MATRIX === '1') {
+      process.stderr.write(`kept profile matrix fixture at ${root}\n`)
+    } else {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    }
   }
 })

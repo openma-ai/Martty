@@ -61,6 +61,7 @@ jobs:
           DSH_TUI_BIN: ${{ github.workspace }}/target/profile-smoke-tui.exe
           DSH_TUI_SMOKE_SCRIPT: ${{ github.workspace }}/scripts/profile-smoke-tui.mjs
           DSH_TUI_MATRIX_CASE: missing
+          DSH_TUI_LOCAL_DEPS: "1"
         run: npm run test:profile-install-matrix --prefix npm
 
   native:
