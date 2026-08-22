@@ -20,6 +20,7 @@ const acpRoot = path.resolve(
 )
 const smokeTui = path.join(import.meta.dirname, 'profile-smoke-tui.mjs')
 const smokeBin = path.resolve(process.env.DSH_TUI_BIN ?? smokeTui)
+const dshCli = path.join(packageRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -39,9 +40,14 @@ function requireOk(result, operation) {
 }
 
 function pack(directory, destination) {
-  const result = run('npm', [
-    'pack', '--silent', '--ignore-scripts', '--pack-destination', destination,
-  ], { cwd: directory })
+  const npmCli = process.env.npm_execpath
+  const result = npmCli === undefined
+    ? run('npm', [
+      'pack', '--silent', '--ignore-scripts', '--pack-destination', destination,
+    ], { cwd: directory })
+    : run(process.execPath, [
+      npmCli, 'pack', '--silent', '--ignore-scripts', '--pack-destination', destination,
+    ], { cwd: directory })
   requireOk(result, `pack ${directory}`)
   const filename = result.stdout.trim().split(/\r?\n/).at(-1)
   assert.ok(filename, `npm pack printed no filename for ${directory}`)
@@ -100,7 +106,7 @@ function writeWorkspaceOverride(home, tuiPackage) {
 }
 
 function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
-  return run('dsh', args, {
+  return run(process.execPath, [dshCli, ...args], {
     cwd,
     timeout,
     env: {
