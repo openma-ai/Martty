@@ -8517,6 +8517,20 @@ mod palette_tests {
         json!({"protocol": 0, "palette": palette, "activate": activate})
     }
 
+    fn gallery_params(id: &str, activate: bool) -> serde_json::Value {
+        let fixture = match id {
+            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
+            "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
+            "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
+            "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
+            "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
+            "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
+            _ => panic!("unknown gallery fixture {id}"),
+        };
+        let palette: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        json!({"protocol": 0, "palette": palette, "activate": activate})
+    }
+
     #[test]
     fn starts_on_default_pack() {
         let (app, _ctl, _rx) = test_app();
@@ -8577,6 +8591,57 @@ mod palette_tests {
             app.picker.is_some(),
             "toggling mode must not close the picker"
         );
+    }
+
+    #[test]
+    fn gallery_palette_rpc_activates_everforest_and_toggles_modes() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: gallery_params("everforest", true),
+            },
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "everforest");
+        assert_eq!(app.theme.brand, Color::Rgb(127, 187, 179)); // #7FBBB3 Everforest dark blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "everforest");
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(58, 148, 197)); // #3A94C5 Everforest light blue
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(
+            tip.contains("everforest") && tip.contains("light"),
+            "tip should name the pack, got {tip:?}"
+        );
+    }
+
+    #[test]
+    fn slash_theme_switches_between_gallery_packs() {
+        let (mut app, ctl, _rx) = test_app();
+        for id in [
+            "ayu", "catppuccin", "kanagawa", "everforest",
+            "iceberg", "solarized",
+        ] {
+            app.handle(
+                AppEvent::Rpc {
+                    method: crate::cordis::THEME_UPDATE.into(),
+                    params: gallery_params(id, false),
+                },
+                &ctl,
+            );
+        }
+        assert_eq!(app.active_palette_id, "default");
+        app.run_slash("theme", "solarized", &ctl);
+        assert_eq!(app.active_palette_id, "solarized");
+        // Solarized keeps the same blue in both modes.
+        assert_eq!(app.theme.brand, Color::Rgb(38, 139, 210)); // #268BD2
     }
 
     #[test]
