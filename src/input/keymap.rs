@@ -1077,9 +1077,21 @@ mod tests {
         assert!(!mac.contains("option+a"), "old macOS alias leaked:\n{mac}");
         let linux = keys_markdown(false, false);
         assert!(linux.contains("ctrl+←"), "linux chord missing:\n{linux}");
-        assert!(!linux.contains("⌘←"), "macOS chord leaked to linux:\n{linux}");
-        assert!(linux.contains("ctrl+shift+a"), "linux agent chord missing:\n{linux}");
-        for group in [KeyGroup::Send, KeyGroup::Navigate, KeyGroup::Edit, KeyGroup::App, KeyGroup::Mouse] {
+        assert!(
+            !linux.contains("⌘←"),
+            "macOS chord leaked to linux:\n{linux}"
+        );
+        assert!(
+            linux.contains("ctrl+shift+a"),
+            "linux agent chord missing:\n{linux}"
+        );
+        for group in [
+            KeyGroup::Send,
+            KeyGroup::Navigate,
+            KeyGroup::Edit,
+            KeyGroup::App,
+            KeyGroup::Mouse,
+        ] {
             assert!(
                 linux.contains(&group.title(false)),
                 "group {:?} missing:\n{linux}",
@@ -1091,5 +1103,4 @@ mod tests {
         assert!(zh.contains("[空输入时]"), "zh context tag missing:\n{zh}");
         assert!(zh.contains("发送"), "zh send group missing:\n{zh}");
     }
-
 }

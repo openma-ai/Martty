@@ -242,7 +242,7 @@ export function installTuiTheme(ctx, options = {}) {
   let activationRevision = 0
 
   const builtin = validatePalette(defaultPalette)
-  palettes.set(builtin.id, { palette: builtin, owner: undefined, loaded: true })
+  palettes.set(builtin.id, { palette: builtin, owner: undefined, loaded: true, source: 'static' })
 
   function emit(method, params) {
     if (typeof send === 'function') {
@@ -279,7 +279,14 @@ export function installTuiTheme(ctx, options = {}) {
     activeId = id
     activationRevision += 1
     if (notifyPainter) {
-      emit(CORDIS_METHODS.themeUpdate, { protocol: PROTOCOL, palette, activate: true })
+      emit(CORDIS_METHODS.themeUpdate, {
+        protocol: PROTOCOL,
+        palette,
+        activate: true,
+        loaded: entry.loaded,
+        source: entry.source,
+        ...(entry.owner === undefined ? {} : { owner: { pluginId: entry.owner } }),
+      })
     }
     if (previousId !== id) {
       for (const listener of [...listeners]) {
@@ -336,13 +343,18 @@ export function installTuiTheme(ctx, options = {}) {
     const setup = () => {
       const previousId = cover ? activeId : undefined
       let leaseRevision
-      entry = { palette: validated, owner, loaded: true }
+      const source = owner === undefined ? 'static' : registerOptions.source ?? 'dynamic'
+      if (source !== 'static' && source !== 'dynamic') {
+        throw new Error('tuiTheme.register: source must be static or dynamic')
+      }
+      entry = { palette: validated, owner, loaded: true, source }
       palettes.set(validated.id, entry)
       emit(CORDIS_METHODS.themeUpdate, {
         protocol: PROTOCOL,
         palette: validated,
         activate: false,
         loaded: true,
+        source,
         ...(owner === undefined ? {} : { owner: { pluginId: owner } }),
       })
       if (cover) {
@@ -372,6 +384,7 @@ export function installTuiTheme(ctx, options = {}) {
             palette: validated,
             activate: false,
             loaded: false,
+            source: entry.source,
             owner: { pluginId: owner },
           })
         }
@@ -400,6 +413,7 @@ export function installTuiTheme(ctx, options = {}) {
         palette: next,
         activate: false,
         loaded: true,
+        source: entry.source,
         ...(owner === undefined ? {} : { owner: { pluginId: owner } }),
       })
     }

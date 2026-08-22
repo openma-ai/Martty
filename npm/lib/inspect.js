@@ -756,14 +756,15 @@ async function mountClientHalf(
  *   acpSessionStatus?: object,
  *   localPlugins?: object,
  *   requestAgent: (method: string, params?: object) => Promise<unknown>,
+ *   notifyTui?: (method: string, params?: object) => void,
  * }} opts
- * @returns {{ onHost: (message: object) => void }}
+ * @returns {{ onHost: (message: object) => void, respondApproval: (params: object) => Promise<void> }}
  */
 export function attachTuiClient(opts) {
   const {
     ctx, tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
     acpSessionStats, acpSessionStatus, localPlugins,
-    requestAgent,
+    requestAgent, notifyTui = () => {},
   } = opts
   const providers = [
     themeInspectProvider(tuiTheme),
@@ -780,6 +781,23 @@ export function attachTuiClient(opts) {
   /** @type {Map<string, () => void>} */
   const loaded = new Map()
   const pendingThemeSelections = new Map()
+  const pendingUiSelections = new Map()
+  const pendingApprovals = new Map()
+
+  function publishApprovals() {
+    notifyTui(CORDIS_METHODS.approvalsUpdate, {
+      protocol: 0,
+      approvals: [...pendingApprovals.values()].map((request) => ({
+        requestId: request.requestId,
+        agentId: request.agentId,
+        pluginId: request.pluginId,
+        packageId: request.packageId,
+        mode: request.mode,
+        name: request.name,
+        purpose: request.purpose,
+      })),
+    })
+  }
 
   async function stopOwner(agentId, pluginId) {
     if (localPlugins?.has?.(pluginId) === true) {
@@ -828,7 +846,7 @@ export function attachTuiClient(opts) {
     await requestAgent(CORDIS_METHODS.inspectResolve, { agentId, requestId, resolution }).catch(() => {})
   }
 
-  async function runClient(params, direct = false) {
+  async function runClient(params, direct = false, approveFutureVersions = false) {
     const request = params !== null && typeof params === 'object' ? params : {}
     const requestId = request.requestId
     if (!direct && typeof requestId !== 'string') return
@@ -842,6 +860,7 @@ export function attachTuiClient(opts) {
       ? { ok: true, pluginRunId: request.pluginRunId }
       : undefined
     const previousThemeOwner = tuiTheme.owner?.(tuiTheme.active())
+    const previousUiOwner = tuiPresets?.owner?.(tuiPresets.active?.())
     try {
       if (!direct) {
         host = await requestAgent(CORDIS_METHODS.runHost, {
@@ -850,7 +869,7 @@ export function attachTuiClient(opts) {
           packageId: request.packageId,
           mode: request.mode,
           requestId,
-          approveFutureVersions: false,
+          approveFutureVersions,
         })
       }
       if (host === null || typeof host !== 'object' || host.ok !== true) {
@@ -909,6 +928,15 @@ export function attachTuiClient(opts) {
         },
       )
       loaded.set(request.pluginId, applied.dispose)
+      const selectedUi = pendingUiSelections.get(request.pluginId)
+      if (selectedUi !== undefined && tuiPresets?.isLoaded?.(selectedUi) === true) {
+        pendingUiSelections.delete(request.pluginId)
+        tuiPresets.activate(selectedUi)
+        if (previousUiOwner !== undefined && previousUiOwner !== request.pluginId
+          && tuiTheme.owner?.(tuiTheme.active()) !== previousUiOwner) {
+          await stopOwner(request.agentId, previousUiOwner)
+        }
+      }
       const selectedTheme = pendingThemeSelections.get(request.pluginId)
       if (selectedTheme !== undefined && tuiTheme.isLoaded?.(selectedTheme) === true) {
         pendingThemeSelections.delete(request.pluginId)
@@ -953,7 +981,21 @@ export function attachTuiClient(opts) {
       case CORDIS_METHODS.inspectQuery:
         return answerQuery(message.params)
       case CORDIS_METHODS.requestRun:
+        if (message.params !== null && typeof message.params === 'object'
+          && message.params.requiresApproval === true
+          && typeof message.params.requestId === 'string') {
+          pendingApprovals.set(message.params.requestId, { ...message.params })
+          publishApprovals()
+          return
+        }
         return runClient(message.params)
+      case CORDIS_METHODS.requestRunResolved: {
+        const requestId = message.params !== null && typeof message.params === 'object'
+          ? message.params.requestId
+          : undefined
+        if (typeof requestId === 'string' && pendingApprovals.delete(requestId)) publishApprovals()
+        return
+      }
       case CORDIS_METHODS.userRun:
         return runClient(message.params, true)
       case CORDIS_METHODS.pluginRetract: {
@@ -968,6 +1010,29 @@ export function attachTuiClient(opts) {
       }
       default:
     }
+  }
+
+  async function respondApproval(params) {
+    const request = params !== null && typeof params === 'object' ? params : {}
+    if (request.protocol !== 0) throw new Error('unsupported approval response payload')
+    if (typeof request.requestId !== 'string' || request.requestId.length === 0) {
+      throw new Error('approval response needs requestId')
+    }
+    if (!['allow-version', 'allow-future', 'reject'].includes(request.decision)) {
+      throw new Error('approval response has an invalid decision')
+    }
+    const pending = pendingApprovals.get(request.requestId)
+    if (pending === undefined) return
+    pendingApprovals.delete(request.requestId)
+    publishApprovals()
+    if (request.decision === 'reject') {
+      await requestAgent(CORDIS_METHODS.resolveRequestRun, {
+        requestId: request.requestId,
+        resolution: { ok: false, reason: 'rejected' },
+      })
+      return
+    }
+    await runClient(pending, false, request.decision === 'allow-future')
   }
 
   async function selectTheme(params) {
@@ -1042,12 +1107,71 @@ export function attachTuiClient(opts) {
     }
   }
 
+  async function selectUi(params) {
+    const request = params !== null && typeof params === 'object' ? params : {}
+    if (request.protocol !== 0) throw new Error('unsupported UI selection payload')
+    if (typeof request.agentId !== 'string' || request.agentId.length === 0) {
+      throw new Error('UI selection needs agentId')
+    }
+    if (typeof request.id !== 'string' || request.id.length === 0) {
+      throw new Error('UI selection needs id')
+    }
+    if (!tuiPresets?.list?.().some((entry) => entry.id === request.id)) {
+      throw new Error(`UI Plugin "${request.id}" is not registered`)
+    }
+    const previousId = tuiPresets.active()
+    const previousOwner = tuiPresets.owner?.(previousId)
+    const targetOwner = tuiPresets.owner?.(request.id)
+
+    if (targetOwner === undefined || tuiPresets.isLoaded?.(request.id) === true) {
+      tuiPresets.activate(request.id)
+      if (previousOwner !== undefined && previousOwner !== targetOwner
+        && tuiTheme.owner?.(tuiTheme.active()) !== previousOwner) {
+        await stopOwner(request.agentId, previousOwner)
+      }
+      return { ok: true, status: 'selected', id: request.id }
+    }
+    if (localPlugins?.has?.(targetOwner) === true) {
+      await localPlugins.start(targetOwner)
+      if (tuiPresets.isLoaded?.(request.id) !== true) {
+        throw new Error(`local UI Plugin "${targetOwner}" did not load UI "${request.id}"`)
+      }
+      tuiPresets.activate(request.id)
+      if (previousOwner !== undefined && previousOwner !== targetOwner
+        && tuiTheme.owner?.(tuiTheme.active()) !== previousOwner) {
+        await stopOwner(request.agentId, previousOwner)
+      }
+      return { ok: true, status: 'selected', id: request.id }
+    }
+
+    pendingUiSelections.set(targetOwner, request.id)
+    try {
+      const started = await requestAgent(CORDIS_METHODS.pluginStart, {
+        agentId: request.agentId,
+        pluginId: targetOwner,
+      })
+      if (started?.ok === false) {
+        throw new Error(typeof started.message === 'string'
+          ? started.message
+          : `failed to start UI Plugin "${targetOwner}"`)
+      }
+      return { ok: true, status: 'starting', id: request.id }
+    } catch (error) {
+      pendingUiSelections.delete(targetOwner)
+      throw error
+    }
+  }
+
   function dispose() {
     for (const release of loaded.values()) release()
     loaded.clear()
+    if (pendingApprovals.size > 0) {
+      pendingApprovals.clear()
+      publishApprovals()
+    }
   }
 
-  return { onHost, selectTheme, sync, dispose }
+  return { onHost, respondApproval, selectTheme, selectUi, sync, dispose }
 }
 
 /** Mount the TUI counterpart of the Web Cordis Client runner. */
@@ -1064,12 +1188,12 @@ export function apply(ctx) {
   const localPlugins = ctx.get?.('tuiLocalPlugins')
   let client
   const service = {
-    bindTransport(requestAgent) {
+    bindTransport(requestAgent, notifyTui) {
       client?.dispose()
       client = attachTuiClient({
         ctx, tuiTheme, tuiPresets, tuiSlots, tuiCommands, tuiOverlay, acpSessionConfig, acpSessionPlan,
         acpSessionStats, acpSessionStatus, localPlugins,
-        requestAgent,
+        requestAgent, notifyTui,
       })
       const attached = client
       return () => {
@@ -1084,6 +1208,14 @@ export function apply(ctx) {
     selectTheme(params) {
       if (client === undefined) throw new Error('TUI Cordis Client runner is not attached')
       return client.selectTheme(params)
+    },
+    selectUi(params) {
+      if (client === undefined) throw new Error('TUI Cordis Client runner is not attached')
+      return client.selectUi(params)
+    },
+    respondApproval(params) {
+      if (client === undefined) throw new Error('TUI Cordis Client runner is not attached')
+      return client.respondApproval(params)
     },
     sync() {
       client?.sync()

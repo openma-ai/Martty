@@ -21,6 +21,8 @@ const COMPOSITOR_METHODS = Object.freeze(new Set([
   CORDIS_METHODS.commandInvoke,
   CORDIS_METHODS.overlayEvent,
   CORDIS_METHODS.sessionConfigSet,
+  CORDIS_METHODS.approvalRespond,
+  CORDIS_METHODS.uiSelected,
 ]))
 
 /** Agent → TUI Node extras. Not compositor paint; Rust never sees these. */

@@ -30,3 +30,22 @@ test('release workflow packages and publishes both npm names', () => {
   assert.match(workflow, /npm publish \.\/dist\/martty-\[0-9\]\*\.tgz/)
   assert.match(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui-\[0-9\]\*\.tgz/)
 })
+
+test('Windows CI boots an installed profile through the real Node loader', () => {
+  assert.match(
+    workflow,
+    /uses: pnpm\/action-setup@v6\n\s+with:/,
+    'pnpm setup must not exclude Windows',
+  )
+  assert.match(
+    workflow,
+    /name: Install Node test dependencies\n\s+run: npm ci --prefix npm/,
+    'Node dependencies must be installed on Windows',
+  )
+  assert.match(workflow, /name: Build Windows profile smoke launcher/)
+  assert.match(workflow, /name: Run Windows profile smoke/)
+  assert.match(workflow, /DSH_TUI_MATRIX_CASE: missing/)
+  assert.match(workflow, /DSH_TUI_LOCAL_DEPS: "1"/)
+  assert.match(workflow, /DSH_TUI_MATRIX_TMP: \$\{\{ runner\.temp \}\}/)
+  assert.match(workflow, /npm run test:profile-install-matrix --prefix npm/)
+})

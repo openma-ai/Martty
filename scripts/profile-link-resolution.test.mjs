@@ -30,25 +30,22 @@ const packageLib = path.join(import.meta.dirname, '../npm/lib')
 const requireFromTui = createRequire(path.join(packageLib, '../package.json'))
 const ownAcpPlugin = requireFromTui.resolve('@openma/deepseek-harness-acp/plugin')
 const ownAcpBridge = requireFromTui.resolve('@openma/deepseek-harness-acp/bridge')
+const ownAcpPluginUrl = pathToFileURL(ownAcpPlugin).href
+const ownAcpBridgeUrl = pathToFileURL(ownAcpBridge).href
+const ownAcpPluginExports = await import(ownAcpPluginUrl)
 
-test('Host entries resolve ACP from the TUI dependency graph through the profile loader', async () => {
+test('Host entries pass resolved ACP modules to the profile loader as file URLs', async () => {
   const imports = []
-  const embedded = {
-    name: 'embedded-acp',
-    inject: [],
-    apply() {},
-  }
   const loader = {
     async import(specifier) {
       imports.push(specifier)
-      if (specifier === ownAcpPlugin) return embedded
-      if (specifier === ownAcpBridge) {
+      if (specifier === ownAcpBridgeUrl) {
         return { nodeAcpStream: harness.nodeAcpStream }
       }
       throw new Error(`unexpected loader import ${specifier}`)
     },
     unwrapExports(exports) {
-      return exports
+      return exports.default ?? exports
     },
   }
 
@@ -57,8 +54,9 @@ test('Host entries resolve ACP from the TUI dependency graph through the profile
   )
   const mounted = []
   const wrapperResult = await acpHost.apply({
+    baseUrl: import.meta.url,
     loader,
-    plugin(plugin, config) {
+    async plugin(plugin, config) {
       mounted.push({ plugin, config })
       return Symbol('cordis-fiber')
     },
@@ -67,7 +65,7 @@ test('Host entries resolve ACP from the TUI dependency graph through the profile
   assert.equal(wrapperResult, undefined)
   assert.deepEqual(acpHost.inject, ['loader'])
   assert.deepEqual(mounted, [{
-    plugin: embedded,
+    plugin: loader.unwrapExports(ownAcpPluginExports),
     config: { permissionMode: 'workspace-write' },
   }])
 
@@ -90,7 +88,6 @@ test('Host entries resolve ACP from the TUI dependency graph through the profile
     'loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins',
   ])
   assert.deepEqual(imports, [
-    ownAcpPlugin,
-    ownAcpBridge,
+    ownAcpBridgeUrl,
   ])
 })

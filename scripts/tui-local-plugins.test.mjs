@@ -44,7 +44,7 @@ function palette(id, label) {
   }
 }
 
-test('a new Client process discovers and mounts saved UI Preset artifacts', async () => {
+test('a new Client process discovers and mounts saved UI Plugin artifacts', async () => {
   assert.equal(typeof localModule.installTuiLocalPlugins, 'function')
   if (typeof localModule.installTuiLocalPlugins !== 'function') return
 
@@ -82,12 +82,16 @@ test('a new Client process discovers and mounts saved UI Preset artifacts', asyn
     assert.deepEqual(local.list(), [{
       artifactId: 'focused-ui',
       pluginId: 'tui-local:focused-ui',
-      kind: 'ui-preset',
+      kind: 'ui',
       loaded: true,
     }])
 
     await local.dispose()
-    assert.deepEqual(runtime.tuiPresets.list(), [{ id: 'default', label: 'Martty' }])
+    assert.deepEqual(runtime.tuiPresets.list(), [
+      { id: 'default', label: 'Martty' },
+      { id: 'focused', label: 'Focused' },
+    ])
+    assert.equal(runtime.tuiPresets.catalog()[1].status, 'stopped')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

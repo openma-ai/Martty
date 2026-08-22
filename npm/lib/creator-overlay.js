@@ -41,7 +41,7 @@ function registerArtifactTools(ctx, scopedCtx, defineTool, store) {
     name: 'tui_plugin_save',
     description:
       'Persist one successfully activated, Client-only Cordis Package as a durable TUI artifact. '
-      + 'Use this only after cordis_run succeeds. UI Presets and Theme Plugins survive restart only '
+      + 'Use this only after cordis_run succeeds. UI and Theme Plugins survive restart only '
       + 'after this Tool returns saved. Replacing an existing artifact must be explicit.',
     parameters: {
       artifactId: {
@@ -52,7 +52,7 @@ function registerArtifactTools(ctx, scopedCtx, defineTool, store) {
       kind: {
         type: 'string',
         required: true,
-        enum: ['ui-preset', 'theme'],
+        enum: ['ui', 'theme'],
         description: 'Durable TUI contribution kind.',
       },
       pluginId: {
@@ -86,7 +86,7 @@ function registerArtifactTools(ctx, scopedCtx, defineTool, store) {
       if (typeof source.code?.host === 'string') {
         throw new Error(
           'tui_plugin_save: durable TUI artifacts are client-only; a Package with a Host half '
-          + 'must be shipped as a standard profile plugin instead',
+          + 'belongs to the connected Harness and needs its separate shipping path',
         )
       }
       if (typeof source.code?.client !== 'string') {

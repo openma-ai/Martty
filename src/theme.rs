@@ -215,6 +215,8 @@ pub struct PalettePack {
     pub label: String,
     /// Dynamic Client Plugin that owns this selectable theme, when any.
     pub plugin_id: Option<String>,
+    /// ACP-carried registry origin; Rust never infers this from plugin ids.
+    pub source: String,
     /// Whether the owning Plugin is currently mounted.
     pub loaded: bool,
     /// Optional terminal background owned by this theme pack.
@@ -257,6 +259,7 @@ impl PalettePack {
             id: "default".into(),
             label: "Default".into(),
             plugin_id: None,
+            source: "static".into(),
             loaded: true,
             background: None,
             dark: DEFAULT_DARK,
@@ -299,6 +302,7 @@ impl PalettePack {
             id: id.to_string(),
             label: label.to_string(),
             plugin_id: None,
+            source: "static".into(),
             loaded: true,
             background,
             dark,
@@ -439,6 +443,11 @@ pub fn parse_palette_notification(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    pack.source = match params.get("source").and_then(Value::as_str) {
+        Some("dynamic") => "dynamic".into(),
+        Some("static") | None => "static".into(),
+        Some(source) => return Err(PaletteError(format!("invalid palette source {source}"))),
+    };
     pack.loaded = params
         .get("loaded")
         .and_then(Value::as_bool)
@@ -708,6 +717,88 @@ mod tests {
         assert_eq!(light.bg, Color::Rgb(255, 246, 238)); // #FFF6EE
     }
 
+    fn fixture_json(name: &str) -> serde_json::Value {
+        match name {
+            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
+            "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
+            "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
+            "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
+            "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
+            "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
+            _ => panic!("unknown fixture {name}"),
+        }
+        .parse::<serde_json::Value>()
+        .expect("fixture json")
+    }
+
+    #[test]
+    fn gallery_fixtures_parse_both_modes() {
+        for (name, label, dark_brand, light_brand, dark_bg, light_bg) in [
+            (
+                "ayu",
+                "Ayu",
+                Color::Rgb(83, 189, 250), // #53BDFA Ayu dark blue
+                Color::Rgb(49, 153, 225),  // #3199E1 Ayu Light blue
+                Color::Rgb(11, 14, 20),   // #0B0E14
+                Color::Rgb(248, 249, 250), // #F8F9FA
+            ),
+            (
+                "catppuccin",
+                "Catppuccin",
+                Color::Rgb(137, 180, 250), // #89B4FA Catppuccin Mocha blue
+                Color::Rgb(30, 102, 245),  // #1E66F5 Catppuccin Latte blue
+                Color::Rgb(30, 30, 46),    // #1E1E2E
+                Color::Rgb(239, 241, 245), // #EFF1F5
+            ),
+            (
+                "kanagawa",
+                "Kanagawa",
+                Color::Rgb(126, 156, 216), // #7E9CD8 Kanagawa Wave blue
+                Color::Rgb(77, 105, 155),  // #4D699B Kanagawa Lotus blue
+                Color::Rgb(31, 31, 40),    // #1F1F28
+                Color::Rgb(242, 236, 188), // #F2ECBC
+            ),
+            (
+                "everforest",
+                "Everforest",
+                Color::Rgb(127, 187, 179), // #7FBBB3
+                Color::Rgb(58, 148, 197),  // #3A94C5
+                Color::Rgb(45, 53, 59),    // #2D353B
+                Color::Rgb(253, 246, 227), // #FDF6E3
+            ),
+            (
+                "iceberg",
+                "Iceberg",
+                Color::Rgb(132, 160, 198), // #84A0C6
+                Color::Rgb(45, 83, 158),   // #2D539E
+                Color::Rgb(22, 24, 33),    // #161821
+                Color::Rgb(232, 233, 236), // #E8E9EC
+            ),
+            (
+                "solarized",
+                "Solarized",
+                Color::Rgb(38, 139, 210),  // #268BD2 (both modes)
+                Color::Rgb(38, 139, 210),  // #268BD2
+                Color::Rgb(0, 43, 54),     // #002B36
+                Color::Rgb(253, 246, 227), // #FDF6E3
+            ),
+        ] {
+            let pack = PalettePack::from_json(&fixture_json(name)).expect("gallery fixture");
+            assert_eq!(pack.id, name);
+            assert_eq!(pack.label, label);
+            let dark = pack.theme(Mode::Dark);
+            let light = pack.theme(Mode::Light);
+            assert_eq!(dark.mode, Mode::Dark);
+            assert_eq!(light.mode, Mode::Light);
+            assert_eq!(dark.brand, dark_brand, "{name} dark brand");
+            assert_eq!(light.brand, light_brand, "{name} light brand");
+            assert_eq!(dark.bg, dark_bg, "{name} dark bg");
+            assert_eq!(light.bg, light_bg, "{name} light bg");
+            // Toggling stays inside the pack's own maps.
+            assert_eq!(dark.toggled().brand, light.brand, "{name} toggled");
+        }
+    }
+
     #[test]
     fn palette_parses_an_optional_png_background() {
         let mut value = ember_json();
@@ -817,12 +908,14 @@ mod tests {
             "palette": ember_json(),
             "activate": false,
             "loaded": false,
+            "source": "dynamic",
             "owner": { "pluginId": "night-lime-1" },
         }))
         .unwrap()
         .expect("protocol 0");
 
         assert_eq!(notification.pack.plugin_id.as_deref(), Some("night-lime-1"));
+        assert_eq!(notification.pack.source, "dynamic");
         assert!(!notification.pack.loaded);
     }
 }

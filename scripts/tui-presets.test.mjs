@@ -58,12 +58,12 @@ test('UI presets compose plugin mounts, switch atomically, and persist selection
   assert.deepEqual(mounted, ['default'])
   assert.deepEqual(commands.current().options, {
     name: 'ui',
-    description: 'Switch UI preset',
+    description: 'Switch UI Plugin',
     input: {
-      hint: 'preset',
+      hint: 'plugin',
       options: [
-        { value: 'default', label: 'Martty' },
-        { value: 'deepseek', label: 'DeepSeek' },
+        { value: 'default', label: 'Martty', description: 'static · active' },
+        { value: 'deepseek', label: 'DeepSeek', description: 'static · ready' },
       ],
     },
   })
@@ -117,16 +117,50 @@ test('/ui without arguments opens a native preset selector', async () => {
   assert.deepEqual(overlay.active(), {
     kind: 'select',
     id: 'ui-preset',
-    title: 'UI preset',
+    title: 'UI Plugin',
     value: 'default',
     options: [
-      { value: 'default', label: 'Martty' },
-      { value: 'deepseek', label: 'DeepSeek' },
+      { value: 'default', label: 'Martty', description: 'static · active' },
+      { value: 'deepseek', label: 'DeepSeek', description: 'static · ready' },
     ],
   })
 
   await overlay.dispatch({ protocol: 0, id: 'ui-preset', event: 'submit', value: 'deepseek' })
   assert.equal(service.active(), 'deepseek')
   assert.equal(notifications.at(-1).params.overlay, null)
+  service.dispose()
+})
+
+test('UI Plugin catalog retains stopped dynamic owners and routes restore through its lifecycle seam', async () => {
+  const commands = commandService()
+  const service = presetsPlugin.installTuiPresets({ tuiCommands: commands })
+  service.register({ id: 'default', label: 'Martty' }, () => () => {})
+  const stopDynamic = service.registerOwned(
+    'panel-1',
+    { id: 'focused', label: 'Focused' },
+    () => () => {},
+    { source: 'dynamic' },
+  )
+  stopDynamic()
+
+  assert.deepEqual(service.catalog(), [
+    { id: 'default', label: 'Martty', source: 'static', status: 'active' },
+    {
+      id: 'focused',
+      label: 'Focused',
+      source: 'dynamic',
+      status: 'stopped',
+      owner: { pluginId: 'panel-1' },
+    },
+  ])
+  assert.equal(
+    commands.current().options.input.options[1].description,
+    'dynamic · stopped',
+  )
+
+  const restored = []
+  service.bindLifecycle(async (id, owner) => restored.push({ id, owner }))
+  await commands.run('focused')
+  assert.deepEqual(restored, [{ id: 'focused', owner: 'panel-1' }])
   service.dispose()
 })

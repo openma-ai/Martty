@@ -419,6 +419,66 @@ test('dynamic UI plugins can register a composed UI preset with owned lifecycle'
   presets.dispose()
 })
 
+test('/ui restores a stopped dynamic UI Plugin through ACP before selecting it', async () => {
+  const ctx = makeCtx()
+  const presets = installTuiPresets({ tuiCommands: installTuiCommands(ctx) })
+  presets.register({ id: 'default', label: 'Martty' }, () => () => {})
+  const code = `return {
+    inject: ['tuiPresets'],
+    apply(ctx) {
+      ctx.tuiPresets.register({ id: 'focused', label: 'Focused' }, () => () => {})
+    },
+  }`
+  const lifecycle = []
+  let client
+  const requestAgent = async (method, params = {}) => {
+    if (method === CORDIS_METHODS.getClientCode) return { code }
+    if (method === CORDIS_METHODS.settleUserRun) return { ok: true }
+    if (method === CORDIS_METHODS.pluginStart) {
+      lifecycle.push(`start:${params.pluginId}`)
+      await client.onHost({
+        method: CORDIS_METHODS.userRun,
+        params: {
+          agentId: params.agentId,
+          pluginId: params.pluginId,
+          packageId: 'pkg-focused',
+          pluginRunId: 'run-focused-restored',
+          startedHere: true,
+          mode: 'run',
+          hasClientHalf: true,
+        },
+      })
+      return { ok: true }
+    }
+    return { ok: true }
+  }
+  client = attachTuiClient({
+    ctx,
+    tuiTheme: installTuiTheme(ctx),
+    tuiPresets: presets,
+    requestAgent,
+  })
+  await client.onHost({
+    method: CORDIS_METHODS.userRun,
+    params: {
+      agentId: 'agent-1',
+      pluginId: 'focused-owner',
+      packageId: 'pkg-focused',
+      pluginRunId: 'run-focused',
+      startedHere: true,
+      mode: 'run',
+      hasClientHalf: true,
+    },
+  })
+  await client.onHost({ method: CORDIS_METHODS.pluginRetract, params: { pluginId: 'focused-owner' } })
+  assert.equal(presets.catalog().find(({ id }) => id === 'focused').status, 'stopped')
+
+  await client.selectUi({ protocol: 0, agentId: 'agent-1', id: 'focused' })
+
+  assert.deepEqual(lifecycle, ['start:focused-owner'])
+  assert.equal(presets.active(), 'focused')
+})
+
 test('dynamic Client commands and overlays share the Plugin lifecycle', async () => {
   const commands = installTuiCommands(makeCtx())
   const overlay = installTuiOverlay(makeCtx())
@@ -958,6 +1018,106 @@ test('Cordis run injects command and overlay services into a dynamic Client half
   client.dispose()
   assert.deepEqual(commands.list(), [])
   assert.equal(overlay.active(), null)
+})
+
+test('a Cordis run that requires approval stays pending and is published to the native TUI', async () => {
+  const calls = []
+  const updates = []
+  const client = attachTuiClient({
+    ctx: makeCtx(),
+    tuiTheme: installTuiTheme(makeCtx()),
+    notifyTui(method, params) {
+      updates.push({ method, params })
+    },
+    requestAgent(method, params) {
+      calls.push({ method, params })
+      return Promise.resolve({ accepted: true })
+    },
+  })
+
+  await client.onHost({
+    method: '_dsh/cordis/run/request',
+    params: {
+      requestId: 'approval-panel',
+      agentId: 'agent-1',
+      pluginId: 'panel-1',
+      packageId: 'pkg-panel',
+      mode: 'run',
+      name: 'Right sidebar',
+      purpose: 'Show jobs and web fetches',
+      requiresApproval: true,
+    },
+  })
+
+  assert.equal(calls.some(({ method }) => method === '_dsh/cordis/run/host'), false)
+  assert.deepEqual(updates.at(-1), {
+    method: '_dsh/cordis/tui/approvals/update',
+    params: {
+      protocol: 0,
+      approvals: [{
+        requestId: 'approval-panel',
+        agentId: 'agent-1',
+        pluginId: 'panel-1',
+        packageId: 'pkg-panel',
+        mode: 'run',
+        name: 'Right sidebar',
+        purpose: 'Show jobs and web fetches',
+      }],
+    },
+  })
+})
+
+test('native Cordis approval supports this version, future versions, and rejection', async () => {
+  const calls = []
+  const updates = []
+  const client = attachTuiClient({
+    ctx: makeCtx(),
+    tuiTheme: installTuiTheme(makeCtx()),
+    notifyTui(method, params) {
+      updates.push({ method, params })
+    },
+    requestAgent(method, params) {
+      calls.push({ method, params })
+      if (method === '_dsh/cordis/run/host') {
+        return Promise.resolve({ ok: true, pluginRunId: `run-${params.pluginId}` })
+      }
+      if (method === '_dsh/cordis/run/client-code') {
+        return Promise.resolve({ code: 'return { inject: [], apply() {} }' })
+      }
+      return Promise.resolve({ accepted: true })
+    },
+  })
+
+  const open = (suffix) => client.onHost({
+    method: '_dsh/cordis/run/request',
+    params: {
+      requestId: `approval-${suffix}`,
+      agentId: 'agent-1',
+      pluginId: `plugin-${suffix}`,
+      packageId: `pkg-${suffix}`,
+      mode: 'run',
+      name: `Plugin ${suffix}`,
+      purpose: 'test approval',
+      requiresApproval: true,
+    },
+  })
+
+  await open('once')
+  await client.respondApproval({ protocol: 0, requestId: 'approval-once', decision: 'allow-version' })
+  await open('future')
+  await client.respondApproval({ protocol: 0, requestId: 'approval-future', decision: 'allow-future' })
+  await open('reject')
+  await client.respondApproval({ protocol: 0, requestId: 'approval-reject', decision: 'reject' })
+
+  const starts = calls.filter(({ method }) => method === '_dsh/cordis/run/host')
+  assert.equal(starts[0].params.approveFutureVersions, false)
+  assert.equal(starts[1].params.approveFutureVersions, true)
+  assert.deepEqual(
+    calls.find(({ method, params }) => method === '_dsh/cordis/run/resolve'
+      && params.requestId === 'approval-reject')?.params,
+    { requestId: 'approval-reject', resolution: { ok: false, reason: 'rejected' } },
+  )
+  assert.deepEqual(updates.at(-1).params.approvals, [])
 })
 
 test('dynamic Client host.call invokes its matching Host run and renders the result', async () => {

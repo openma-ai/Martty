@@ -8,7 +8,7 @@ export const name = 'tui-client-plugin-registry'
 export const inject = []
 
 const ID = /^[a-z0-9][a-z0-9-]*$/
-const KINDS = new Set(['theme', 'ui-preset'])
+const KINDS = new Set(['theme', 'ui', 'ui-preset'])
 
 function normalizeEntry(value) {
   if (typeof value !== 'string' || value.length === 0) {
@@ -41,14 +41,14 @@ class TuiClientPluginsService extends Service {
       throw new Error('tuiClientPlugins.register: id must be a lowercase package identifier')
     }
     if (!KINDS.has(options.kind)) {
-      throw new Error('tuiClientPlugins.register: kind must be "theme" or "ui-preset"')
+      throw new Error('tuiClientPlugins.register: kind must be "theme" or "ui"')
     }
     if (this.entries.has(options.id)) {
       throw new Error(`tuiClientPlugins.register: id ${JSON.stringify(options.id)} is already registered`)
     }
     const entry = {
       id: options.id,
-      kind: options.kind,
+      kind: options.kind === 'ui-preset' ? 'ui' : options.kind,
       entry: normalizeEntry(options.entry),
     }
     this.entries.set(entry.id, entry)

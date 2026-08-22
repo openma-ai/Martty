@@ -161,7 +161,10 @@ function restrictedCtx(env, own, inject) {
             && typeof sourceTheme.registerOwned === 'function'
             ? sourceTheme.registerOwned.bind(sourceTheme, env.pluginId)
             : sourceTheme.register.bind(sourceTheme)
-          const registration = register(palette, options)
+          const registration = register(palette, {
+            ...options,
+            ...(typeof env.pluginSource === 'string' ? { source: env.pluginSource } : {}),
+          })
           const dispose = own(
             typeof registration?.dispose === 'function'
               ? registration.dispose.bind(registration)
@@ -199,7 +202,13 @@ function restrictedCtx(env, own, inject) {
     ? undefined
     : {
         register(options, mount) {
-          return own(sourcePresets.register(options, mount))
+          const register = typeof env.pluginId === 'string'
+            && typeof sourcePresets.registerOwned === 'function'
+            ? sourcePresets.registerOwned.bind(sourcePresets, env.pluginId)
+            : sourcePresets.register.bind(sourcePresets)
+          return own(register(options, mount, {
+            ...(typeof env.pluginSource === 'string' ? { source: env.pluginSource } : {}),
+          }))
         },
         list() {
           return sourcePresets.list()

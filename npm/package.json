@@ -1,6 +1,6 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.2.17-beta.0",
+  "version": "0.2.18-beta.2",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
@@ -15,7 +15,8 @@
   "main": "lib/index.js",
   "scripts": {
     "pretest": "node --test ../scripts/workflow-release.test.mjs ../scripts/package-alias.test.mjs",
-    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs ../scripts/check-static-elf.test.mjs ../scripts/smoke-old-linux.test.mjs ../scripts/cargo-guard.test.mjs ../scripts/build-npm.test.mjs ../scripts/client-profile.test.mjs ../scripts/plugin-runner.test.mjs ../scripts/profile-link-resolution.test.mjs ../scripts/release.test.mjs ../scripts/jsonrpc-line-transport.test.mjs ../scripts/tui-theme.test.mjs ../scripts/tui-presets.test.mjs ../scripts/tui-plugin-store.test.mjs ../scripts/tui-local-plugins.test.mjs ../scripts/tui-client-plugin-registry.test.mjs ../scripts/tui-slots.test.mjs ../scripts/tui-commands.test.mjs ../scripts/tui-overlay.test.mjs ../scripts/mux.test.mjs ../scripts/acp-client.test.mjs ../scripts/acp-client-events.test.mjs ../scripts/acp-session-config.test.mjs ../scripts/acp-session-plan.test.mjs ../scripts/acp-session-stats.test.mjs ../scripts/acp-session-status.test.mjs ../scripts/plan-view.test.mjs ../scripts/stats-view.test.mjs ../scripts/status-view.test.mjs ../scripts/deepseek-logo.test.mjs ../scripts/runner.test.mjs ../scripts/inspect.test.mjs ../scripts/creator-overlay.test.mjs ../scripts/real-agent-e2e.test.mjs"
+    "test": "node --test ../scripts/package-native.test.mjs ../scripts/check-release-tag.test.mjs ../scripts/check-static-elf.test.mjs ../scripts/smoke-old-linux.test.mjs ../scripts/cargo-guard.test.mjs ../scripts/build-npm.test.mjs ../scripts/client-profile.test.mjs ../scripts/plugin-runner.test.mjs ../scripts/profile-link-resolution.test.mjs ../scripts/profile-smoke-tui.test.mjs ../scripts/release.test.mjs ../scripts/jsonrpc-line-transport.test.mjs ../scripts/tui-theme.test.mjs ../scripts/tui-presets.test.mjs ../scripts/tui-plugin-store.test.mjs ../scripts/tui-local-plugins.test.mjs ../scripts/tui-client-plugin-registry.test.mjs ../scripts/tui-slots.test.mjs ../scripts/tui-commands.test.mjs ../scripts/tui-overlay.test.mjs ../scripts/mux.test.mjs ../scripts/acp-client.test.mjs ../scripts/acp-client-events.test.mjs ../scripts/acp-session-config.test.mjs ../scripts/acp-session-plan.test.mjs ../scripts/acp-session-stats.test.mjs ../scripts/acp-session-status.test.mjs ../scripts/plan-view.test.mjs ../scripts/stats-view.test.mjs ../scripts/status-view.test.mjs ../scripts/deepseek-logo.test.mjs ../scripts/runner.test.mjs ../scripts/inspect.test.mjs ../scripts/creator-overlay.test.mjs ../scripts/real-agent-e2e.test.mjs",
+    "test:profile-install-matrix": "node --test ../scripts/profile-install-matrix.test.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -70,7 +71,7 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@openma/deepseek-harness-acp": "0.4.17-beta.0"
+    "@openma/deepseek-harness-acp": "0.4.20"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.6"

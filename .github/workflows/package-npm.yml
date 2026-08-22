@@ -30,7 +30,6 @@ jobs:
           cache: npm
           cache-dependency-path: npm/package-lock.json
       - uses: pnpm/action-setup@v6
-        if: runner.os != 'Windows'
         with:
           version: "10.2.0"
       - run: rustup update stable
@@ -45,11 +44,26 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo check --locked --tests
       - name: Install Node test dependencies
-        if: runner.os != 'Windows'
         run: npm ci --prefix npm --ignore-scripts --no-audit --no-fund
       - name: Run Node tests
         if: runner.os != 'Windows'
         run: npm test --prefix npm
+      - name: Build Windows profile smoke launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target | Out-Null
+          rustc scripts/profile-smoke-launcher.rs -o target/profile-smoke-tui.exe
+      - name: Run Windows profile smoke
+        if: runner.os == 'Windows'
+        env:
+          DSH_TUI_ACP_ROOT: ${{ github.workspace }}/npm/node_modules/@openma/deepseek-harness-acp
+          DSH_TUI_BIN: ${{ github.workspace }}/target/profile-smoke-tui.exe
+          DSH_TUI_SMOKE_SCRIPT: ${{ github.workspace }}/scripts/profile-smoke-tui.mjs
+          DSH_TUI_MATRIX_CASE: missing
+          DSH_TUI_LOCAL_DEPS: "1"
+          DSH_TUI_MATRIX_TMP: ${{ runner.temp }}
+        run: npm run test:profile-install-matrix --prefix npm
 
   native:
     name: Build ${{ matrix.name }}

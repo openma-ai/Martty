@@ -99,6 +99,7 @@ test('theme registration updates an optional background without replacing its pa
       },
       activate: false,
       loaded: true,
+      source: 'static',
     },
   })
 
@@ -349,4 +350,70 @@ test('exportInspectTokens lists every closed token as #RRGGBB', () => {
   assert.equal(tokens[0].valueType, '#RRGGBB')
   assert.equal(tokens[0].requiresLightAndDark, true)
   assert.ok(tokens.every((token) => typeof token.name === 'string' && token.name.length > 0))
+})
+
+const GALLERY = [
+  ['ayu', 'Ayu'],
+  ['catppuccin', 'Catppuccin'],
+  ['kanagawa', 'Kanagawa'],
+  ['everforest', 'Everforest'],
+  ['iceberg', 'Iceberg'],
+  ['solarized', 'Solarized'],
+]
+
+test('npm gallery palettes match docs/fixtures v0.json', () => {
+  for (const [id] of GALLERY) {
+    const npm = JSON.parse(
+      readFileSync(path.join(repoRoot, 'npm/lib/palettes', `${id}.json`), 'utf8'),
+    )
+    const docs = JSON.parse(readFileSync(path.join(repoRoot, 'docs/fixtures', `${id}.v0.json`), 'utf8'))
+    assert.deepEqual(npm, docs, `${id} npm vs fixture`)
+  }
+})
+
+test('gallery plugins register without covering and activate round-trips', async () => {
+  const plugins = {}
+  for (const [id] of GALLERY) {
+    plugins[id] = await import(pathToFileURL(path.join(repoRoot, `npm/lib/${id}.js`)).href)
+    assert.deepEqual(plugins[id].inject, ['tuiTheme'], `${id} inject`)
+  }
+  const ctx = makeCtx()
+  const theme = installTuiTheme(ctx)
+  for (const [id] of GALLERY) plugins[id].apply(ctx)
+  assert.equal(theme.active(), 'default')
+  const ids = theme.list().map((p) => p.id)
+  for (const [id] of GALLERY) {
+    assert.ok(ids.includes(id), `catalog ${ids.join(', ')}`)
+    theme.activate(id)
+    assert.equal(theme.active(), id)
+  }
+  theme.activate('default')
+  assert.equal(theme.active(), 'default')
+})
+
+test('disposing static palette fibers unregisters their palettes', async () => {
+  const { Context } = await import(cordisUrl)
+  const plugins = {}
+  for (const [id] of GALLERY) {
+    plugins[id] = await import(pathToFileURL(path.join(repoRoot, `npm/lib/${id}.js`)).href)
+  }
+  const ctx = new Context()
+  await ctx.plugin(themePlugin)
+  const fibers = {}
+  for (const [id] of GALLERY) {
+    fibers[id] = ctx.plugin(plugins[id])
+    await fibers[id]
+    assert.ok(
+      ctx.tuiTheme.list().some((palette) => palette.id === id),
+      `${id} registered`,
+    )
+  }
+  for (const [id] of GALLERY) {
+    await fibers[id].dispose()
+    assert.ok(
+      !ctx.tuiTheme.list().some((palette) => palette.id === id),
+      `${id} unregistered`,
+    )
+  }
+  assert.deepEqual(ctx.tuiTheme.list(), [{ id: 'default', label: 'Default' }])
 })

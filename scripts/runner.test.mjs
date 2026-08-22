@@ -112,7 +112,7 @@ test('profile runner connects Host ACP to a separate TUI Client process', async 
     loader: {
       async import(specifier) {
         assert.notEqual(specifier, '@openma/deepseek-harness-acp/bridge')
-        assert.match(specifier, /^data:text\/javascript,/)
+        assert.match(specifier, /^file:\/\//)
         return { nodeAcpStream: profileHarness.nodeAcpStream }
       },
     },

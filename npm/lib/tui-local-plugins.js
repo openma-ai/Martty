@@ -9,7 +9,7 @@ const PACKAGE_PREFIX = 'tui-package:'
  * @param {object} ctx
  * @param {{
  *   store: object,
- *   packages?: Array<{ id: string, kind: 'theme' | 'ui-preset', entry: string }>,
+ *   packages?: Array<{ id: string, kind: 'theme' | 'ui', entry: string }>,
  *   tuiTheme?: object,
  *   tuiPresets?: object,
  *   tuiSlots?: object,
@@ -34,6 +34,7 @@ export function installTuiLocalPlugins(ctx, options) {
 
   const env = (pluginId) => ({
     pluginId,
+    pluginSource: 'static',
     tuiTheme: options.tuiTheme,
     tuiPresets: options.tuiPresets,
     tuiSlots: options.tuiSlots,

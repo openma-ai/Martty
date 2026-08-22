@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -93,6 +93,49 @@ test('Creator TUI artifacts persist under one user root and are discovered from 
   }
 })
 
+test('new UI Plugins persist as ui without Preset terminology', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-tui-artifacts-'))
+  try {
+    const store = storeModule.createTuiPluginStore({ root })
+    const saved = store.save({
+      id: 'focused-ui',
+      kind: 'ui',
+      name: 'Focused UI',
+      purpose: 'A focused layout',
+      source: { pluginId: 'ui-1', packageId: 'dyn-1' },
+      clientCode: 'return { apply() {} }',
+    })
+
+    assert.equal(store.resolve('focused-ui').kind, 'ui')
+    assert.equal(JSON.parse(readFileSync(saved.path, 'utf8')).kind, 'ui')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('legacy ui-preset manifests load dynamically as UI Plugins', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-tui-artifacts-'))
+  try {
+    const dir = path.join(root, 'legacy-ui')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify({
+      schemaVersion: 0,
+      id: 'legacy-ui',
+      kind: 'ui-preset',
+      name: 'Legacy UI',
+      purpose: 'Compatibility fixture',
+      source: { pluginId: 'ui-1', packageId: 'dyn-1' },
+      code: { client: 'return { apply() {} }' },
+    }))
+
+    const store = storeModule.createTuiPluginStore({ root })
+    assert.equal(store.list()[0].kind, 'ui')
+    assert.equal(store.resolve('legacy-ui').kind, 'ui')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('saving an existing artifact requires explicit replacement', () => {
   assert.equal(typeof storeModule.createTuiPluginStore, 'function')
   if (typeof storeModule.createTuiPluginStore !== 'function') return
@@ -102,7 +145,7 @@ test('saving an existing artifact requires explicit replacement', () => {
     const store = storeModule.createTuiPluginStore({ root })
     const first = {
       id: 'focused-ui',
-      kind: 'ui-preset',
+      kind: 'ui',
       name: 'Focused UI',
       purpose: 'A focused layout',
       source: { pluginId: 'ui-1', packageId: 'dyn-1' },

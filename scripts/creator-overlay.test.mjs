@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -207,6 +207,23 @@ test('Creator scope exposes explicit durable TUI artifact tools', async () => {
     assert.equal(read.artifact.source.packageId, 'dyn-1')
     assert.equal(read.artifact.code.client, 'return { apply() {} }')
 
+    fixture.setPackageSource({
+      pluginId: 'ui-1',
+      packageId: 'dyn-2',
+      name: 'Focused UI',
+      purpose: 'A focused layout',
+      code: { client: 'return { apply() {} }' },
+      currentPackageId: 'dyn-2',
+    })
+    const savedUi = await fixture.tools.get('tui_plugin_save').execute({
+      artifactId: 'focused-ui',
+      kind: 'ui',
+      pluginId: 'ui-1',
+      packageId: 'dyn-2',
+    }, { agent })
+    assert.equal(savedUi.artifact.kind, 'ui')
+    assert.equal(JSON.parse(readFileSync(savedUi.path, 'utf8')).kind, 'ui')
+
     const removed = await fixture.tools.get('tui_plugin_remove').execute({
       artifactId: 'paper-lantern',
     }, { agent })
@@ -253,7 +270,7 @@ test('Creator refuses to persist unvalidated or Host-backed dynamic Packages as 
     await assert.rejects(
       save.execute({
         artifactId: 'mixed',
-        kind: 'ui-preset',
+        kind: 'ui',
         pluginId: 'mixed-1',
         packageId: 'dyn-3',
       }, { agent: { id: 'agent-1' } }),

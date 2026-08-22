@@ -410,12 +410,17 @@ fn controller_loop(
                 };
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
             }
-            Cmd::FetchPlugins { .. } => {
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Plugins {
+            Cmd::FetchStaticPlugins => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::StaticPlugins {
                     plugins: Vec::new(),
                 }));
             }
-            Cmd::SetPluginEnabled { .. } => {
+            Cmd::FetchCordisPlugins { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::CordisPlugins {
+                    plugins: Vec::new(),
+                }));
+            }
+            Cmd::SetCordisPluginEnabled { .. } | Cmd::RespondCordisApproval { .. } => {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
                     "dynamic plugins require the ACP transport".into(),
                 )));
@@ -428,6 +433,11 @@ fn controller_loop(
             Cmd::PluginThemeSelected { .. } => {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
                     "client themes require the ACP compositor transport".into(),
+                )));
+            }
+            Cmd::PluginUiSelected { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "client UI Plugins require the ACP compositor transport".into(),
                 )));
             }
             Cmd::PluginOverlayEvent { .. } => {

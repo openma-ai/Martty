@@ -201,7 +201,7 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
   }
 })
 
-test('Client boot rehydrates Creator-authored UI Presets from the durable user root', async () => {
+test('Client boot rehydrates Creator-authored UI Plugins from the durable user root', async () => {
   runner.resetShellForTests()
   const restore = ensureTestNative()
   const home = mkdtempSync(path.join(tmpdir(), 'dsh-tui-client-artifacts-'))
@@ -234,7 +234,7 @@ test('Client boot rehydrates Creator-authored UI Presets from the durable user r
     assert.deepEqual(ctx.get('tuiLocalPlugins').list(), [{
       artifactId: 'focused-ui',
       pluginId: 'tui-local:focused-ui',
-      kind: 'ui-preset',
+      kind: 'ui',
       loaded: true,
     }])
   } finally {
@@ -263,7 +263,7 @@ test('Client boot mounts installed package entries received from the Host regist
     `)
     const packagePlugins = [{
       id: 'installed-ui',
-      kind: 'ui-preset',
+      kind: 'ui',
       entry: pathToFileURL(entry).href,
     }]
     assert.equal(typeof parseClientPluginsEnv, 'function')
@@ -282,9 +282,15 @@ test('Client boot mounts installed package entries received from the Host regist
     assert.deepEqual(ctx.get('tuiLocalPlugins').list(), [{
       artifactId: 'installed-ui',
       pluginId: 'tui-package:installed-ui',
-      kind: 'ui-preset',
+      kind: 'ui',
       loaded: true,
     }])
+
+    assert.equal(parseClientPluginsEnv(JSON.stringify([{
+      id: 'legacy-ui',
+      kind: 'ui-preset',
+      entry: pathToFileURL(entry).href,
+    }]))[0].kind, 'ui')
   } finally {
     await ctx?.dispose?.()
     runner.resetShellForTests()

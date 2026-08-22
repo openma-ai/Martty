@@ -40,6 +40,28 @@ test('installed packages register serializable Client entries on the Host tree',
   assert.deepEqual(ctx.tuiClientPlugins.list(), [])
 })
 
+test('installed UI package metadata uses ui and normalizes legacy ui-preset entries', async () => {
+  const { Context } = cordisModule
+  const ctx = new Context()
+  await ctx.plugin(registryModule)
+
+  ctx.tuiClientPlugins.register({
+    id: 'focused-ui',
+    kind: 'ui',
+    entry: '/opt/example/focused-ui.js',
+  })
+  ctx.tuiClientPlugins.register({
+    id: 'legacy-ui',
+    kind: 'ui-preset',
+    entry: '/opt/example/legacy-ui.js',
+  })
+
+  assert.deepEqual(ctx.tuiClientPlugins.list().map(({ id, kind }) => ({ id, kind })), [
+    { id: 'focused-ui', kind: 'ui' },
+    { id: 'legacy-ui', kind: 'ui' },
+  ])
+})
+
 test('installed package registry rejects duplicate ids and non-file Client entries', async () => {
   assert.equal(typeof registryModule.apply, 'function')
   if (typeof registryModule.apply !== 'function') return

@@ -196,9 +196,19 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "switch theme plugin · ctrl+t toggles dark/light",
     },
     SlashCommand {
+        name: "ui",
+        usage: "/ui [id]",
+        desc: "switch UI Plugin",
+    },
+    SlashCommand {
         name: "plugins",
         usage: "/plugins",
-        desc: "stop or restore dynamic plugins",
+        desc: "show static Host plugins",
+    },
+    SlashCommand {
+        name: "cordis-plugins",
+        usage: "/cordis-plugins",
+        desc: "review or manage dynamic Cordis plugins",
     },
     SlashCommand {
         name: "session",
@@ -482,11 +492,14 @@ pub enum PickerKind {
     Effort,
     Mode,
     Theme,
+    UiPlugin,
     Permission,
     Session,
     Subagent,
     Auth,
-    Plugin,
+    StaticPlugin,
+    CordisPlugin,
+    CordisApproval,
 }
 
 #[derive(Clone)]
@@ -552,6 +565,18 @@ struct PluginCommandCatalog {
 struct PluginOverlaySnapshot {
     protocol: u64,
     overlay: Option<PluginOverlay>,
+}
+
+#[derive(serde::Deserialize)]
+struct CordisApprovalsSnapshot {
+    protocol: u64,
+    approvals: Vec<crate::bus::PendingCordisApproval>,
+}
+
+#[derive(serde::Deserialize)]
+struct UiPluginCatalog {
+    protocol: u64,
+    plugins: Vec<crate::bus::UiPluginItem>,
 }
 
 #[derive(serde::Deserialize)]
@@ -934,8 +959,14 @@ pub struct App {
     /// Client Plugin commands are compositor-private and live exactly as long
     /// as their owning Plugin Fiber.
     plugin_commands: Vec<PluginCommand>,
-    /// Last backend-owned dynamic plugin inventory (`/plugins`).
-    dynamic_plugins: Vec<crate::bus::DynamicPluginItem>,
+    /// Last Host Loader inventory (`/plugins`).
+    static_plugins: Vec<crate::bus::StaticPluginItem>,
+    /// Last backend-owned dynamic plugin inventory (`/cordis-plugins`).
+    cordis_plugins: Vec<crate::bus::CordisPluginItem>,
+    /// Model-requested dynamic activations awaiting a decision.
+    pub(crate) pending_cordis_approvals: Vec<crate::bus::PendingCordisApproval>,
+    /// ACP-carried UI Plugin catalog (`/ui`).
+    ui_plugins: Vec<crate::bus::UiPluginItem>,
     /// Last advertised composition select (`/agent`).
     last_presets: Vec<crate::bus::CatalogPreset>,
     /// Last advertised ACP model select (`/model`).
@@ -1246,7 +1277,10 @@ impl App {
             modes: Self::load_modes_cache(&cfg).unwrap_or_default(),
             skills: Vec::new(),
             plugin_commands: Vec::new(),
-            dynamic_plugins: Vec::new(),
+            static_plugins: Vec::new(),
+            cordis_plugins: Vec::new(),
+            pending_cordis_approvals: Vec::new(),
+            ui_plugins: Vec::new(),
             last_presets: Vec::new(),
             last_models: Vec::new(),
             permission_choices: Vec::new(),
@@ -1443,10 +1477,12 @@ impl App {
             .map(|pack| PickerItem {
                 id: pack.id.clone(),
                 label: pack.label.clone(),
-                meta: if pack.loaded {
-                    pack.id.clone()
+                meta: if pack.id == self.active_palette_id {
+                    format!("{} · active", pack.source)
+                } else if pack.loaded {
+                    format!("{} · ready", pack.source)
                 } else {
-                    format!("{} · stopped", pack.id)
+                    format!("{} · stopped", pack.source)
                 },
                 provider: None,
             })
@@ -1469,36 +1505,134 @@ impl App {
         });
     }
 
-    fn open_plugin_picker(&mut self) {
+    fn open_ui_plugin_picker(&mut self) {
         let items = self
-            .dynamic_plugins
+            .ui_plugins
+            .iter()
+            .map(|plugin| PickerItem {
+                id: plugin.id.clone(),
+                label: plugin.label.clone(),
+                meta: format!("{} · {}", plugin.source, plugin.status),
+                provider: None,
+            })
+            .collect();
+        let sel = self
+            .ui_plugins
+            .iter()
+            .position(|plugin| plugin.status == "active")
+            .unwrap_or(0);
+        self.picker = Some(Picker {
+            kind: PickerKind::UiPlugin,
+            title: self
+                .locale
+                .tr(
+                    " UI Plugins · enter apply · esc close ",
+                    " UI 插件 · enter 应用 · esc 关闭 ",
+                )
+                .into(),
+            sel,
+            items,
+        });
+    }
+
+    fn open_static_plugin_picker(&mut self) {
+        let items = self
+            .static_plugins
+            .iter()
+            .map(|plugin| PickerItem {
+                id: plugin.entry_id.clone(),
+                label: plugin.module_name.clone(),
+                meta: format!(
+                    "static · {} · {}",
+                    if plugin.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    plugin.fiber_phase.as_deref().unwrap_or("inactive"),
+                ),
+                provider: None,
+            })
+            .collect();
+        self.picker = Some(Picker {
+            kind: PickerKind::StaticPlugin,
+            title: self
+                .locale
+                .tr(
+                    " Host plugins · static · read only · esc close ",
+                    " Host 插件 · 静态 · 只读 · esc 关闭 ",
+                )
+                .into(),
+            sel: 0,
+            items,
+        });
+    }
+
+    fn open_cordis_plugin_picker(&mut self) {
+        let items = self
+            .cordis_plugins
             .iter()
             .map(|plugin| PickerItem {
                 id: plugin.id.clone(),
                 label: plugin.name.clone(),
-                meta: if plugin.running {
-                    self.locale
-                        .tr("running · enter stop", "运行中 · enter 停用")
-                        .into()
-                } else {
-                    self.locale
-                        .tr("stopped · enter restore", "已停用 · enter 恢复")
-                        .into()
+                meta: match plugin.status.as_str() {
+                    "awaiting-approval" => "dynamic · awaiting approval · enter review".into(),
+                    "running" | "waiting" => "dynamic · running · enter stop".into(),
+                    "starting-host" | "client-pending" => "dynamic · starting".into(),
+                    "failed" => "dynamic · failed · enter retry".into(),
+                    _ => "dynamic · stopped · enter restore".into(),
                 },
                 provider: None,
             })
             .collect();
         self.picker = Some(Picker {
-            kind: PickerKind::Plugin,
+            kind: PickerKind::CordisPlugin,
             title: self
                 .locale
                 .tr(
-                    " dynamic plugins · enter stop/restore · esc close ",
-                    " 动态插件 · enter 停用/恢复 · esc 关闭 ",
+                    " Cordis plugins · dynamic · enter manage · esc close ",
+                    " Cordis 插件 · 动态 · enter 管理 · esc 关闭 ",
                 )
                 .into(),
             sel: 0,
             items,
+        });
+    }
+
+    fn open_cordis_approval_picker(&mut self, request_id: String) {
+        self.picker = Some(Picker {
+            kind: PickerKind::CordisApproval,
+            title: self
+                .locale
+                .tr(
+                    " plugin approval · enter decide ",
+                    " 插件审批 · enter 决定 ",
+                )
+                .into(),
+            sel: 0,
+            items: vec![
+                PickerItem {
+                    id: "allow-version".into(),
+                    label: self.locale.tr("Allow this version", "允许当前版本").into(),
+                    meta: String::new(),
+                    provider: Some(request_id.clone()),
+                },
+                PickerItem {
+                    id: "allow-future".into(),
+                    label: self
+                        .locale
+                        .tr("Allow future versions", "允许后续版本")
+                        .into(),
+                    meta: String::new(),
+                    provider: Some(request_id.clone()),
+                },
+                PickerItem {
+                    id: "reject".into(),
+                    label: self.locale.tr("Reject", "拒绝").into(),
+                    meta: String::new(),
+                    provider: Some(request_id),
+                },
+            ],
         });
     }
 
@@ -1628,13 +1762,7 @@ impl App {
                     return self
                         .last_models
                         .iter()
-                        .map(|model| {
-                            (
-                                model.id.clone(),
-                                model.name.clone(),
-                                model.provider.clone(),
-                            )
-                        })
+                        .map(|model| (model.id.clone(), model.name.clone(), model.provider.clone()))
                         .collect();
                 }
                 let mut ids = host_catalog_models().unwrap_or_else(|| {
@@ -1711,6 +1839,17 @@ impl App {
                     )
                 })
                 .collect(),
+            "ui" => self
+                .ui_plugins
+                .iter()
+                .map(|plugin| {
+                    (
+                        plugin.id.clone(),
+                        plugin.label.clone(),
+                        format!("{} · {}", plugin.source, plugin.status),
+                    )
+                })
+                .collect(),
             "auth" => self
                 .auth
                 .methods
@@ -1753,6 +1892,26 @@ impl App {
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Ui(ui) => self.apply_ui(ui),
             AppEvent::Rpc { method, params } => {
+                if method == crate::cordis::UI_UPDATE {
+                    match serde_json::from_value::<UiPluginCatalog>(params) {
+                        Ok(catalog) if catalog.protocol == 0 => self.ui_plugins = catalog.plugins,
+                        Ok(_) => {}
+                        Err(err) => self.show_tip(format!("UI Plugin catalog ignored: {err}")),
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
+                if method == crate::cordis::APPROVALS_UPDATE {
+                    match serde_json::from_value::<CordisApprovalsSnapshot>(params) {
+                        Ok(snapshot) if snapshot.protocol == 0 => {
+                            self.pending_cordis_approvals = snapshot.approvals;
+                        }
+                        Ok(_) => {}
+                        Err(err) => self.show_tip(format!("plugin approvals ignored: {err}")),
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
                 if method == crate::cordis::THEME_UPDATE {
                     self.apply_palette_rpc(&params);
                     return;
@@ -1952,9 +2111,13 @@ impl App {
                     CtlEvent::Skills { skills } => {
                         self.skills = skills;
                     }
-                    CtlEvent::Plugins { plugins } => {
-                        self.dynamic_plugins = plugins;
-                        self.open_plugin_picker();
+                    CtlEvent::StaticPlugins { plugins } => {
+                        self.static_plugins = plugins;
+                        self.open_static_plugin_picker();
+                    }
+                    CtlEvent::CordisPlugins { plugins } => {
+                        self.cordis_plugins = plugins;
+                        self.open_cordis_plugin_picker();
                     }
                     CtlEvent::Catalog { models, presets } => {
                         if !presets.is_empty() {
@@ -2899,6 +3062,22 @@ impl App {
             self.show_tip(format!("key: {:?} + {:?}", key.modifiers, key.code));
         }
 
+        if key.modifiers == KeyModifiers::ALT && !self.pending_cordis_approvals.is_empty() {
+            let decision = match key.code {
+                KeyCode::Char('1') => Some("allow-version"),
+                KeyCode::Char('2') => Some("allow-future"),
+                KeyCode::Char('3') => Some("reject"),
+                _ => None,
+            };
+            if let Some(decision) = decision {
+                ctl.send(Cmd::RespondCordisApproval {
+                    request_id: self.pending_cordis_approvals[0].request_id.clone(),
+                    decision: decision.into(),
+                });
+                return;
+            }
+        }
+
         // Standard ACP form elicitation is the top-most modal.
         if self.elicitation_ask.is_some() {
             self.handle_elicitation_key(key);
@@ -3261,6 +3440,12 @@ impl App {
                     PickerKind::Model => self.select_model(item, ctl),
                     PickerKind::Mode => self.set_mode(item.id, ctl),
                     PickerKind::Theme => self.select_palette(&item.id, ctl),
+                    PickerKind::UiPlugin => {
+                        ctl.send(Cmd::PluginUiSelected {
+                            agent_id: self.session_id.clone(),
+                            id: item.id,
+                        });
+                    }
                     PickerKind::Permission => self.set_permission(item.id, ctl),
                     PickerKind::Session => {
                         if self.resume_via_acp {
@@ -3293,14 +3478,28 @@ impl App {
                             .push_notice(NoticeLevel::Info, format!("reasoning effort → {effort}"));
                     }
                     PickerKind::Auth => self.start_auth(&item.id, ctl),
-                    PickerKind::Plugin => {
+                    PickerKind::StaticPlugin => {}
+                    PickerKind::CordisPlugin => {
                         let action = self
-                            .dynamic_plugins
+                            .cordis_plugins
                             .iter()
                             .find(|plugin| plugin.id == item.id)
-                            .map(|plugin| (plugin.id.clone(), !plugin.running));
-                        if let Some((plugin_id, enabled)) = action {
-                            ctl.send(Cmd::SetPluginEnabled {
+                            .map(|plugin| {
+                                (
+                                    plugin.id.clone(),
+                                    plugin.status.clone(),
+                                    plugin.approval_request_id.clone(),
+                                )
+                            });
+                        if let Some((_plugin_id, _, Some(request_id))) = action.as_ref() {
+                            self.open_cordis_approval_picker(request_id.clone());
+                        } else if let Some((plugin_id, status, _)) = action {
+                            if matches!(status.as_str(), "starting-host" | "client-pending") {
+                                self.show_tip(format!("plugin {plugin_id} is already starting"));
+                                return;
+                            }
+                            let enabled = !matches!(status.as_str(), "running" | "waiting");
+                            ctl.send(Cmd::SetCordisPluginEnabled {
                                 agent_id: self.session_id.clone(),
                                 plugin_id: plugin_id.clone(),
                                 enabled,
@@ -3309,6 +3508,14 @@ impl App {
                                 format!("restoring plugin {plugin_id}…")
                             } else {
                                 format!("stopping plugin {plugin_id}…")
+                            });
+                        }
+                    }
+                    PickerKind::CordisApproval => {
+                        if let Some(request_id) = item.provider {
+                            ctl.send(Cmd::RespondCordisApproval {
+                                request_id,
+                                decision: item.id,
                             });
                         }
                     }
@@ -4172,13 +4379,32 @@ impl App {
                 self.show_tip(msg);
             }
             "theme" => self.apply_theme_arg(arg, ctl),
+            "ui" => {
+                if arg.is_empty() {
+                    self.open_ui_plugin_picker();
+                } else if self.ui_plugins.iter().any(|plugin| plugin.id == arg) {
+                    ctl.send(Cmd::PluginUiSelected {
+                        agent_id: self.session_id.clone(),
+                        id: arg.to_string(),
+                    });
+                } else {
+                    self.show_tip(format!("unknown UI Plugin: {arg}"));
+                }
+            }
             "plugins" => {
-                ctl.send(Cmd::FetchPlugins {
+                ctl.send(Cmd::FetchStaticPlugins);
+                self.show_tip(self.locale.tr(
+                    "reading static plugins from Host…",
+                    "正在从 Host 读取静态插件…",
+                ));
+            }
+            "cordis-plugins" => {
+                ctl.send(Cmd::FetchCordisPlugins {
                     agent_id: self.session_id.clone(),
                 });
                 self.show_tip(self.locale.tr(
-                    "reading dynamic plugins from Host…",
-                    "正在从 Host 读取动态插件…",
+                    "reading dynamic Cordis plugins from Host…",
+                    "正在从 Host 读取动态 Cordis 插件…",
                 ));
             }
             "model" => {
@@ -5547,7 +5773,11 @@ mod resume_tests {
         key(&mut app, KeyCode::Home);
         assert_eq!(app.picker.as_ref().unwrap().sel, 0, "home pins the head");
         key(&mut app, KeyCode::PageUp);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 0, "page up sticks at head");
+        assert_eq!(
+            app.picker.as_ref().unwrap().sel,
+            0,
+            "page up sticks at head"
+        );
         key(&mut app, KeyCode::Up);
         assert_eq!(app.picker.as_ref().unwrap().sel, 39, "↑ still wraps");
         let _ = std::fs::remove_dir_all(&root);
@@ -5745,7 +5975,10 @@ mod selection_tests {
 #[cfg(test)]
 mod mode_tests {
     use super::*;
-    use crate::bus::{CatalogModel, CatalogPreset, DynamicPluginItem, SessionListItem};
+    use crate::bus::{
+        CatalogModel, CatalogPreset, CordisPluginItem, PendingCordisApproval, SessionListItem,
+        StaticPluginItem,
+    };
     use std::sync::mpsc::Receiver;
 
     /// Unique session root per call — keeps the modes cache from leaking
@@ -5953,7 +6186,7 @@ mod mode_tests {
     }
 
     #[test]
-    fn plugins_slash_fetches_the_host_inventory() {
+    fn plugins_slash_fetches_the_static_loader_inventory() {
         let (mut app, _demo_ctl, _rx) = test_app();
         let (ctl, commands) = crate::controller::test_controller();
 
@@ -5962,27 +6195,70 @@ mod mode_tests {
         let command = commands
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("plugins slash sends a command");
-        assert!(matches!(command, Cmd::FetchPlugins { agent_id } if agent_id == "dsh-test"));
+        assert!(matches!(command, Cmd::FetchStaticPlugins));
     }
 
     #[test]
-    fn host_plugin_inventory_opens_a_running_and_stopped_picker() {
+    fn cordis_plugins_slash_fetches_the_dynamic_inventory() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+
+        app.run_slash("cordis-plugins", "", &ctl);
+
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("cordis-plugins slash sends a command");
+        assert!(matches!(command, Cmd::FetchCordisPlugins { agent_id } if agent_id == "dsh-test"));
+    }
+
+    #[test]
+    fn static_plugin_inventory_is_read_only_and_matches_web_status_fields() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Ctl(CtlEvent::StaticPlugins {
+                plugins: vec![StaticPluginItem {
+                    entry_id: "root/include".into(),
+                    module_name: "include".into(),
+                    enabled: true,
+                    fiber_phase: Some("active".into()),
+                }],
+            }),
+            &ctl,
+        );
+
+        let picker = app.picker.as_ref().expect("static plugin picker opens");
+        assert!(matches!(picker.kind, PickerKind::StaticPlugin));
+        assert_eq!(picker.items[0].label, "include");
+        assert_eq!(picker.items[0].meta, "static · enabled · active");
+    }
+
+    #[test]
+    fn cordis_plugin_inventory_opens_a_running_stopped_and_pending_picker() {
         let (mut app, ctl, _rx) = test_app();
 
         app.handle(
-            AppEvent::Ctl(CtlEvent::Plugins {
+            AppEvent::Ctl(CtlEvent::CordisPlugins {
                 plugins: vec![
-                    DynamicPluginItem {
+                    CordisPluginItem {
                         id: "panel-1".into(),
                         name: "Status panel".into(),
                         package_id: "pkg-1".into(),
-                        running: true,
+                        status: "running".into(),
+                        approval_request_id: None,
                     },
-                    DynamicPluginItem {
+                    CordisPluginItem {
                         id: "theme-1".into(),
                         name: "Clay theme".into(),
                         package_id: "pkg-2".into(),
-                        running: false,
+                        status: "stopped".into(),
+                        approval_request_id: None,
+                    },
+                    CordisPluginItem {
+                        id: "dock-1".into(),
+                        name: "Composer dock".into(),
+                        package_id: "pkg-3".into(),
+                        status: "awaiting-approval".into(),
+                        approval_request_id: Some("approval-3".into()),
                     },
                 ],
             }),
@@ -5990,10 +6266,14 @@ mod mode_tests {
         );
 
         let picker = app.picker.as_ref().expect("plugin picker opens");
-        assert!(matches!(picker.kind, PickerKind::Plugin));
+        assert!(matches!(picker.kind, PickerKind::CordisPlugin));
         assert_eq!(picker.items[0].label, "Status panel");
-        assert_eq!(picker.items[0].meta, "running · enter stop");
-        assert_eq!(picker.items[1].meta, "stopped · enter restore");
+        assert_eq!(picker.items[0].meta, "dynamic · running · enter stop");
+        assert_eq!(picker.items[1].meta, "dynamic · stopped · enter restore");
+        assert_eq!(
+            picker.items[2].meta,
+            "dynamic · awaiting approval · enter review"
+        );
     }
 
     #[test]
@@ -6001,12 +6281,13 @@ mod mode_tests {
         let (mut app, _demo_ctl, _rx) = test_app();
         let (ctl, commands) = crate::controller::test_controller();
         app.handle(
-            AppEvent::Ctl(CtlEvent::Plugins {
-                plugins: vec![DynamicPluginItem {
+            AppEvent::Ctl(CtlEvent::CordisPlugins {
+                plugins: vec![CordisPluginItem {
                     id: "panel-1".into(),
                     name: "Status panel".into(),
                     package_id: "pkg-1".into(),
-                    running: true,
+                    status: "running".into(),
+                    approval_request_id: None,
                 }],
             }),
             &ctl,
@@ -6019,8 +6300,64 @@ mod mode_tests {
             .expect("plugin picker sends a toggle");
         assert!(matches!(
             command,
-            Cmd::SetPluginEnabled { agent_id, plugin_id, enabled }
+            Cmd::SetCordisPluginEnabled { agent_id, plugin_id, enabled }
                 if agent_id == "dsh-test" && plugin_id == "panel-1" && !enabled
+        ));
+    }
+
+    #[test]
+    fn pending_cordis_approval_renders_above_tips_and_alt_shortcut_answers_it() {
+        let (mut app, _demo_ctl, _rx) = test_app();
+        let (ctl, commands) = crate::controller::test_controller();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::APPROVALS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "approvals": [{
+                        "requestId": "approval-1",
+                        "agentId": "dsh-test",
+                        "pluginId": "panel-1",
+                        "packageId": "pkg-1",
+                        "mode": "run",
+                        "name": "Right sidebar",
+                        "purpose": "Show jobs and web fetches"
+                    }]
+                }),
+            },
+            &ctl,
+        );
+        assert_eq!(
+            app.pending_cordis_approvals,
+            vec![PendingCordisApproval {
+                request_id: "approval-1".into(),
+                agent_id: "dsh-test".into(),
+                plugin_id: "panel-1".into(),
+                package_id: "pkg-1".into(),
+                mode: "run".into(),
+                name: "Right sidebar".into(),
+                purpose: "Show jobs and web fetches".into(),
+            }]
+        );
+        let frame = crate::ui::dump_frame(&mut app, 120, 24);
+        let approval = frame.find("Right sidebar").expect("approval row");
+        let tips = frame.find("Tip").expect("tip row");
+        assert!(approval < tips, "approval must render above tips");
+
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('2'),
+                KeyModifiers::ALT,
+            ))),
+            &ctl,
+        );
+        let command = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("approval shortcut sends a decision");
+        assert!(matches!(
+            command,
+            Cmd::RespondCordisApproval { request_id, decision }
+                if request_id == "approval-1" && decision == "allow-future"
         ));
     }
 
@@ -7432,30 +7769,19 @@ mod mode_tests {
     }
 
     #[test]
-    fn plugin_command_arguments_reuse_the_upward_slash_menu() {
+    fn ui_plugin_catalog_reuses_the_upward_slash_menu_and_selects_over_acp() {
         let (mut app, _demo_ctl, _rx) = test_app();
         let (ctl, commands) = crate::controller::test_controller();
         app.show_banner = false;
         app.handle(
             AppEvent::Rpc {
-                method: crate::cordis::COMMANDS_UPDATE.into(),
+                method: crate::cordis::UI_UPDATE.into(),
                 params: serde_json::json!({
                     "protocol": 0,
-                    "commands": [{
-                        "name": "ui",
-                        "description": "Switch UI preset",
-                        "input": {
-                            "hint": "preset",
-                            "options": [
-                                { "value": "default", "label": "Martty" },
-                                {
-                                    "value": "deepseek",
-                                    "label": "DeepSeek",
-                                    "description": "Classic harness UI"
-                                }
-                            ]
-                        }
-                    }]
+                    "plugins": [
+                        { "id": "default", "label": "Martty", "source": "static", "status": "active" },
+                        { "id": "deepseek", "label": "DeepSeek", "source": "dynamic", "status": "stopped" }
+                    ]
                 }),
             },
             &ctl,
@@ -7466,20 +7792,29 @@ mod mode_tests {
         assert_eq!(menu.len(), 2);
         assert_eq!(menu[0].usage, "Martty");
         assert_eq!(menu[1].usage, "DeepSeek");
-        assert_eq!(menu[1].desc, "Classic harness UI");
+        assert_eq!(menu[1].desc, "dynamic · stopped");
         assert_eq!(menu[1].completion.as_deref(), Some("/ui deepseek"));
 
         let frame = crate::ui::dump_frame(&mut app, 100, 28);
-        let menu_y = frame.lines().position(|line| line.contains("DeepSeek")).unwrap();
-        let input_y = frame.lines().position(|line| line.contains("/ui ")).unwrap();
-        assert!(menu_y < input_y, "argument candidates stay above the composer:\n{frame}");
+        let menu_y = frame
+            .lines()
+            .position(|line| line.contains("DeepSeek"))
+            .unwrap();
+        let input_y = frame
+            .lines()
+            .position(|line| line.contains("/ui "))
+            .unwrap();
+        assert!(
+            menu_y < input_y,
+            "argument candidates stay above the composer:\n{frame}"
+        );
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_secs(1)),
-            Ok(Cmd::InvokePluginCommand { name, args })
-                if name == "ui" && args == "deepseek"
+            Ok(Cmd::PluginUiSelected { agent_id, id })
+                if agent_id == "dsh-test" && id == "deepseek"
         ));
     }
 
@@ -7490,11 +7825,19 @@ mod mode_tests {
         app.input.set("/plan o".into());
 
         let menu = app.slash_matches();
-        assert_eq!(menu.iter().map(|entry| entry.usage.as_str()).collect::<Vec<_>>(), ["on", "off"]);
+        assert_eq!(
+            menu.iter()
+                .map(|entry| entry.usage.as_str())
+                .collect::<Vec<_>>(),
+            ["on", "off"]
+        );
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &ctl);
         assert_eq!(app.input.buf, "/plan on");
-        assert!(matches!(commands.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
     }
 
     #[test]
@@ -7580,7 +7923,10 @@ mod mode_tests {
         assert!(frame.contains("UI preset"), "form title:\n{frame}");
         assert!(frame.contains("Martty"), "first option:\n{frame}");
         assert!(frame.contains("DeepSeek"), "second option:\n{frame}");
-        assert!(frame.contains("Ocean blue terminal identity"), "description:\n{frame}");
+        assert!(
+            frame.contains("Ocean blue terminal identity"),
+            "description:\n{frame}"
+        );
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
@@ -8517,6 +8863,20 @@ mod palette_tests {
         json!({"protocol": 0, "palette": palette, "activate": activate})
     }
 
+    fn gallery_params(id: &str, activate: bool) -> serde_json::Value {
+        let fixture = match id {
+            "ayu" => include_str!("../docs/fixtures/ayu.v0.json"),
+            "catppuccin" => include_str!("../docs/fixtures/catppuccin.v0.json"),
+            "kanagawa" => include_str!("../docs/fixtures/kanagawa.v0.json"),
+            "everforest" => include_str!("../docs/fixtures/everforest.v0.json"),
+            "iceberg" => include_str!("../docs/fixtures/iceberg.v0.json"),
+            "solarized" => include_str!("../docs/fixtures/solarized.v0.json"),
+            _ => panic!("unknown gallery fixture {id}"),
+        };
+        let palette: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        json!({"protocol": 0, "palette": palette, "activate": activate})
+    }
+
     #[test]
     fn starts_on_default_pack() {
         let (app, _ctl, _rx) = test_app();
@@ -8577,6 +8937,57 @@ mod palette_tests {
             app.picker.is_some(),
             "toggling mode must not close the picker"
         );
+    }
+
+    #[test]
+    fn gallery_palette_rpc_activates_everforest_and_toggles_modes() {
+        let (mut app, ctl, _rx) = test_app();
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::THEME_UPDATE.into(),
+                params: gallery_params("everforest", true),
+            },
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "everforest");
+        assert_eq!(app.theme.brand, Color::Rgb(127, 187, 179)); // #7FBBB3 Everforest dark blue
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ))),
+            &ctl,
+        );
+        assert_eq!(app.active_palette_id, "everforest");
+        assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+        assert_eq!(app.theme.brand, Color::Rgb(58, 148, 197)); // #3A94C5 Everforest light blue
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(
+            tip.contains("everforest") && tip.contains("light"),
+            "tip should name the pack, got {tip:?}"
+        );
+    }
+
+    #[test]
+    fn slash_theme_switches_between_gallery_packs() {
+        let (mut app, ctl, _rx) = test_app();
+        for id in [
+            "ayu", "catppuccin", "kanagawa", "everforest",
+            "iceberg", "solarized",
+        ] {
+            app.handle(
+                AppEvent::Rpc {
+                    method: crate::cordis::THEME_UPDATE.into(),
+                    params: gallery_params(id, false),
+                },
+                &ctl,
+            );
+        }
+        assert_eq!(app.active_palette_id, "default");
+        app.run_slash("theme", "solarized", &ctl);
+        assert_eq!(app.active_palette_id, "solarized");
+        // Solarized keeps the same blue in both modes.
+        assert_eq!(app.theme.brand, Color::Rgb(38, 139, 210)); // #268BD2
     }
 
     #[test]
@@ -8674,6 +9085,7 @@ mod palette_tests {
         let mut loaded = ember_params(true);
         loaded["owner"] = json!({ "pluginId": "night-lime-1" });
         loaded["loaded"] = json!(true);
+        loaded["source"] = json!("dynamic");
         app.handle(
             AppEvent::Rpc {
                 method: crate::cordis::THEME_UPDATE.into(),
@@ -8684,6 +9096,7 @@ mod palette_tests {
         let mut stopped = ember_params(false);
         stopped["owner"] = json!({ "pluginId": "night-lime-1" });
         stopped["loaded"] = json!(false);
+        stopped["source"] = json!("dynamic");
         app.handle(
             AppEvent::Rpc {
                 method: crate::cordis::THEME_UPDATE.into(),
@@ -8694,6 +9107,10 @@ mod palette_tests {
 
         assert_eq!(app.active_palette_id, "default");
         assert!(app.palettes.iter().any(|palette| palette.id == "ember"));
+        app.open_theme_picker();
+        let picker = app.picker.as_ref().expect("theme picker");
+        assert_eq!(picker.items[0].meta, "static · active");
+        assert_eq!(picker.items[1].meta, "dynamic · stopped");
         let (client_ctl, commands) = crate::controller::test_controller();
         app.run_slash("theme", "ember", &client_ctl);
         assert_eq!(app.active_palette_id, "default");

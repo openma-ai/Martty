@@ -42,8 +42,8 @@ Client process: independent Cordis root
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
   tui-presets     provides tuiPresets; owns persistent /ui composition selection
-  martty-preset   default UI Preset → welcome.hero + welcome.info
-  deepseek-logo   injects tuiPresets + tuiSlots; registers the deepseek UI Preset
+  martty-preset   default UI Plugin → welcome.hero + welcome.info
+  deepseek-logo   injects tuiPresets + tuiSlots; registers the deepseek UI Plugin
   acp-session-status  provides acpSessionStatus (connection/server/auth/
                   session/model/effort/permission/plan/agent run-state facts)
   tui-slots       provides tuiSlots; declares welcome.hero / welcome.info / chrome.right /
@@ -92,8 +92,8 @@ tui-slots             TuiNode trees → welcome.hero / welcome.info / chrome.rig
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
-martty-preset         default UI Preset → Martty Hero + native dynamic information
-deepseek-logo         deepseek UI Preset → DeepSeek Hero + native dynamic information
+martty-preset         default UI Plugin → Martty Hero + native dynamic information
+deepseek-logo         deepseek UI Plugin → DeepSeek Hero + native dynamic information
 acp-session-status    standard ACP run-state projection: connection/server/auth/
                       session/model/effort/permission/plan/agent — no token or
                       timing accumulation (acpSessionStats owns that)
@@ -133,8 +133,8 @@ Token **names** are closed; see [plugins.md](plugins.en.md). Built-in `default` 
 `ctrl+t` toggles dark/light inside the current theme. `/theme` switches the whole
 Theme Plugin. Kitty pet sprites are RGBA and do not recolor. In the startup
 lockup, `MAR` reads the ocean gradient while `TTY` uses terminal foreground
-(white in dark mode, black in light mode). A UI Preset is a composition of UI
-Plugins, not a Theme alias. Both builtin `default` (Martty) and `deepseek`
+(white in dark mode, black in light mode). A UI Plugin can compose several UI
+contributions and is not a Theme alias. Both builtin `default` (Martty) and `deepseek`
 fill `welcome.hero` and `welcome.info`: the first is the centered `logo + hint`
 brand region; the second is the lower-left version/model/workspace/session/
 credential/access/help region. Both currently reuse the native dynamic info

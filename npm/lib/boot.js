@@ -15,6 +15,12 @@ import { apply as applyShell } from './index.js'
 import { resolveStackedAgent } from './agent.js'
 import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
+import { apply as applyAyu, inject as ayuInject } from './ayu.js'
+import { apply as applyCatppuccin, inject as catppuccinInject } from './catppuccin.js'
+import { apply as applyKanagawa, inject as kanagawaInject } from './kanagawa.js'
+import { apply as applyEverforest, inject as everforestInject } from './everforest.js'
+import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
+import { apply as applySolarized, inject as solarizedInject } from './solarized.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
 import { apply as applyPresets, inject as presetsInject } from './tui-presets.js'
@@ -34,7 +40,7 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
  * @param {string} [options.settingsPath]
  * @param {string} [options.artifactRoot]
- * @param {Array<{ id: string, kind: 'theme' | 'ui-preset', entry: string }>} [options.packagePlugins]
+ * @param {Array<{ id: string, kind: 'theme' | 'ui', entry: string }>} [options.packagePlugins]
  */
 export async function bootClient(options = {}) {
   const { Context } = await import('@deepseek-ai/cordis')
@@ -49,6 +55,12 @@ export async function bootClient(options = {}) {
   const presetConfig = { settingsPath }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
+    await ctx.plugin({ name: 'tui-theme-ayu', inject: ayuInject, apply: applyAyu })
+    await ctx.plugin({ name: 'tui-theme-catppuccin', inject: catppuccinInject, apply: applyCatppuccin })
+    await ctx.plugin({ name: 'tui-theme-kanagawa', inject: kanagawaInject, apply: applyKanagawa })
+    await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
+    await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
+    await ctx.plugin({ name: 'tui-theme-solarized', inject: solarizedInject, apply: applySolarized })
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
@@ -87,7 +99,7 @@ export async function bootClient(options = {}) {
         name: 'dsh-tui-shell',
         inject: [
           'acpClient', 'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
-          'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
+          'tuiPresets', 'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
         ],
         apply: applyShell,
       },
@@ -95,6 +107,12 @@ export async function bootClient(options = {}) {
     )
   } else {
     applyTheme(ctx, presetConfig)
+    applyAyu(ctx)
+    applyCatppuccin(ctx)
+    applyKanagawa(ctx)
+    applyEverforest(ctx)
+    applyIceberg(ctx)
+    applySolarized(ctx)
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
@@ -145,7 +163,7 @@ export function parseClientPluginsEnv(value) {
     if (typeof entry.id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(entry.id)) {
       throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid id`)
     }
-    if (!['theme', 'ui-preset'].includes(entry.kind)) {
+    if (!['theme', 'ui', 'ui-preset'].includes(entry.kind)) {
       throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid kind`)
     }
     if (typeof entry.entry !== 'string') {
@@ -160,7 +178,11 @@ export function parseClientPluginsEnv(value) {
     if (url.protocol !== 'file:') {
       throw new Error(`dsh-tui: installed Client plugin entry ${index} must use a file URL`)
     }
-    return { id: entry.id, kind: entry.kind, entry: url.href }
+    return {
+      id: entry.id,
+      kind: entry.kind === 'ui-preset' ? 'ui' : entry.kind,
+      entry: url.href,
+    }
   })
 }
 

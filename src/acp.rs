@@ -40,8 +40,8 @@ use crate::acp_auth::{
     select_auth_method, snapshot_from_methods, AuthMethodInfo, AuthSnapshot, AuthStatus,
 };
 use crate::bus::{
-    permission_ask_empty_outcome, AppEvent, CatalogPreset, Cmd, CtlEvent, DynamicPluginItem,
-    PermissionAskOption, PermissionAskReply, SessionListItem,
+    permission_ask_empty_outcome, AppEvent, CatalogPreset, Cmd, CordisPluginItem, CtlEvent,
+    PermissionAskOption, PermissionAskReply, SessionListItem, StaticPluginItem,
 };
 use crate::events::{
     catalog_from_config_options, config_option_events, flatten_select_options,
@@ -795,9 +795,7 @@ async fn run(
     }
 }
 
-fn dynamic_plugins_from_value(
-    value: &Value,
-) -> std::result::Result<Vec<DynamicPluginItem>, String> {
+fn dynamic_plugins_from_value(value: &Value) -> std::result::Result<Vec<CordisPluginItem>, String> {
     let rows = value
         .as_array()
         .ok_or_else(|| "Cordis plugins/list returned a non-array result".to_string())?;
@@ -834,11 +832,58 @@ fn dynamic_plugins_from_value(
                 .and_then(|package| package.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or(plugin_id);
-            Ok(DynamicPluginItem {
+            let latest = row.get("latestRun").filter(|value| value.is_object());
+            let status = latest
+                .and_then(|run| run.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    if row.get("activeRun").is_some_and(Value::is_object) {
+                        "running"
+                    } else {
+                        "stopped"
+                    }
+                });
+            let approval_request_id = latest
+                .filter(|run| run.get("requiresApproval").and_then(Value::as_bool) == Some(true))
+                .and_then(|run| run.get("approvalRequestId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(CordisPluginItem {
                 id: plugin_id.to_string(),
                 name: name.to_string(),
                 package_id: package_id.to_string(),
-                running: row.get("activeRun").is_some_and(Value::is_object),
+                status: status.to_string(),
+                approval_request_id,
+            })
+        })
+        .collect()
+}
+
+fn static_plugins_from_value(value: &Value) -> std::result::Result<Vec<StaticPluginItem>, String> {
+    let rows = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "plugins/list returned no entries array".to_string())?;
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let text = |field: &str| {
+                row.get(field)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("entries[{index}].{field} is missing"))
+            };
+            Ok(StaticPluginItem {
+                entry_id: text("entryId")?,
+                module_name: text("moduleName")?,
+                enabled: row
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| format!("entries[{index}].enabled is missing"))?,
+                fiber_phase: row
+                    .get("fiberPhase")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             })
         })
         .collect()
@@ -856,7 +901,7 @@ async fn call_tui_extension(
 async fn fetch_dynamic_plugins(
     cx: &ConnectionTo<Agent>,
     agent_id: &str,
-) -> std::result::Result<Vec<DynamicPluginItem>, String> {
+) -> std::result::Result<Vec<CordisPluginItem>, String> {
     let value = call_tui_extension(
         cx,
         crate::cordis::PLUGINS_LIST,
@@ -865,6 +910,19 @@ async fn fetch_dynamic_plugins(
     .await
     .map_err(|error| error.to_string())?;
     dynamic_plugins_from_value(&value)
+}
+
+async fn fetch_static_plugins(
+    cx: &ConnectionTo<Agent>,
+) -> std::result::Result<Vec<StaticPluginItem>, String> {
+    let value = call_tui_extension(
+        cx,
+        crate::cordis::STATIC_PLUGINS_LIST,
+        serde_json::json!({}),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    static_plugins_from_value(&value)
 }
 
 fn ensure_agent_cordis(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent>) -> bool {
@@ -955,6 +1013,8 @@ where
                         | crate::cordis::SLOTS_UPDATE
                         | crate::cordis::COMMANDS_UPDATE
                         | crate::cordis::OVERLAY_UPDATE
+                        | crate::cordis::APPROVALS_UPDATE
+                        | crate::cordis::UI_UPDATE
                 ) {
                     let _ = bus_u.send(AppEvent::Rpc {
                         method: msg.method().into(),
@@ -1692,13 +1752,23 @@ where
                                 .clone();
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
                         }
-                        Cmd::FetchPlugins { agent_id } => {
+                        Cmd::FetchStaticPlugins => match fetch_static_plugins(&cx).await {
+                            Ok(plugins) => {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::StaticPlugins { plugins }));
+                            }
+                            Err(error) => {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                    "static plugins unavailable: {error}"
+                                ))));
+                            }
+                        },
+                        Cmd::FetchCordisPlugins { agent_id } => {
                             if !ensure_agent_cordis(&surface, &bus) {
                                 continue;
                             }
                             match fetch_dynamic_plugins(&cx, &agent_id).await {
                                 Ok(plugins) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Plugins { plugins }));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::CordisPlugins { plugins }));
                                 }
                                 Err(error) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -1707,7 +1777,7 @@ where
                                 }
                             }
                         }
-                        Cmd::SetPluginEnabled {
+                        Cmd::SetCordisPluginEnabled {
                             agent_id,
                             plugin_id,
                             enabled,
@@ -1741,7 +1811,7 @@ where
                                 }
                                 Ok(_) => match fetch_dynamic_plugins(&cx, &agent_id).await {
                                     Ok(plugins) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Plugins { plugins }));
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::CordisPlugins { plugins }));
                                     }
                                     Err(error) => {
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -1755,6 +1825,26 @@ where
                                         "plugin {action} failed: {error}"
                                     ))));
                                 }
+                            }
+                        }
+                        Cmd::RespondCordisApproval { request_id, decision } => {
+                            if !ensure_agent_cordis(&surface, &bus) {
+                                continue;
+                            }
+                            if let Err(error) = call_tui_extension(
+                                &cx,
+                                crate::cordis::APPROVAL_RESPOND,
+                                serde_json::json!({
+                                    "protocol": crate::cordis::PROTOCOL,
+                                    "requestId": request_id,
+                                    "decision": decision,
+                                }),
+                            )
+                            .await
+                            {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                    "plugin approval failed: {error}"
+                                ))));
                             }
                         }
                         Cmd::InvokePluginCommand { name, args } => {
@@ -1795,6 +1885,29 @@ where
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
                                     "theme Plugin selection failed: {error}"
                                 ))));
+                            }
+                        }
+                        Cmd::PluginUiSelected { agent_id, id } => {
+                            if !ensure_agent_cordis(&surface, &bus) {
+                                continue;
+                            }
+                            match call_tui_extension(
+                                &cx,
+                                crate::cordis::UI_SELECTED,
+                                serde_json::json!({
+                                    "protocol": crate::cordis::PROTOCOL,
+                                    "agentId": agent_id,
+                                    "id": id,
+                                }),
+                            )
+                            .await
+                            {
+                                Ok(_) => {}
+                                Err(error) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                        "UI Plugin selection failed: {error}"
+                                    ))));
+                                }
                             }
                         }
                         Cmd::PluginOverlayEvent { id, event, value } => {
@@ -2349,17 +2462,58 @@ mod tests {
         assert_eq!(
             plugins,
             vec![
-                crate::bus::DynamicPluginItem {
+                crate::bus::CordisPluginItem {
                     id: "panel-1".into(),
                     name: "Current panel".into(),
                     package_id: "pkg-current".into(),
-                    running: true,
+                    status: "running".into(),
+                    approval_request_id: None,
                 },
-                crate::bus::DynamicPluginItem {
+                crate::bus::CordisPluginItem {
                     id: "theme-1".into(),
                     name: "Clay theme".into(),
                     package_id: "pkg-theme".into(),
-                    running: false,
+                    status: "stopped".into(),
+                    approval_request_id: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn static_plugin_inventory_parses_the_web_snapshot_shape() {
+        let plugins = static_plugins_from_value(&json!({
+            "entries": [
+                {
+                    "entryId": "root/include",
+                    "moduleName": "include",
+                    "enabled": true,
+                    "fiberPhase": "active"
+                },
+                {
+                    "entryId": "root/hmr",
+                    "moduleName": "hmr",
+                    "enabled": false,
+                    "fiberPhase": null
+                }
+            ]
+        }))
+        .expect("valid static inventory");
+
+        assert_eq!(
+            plugins,
+            vec![
+                crate::bus::StaticPluginItem {
+                    entry_id: "root/include".into(),
+                    module_name: "include".into(),
+                    enabled: true,
+                    fiber_phase: Some("active".into()),
+                },
+                crate::bus::StaticPluginItem {
+                    entry_id: "root/hmr".into(),
+                    module_name: "hmr".into(),
+                    enabled: false,
+                    fiber_phase: None,
                 },
             ]
         );
