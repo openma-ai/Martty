@@ -1473,3 +1473,175 @@ fn elicitation_overlay_renders_a_real_question_form() {
     assert!(frame.contains("Other"), "custom choice\n{frame}");
     assert!(frame.contains("enter"), "keyboard affordance\n{frame}");
 }
+
+fn box_line(line: &str) -> &str {
+    let trimmed = line.trim_start_matches(' ');
+    trimmed
+        .strip_prefix('│')
+        .and_then(|rest| rest.strip_suffix('│'))
+        .unwrap_or(trimmed)
+}
+
+#[test]
+fn select_overlay_ellipsizes_long_rows_and_previews_the_selection() {
+    use crate::app::{SelectOption, SelectOverlay};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    let long_label = "非常长的选项标签，用于验证省略号截断与选中项预览换行".repeat(3);
+    let long_desc = "这个描述也很长，说明超宽描述同样会被省略号截断而不是硬切".repeat(3);
+    let label_head: String = long_label.chars().take(10).collect();
+    app.select_overlay = Some(SelectOverlay {
+        id: "ui-preset".into(),
+        title: "UI preset".into(),
+        value: "long".into(),
+        sel: 0,
+        options: vec![
+            SelectOption {
+                value: "long".into(),
+                label: long_label,
+                description: Some(long_desc),
+            },
+            SelectOption {
+                value: "short".into(),
+                label: "Short".into(),
+                description: Some("second option".into()),
+            },
+        ],
+    });
+
+    let frame = dump_frame(&mut app, 60, 30);
+    let lines: Vec<&str> = frame.lines().collect();
+    // Selected row: markers + ellipsized label that stays inside the box.
+    let row = lines
+        .iter()
+        .map(|line| box_line(line))
+        .find(|line| line.contains("▸ ●"))
+        .expect("selected row");
+    assert!(row.contains('…'), "long label ellipsized:\n{frame}");
+    // TestBackend renders each double-width cell as `char + phantom
+    // space`, so the row's char count equals its cell span.
+    assert!(
+        row.chars().count() <= 54,
+        "row cells {} must fit the box; row: {row:?}\n{frame}",
+        row.chars().count()
+    );
+    // The description row is ellipsized too, never hard-clipped.
+    assert!(
+        lines
+            .iter()
+            .map(|line| box_line(line))
+            .any(|line| line.starts_with("    ") && line.contains('…')),
+        "description ellipsized:\n{frame}"
+    );
+    // Preview carries the full label head of the highlighted option.
+    let hint = lines
+        .iter()
+        .position(|line| line.contains("enter apply"))
+        .expect("hint line");
+    let preview: String = lines[hint.saturating_sub(3)..hint]
+        .iter()
+        .map(|line| box_line(line))
+        .collect();
+    // Drop the phantom spaces TestBackend inserts after double-width
+    // cells before comparing against the CJK head.
+    let compact: String = preview.chars().filter(|c| *c != ' ').collect();
+    assert!(
+        compact.contains(&label_head),
+        "preview carries the full label head:\n{frame}"
+    );
+    assert!(
+        preview.contains(" — "),
+        "preview joins label and description:\n{frame}"
+    );
+
+    // Down moves the highlight; the preview follows the selection.
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))),
+        &ctl,
+    );
+    let frame = dump_frame(&mut app, 60, 30);
+    let lines: Vec<&str> = frame.lines().collect();
+    let hint = lines
+        .iter()
+        .position(|line| line.contains("enter apply"))
+        .expect("hint line");
+    assert_eq!(
+        box_line(lines[hint - 1]).trim_end(),
+        "Short — second option",
+        "preview follows the selection:\n{frame}"
+    );
+    assert!(
+        lines
+            .iter()
+            .map(|line| box_line(line))
+            .any(|line| line.contains("▸ ●") && line.contains("Short")),
+        "highlight moved:\n{frame}"
+    );
+
+    // Enter submits the highlighted value; the overlay closes.
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+    assert!(app.select_overlay.is_none(), "overlay closed after submit");
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(crate::bus::Cmd::PluginOverlayEvent { id, event, value })
+            if id == "ui-preset"
+                && event == "change"
+                && value == Some(serde_json::json!("short"))
+    ));
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(crate::bus::Cmd::PluginOverlayEvent { id, event, value })
+            if id == "ui-preset"
+                && event == "submit"
+                && value == Some(serde_json::json!("short"))
+    ));
+}
+
+#[test]
+fn select_overlay_preview_wraps_and_caps_three_lines() {
+    use crate::app::{SelectOption, SelectOverlay};
+    let mut app = test_app();
+    app.show_banner = false;
+    app.select_overlay = Some(SelectOverlay {
+        id: "long".into(),
+        title: "Long".into(),
+        value: "v".into(),
+        sel: 0,
+        options: vec![SelectOption {
+            value: "v".into(),
+            label: "x".repeat(400),
+            description: None,
+        }],
+    });
+
+    let frame = dump_frame(&mut app, 40, 30);
+    let lines: Vec<&str> = frame.lines().collect();
+    let hint = lines
+        .iter()
+        .position(|line| line.contains("enter apply"))
+        .expect("hint line");
+    let preview: Vec<&str> = lines[hint.saturating_sub(3)..hint]
+        .iter()
+        .map(|line| box_line(line))
+        .collect();
+    assert_eq!(preview.len(), 3, "preview capped at three lines:\n{frame}");
+    assert!(
+        preview[0].starts_with("xxx"),
+        "preview starts with the label:\n{frame}"
+    );
+    assert!(
+        preview[2].ends_with('…'),
+        "capped preview ends with ellipsis:\n{frame}"
+    );
+    for line in preview {
+        assert!(line.width() <= 34, "preview line fits the box:\n{frame}");
+    }
+}

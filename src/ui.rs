@@ -356,7 +356,29 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     let theme = app.theme;
-    let width = screen.width.saturating_sub(4).min(72).max(28);
+    // Fit the widest option (markers `▸ ● ` and the `    ` description
+    // indent included); cap to the screen so one long option never exceeds
+    // the terminal. Narrow terminals fall back to ellipsis per row.
+    let needed = select
+        .options
+        .iter()
+        .map(|option| {
+            let label_w = option.label.width() + 4;
+            let desc_w = option
+                .description
+                .as_deref()
+                .filter(|text| !text.is_empty())
+                .map(|text| text.width() + 4)
+                .unwrap_or(0);
+            label_w.max(desc_w)
+        })
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (needed + 2).min(screen.width.saturating_sub(4)).max(28);
+    let inner = width.saturating_sub(2) as usize;
+    let label_cells = inner.saturating_sub(4);
+    let desc_cells = inner.saturating_sub(4);
+
     let mut lines = Vec::new();
     for (index, option) in select.options.iter().enumerate() {
         let selected = index == select.sel;
@@ -370,7 +392,7 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
                 Style::default().fg(if selected { theme.brand } else { theme.caption }),
             ),
             Span::styled(
-                option.label.clone(),
+                ellipsize_to(&option.label, label_cells),
                 Style::default()
                     .fg(if selected {
                         theme.fg
@@ -390,20 +412,53 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
             .filter(|text| !text.is_empty())
         {
             lines.push(Line::from(Span::styled(
-                format!("    {description}"),
+                format!("    {}", ellipsize_to(description, desc_cells)),
                 Style::default().fg(theme.caption),
             )));
         }
     }
+    let option_rows = lines.len();
     lines.push(Line::default());
+    // Full text of the highlighted option, wrapped so a long choice stays
+    // readable at the moment of confirming it.
+    if let Some(option) = select.options.get(select.sel) {
+        let mut preview = option.label.clone();
+        if let Some(description) = option
+            .description
+            .as_deref()
+            .filter(|text| !text.is_empty())
+        {
+            preview.push_str(" — ");
+            preview.push_str(description);
+        }
+        let mut wrapped = wrap_line(&preview, inner);
+        if wrapped.len() > 3 {
+            wrapped.truncate(3);
+            let last = wrapped.last_mut().expect("three preview lines");
+            *last = ellipsize_to(&format!("{last}…"), inner);
+        }
+        for line in wrapped {
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(theme.fg_tertiary),
+            )));
+        }
+    }
     lines.push(Line::from(Span::styled(
         "↑/↓ select   enter apply   esc cancel",
         Style::default().fg(theme.caption),
     )));
 
-    let height = (lines.len() as u16 + 2)
-        .min(screen.height.saturating_sub(2))
-        .max(5);
+    let mut height = lines.len() as u16 + 2;
+    let max_height = screen.height.saturating_sub(2).max(5);
+    if height > max_height {
+        // Drop the earliest option rows first so the preview and the hint
+        // line stay visible; the list itself has no scroll window yet.
+        let overflow = (height - max_height) as usize;
+        let keep = option_rows.saturating_sub(overflow);
+        lines.drain(keep..option_rows);
+        height = max_height;
+    }
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 3,
@@ -421,6 +476,53 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
         ))
         .style(Style::default().bg(theme.panel));
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Truncate `s` to at most `cells` display cells, appending `…` when it does
+/// not fit. CJK/double-width aware; wide chars are never split.
+fn ellipsize_to(s: &str, cells: usize) -> String {
+    if s.width() <= cells {
+        return s.to_string();
+    }
+    if cells == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > cells.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
+}
+
+/// Greedy wrap `s` into lines of at most `cells` display cells. Never splits
+/// a wide char; a single char wider than `cells` still occupies its own line.
+fn wrap_line(s: &str, cells: usize) -> Vec<String> {
+    if cells == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used > 0 && used + cw > cells {
+            out.push(std::mem::take(&mut cur));
+            used = 0;
+        }
+        cur.push(ch);
+        used += cw;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
@@ -1668,10 +1770,16 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
         } else {
             cmd.desc.to_string()
         };
+        // Desc column absorbs the remaining width and ellipsizes; a long
+        // skill description must never hard-clip at the box edge.
+        let desc_cells = (w as usize).saturating_sub(name_w + 5);
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
             Span::styled(pad_or_ellipsize(&cmd.usage, name_w), name_style),
-            Span::styled(format!(" {desc}"), Style::default().fg(theme.caption)),
+            Span::styled(
+                format!(" {}", ellipsize_to(&desc, desc_cells)),
+                Style::default().fg(theme.caption),
+            ),
         ]));
     }
     let title = if matches.iter().any(|m| m.completion.is_some()) {
