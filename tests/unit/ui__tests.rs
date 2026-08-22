@@ -112,6 +112,50 @@ fn composer_cap_preserves_the_workspace_tail_on_narrow_terminals() {
 }
 
 #[test]
+fn composer_cap_shows_git_branch_after_the_project_path() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.cfg.workspace = "/work/acme/martty".into();
+    app.git_branch = Some("ui-tweak".into());
+
+    let frame = dump_frame(&mut app, 120, 20);
+    let cap = frame
+        .lines()
+        .find(|line| line.contains("Tip"))
+        .expect("composer cap");
+    assert!(cap.contains("· /work/acme/martty : ui-tweak"), "{cap}");
+
+    // No git (or not a repository): path only, no branch tag.
+    app.git_branch = None;
+    let frame = dump_frame(&mut app, 120, 20);
+    let cap = frame
+        .lines()
+        .find(|line| line.contains("Tip"))
+        .expect("composer cap");
+    assert!(cap.contains("· /work/acme/martty"), "{cap}");
+    assert!(!cap.contains(" : "), "{cap}");
+}
+
+#[test]
+fn composer_cap_drops_git_branch_on_narrow_terminals() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.cfg.workspace = "/work/acme/martty".into();
+    app.git_branch = Some("a-long-branch-name".into());
+
+    let frame = dump_frame(&mut app, 60, 20);
+    let cap = frame
+        .lines()
+        .find(|line| line.contains("Tip"))
+        .expect("composer cap");
+    assert!(
+        !cap.contains(" : a-long-branch-name"),
+        "branch must yield when the terminal is narrow: {cap}"
+    );
+    assert!(cap.contains("· /work/acme/martty"), "{cap}");
+}
+
+#[test]
 fn active_image_background_clears_only_the_base_canvas() {
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -206,7 +250,7 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 
     assert_eq!(flat_line(status_title(&app)), "");
     let pending = flat_spans(status_right(&app));
-    assert!(pending.contains("^K keys"), "{pending}");
+    assert!(pending.contains("^k keys"), "{pending}");
     assert!(!pending.contains("deepseek-chat"), "{pending}");
     assert!(!pending.contains("high"), "{pending}");
 
@@ -316,7 +360,7 @@ fn meta_row_hints_follow_the_state_machine() {
     };
     let mut app = test_app();
     // idle · empty → discovery hint
-    assert!(flat(context_hints(&app)).contains("^K keys"));
+    assert!(flat(context_hints(&app)).contains("^k keys"));
     // idle · draft → enter sends
     app.input.set("hello".into());
     let s = flat(context_hints(&app));
@@ -867,6 +911,9 @@ fn composed_deepseek_preset_keeps_balanced_outer_padding() {
 fn pet_rect_geometry() {
     let mut app = test_app();
     let area = Rect::new(0, 0, 100, 34);
+    // Off by default (issue #37): `/liang on` summons him.
+    assert_eq!(pet_rect(area, &app), None, "liang is off by default");
+    app.pet_visible = true;
     // 34 rows → 5-row composer → 4-row pet (192:208 sprite → 7 cols),
     // inset one row/column so the rounded box border stays intact.
     assert_eq!(pet_rect(area, &app), Some(Rect::new(92, 29, 7, 4)));
@@ -884,6 +931,7 @@ fn pet_rect_geometry() {
 #[test]
 fn pet_rides_above_the_stats_dock() {
     let mut app = test_app();
+    app.pet_visible = true;
     app.slot_snapshots.insert(
         "conversation.composer.dock".into(),
         serde_json::from_value(serde_json::json!({
@@ -916,6 +964,7 @@ fn pet_rides_above_the_stats_dock() {
 #[test]
 fn pet_stays_inside_the_box_when_the_stats_dock_shows() {
     let mut app = test_app();
+    app.pet_visible = true;
     app.show_banner = false;
     app.slot_snapshots.insert(
         "conversation.composer.dock".into(),
@@ -945,6 +994,7 @@ fn pet_stays_inside_the_box_when_the_stats_dock_shows() {
 #[test]
 fn pet_falls_back_to_half_blocks_and_toggles() {
     let mut app = test_app();
+    app.pet_visible = true;
     app.show_banner = false;
     // pet_pixels=false (no kitty graphics): XS art at the right edge,
     // inside the box border.

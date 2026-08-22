@@ -923,7 +923,7 @@ fn status_title(app: &App) -> Line<'static> {
 
 /// Contextual shortcut hints — a tiny state machine over (run state ×
 /// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty falls back to the `^K keys` discovery hint.
+/// immediately. Idle+empty falls back to the `^k keys` discovery hint.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
     let key = Style::default()
@@ -941,7 +941,7 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
             ("esc", app.locale.tr("interrupt", "中断")),
         ],
         // Idle, empty: point at the full shortcut list.
-        (false, true) => vec![("^K", app.locale.tr("keys", "快捷键"))],
+        (false, true) => vec![("^k", app.locale.tr("keys", "快捷键"))],
         // Idle with a draft: enter's meaning follows the prefix.
         (false, false) if app.input.buf.starts_with('/') => {
             vec![("⏎", app.locale.tr("command", "命令"))]
@@ -1319,14 +1319,38 @@ fn compact_workspace(path: &str, max_width: usize) -> String {
     format!("…{suffix}")
 }
 
+/// Best-effort current git branch of the workspace (" : branch" rides after
+/// the project path in the composer cap). None when git is missing, the
+/// workspace is not a repository, or HEAD is detached. One subprocess at
+/// startup, never per frame.
+pub fn detect_git_branch(workspace: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!branch.is_empty()).then_some(branch)
+}
+
 fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {
     let title_width = (area_width / 2).clamp(8, 64);
     let path_width = title_width.saturating_sub(4);
-    Line::from(Span::styled(
-        format!(" · {} ", compact_workspace(&app.cfg.workspace, path_width)),
-        Style::default().fg(app.theme.caption),
-    ))
-    .right_aligned()
+    let mut text = format!(" · {} ", compact_workspace(&app.cfg.workspace, path_width));
+    // The git branch follows the project path only when both still fit the
+    // cap budget — narrow terminals keep just the path.
+    if let Some(branch) = &app.git_branch {
+        let branch_tag = format!(": {branch} ");
+        if text.width() + branch_tag.width() <= title_width {
+            text.push_str(&branch_tag);
+        }
+    }
+    Line::from(Span::styled(text, Style::default().fg(app.theme.caption)))
+        .right_aligned()
 }
 
 fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'static> {

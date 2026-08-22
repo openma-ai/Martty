@@ -309,7 +309,7 @@ composer 上方弹出，选中 DeepSeek 即可。
 Ghostty、Kitty 和 WezTerm 等支持 kitty graphics protocol 的终端会显示 RGBA
 像素精灵；其他终端退回半块字符鲸鱼。宽度低于 60 列时自动隐藏。
 
-可用 `/liang on`、`/liang off` 显式控制。
+可用 `/liang on`、`/liang off` 显式控制。缺省关闭，`/liang on` 召唤。
 
 <p align="center">
   <img src="assets/screenshots/liang.png" width="640"

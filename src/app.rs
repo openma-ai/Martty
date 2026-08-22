@@ -902,10 +902,15 @@ pub struct App {
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
     pub show_banner: bool,
     /// Pixel-art Liang at the composer's right edge (`/liang` toggles him).
+    /// Off by default — `/liang on` summons him.
     pub pet_visible: bool,
     /// True when the terminal speaks the kitty graphics protocol: image
     /// thumbnails and the background layer emit real pixels (set by `main`).
     pub pet_pixels: bool,
+    /// Current git branch of the workspace, shown after the project path in
+    /// the composer cap when git is available and the terminal is wide
+    /// enough. Detected once at startup (`None` otherwise).
+    pub git_branch: Option<String>,
     pub run_started: Option<Instant>,
     pub spinner_idx: usize,
     pub scroll_up: usize, // lines above the bottom; 0 = follow
@@ -1248,8 +1253,9 @@ impl App {
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
-            pet_visible: true,
+            pet_visible: false,
             pet_pixels: false,
+            git_branch: None,
             run_started: None,
             spinner_idx: 0,
             scroll_up: 0,
