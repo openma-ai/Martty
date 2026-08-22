@@ -183,6 +183,7 @@ function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
       DSH_TUI_BIN: smokeBin,
       DSH_TUI_AGENT: 'dsh-tui-matrix-must-not-spawn-an-acp-process',
       DEEPSEEK_API_KEY: 'sk-profile-smoke-not-a-real-key',
+      npm_config_ignore_workspace_root_check: 'true',
     },
   })
 }
