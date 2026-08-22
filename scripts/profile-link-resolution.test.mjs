@@ -36,40 +36,23 @@ const ownAcpPluginUrl = pathToFileURL(ownAcpPlugin).href
 const ownAcpBridgeUrl = pathToFileURL(ownAcpBridge).href
 const ownAgentPresetsUrl = pathToFileURL(ownAgentPresets).href
 const ownCordisRunnerUrl = pathToFileURL(ownCordisRunner).href
+const ownAgentPresetsPlugin = await import(ownAgentPresetsUrl)
+const ownCordisRunnerPlugin = await import(ownCordisRunnerUrl)
+const ownAcpPluginExports = await import(ownAcpPluginUrl)
 
 test('Host entries pass resolved ACP modules to the profile loader as file URLs', async () => {
   const imports = []
-  const embedded = {
-    name: 'embedded-acp',
-    inject: [],
-    apply() {},
-  }
   const services = new Map()
-  const agentPresets = {
-    name: 'agent-presets',
-    apply() {
-      services.set('agentPresets', {})
-    },
-  }
-  const dynamicCordisRunner = {
-    name: 'dynamic-cordis-runner',
-    apply() {
-      services.set('dynamicCordisRunner', {})
-    },
-  }
   const loader = {
     async import(specifier) {
       imports.push(specifier)
-      if (specifier === ownAgentPresetsUrl) return agentPresets
-      if (specifier === ownCordisRunnerUrl) return dynamicCordisRunner
-      if (specifier === ownAcpPluginUrl) return embedded
       if (specifier === ownAcpBridgeUrl) {
         return { nodeAcpStream: harness.nodeAcpStream }
       }
       throw new Error(`unexpected loader import ${specifier}`)
     },
     unwrapExports(exports) {
-      return exports
+      return exports.default ?? exports
     },
   }
 
@@ -85,7 +68,12 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
     },
     async plugin(plugin, config) {
       mounted.push({ plugin, config })
-      await plugin.apply?.(this, config)
+      if (plugin === loader.unwrapExports(ownAgentPresetsPlugin)) {
+        services.set('agentPresets', {})
+      }
+      if (plugin === loader.unwrapExports(ownCordisRunnerPlugin)) {
+        services.set('dynamicCordisRunner', {})
+      }
       return Symbol('cordis-fiber')
     },
   }, { permissionMode: 'workspace-write' })
@@ -93,13 +81,16 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
   assert.equal(wrapperResult, undefined)
   assert.deepEqual(acpHost.inject, ['loader'])
   assert.equal(mounted.length, 3)
-  assert.equal(mounted[0].plugin, agentPresets)
+  assert.equal(mounted[0].plugin, loader.unwrapExports(ownAgentPresetsPlugin))
   assert.equal(mounted[0].config.default, 'standard')
   assert.match(mounted[0].config.roots[0].path, /agent-presets$/)
   assert.equal(mounted[0].config.roots[0].trust, 'system')
-  assert.deepEqual(mounted[1], { plugin: dynamicCordisRunner, config: undefined })
+  assert.deepEqual(mounted[1], {
+    plugin: loader.unwrapExports(ownCordisRunnerPlugin),
+    config: undefined,
+  })
   assert.deepEqual(mounted[2], {
-    plugin: embedded,
+    plugin: loader.unwrapExports(ownAcpPluginExports),
     config: { permissionMode: 'workspace-write' },
   })
 
@@ -122,9 +113,6 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
     'loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins',
   ])
   assert.deepEqual(imports, [
-    ownAgentPresetsUrl,
-    ownCordisRunnerUrl,
-    ownAcpPluginUrl,
     ownAcpBridgeUrl,
   ])
 })

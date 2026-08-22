@@ -36,7 +36,7 @@ function shippedPresetRoot(ctx) {
 
 async function mountService(ctx, service, specifier, config) {
   if (ctx.get(service) !== undefined) return
-  const exports = await ctx.loader.import(resolvedModule(ctx, specifier))
+  const exports = await import(resolvedModule(ctx, specifier))
   const plugin = ctx.loader.unwrapExports(exports)
   await ctx.plugin(plugin, config)
   if (ctx.get(service) === undefined) {
@@ -54,9 +54,7 @@ export async function apply(ctx, config) {
   })
   await mountService(ctx, 'dynamicCordisRunner', '@deepseek-ai/dsh-cordis-host-runner')
 
-  const exports = await ctx.loader.import(
-    resolvedModule(ctx, '@openma/deepseek-harness-acp/plugin'),
-  )
+  const exports = await import(resolvedModule(ctx, '@openma/deepseek-harness-acp/plugin'))
   const plugin = ctx.loader.unwrapExports(exports)
   await ctx.plugin(plugin, config)
 }
