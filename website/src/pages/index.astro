@@ -1,48 +1,15 @@
 ---
-import CopyCommand from "../components/CopyCommand.astro";
-import { SignalField } from "../components/SignalField";
-import { WHALE_DENSITY } from "../data/whale-density";
-import {
-  ACP_GITHUB_URL,
-  ACP_NPM_URL,
-  ACP_PACKAGE,
-  DEMO_STEPS,
-  FEATURES,
-  PROFILE_STEPS,
-  TUI_GITHUB_URL,
-  TUI_NPM_URL,
-} from "../data/content";
 import "../styles/global.css";
 
-const title = "DeepSeek Harness TUI — A terminal-native agent interface";
+const title = "Martty — 终端里的 Agent TUI";
 const description =
-  "Run DeepSeek Harness in a fast Rust terminal with streamed reasoning, tool calls, subagents, multi-image prompts, durable sessions, and composable Cordis plugins.";
+  "Martty 是一个 DSH-first 的 Agent TUI:在终端中流式呈现推理、工具调用、subagent、多图 prompt 与持久化会话,界面由 Cordis 插件组合。";
 const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url.origin);
-const socialImage = new URL("/social-preview.png", Astro.site ?? Astro.url.origin);
 const year = new Date().getFullYear();
-const structuredData = {
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  name: "DeepSeek Harness TUI",
-  alternateName: "dsh-tui",
-  description,
-  applicationCategory: "DeveloperApplication",
-  applicationSubCategory: "Terminal user interface for AI agents",
-  operatingSystem: "macOS, Linux, Windows",
-  softwareRequirements: "Node.js 18 or newer",
-  downloadUrl: TUI_NPM_URL,
-  codeRepository: TUI_GITHUB_URL,
-  license: "https://opensource.org/license/mit",
-  offers: {
-    "@type": "Offer",
-    price: "0",
-    priceCurrency: "USD",
-  },
-};
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
@@ -50,184 +17,161 @@ const structuredData = {
     <meta name="description" content={description} />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href={canonical} />
-    <link rel="icon" href="/favicon.ico?v=3" sizes="any" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png?v=3" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="DeepSeek Harness TUI" />
+    <meta property="og:site_name" content="Martty" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
-    <meta property="og:image" content={socialImage} />
-    <meta property="og:image:alt" content="DeepSeek Harness TUI — Abyssal Signal whale artwork" />
+    <meta property="og:image" content={new URL("/social-preview.png", Astro.site ?? Astro.url.origin)} />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content={socialImage} />
-    <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
     <title>{title}</title>
   </head>
-  <body>
-    <a href="#main" class="skip-link">Skip to content</a>
-    <div class="shell">
-      <header class="site-header">
-        <div class="wrap site-header__row">
-          <a class="brand" href="#main" aria-label="DeepSeek Harness TUI home">
-            <img class="brand__mark" src="/tui-whale.svg?v=3" width="48" height="36" alt="" />
-            <span class="brand__name">DeepSeek Harness TUI</span>
-            <span class="brand__tag">Terminal-native agent interface</span>
-          </a>
-          <nav class="site-nav" aria-label="Primary">
-            <a href="#features">Features</a>
-            <a href="#profile">Install</a>
-            <a href="#other-products">Other products</a>
-            <a href={TUI_GITHUB_URL} class="site-nav__accent">GitHub</a>
-          </nav>
-        </div>
+  <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
+    <div class="mx-auto flex min-h-screen max-w-5xl flex-col px-5 sm:px-8">
+      <!-- Header -->
+      <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
+        <a href="/" class="flex items-center gap-3 no-underline">
+          <img src="/martty-lockup.svg" alt="Martty" class="h-9 w-auto" />
+        </a>
+        <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]">
+          <a href="#install" class="hover:text-[#e7eaee]">安装</a>
+          <a href="#ui" class="hover:text-[#e7eaee]">UI 简介</a>
+          <a href="#usage" class="hover:text-[#e7eaee]">使用方法</a>
+          <a href="/en" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">English</a>
+        </nav>
       </header>
 
-      <main id="main">
-        <section class="hero" aria-label="DeepSeek Harness TUI">
-          <span class="hero__corner hero__corner--tl" aria-hidden="true"></span>
-          <span class="hero__corner hero__corner--tr" aria-hidden="true"></span>
-          <span class="hero__corner hero__corner--bl" aria-hidden="true"></span>
-          <span class="hero__corner hero__corner--br" aria-hidden="true"></span>
-          <div class="wrap hero__inner">
-            <div class="hero__copy">
-              <div class="hero__rail" aria-hidden="true"><span></span><b>∞</b><span></span></div>
-              <p class="hero__eyebrow">
-                <span class="hero__eyebrow-dot" aria-hidden="true"></span>
-                dsh-tui · terminal-native ACP client
-              </p>
-              <h1 class="hero__title">
-                The DeepSeek Harness terminal, <span class="hero__title-accent">reimagined</span>
-              </h1>
-              <p class="hero__lede">
-                A fast Rust terminal on a Cordis client tree: streamed reasoning, tool calls,
-                subagents, token usage, and durable sessions — with themes, commands, and views
-                composed as plugins instead of welded into the shell.
-              </p>
-              <div class="hero__dotline" aria-hidden="true">
-                {Array.from({ length: 36 }).map(() => <i></i>)}
-              </div>
-              <div class="hero__ctas">
-                <a class="btn btn--accent" href="#profile">Install with dsh</a>
-                <a class="btn" href={TUI_GITHUB_URL}>View on GitHub</a>
-                <a class="btn" href={TUI_NPM_URL}>View on npm</a>
-              </div>
-              <CopyCommand lines={PROFILE_STEPS} label="Recommended dsh profile install command" />
-              <div class="hero__notation" aria-hidden="true">
-                <span>∞</span><i></i><span>DSH.TUI / CLIENT.SURFACE</span>
-              </div>
-            </div>
-
-            <div class="hero__visual-card" aria-label="Animated whale signal">
-              <SignalField client:only="react" />
-              <div class="hero__status-pill">
-                <span class="hero__status-dot"><i></i></span>
-                STREAM READY
-              </div>
-              <div class="hero__ascii-stage" aria-hidden="true">
-                <div class="hero__whale-glyphs">
-                  <pre class="hero__density-art">{WHALE_DENSITY.join("\n")}</pre>
-                  <pre class="hero__density-art hero__density-art--signal">{WHALE_DENSITY.join("\n")}</pre>
-                </div>
-                <span class="hero__scanline"></span>
-              </div>
-              <div class="hero__card-readout" aria-hidden="true">
-                <span>◐ RENDERING</span>
-                <span>FRAME ∞</span>
-                <span>ASCII 76×31</span>
-              </div>
-            </div>
+      <main class="flex-1">
+        <!-- Hero -->
+        <section class="border-b border-[#171d25] py-16 sm:py-20">
+          <p class="mb-3 text-xs uppercase tracking-[0.2em] text-[#66707c]">
+            DSH-first · Terminal-native · Cordis 插件
+          </p>
+          <h1 class="max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
+            在终端里,<span class="text-[#3aa0ff]">完整地看见</span>你的 Agent 在做什么。
+          </h1>
+          <p class="mt-5 max-w-2xl text-base leading-relaxed text-[#9aa5b1]">
+            Martty 是一个高性能的 Agent TUI(Rust / ratatui 渲染),流式呈现推理、工具调用、
+            subagent、token 用量和持久化会话;图片可从文件或剪贴板加入 prompt。界面、主题、
+            命令与视图都由 Cordis 插件组合,而不是写死在 shell 里。
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="#install" class="rounded border border-[#1f4a73] bg-[rgba(58,160,255,0.12)] px-5 py-2.5 text-sm no-underline hover:border-[#3aa0ff]">安装 Martty</a>
+            <a href="#ui" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">看看界面</a>
+            <a href="https://www.npmjs.com/package/martty" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">npm</a>
+            <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">GitHub</a>
           </div>
-          <div class="hero__bottom-bar" aria-hidden="true">
-            <div class="wrap">
-              <span>SYSTEM.ACTIVE</span><i></i><span>LATENCY 12MS</span>
-              <span class="hero__bottom-right">ABYSSAL SIGNAL / 01</span>
+        </section>
+
+        <!-- Install -->
+        <section id="install" class="border-b border-[#171d25] py-14">
+          <h2 class="mb-2 text-2xl font-semibold">如何安装</h2>
+          <p class="mb-6 text-sm text-[#66707c]">需要 Node.js 18+。安装后直接启动,默认连接 DSH。</p>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">全局安装(推荐)</h3>
+          <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npm install --global martty
+<span class="text-[#3aa0ff]">$ </span>martty</code></pre>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">不想全局安装</h3>
+          <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npx --yes martty</code></pre>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">已有 DSH:装到独立 profile,交给 DSH 管理</h3>
+          <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npm install --global @deepseek-ai/dsh
+<span class="text-[#3aa0ff]">$ </span>dsh plugin --profile martty add martty@latest
+<span class="text-[#3aa0ff]">$ </span>dsh --profile martty</code></pre>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">只想看界面(不需要 runtime 或 API key)</h3>
+          <pre class="mb-2 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>martty --demo
+<span class="text-[#3aa0ff]">$ </span>martty --demo-skin</code></pre>
+          <p class="text-xs text-[#66707c]">`--demo-skin` 使用内置 ember 皮肤展示主题切换。</p>
+        </section>
+
+        <!-- UI -->
+        <section id="ui" class="border-b border-[#171d25] py-14">
+          <h2 class="mb-2 text-2xl font-semibold">UI 简介</h2>
+          <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">
+            Martty 在终端中完整呈现 agent 工作过程:流式回复、推理、工具调用、subagent、Plan、
+            token 用量与持久化会话。以下分别是启动界面、会话恢复与模型选择。
+          </p>
+
+          <figure class="mb-8">
+            <img src="/ui_start.png" alt="Martty 启动界面" class="w-full rounded border border-[#202832]" loading="lazy" />
+            <figcaption class="mt-2 text-xs text-[#66707c]">启动界面:欢迎页展示品牌、版本、模型、workspace 与 session 信息。</figcaption>
+          </figure>
+
+          <div class="grid gap-8 md:grid-cols-2">
+            <figure>
+              <img src="/ui_resume.png" alt="Martty 会话恢复界面" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <figcaption class="mt-2 text-xs text-[#66707c]">会话恢复:`/resume` 或 `--session-id` 恢复持久化 JSONL 会话,workspace、模型与权限设置一并还原。</figcaption>
+            </figure>
+            <figure>
+              <img src="/ui_modelsel.png" alt="Martty 模型选择界面" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <figcaption class="mt-2 text-xs text-[#66707c]">模型选择:`/model` 直接选择 agent 宣告的模型,输入前缀即可过滤候选。</figcaption>
+            </figure>
+          </div>
+
+          <div class="mt-10 grid gap-4 sm:grid-cols-3">
+            <div class="rounded border border-[#202832] bg-[#0a0e13] p-5">
+              <h3 class="mb-1 text-sm font-semibold text-[#3aa0ff]">完整时间线</h3>
+              <p class="text-xs leading-relaxed text-[#9aa5b1]">推理、回复、工具参数与结果、插件上下文、subagent 生命周期、token/缓存指标,状态行实时显示阶段、耗时与队列深度。</p>
+            </div>
+            <div class="rounded border border-[#202832] bg-[#0a0e13] p-5">
+              <h3 class="mb-1 text-sm font-semibold text-[#3aa0ff]">多图 prompt</h3>
+              <p class="text-xs leading-relaxed text-[#9aa5b1]">可从文件、剪贴板或粘贴暂存最多 8 张图片,`[image n]` chip 内联显示,预览包含名称、尺寸、大小与类型。</p>
+            </div>
+            <div class="rounded border border-[#202832] bg-[#0a0e13] p-5">
+              <h3 class="mb-1 text-sm font-semibold text-[#3aa0ff]">原生 ACP 能力</h3>
+              <p class="text-xs leading-relaxed text-[#9aa5b1]">直接读取模型的 model、compositions、permissions、认证方式与可用命令;技能与内置命令共用一个可搜索的斜杠菜单。</p>
             </div>
           </div>
         </section>
 
-        <section class="section" id="features" aria-labelledby="features-heading">
-          <div class="wrap">
-            <div class="section__head">
-              <h2 class="section__title" id="features-heading">What dsh-tui does</h2>
-              <span class="section__index">01 / 06 — 06 / 06</span>
-            </div>
-            <div class="feature-log">
-              {FEATURES.map((feature) => (
-                <div class="feature-row">
-                  <span class="feature-row__index" aria-hidden="true">{feature.index}</span>
-                  <span class="feature-row__title">{feature.title}</span>
-                  <span class="feature-row__body">{feature.body}</span>
-                </div>
-              ))}
-            </div>
+        <!-- Usage -->
+        <section id="usage" class="py-14">
+          <h2 class="mb-2 text-2xl font-semibold">如何使用</h2>
+          <p class="mb-6 max-w-2xl text-sm text-[#9aa5b1]">常用按键与命令:</p>
+          <div class="overflow-x-auto rounded border border-[#202832]">
+            <table class="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr class="border-b border-[#202832] bg-[#0a0e13] text-xs uppercase tracking-wide text-[#66707c]">
+                  <th class="px-4 py-3 font-medium">按键 / 命令</th>
+                  <th class="px-4 py-3 font-medium">行为</th>
+                </tr>
+              </thead>
+              <tbody class="text-[#e7eaee]">
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>enter</code></td><td class="px-4 py-3 text-[#9aa5b1]">发送消息;回合运行时排队 follow-up</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>ctrl+x</code></td><td class="px-4 py-3 text-[#9aa5b1]">立即 steer 当前 agent</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>esc</code></td><td class="px-4 py-3 text-[#9aa5b1]">中断当前回合并保留草稿</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/</code></td><td class="px-4 py-3 text-[#9aa5b1]">打开命令与参数候选菜单</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/model</code> · <code>/agent</code></td><td class="px-4 py-3 text-[#9aa5b1]">选择模型和 Agent Preset</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/permission</code> · <code>shift+tab</code></td><td class="px-4 py-3 text-[#9aa5b1]">选择或轮换权限模式</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/image &lt;path&gt;</code> · <code>/clip</code></td><td class="px-4 py-3 text-[#9aa5b1]">添加本地图片或剪贴板图片</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/theme</code> · <code>ctrl+t</code></td><td class="px-4 py-3 text-[#9aa5b1]">选择 Theme Plugin 或切换明暗变体</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/ui</code></td><td class="px-4 py-3 text-[#9aa5b1]">切换整套 UI 组合(如 Martty / DeepSeek)</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/new</code> · <code>/resume</code></td><td class="px-4 py-3 text-[#9aa5b1]">新建或恢复持久化会话</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>!cmd</code></td><td class="px-4 py-3 text-[#9aa5b1]">在 workspace 的会话级本地 shell 中执行命令</td></tr>
+                <tr><td class="px-4 py-3"><code>/help</code> · <code>/keys</code></td><td class="px-4 py-3 text-[#9aa5b1]">查看命令与完整快捷键列表</td></tr>
+              </tbody>
+            </table>
           </div>
-        </section>
-
-        <section class="section" id="profile" aria-labelledby="profile-heading">
-          <div class="wrap">
-            <div class="section__head">
-              <h2 class="section__title" id="profile-heading">Two ways to run it</h2>
-            </div>
-            <p class="section__lede">
-              Install dsh-tui as a profile plugin for normal use. The standalone demo is available
-              only when you want to preview the interface without a runtime or API key.
-            </p>
-            <div class="flow">
-              <div>
-                <h3 class="flow__title">Recommended: dsh profile plugin</h3>
-                <CopyCommand lines={PROFILE_STEPS} label="Recommended dsh profile install command, repeated" />
-              </div>
-              <div>
-                <h3 class="flow__title">Optional: standalone demo</h3>
-                <CopyCommand lines={DEMO_STEPS} label="Demo install command" />
-              </div>
-            </div>
-            <p class="flow__note">
-              The Host process mounts the ACP plugin on its Base Cordis tree; a separate TUI Client
-              process speaks ACP over standard stdin/stdout and never spawns a second agent. The
-              standalone entry point can instead attach directly to any ACP agent, for example
-              <code>dsh-tui --agent dsh-acp</code>.
-            </p>
-          </div>
-        </section>
-
-        <section class="section other-products" id="other-products" aria-label="Other products">
-          <div class="wrap">
-            <div class="section__head">
-              <h2 class="section__title">Other products</h2>
-              <span class="section__index">secondary</span>
-            </div>
-            <p class="section__lede">
-              dsh-tui is the terminal. This protocol adapter is useful when building another ACP
-              client or agent, but it stays secondary to the TUI here.
-            </p>
-            <div class="product-row">
-              <span class="product-row__name">DeepSeek Harness ACP</span>
-              <span class="product-row__body">
-                {ACP_PACKAGE} adapts DeepSeek Harness to Agent Client Protocol: session lifecycle,
-                permissions, and authentication, independent of any one terminal.
-              </span>
-              <span class="product-row__links">
-                <a href={ACP_NPM_URL}>npm</a>
-                <a href={ACP_GITHUB_URL}>GitHub</a>
-              </span>
-            </div>
-          </div>
+          <p class="mt-4 text-xs leading-relaxed text-[#66707c]">
+            Markdown、代码块与工具输出使用终端原生交互;工具结果默认折叠为最后四行,点击即可展开。
+            图片预览、剪贴板路由与 kitty 图片协议按终端能力自动适配。
+          </p>
         </section>
       </main>
 
-      <footer class="site-footer">
-        <div class="wrap site-footer__row">
-          <span>© {year} DeepSeek Harness TUI · MIT</span>
-          <nav class="site-footer__links" aria-label="Footer">
-            <a href={TUI_NPM_URL}>npm</a>
-            <a href={TUI_GITHUB_URL}>GitHub</a>
-            <a href="#other-products">Other products</a>
-          </nav>
-        </div>
+      <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-[#171d25] py-6 text-xs text-[#4c5560]">
+        <span>© {year} Martty · MIT License</span>
+        <nav class="flex gap-4">
+          <a href="https://www.npmjs.com/package/martty" class="hover:text-[#9aa5b1]">npm</a>
+          <a href="https://github.com/openma-ai/Martty" class="hover:text-[#9aa5b1]">GitHub</a>
+          <a href="/en" class="hover:text-[#9aa5b1]">English</a>
+        </nav>
       </footer>
     </div>
   </body>

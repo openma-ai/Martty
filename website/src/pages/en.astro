@@ -1,0 +1,181 @@
+---
+import "../styles/global.css";
+
+const title = "Martty — Agent TUI for the terminal";
+const description =
+  "Martty is a DSH-first Agent TUI: streamed reasoning, tool calls, subagents, multi-image prompts, and durable sessions in a fast Rust terminal, composed from Cordis plugins.";
+const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url.origin);
+const year = new Date().getFullYear();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="theme-color" content="#05070a" />
+    <meta name="description" content={description} />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Martty" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={new URL("/social-preview.png", Astro.site ?? Astro.url.origin)} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
+    <div class="mx-auto flex min-h-screen max-w-5xl flex-col px-5 sm:px-8">
+      <!-- Header -->
+      <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
+        <a href="/" class="flex items-center gap-3 no-underline">
+          <img src="/martty-lockup.svg" alt="Martty" class="h-9 w-auto" />
+        </a>
+        <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]">
+          <a href="#install" class="hover:text-[#e7eaee]">Install</a>
+          <a href="#ui" class="hover:text-[#e7eaee]">UI overview</a>
+          <a href="#usage" class="hover:text-[#e7eaee]">Usage</a>
+          <a href="/" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">中文</a>
+        </nav>
+      </header>
+
+      <main class="flex-1">
+        <!-- Hero -->
+        <section class="border-b border-[#171d25] py-16 sm:py-20">
+          <p class="mb-3 text-xs uppercase tracking-[0.2em] text-[#66707c]">
+            DSH-first · Terminal-native · Cordis plugins
+          </p>
+          <h1 class="max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
+            See exactly what your agent is doing — <span class="text-[#3aa0ff]">in the terminal</span>.
+          </h1>
+          <p class="mt-5 max-w-2xl text-base leading-relaxed text-[#9aa5b1]">
+            Martty is a high-performance Agent TUI (rendered in Rust / ratatui) that presents
+            streamed reasoning, tool calls, subagents, token usage, and durable sessions; images
+            join prompts from files or the clipboard. Themes, views, commands, and interactions
+            are composed from Cordis plugins instead of being welded into the shell.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="#install" class="rounded border border-[#1f4a73] bg-[rgba(58,160,255,0.12)] px-5 py-2.5 text-sm no-underline hover:border-[#3aa0ff]">Install Martty</a>
+            <a href="#ui" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">See the UI</a>
+            <a href="https://www.npmjs.com/package/martty" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">npm</a>
+            <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">GitHub</a>
+          </div>
+        </section>
+
+        <!-- Install -->
+        <section id="install" class="border-b border-[#171d25] py-14">
+          <h2 class="mb-2 text-2xl font-semibold">How to install</h2>
+          <p class="mb-6 text-sm text-[#66707c]">Requires Node.js 18+. Launch it and it connects to DSH by default.</p>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">Global install (recommended)</h3>
+          <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npm install --global martty
+<span class="text-[#3aa0ff]">$ </span>martty</code></pre>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">No global install</h3>
+          <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npx --yes martty</code></pre>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">Already on DSH: install into a dedicated profile</h3>
+          <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npm install --global @deepseek-ai/dsh
+<span class="text-[#3aa0ff]">$ </span>dsh plugin --profile martty add martty@latest
+<span class="text-[#3aa0ff]">$ </span>dsh --profile martty</code></pre>
+
+          <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">Just preview the interface (no runtime or API key)</h3>
+          <pre class="mb-2 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>martty --demo
+<span class="text-[#3aa0ff]">$ </span>martty --demo-skin</code></pre>
+          <p class="text-xs text-[#66707c]">`--demo-skin` uses the built-in ember skin to show off theme switching.</p>
+        </section>
+
+        <!-- UI -->
+        <section id="ui" class="border-b border-[#171d25] py-14">
+          <h2 class="mb-2 text-2xl font-semibold">UI overview</h2>
+          <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">
+            Martty renders the full agent workflow in the terminal: streamed replies, reasoning,
+            tool calls, subagents, plans, token usage, and durable sessions. Below are the start
+            screen, session resume, and model selection.
+          </p>
+
+          <figure class="mb-8">
+            <img src="/ui_start.png" alt="Martty start screen" class="w-full rounded border border-[#202832]" loading="lazy" />
+            <figcaption class="mt-2 text-xs text-[#66707c]">Start screen: the welcome surface shows brand, version, model, workspace, and session info.</figcaption>
+          </figure>
+
+          <div class="grid gap-8 md:grid-cols-2">
+            <figure>
+              <img src="/ui_resume.png" alt="Martty session resume" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <figcaption class="mt-2 text-xs text-[#66707c]">Session resume: `/resume` or `--session-id` restores durable JSONL sessions, along with workspace, model, and permission settings.</figcaption>
+            </figure>
+            <figure>
+              <img src="/ui_modelsel.png" alt="Martty model selection" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <figcaption class="mt-2 text-xs text-[#66707c]">Model selection: `/model` picks an agent-advertised model directly; typing filters the candidates.</figcaption>
+            </figure>
+          </div>
+
+          <div class="mt-10 grid gap-4 sm:grid-cols-3">
+            <div class="rounded border border-[#202832] bg-[#0a0e13] p-5">
+              <h3 class="mb-1 text-sm font-semibold text-[#3aa0ff]">Full agent timeline</h3>
+              <p class="text-xs leading-relaxed text-[#9aa5b1]">Reasoning, replies, tool arguments and results, plugin context, subagent lifecycles, and token/cache metrics — with a live status line for phase, elapsed time, and queue depth.</p>
+            </div>
+            <div class="rounded border border-[#202832] bg-[#0a0e13] p-5">
+              <h3 class="mb-1 text-sm font-semibold text-[#3aa0ff]">Multi-image prompts</h3>
+              <p class="text-xs leading-relaxed text-[#9aa5b1]">Stage up to eight images from files, clipboard, or paste. Editable `[image n]` chips preview name, dimensions, size, and type inline.</p>
+            </div>
+            <div class="rounded border border-[#202832] bg-[#0a0e13] p-5">
+              <h3 class="mb-1 text-sm font-semibold text-[#3aa0ff]">Native ACP capabilities</h3>
+              <p class="text-xs leading-relaxed text-[#9aa5b1]">Read the agent's models, compositions, permissions, authentication methods, and commands. Skills and built-in commands share one searchable slash menu.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Usage -->
+        <section id="usage" class="py-14">
+          <h2 class="mb-2 text-2xl font-semibold">How to use</h2>
+          <p class="mb-6 max-w-2xl text-sm text-[#9aa5b1]">Essential keys and commands:</p>
+          <div class="overflow-x-auto rounded border border-[#202832]">
+            <table class="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr class="border-b border-[#202832] bg-[#0a0e13] text-xs uppercase tracking-wide text-[#66707c]">
+                  <th class="px-4 py-3 font-medium">Key / command</th>
+                  <th class="px-4 py-3 font-medium">Behavior</th>
+                </tr>
+              </thead>
+              <tbody class="text-[#e7eaee]">
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>enter</code></td><td class="px-4 py-3 text-[#9aa5b1]">Send; queue a follow-up while a turn is running</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>ctrl+x</code></td><td class="px-4 py-3 text-[#9aa5b1]">Steer the active turn immediately</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>esc</code></td><td class="px-4 py-3 text-[#9aa5b1]">Interrupt the current turn (draft survives)</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/</code></td><td class="px-4 py-3 text-[#9aa5b1]">Open the upward command and argument menu</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/model</code> · <code>/agent</code></td><td class="px-4 py-3 text-[#9aa5b1]">Pick a model or an agent preset</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/permission</code> · <code>shift+tab</code></td><td class="px-4 py-3 text-[#9aa5b1]">Pick or cycle permission modes</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/image &lt;path&gt;</code> · <code>/clip</code></td><td class="px-4 py-3 text-[#9aa5b1]">Add a local image or the clipboard image</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/theme</code> · <code>ctrl+t</code></td><td class="px-4 py-3 text-[#9aa5b1]">Pick a Theme Plugin or toggle dark/light variant</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/ui</code></td><td class="px-4 py-3 text-[#9aa5b1]">Switch the whole UI composition (e.g. Martty / DeepSeek)</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/new</code> · <code>/resume</code></td><td class="px-4 py-3 text-[#9aa5b1]">Start or resume a durable session</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>!cmd</code></td><td class="px-4 py-3 text-[#9aa5b1]">Run a command in the session-local shell in the workspace</td></tr>
+                <tr><td class="px-4 py-3"><code>/help</code> · <code>/keys</code></td><td class="px-4 py-3 text-[#9aa5b1]">List commands and the full shortcut reference</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="mt-4 text-xs leading-relaxed text-[#66707c]">
+            Markdown, code blocks, and tool output use native terminal interaction; tool results
+            collapse to the last four lines and expand on click. Image previews, clipboard routing,
+            and kitty image protocol adapt to terminal capabilities.
+          </p>
+        </section>
+      </main>
+
+      <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-[#171d25] py-6 text-xs text-[#4c5560]">
+        <span>© {year} Martty · MIT License</span>
+        <nav class="flex gap-4">
+          <a href="https://www.npmjs.com/package/martty" class="hover:text-[#9aa5b1]">npm</a>
+          <a href="https://github.com/openma-ai/Martty" class="hover:text-[#9aa5b1]">GitHub</a>
+          <a href="/" class="hover:text-[#9aa5b1]">中文</a>
+        </nav>
+      </footer>
+    </div>
+  </body>
+</html>
