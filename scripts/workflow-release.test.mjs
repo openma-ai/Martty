@@ -46,5 +46,6 @@ test('Windows CI boots an installed profile through the real Node loader', () =>
   assert.match(workflow, /name: Run Windows profile smoke/)
   assert.match(workflow, /DSH_TUI_MATRIX_CASE: missing/)
   assert.match(workflow, /DSH_TUI_LOCAL_DEPS: "1"/)
+  assert.match(workflow, /DSH_TUI_MATRIX_TMP: \$\{\{ github\.workspace \}\}\/target/)
   assert.match(workflow, /npm run test:profile-install-matrix --prefix npm/)
 })

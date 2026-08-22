@@ -233,7 +233,9 @@ test('one TUI command handles the complete profile installation matrix', async (
   assert.ok(existsSync(smokeTui), 'profile smoke painter fixture is missing')
   assert.ok(existsSync(smokeBin), 'profile smoke painter executable is missing')
   assert.ok(existsSync(path.join(acpRoot, 'dist', 'server.js')), 'build ACP before matrix test')
-  const root = mkdtempSync(path.join(tmpdir(), 'dsh-tui-profile-matrix-'))
+  const matrixTmp = path.resolve(process.env.DSH_TUI_MATRIX_TMP ?? tmpdir())
+  mkdirSync(matrixTmp, { recursive: true })
+  const root = mkdtempSync(path.join(matrixTmp, 'dsh-tui-profile-matrix-'))
   const packages = preparePackages(root)
   const selected = process.env.DSH_TUI_MATRIX_CASE
   const matrixCase = (key, name, callback) => t.test(name, {
