@@ -65,11 +65,15 @@ function preparePackages(root) {
   const fixture = path.join(root, 'tui-package')
   mkdirSync(fixture, { recursive: true })
   for (const name of [
-    'LICENSE', 'README.md', 'bin', 'cordis.patch.yml', 'creator', 'lib', 'skills', 'vendor',
+    'LICENSE', 'README.md', 'bin', 'cordis.patch.yml', 'creator', 'lib', 'skills',
   ]) {
     cpSync(path.join(packageRoot, name), path.join(fixture, name), {
       recursive: true,
     })
+  }
+  const vendor = path.join(packageRoot, 'vendor')
+  if (existsSync(vendor)) {
+    cpSync(vendor, path.join(fixture, 'vendor'), { recursive: true })
   }
   const manifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
   manifest.dependencies = {
