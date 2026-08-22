@@ -62,8 +62,8 @@ function preparePackages(root) {
   const acp = pack(acpRoot, packs)
 
   // Keep the published dependency shape while pinning this E2E to the two
-  // unpublished worktrees under test.  The user's command remains the exact
-  // bare package command; only the test registry resolution is substituted.
+  // unpublished worktrees under test. The installer reads the canonical
+  // package name and bundle metadata from these exact tarballs.
   const fixture = path.join(root, 'tui-package')
   mkdirSync(fixture, { recursive: true })
   for (const name of [
@@ -188,9 +188,9 @@ function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
   })
 }
 
-function installTui(home) {
+function installTui(home, packageTarball) {
   const result = runDsh(home, [
-    'plugin', '--profile', 'tui', 'add', '@openma/deepseek-harness-tui',
+    'plugin', '--profile', 'tui', 'add', pathToFileURL(packageTarball).href,
   ], repoRoot, 300_000)
   requireOk(result, 'install TUI')
 }
@@ -216,6 +216,17 @@ function assertSingleTuiBundle(home) {
   assert.equal(
     bundles.filter((name) => name === '@openma/deepseek-harness-tui').length,
     1,
+  )
+}
+
+function assertPackedTuiInstalled(home) {
+  const installed = path.join(
+    profileDir(home), 'node_modules', '@openma', 'deepseek-harness-tui', 'lib', 'acp-host.js',
+  )
+  assert.equal(
+    readFileSync(installed, 'utf8'),
+    readFileSync(path.join(packageRoot, 'lib', 'acp-host.js'), 'utf8'),
+    'profile must boot the package produced by this checkout',
   )
 }
 
@@ -249,8 +260,9 @@ test('one TUI command handles the complete profile installation matrix', async (
       const home = path.join(root, 'missing')
       writeWorkspaceOverride(home, packages)
       assert.equal(existsSync(path.join(profileDir(home), 'package.json')), false)
-      installTui(home)
+      installTui(home, packages.tui)
       assertSingleTuiBundle(home)
+      assertPackedTuiInstalled(home)
       mkdirSync(path.join(home, 'workspace'), { recursive: true })
       smokeProfile(home)
     })
@@ -259,7 +271,7 @@ test('one TUI command handles the complete profile installation matrix', async (
       const home = path.join(root, 'base-only')
       writeWorkspaceOverride(home, packages)
       initExistingProfile(home)
-      installTui(home)
+      installTui(home, packages.tui)
       assertSingleTuiBundle(home)
       mkdirSync(path.join(home, 'workspace'), { recursive: true })
       smokeProfile(home)
@@ -270,7 +282,7 @@ test('one TUI command handles the complete profile installation matrix', async (
       writeWorkspaceOverride(home, packages)
       initExistingProfile(home)
       installAcp(home, pathToFileURL(packages.acp).href)
-      installTui(home)
+      installTui(home, packages.tui)
       assertSingleTuiBundle(home)
       assert.equal(
         manifest(home).dsh.profile.bundles
@@ -284,8 +296,8 @@ test('one TUI command handles the complete profile installation matrix', async (
     await matrixCase('twice', 'installing TUI twice is idempotent', () => {
       const home = path.join(root, 'twice')
       writeWorkspaceOverride(home, packages)
-      installTui(home)
-      installTui(home)
+      installTui(home, packages.tui)
+      installTui(home, packages.tui)
       assertSingleTuiBundle(home)
       mkdirSync(path.join(home, 'workspace'), { recursive: true })
       smokeProfile(home)
@@ -297,7 +309,7 @@ test('one TUI command handles the complete profile installation matrix', async (
       initExistingProfile(home)
       installAcp(home, '@openma/deepseek-harness-acp@0.4.8')
       assert.equal(manifest(home).dependencies['@openma/deepseek-harness-acp'], '0.4.8')
-      installTui(home)
+      installTui(home, packages.tui)
       assert.equal(
         manifest(home).dependencies['@openma/deepseek-harness-acp'],
         '0.4.8',
