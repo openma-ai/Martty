@@ -573,11 +573,14 @@ fn apply_created(
     bus: &Sender<AppEvent>,
     notice: Option<String>,
 ) {
-    emit_session_bound(bus, &created.session_id, notice);
     if let Ok(value) = serde_json::to_value(created) {
         let session = created.session_id.to_string();
         apply_setup(&value, Some(&session), surface, bus);
     }
+    // Queue the Host's authoritative model/effort/permission facts before
+    // making the session visible; otherwise one frame renders workspace
+    // cache values and then jumps to the Host state.
+    emit_session_bound(bus, &created.session_id, notice);
 }
 
 fn apply_config_response(
@@ -2291,6 +2294,10 @@ where
                             {
                                 Ok(loaded) => {
                                     session_id = Some(sid.clone());
+                                    if let Ok(value) = serde_json::to_value(&loaded) {
+                                        let session = sid.to_string();
+                                        apply_setup(&value, Some(&session), &surface, &bus);
+                                    }
                                     emit_session_bound(
                                         &bus,
                                         &sid,
@@ -2298,10 +2305,6 @@ where
                                             "⟲ loaded {id} — transcript from session/update"
                                         )),
                                     );
-                                    if let Ok(value) = serde_json::to_value(&loaded) {
-                                        let session = sid.to_string();
-                                        apply_setup(&value, Some(&session), &surface, &bus);
-                                    }
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
                                     emit_needs_auth_open(
@@ -3319,7 +3322,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn new_session_binds_before_its_initial_config_facts() {
+    async fn new_session_applies_initial_config_before_binding() {
         use agent_client_protocol::schema::v1::{
             AgentCapabilities, InitializeResponse, NewSessionResponse, SessionConfigOption,
             SessionConfigSelectOption,
@@ -3393,7 +3396,7 @@ mod tests {
             }
         }
 
-        assert_eq!(order, ["bound", "plan"]);
+        assert_eq!(order, ["plan", "bound"]);
         let _ = cmd_tx.send(Cmd::Shutdown);
         let _ = client.await;
     }
@@ -3629,7 +3632,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn load_session_applies_initial_config_after_binding_the_loaded_id() {
+    async fn load_session_applies_initial_config_before_binding_the_loaded_id() {
         use agent_client_protocol::schema::v1::{
             AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse,
             SessionConfigOption, SessionConfigSelectOption,
@@ -3725,7 +3728,7 @@ mod tests {
             }
         }
 
-        assert_eq!(order, ["bound", "plan"]);
+        assert_eq!(order, ["plan", "bound"]);
         let _ = cmd_tx.send(Cmd::Shutdown);
         let _ = client.await;
     }
