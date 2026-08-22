@@ -156,7 +156,7 @@ function writeWorkspaceOverride(home, packages) {
         'module.exports = {',
         '  hooks: {',
         '    readPackage(pkg) {',
-        "      for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {",
+        "      for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {",
         '        for (const name of Object.keys(pkg[section] ?? {})) {',
         '          if (localSpecifiers[name]) pkg[section][name] = localSpecifiers[name]',
         '        }',
