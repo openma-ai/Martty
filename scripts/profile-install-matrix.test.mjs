@@ -15,8 +15,11 @@ import test from 'node:test'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const packageRoot = path.join(repoRoot, 'npm')
-const acpRoot = path.resolve(repoRoot, '../openma/deepseek-harness-acp')
+const acpRoot = path.resolve(
+  process.env.DSH_TUI_ACP_ROOT ?? path.resolve(repoRoot, '../openma/deepseek-harness-acp'),
+)
 const smokeTui = path.join(import.meta.dirname, 'profile-smoke-tui.mjs')
+const smokeBin = path.resolve(process.env.DSH_TUI_BIN ?? smokeTui)
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -103,7 +106,7 @@ function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
     env: {
       DSH_HOME: home,
       DSH_TELEMETRY_DISABLED: '1',
-      DSH_TUI_BIN: smokeTui,
+      DSH_TUI_BIN: smokeBin,
       DSH_TUI_AGENT: 'dsh-tui-matrix-must-not-spawn-an-acp-process',
       DEEPSEEK_API_KEY: 'sk-profile-smoke-not-a-real-key',
     },
@@ -155,6 +158,7 @@ function smokeProfile(home) {
 
 test('one TUI command handles the complete profile installation matrix', async (t) => {
   assert.ok(existsSync(smokeTui), 'profile smoke painter fixture is missing')
+  assert.ok(existsSync(smokeBin), 'profile smoke painter executable is missing')
   assert.ok(existsSync(path.join(acpRoot, 'dist', 'server.js')), 'build ACP before matrix test')
   const root = mkdtempSync(path.join(tmpdir(), 'dsh-tui-profile-matrix-'))
   const packages = preparePackages(root)

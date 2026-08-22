@@ -34,7 +34,7 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
  * @param {string} [options.settingsPath]
  * @param {string} [options.artifactRoot]
- * @param {Array<{ id: string, kind: 'theme' | 'ui-preset', entry: string }>} [options.packagePlugins]
+ * @param {Array<{ id: string, kind: 'theme' | 'ui', entry: string }>} [options.packagePlugins]
  */
 export async function bootClient(options = {}) {
   const { Context } = await import('@deepseek-ai/cordis')
@@ -87,7 +87,7 @@ export async function bootClient(options = {}) {
         name: 'dsh-tui-shell',
         inject: [
           'acpClient', 'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
-          'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
+          'tuiPresets', 'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
         ],
         apply: applyShell,
       },
@@ -145,7 +145,7 @@ export function parseClientPluginsEnv(value) {
     if (typeof entry.id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(entry.id)) {
       throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid id`)
     }
-    if (!['theme', 'ui-preset'].includes(entry.kind)) {
+    if (!['theme', 'ui', 'ui-preset'].includes(entry.kind)) {
       throw new Error(`dsh-tui: installed Client plugin entry ${index} has an invalid kind`)
     }
     if (typeof entry.entry !== 'string') {
@@ -160,7 +160,11 @@ export function parseClientPluginsEnv(value) {
     if (url.protocol !== 'file:') {
       throw new Error(`dsh-tui: installed Client plugin entry ${index} must use a file URL`)
     }
-    return { id: entry.id, kind: entry.kind, entry: url.href }
+    return {
+      id: entry.id,
+      kind: entry.kind === 'ui-preset' ? 'ui' : entry.kind,
+      entry: url.href,
+    }
   })
 }
 

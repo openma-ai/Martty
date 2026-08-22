@@ -72,7 +72,7 @@ token 或耗时——统计只有 `acpSessionStats` 这一套口径。
 transcript accumulator。没有 Client 树的运行（demo、独立 painter）由 Rust 的
 精简 fallback 只画运行状态与 ACP 事实，同样不读 token/耗时累计器。
 
-## UI Preset 与两个欢迎页 slot
+## UI Plugin 与两个欢迎页 slot
 
 `tuiPresets` 把多个独立 UI Plugin contribution 组合成一个可持久化选择；它与
 组合 Host/Agent 能力的 Agent Preset 分属 Client/Host 两棵树，也不是 Theme 的别名。
@@ -83,9 +83,11 @@ composer 上方的 slash 菜单列出候选，也可用 `/ui <id>` 直接切换�
 `$MARTTY_HOME/settings.json`，重启后恢复。Creator 可以 inspect `UiPresets` 与相邻 Client
 服务，生成调用 `tuiPresets.register` 的 `code.client` Package；`cordis_define/run`
 只做当前进程预览，成功后必须由 `tui_plugin_save` 写入
-`$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，新 preset 才会在重启后恢复。
+`$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，新 artifact 使用 `kind: "ui"`，重启后恢复。
+旧 `kind: "ui-preset"` 会在读取边界归一成 `ui`；`UiPresets`、`tuiPresets` 与
+settings 的 `uiPreset` 仅作为兼容性内部名保留。
 
-内置 `default`（Martty）和 `deepseek` 两个 UI Preset 都装配两个 single root slot：
+内置 `default`（Martty）和 `deepseek` 两个 UI Plugin 都装配两个 single root slot：
 
 - `welcome.hero`：居中的品牌区，结构为 `logo + hint`；
 - `welcome.info`：左下的版本、模型、workspace、session、凭据、访问说明与帮助区。
@@ -207,7 +209,7 @@ Enter 提交、Esc 取消；它是通用节点视图，不认识 Plan。
 本地命令可在 `tuiCommands.register` 的 options 中声明
 `input: { hint, options: [{ value, label, description }] }`。用户输入 `/name ` 后，Rust
 painter 会复用现有上拉 slash 菜单展示候选；注册返回的 disposer 还提供
-`update({ input })`，供 UI Preset、模型等动态目录刷新候选。标准 ACP
+`update({ input })`，供 UI Plugin、模型等动态目录刷新候选。标准 ACP
 `AvailableCommand.input` 当前只有 `hint`，没有枚举候选；Agent 命令因此展示标准
 hint，只有 Client 插件扩展或可从 ACP config/catalog 推导的命令才列出候选。
 
@@ -275,9 +277,13 @@ TUI 合并三个来源，按 builtin、已安装 package、Creator artifact 的�
 2. 第三方 package 由 `dsh plugin --profile tui add <package-or-path>` 安装，其 Host
    registrar 向 `tuiClientPlugins` 登记绝对 Client entry；Host runner 只把这份 JSON
    清单交给独立 Client 进程；
-3. Creator artifact 位于 `$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，由
+3. Client-only Creator artifact 位于 `$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，由
    `tui_plugin_list/read/save/remove` 管理。已安装 package 与本地 artifact 同 id 时，
    package 优先，本地项作为 shadowed diagnostic 保留而不执行。
+
+`tui_plugin_save` 只接受没有 `code.host` 的 Package。只要存在 Host half，无论是否同时
+存在 Client half，完整 Plugin 都归当前 Harness，并使用 Harness 自己的持久安装路径；
+Martty 不把 Host 代码写入 `.martty`。
 
 `MARTTY_HOME` 的解析顺序是显式环境变量、`$DSH_HOME/.martty`、`~/.martty`。
 旧 `$DSH_HOME/.tui-plugins` 与 `~/.dsh-tui/sessions/dsh-tui-settings.json` 在首次启动时
@@ -309,7 +315,7 @@ Cordis **没有**「挂在某个插件实例下面」的父子指针。`tui-them
 2. `tui-cordis-client-runner` 注入两者，向 Host 发布 inspect 目录并执行动态 `code.client`。
 3. 第三方 Client module 声明对应 inject；服务不在就 PENDING，不靠 Host yaml 行序。
 4. package 与 Creator artifact 都经过相同的受限 Client facade；Theme owner 的
-   start/stop 与 UI Preset 的常驻 catalog 生命周期由 Client manager 收集。
+   start/stop 与 UI Plugin 的常驻 catalog 生命周期由 Client manager 收集。
 
 不要在 runner 里 `ctx.plugin(ember)` 来叠第三方。第三方包由组合层作为 sibling
 挂载。Web 的 `ctx.slots` 与终端的 `ctx.tuiSlots` 是不同服务。

@@ -263,7 +263,8 @@ impl Transcript {
     /// headings, inline code). No `· ` prefix and no manual wrapping: the
     /// markdown renderer owns line layout and truncation.
     pub fn push_markdown(&mut self, text: String) {
-        self.cells.push(Cell::new(CellKind::MarkdownNotice { text }));
+        self.cells
+            .push(Cell::new(CellKind::MarkdownNotice { text }));
     }
 
     pub fn push_shell(&mut self, command: String) -> usize {

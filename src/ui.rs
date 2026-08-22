@@ -119,6 +119,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // /keys carry that).
     let child_view = app.active_subagent.is_some();
     let agents_h = if app.subagents.is_empty() { 0 } else { 1 };
+    let approval_h = if !child_view && !app.pending_cordis_approvals.is_empty() && main.height >= 12
+    {
+        1
+    } else {
+        0
+    };
     // Keep the conversation visually detached from the composer chrome.
     // This row is intentionally left untouched so the canvas/background
     // shows through instead of becoming another panel-colored separator.
@@ -144,12 +150,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let composer_dock_h = composer_dock_height(app, main.height, child_view);
     let chat_h = main
         .height
-        .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + gap_h);
+        .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + approval_h + gap_h);
 
     let chat = Rect::new(main.x, main.y, main.width, chat_h);
     let chrome_y = main.y + chat_h + gap_h;
     let agents = Rect::new(main.x, chrome_y, main.width, agents_h);
-    let composer_box = Rect::new(main.x, chrome_y + agents_h, main.width, cap_h + composer_h);
+    let approval = Rect::new(main.x, chrome_y + agents_h, main.width, approval_h);
+    let composer_box = Rect::new(
+        main.x,
+        chrome_y + agents_h + approval_h,
+        main.width,
+        cap_h + composer_h,
+    );
     let composer = Rect::new(main.x, composer_box.y + cap_h, main.width, composer_h);
     let composer_dock = Rect::new(
         main.x,
@@ -161,6 +173,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_chat(f, app, chat);
     if agents_h > 0 {
         draw_agent_rail(f, app, agents);
+    }
+    if approval_h > 0 {
+        draw_cordis_approval(f, app, approval);
     }
     // The pet floats inside the box's bottom-right; composer text keeps
     // clear of it. Anchor to the box's bottom — when the stats dock sits
@@ -209,6 +224,37 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_view_overlay(f, app, area);
     draw_permission_ask(f, app, area);
     draw_elicitation_form(f, app, area);
+}
+
+fn draw_cordis_approval(f: &mut Frame, app: &App, area: Rect) {
+    let Some(approval) = app.pending_cordis_approvals.first() else {
+        return;
+    };
+    let theme = app.theme;
+    let count = app.pending_cordis_approvals.len();
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" ⚠ 1/{count} {} · ", approval.name),
+            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}  ", approval.purpose),
+            Style::default().fg(theme.fg_secondary),
+        ),
+        Span::styled(
+            app.locale
+                .tr(
+                    "alt+1 current · alt+2 future · alt+3 reject",
+                    "alt+1 当前版本 · alt+2 后续版本 · alt+3 拒绝",
+                )
+                .to_string(),
+            Style::default().fg(theme.warn_soft()),
+        ),
+    ]);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.panel)),
+        area,
+    );
 }
 
 fn slider_number(value: f64) -> String {
@@ -326,7 +372,11 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
             Span::styled(
                 option.label.clone(),
                 Style::default()
-                    .fg(if selected { theme.fg } else { theme.fg_secondary })
+                    .fg(if selected {
+                        theme.fg
+                    } else {
+                        theme.fg_secondary
+                    })
                     .add_modifier(if selected {
                         Modifier::BOLD
                     } else {
@@ -334,7 +384,11 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
                     }),
             ),
         ]));
-        if let Some(description) = option.description.as_deref().filter(|text| !text.is_empty()) {
+        if let Some(description) = option
+            .description
+            .as_deref()
+            .filter(|text| !text.is_empty())
+        {
             lines.push(Line::from(Span::styled(
                 format!("    {description}"),
                 Style::default().fg(theme.caption),
@@ -396,7 +450,9 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     // last content row instead of showing blank space below the review.
     // The stored offset is normalized here too, so scrolling back up starts
     // from the visible bottom (End parks at `usize::MAX` until the next draw).
-    let max_scroll = lines.len().saturating_sub(area.height.saturating_sub(2) as usize);
+    let max_scroll = lines
+        .len()
+        .saturating_sub(area.height.saturating_sub(2) as usize);
     let scroll = view.scroll.min(max_scroll) as u16;
     view.scroll = view.scroll.min(max_scroll);
     f.render_widget(Clear, area);
@@ -409,12 +465,7 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
             Style::default().fg(theme.fg),
         ))
         .style(Style::default().bg(theme.panel).fg(theme.fg));
-    f.render_widget(
-        Paragraph::new(lines)
-            .scroll((scroll, 0))
-            .block(block),
-        area,
-    );
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(block), area);
 }
 
 /// Reserve a root-level right rail only while a plugin has content. Narrow
@@ -1713,12 +1764,15 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         }
         crate::app::PickerKind::Mode => item.id == current_mode,
         crate::app::PickerKind::Theme => item.id == current_palette,
+        crate::app::PickerKind::UiPlugin => false,
         crate::app::PickerKind::Permission => item.id == current_permission,
         crate::app::PickerKind::Effort
         | crate::app::PickerKind::Session
         | crate::app::PickerKind::Subagent
         | crate::app::PickerKind::Auth
-        | crate::app::PickerKind::Plugin => false,
+        | crate::app::PickerKind::StaticPlugin
+        | crate::app::PickerKind::CordisPlugin
+        | crate::app::PickerKind::CordisApproval => false,
     };
     // The popup caps at the screen; `ListView` scrolls the overflow instead
     // of clipping it out of reach.
@@ -2563,8 +2617,7 @@ mod tests {
             .spans
             .iter()
             .filter(|span| {
-                span.content.contains("Standard mode")
-                    || span.content.contains("Workspace Write")
+                span.content.contains("Standard mode") || span.content.contains("Workspace Write")
             })
             .collect::<Vec<_>>();
         assert_eq!(value_spans.len(), 2, "{en}");
@@ -3861,17 +3914,24 @@ mod rpc_probe {
         push_view(
             &mut app,
             &ctl,
-            &format!("## Plan\n\n{}", (0..60).map(|i| format!("- [ ] task {i:02}")).collect::<Vec<_>>().join("\n")),
+            &format!(
+                "## Plan\n\n{}",
+                (0..60)
+                    .map(|i| format!("- [ ] task {i:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
         );
         let before = app.view_overlay.as_ref().unwrap().scroll;
         // Some terminals report arrows with modifier bits (kitty keyboard
         // protocol); those must still scroll the view.
-        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        for modifiers in [
+            KeyModifiers::SHIFT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        ] {
             app.handle(
-                crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
-                    KeyCode::Down,
-                    modifiers,
-                ))),
+                crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, modifiers))),
                 &ctl,
             );
         }
@@ -3891,7 +3951,13 @@ mod rpc_probe {
         push_view(
             &mut app,
             &ctl,
-            &format!("## Plan\n\n{}", (0..60).map(|i| format!("- [ ] task {i:02}")).collect::<Vec<_>>().join("\n")),
+            &format!(
+                "## Plan\n\n{}",
+                (0..60)
+                    .map(|i| format!("- [ ] task {i:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
         );
         let before = app.view_overlay.as_ref().unwrap().scroll;
         app.handle(
@@ -3936,10 +4002,7 @@ mod rpc_probe {
             .join("\n");
         push_view(&mut app, &ctl, &format!("## Plan\n\n{long}"));
         app.handle(
-            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
-                KeyCode::End,
-                KeyModifiers::NONE,
-            ))),
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))),
             &ctl,
         );
         let frame = dump_frame(&mut app, 100, 30);
@@ -4007,7 +4070,10 @@ mod rpc_probe {
             .expect("standard ACP form");
         let form = crate::elicitation::form_from_request(&request).expect("supported form");
         let (tx, mut rx) = tokio::sync::oneshot::channel();
-        app.handle(crate::bus::AppEvent::ElicitationAsk { form, reply: tx }, &ctl);
+        app.handle(
+            crate::bus::AppEvent::ElicitationAsk { form, reply: tx },
+            &ctl,
+        );
         assert!(app.elicitation_ask.is_some(), "elicitation opened");
 
         let frame = dump_frame(&mut app, 100, 30);
@@ -4053,10 +4119,7 @@ mod rpc_probe {
         // End reaches the last row and clamps there; scrolling back up must
         // start from the visible bottom, not from the `usize::MAX` sentinel.
         app.handle(
-            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
-                KeyCode::End,
-                KeyModifiers::NONE,
-            ))),
+            crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))),
             &ctl,
         );
         let frame3 = dump_frame(&mut app, 100, 30);
@@ -4066,7 +4129,10 @@ mod rpc_probe {
             "answers visible at the bottom:\n{frame3}"
         );
         let at_bottom = app.elicitation_ask.as_ref().unwrap().scroll;
-        assert!(at_bottom < 1000, "End offset normalized by the draw:\n{at_bottom}");
+        assert!(
+            at_bottom < 1000,
+            "End offset normalized by the draw:\n{at_bottom}"
+        );
         app.handle(
             crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
                 KeyCode::PageUp,

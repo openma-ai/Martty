@@ -99,6 +99,7 @@ test('theme registration updates an optional background without replacing its pa
       },
       activate: false,
       loaded: true,
+      source: 'static',
     },
   })
 

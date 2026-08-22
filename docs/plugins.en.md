@@ -47,7 +47,7 @@ transcript accumulators for this command. Runs without a Client tree (demo,
 standalone painter) keep a lean Rust fallback that renders run-state and ACP
 facts only, also without touching token/timing accumulators.
 
-## UI Presets and the two welcome slots
+## UI Plugins and the two welcome slots
 
 `tuiPresets` composes several independent UI Plugin contributions into one
 saved choice. It lives on the Client tree, separate from Agent Presets that
@@ -63,8 +63,11 @@ services, generate a `code.client` Package that calls `tuiPresets.register`,
 and preview it with `cordis_define/run`. Those operations are process-local;
 after a successful run, `tui_plugin_save` must write it under
 `$MARTTY_HOME/plugins/<artifact-id>/plugin.json` for restart recovery.
+New artifacts use `kind: "ui"`. Legacy `kind: "ui-preset"` manifests normalize
+to `ui` when read; `UiPresets`, `tuiPresets`, and the `uiPreset` settings key
+remain compatibility-only internal names.
 
-The builtin `default` (Martty) and `deepseek` UI Presets both fill two single
+The builtin `default` (Martty) and `deepseek` UI Plugins both fill two single
 root slots:
 
 - `welcome.hero`: the centered brand region, structured as `logo + hint`;
@@ -195,7 +198,7 @@ Local commands may declare
 `input: { hint, options: [{ value, label, description }] }` in
 `tuiCommands.register`. After `/name `, the Rust painter reuses the existing
 upward slash menu for those candidates. The returned disposer also exposes
-`update({ input })` so dynamic catalogs such as UI Presets can refresh them.
+`update({ input })` so dynamic catalogs such as UI Plugins can refresh them.
 Standard ACP `AvailableCommand.input` currently carries only `hint`, not an
 enumerated candidate list; Agent commands therefore expose the standard hint,
 while Client extensions or values derived from ACP config/catalog can provide
@@ -259,9 +262,14 @@ TUI merges builtins, installed package entries, and Creator artifacts into the
 same `/ui` and `/theme` catalogs. Install a third-party package with
 `dsh plugin --profile tui add <package-or-path>`. Its Host registrar registers
 an absolute Client module entry with `tuiClientPlugins`; the Host runner sends
-only that serialized directory to the separate Client process. Creator
-artifacts live under `$MARTTY_HOME/plugins` and are managed by
+only that serialized directory to the separate Client process. Client-only
+Creator artifacts live under `$MARTTY_HOME/plugins` and are managed by
 `tui_plugin_list/read/save/remove`. Installed packages win same-id conflicts.
+
+`tui_plugin_save` accepts only Packages without `code.host`. Any Host half,
+with or without a Client half, makes the complete Plugin Harness-owned and
+subject to that Harness's persistence path; Martty never writes Host code into
+`.martty`.
 
 `MARTTY_HOME` resolves from the explicit environment variable, then
 `$DSH_HOME/.martty`, then `~/.martty`. On first startup, legacy artifacts and

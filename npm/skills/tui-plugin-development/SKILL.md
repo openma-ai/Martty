@@ -31,17 +31,19 @@ skill for shared Cordis behavior and for any genuine Host or Web half.
    later state updates finish activation. Reply with one short status sentence;
    do not summarize the implementation while approval is pending.
 7. After the later state update confirms activation, persist a new or modified
-   UI Preset or Theme Plugin with `tui_plugin_save`, unless the user explicitly
-   requested a temporary preview. Use the returned exact `pluginId` and
-   `packageId`; use a stable `artifactId`, the matching `kind`, and
+   Client-only UI or Theme Plugin with `tui_plugin_save`, unless the user explicitly
+   requested a temporary preview. Use `kind: "ui"` or `kind: "theme"`, the returned
+   exact `pluginId` and `packageId`, and a stable `artifactId`; use
    `replace: true` only when updating an artifact already read from disk.
+   If `code.host` exists, do not call `tui_plugin_save`: Host-only and dual
+   Packages belong to the connected Harness and need its separate shipping path.
 8. Report success only after `tui_plugin_save` returns `saved`, including its
    exact path. Do not call a temporary dynamic Plugin durable. Other dynamic
    TUI Plugins remain process-local unless a separate shipping path was
    explicitly requested.
 
 The normal preview trajectory is therefore one list, one query per needed
-Provider, one define, and one run. A durable UI Preset or Theme Plugin adds one
+Provider, one define, and one run. A durable UI or Theme Plugin adds one
 save after successful activation. Once inspect returns a sufficient live
 contract, author immediately; do not re-prove it from generic Cordis concepts.
 
@@ -73,7 +75,7 @@ Use the narrowest capability:
 | Need | Inspect family | Runtime service |
 | --- | --- | --- |
 | Palette registration/activation | `Theme` | `tuiTheme` |
-| Saved composition of several UI contributions | `UiPresets` | `tuiPresets` |
+| Saved UI Plugin composition | `UiPresets` (legacy provider id) | `tuiPresets` (legacy service id) |
 | Persistent terminal content | `Slots` | `tuiSlots` |
 | Local slash command | `Commands` | `tuiCommands` |
 | Transient slider or node view | `Overlay` | `tuiOverlay` |
@@ -103,12 +105,13 @@ compose only in the Plugin code. The services do not imply one another:
   in that one Plugin. Never read/subscribe to active theme or implement a
   theme condition yourself. Immediate preview uses the inspected registration
   option and enters the same Plugin seat.
-- **UI Presets:** use `tuiPresets.register({ id, label }, mount)` when the user
+- **UI Plugins:** use the current `tuiPresets.register({ id, label }, mount)`
+  compatibility service when the user
   wants one saved `/ui` choice to mount several UI contributions together.
-  The synchronous mount callback returns one disposer. A UI Preset owns
+  The synchronous mount callback returns one disposer. A UI Plugin owns
   structural UI contributions such as slots, chrome, or a pet. It does not
   register, select, clone, or generate a Theme: `/ui`, `/theme`, and dark/light
-  are independent state dimensions. A preset may document a recommended
+  are independent state dimensions. A UI Plugin may document a recommended
   Theme, but recommendation is not runtime ownership.
 - **Commands:** register a local slash command. Registration publishes slash
   completion and keeps invocation out of the ACP prompt. Its availability is

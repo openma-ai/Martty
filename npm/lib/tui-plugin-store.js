@@ -14,7 +14,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 
 const ARTIFACT_ID = /^[a-z0-9][a-z0-9-]*$/
-const KINDS = new Set(['theme', 'ui-preset'])
+const KINDS = new Set(['theme', 'ui', 'ui-preset'])
 const MANIFEST = 'plugin.json'
 
 function artifactId(value) {
@@ -38,7 +38,8 @@ function validateManifest(value, expectedId) {
   if (value.schemaVersion !== 0) throw new Error('schemaVersion must be 0')
   const id = artifactId(value.id)
   if (id !== expectedId) throw new Error(`manifest id must match directory ${JSON.stringify(expectedId)}`)
-  if (!KINDS.has(value.kind)) throw new Error('kind must be "theme" or "ui-preset"')
+  if (!KINDS.has(value.kind)) throw new Error('kind must be "theme" or "ui"')
+  const kind = value.kind === 'ui-preset' ? 'ui' : value.kind
   const name = nonEmpty(value.name, 'name')
   const purpose = nonEmpty(value.purpose, 'purpose')
   if (value.source === null || typeof value.source !== 'object' || Array.isArray(value.source)) {
@@ -53,7 +54,7 @@ function validateManifest(value, expectedId) {
   return {
     schemaVersion: 0,
     id,
-    kind: value.kind,
+    kind,
     name,
     purpose,
     source: { pluginId, packageId },

@@ -215,6 +215,8 @@ pub struct PalettePack {
     pub label: String,
     /// Dynamic Client Plugin that owns this selectable theme, when any.
     pub plugin_id: Option<String>,
+    /// ACP-carried registry origin; Rust never infers this from plugin ids.
+    pub source: String,
     /// Whether the owning Plugin is currently mounted.
     pub loaded: bool,
     /// Optional terminal background owned by this theme pack.
@@ -257,6 +259,7 @@ impl PalettePack {
             id: "default".into(),
             label: "Default".into(),
             plugin_id: None,
+            source: "static".into(),
             loaded: true,
             background: None,
             dark: DEFAULT_DARK,
@@ -299,6 +302,7 @@ impl PalettePack {
             id: id.to_string(),
             label: label.to_string(),
             plugin_id: None,
+            source: "static".into(),
             loaded: true,
             background,
             dark,
@@ -439,6 +443,11 @@ pub fn parse_palette_notification(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    pack.source = match params.get("source").and_then(Value::as_str) {
+        Some("dynamic") => "dynamic".into(),
+        Some("static") | None => "static".into(),
+        Some(source) => return Err(PaletteError(format!("invalid palette source {source}"))),
+    };
     pack.loaded = params
         .get("loaded")
         .and_then(Value::as_bool)
@@ -817,12 +826,14 @@ mod tests {
             "palette": ember_json(),
             "activate": false,
             "loaded": false,
+            "source": "dynamic",
             "owner": { "pluginId": "night-lime-1" },
         }))
         .unwrap()
         .expect("protocol 0");
 
         assert_eq!(notification.pack.plugin_id.as_deref(), Some("night-lime-1"));
+        assert_eq!(notification.pack.source, "dynamic");
         assert!(!notification.pack.loaded);
     }
 }

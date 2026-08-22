@@ -16,7 +16,7 @@ import { muxAcpAndCompositor } from './mux.js'
 
 export const name = 'dsh-tui-shell'
 export const inject = [
-  'acpClient', 'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
+  'acpClient', 'tuiTheme', 'tuiPresets', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
   'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
 ]
 
@@ -115,6 +115,7 @@ export async function applyShell(ctx, options = {}) {
     throw new Error('dsh-tui-shell: ctx.acpClient must expose stdin and stdout')
   }
   const clientRunner = ctx.tuiCordisClientRunner ?? ctx.get?.('tuiCordisClientRunner')
+  const presets = ctx.tuiPresets ?? ctx.get?.('tuiPresets')
   if (clientRunner === undefined || typeof clientRunner.bindTransport !== 'function'
     || typeof clientRunner.selectTheme !== 'function') {
     throw new Error(
@@ -225,18 +226,25 @@ export async function applyShell(ctx, options = {}) {
         if (message.method === CORDIS_METHODS.overlayEvent) {
           return overlay.dispatch(message.params)
         }
+        if (message.method === CORDIS_METHODS.approvalRespond) {
+          return clientRunner.respondApproval(message.params)
+        }
+        if (message.method === CORDIS_METHODS.uiSelected) {
+          return clientRunner.selectUi(message.params)
+        }
         throw new Error(`unsupported Cordis TUI method: ${String(message.method)}`)
       },
     })
     const notifyTui = (method, params) => mux.notifyTui(method, params)
     republishCompositorState = () => {
       handle.bindNotify(notifyTui)
+      presets?.bindNotify?.(notifyTui)
       slots.bindNotify(notifyTui)
       commands.bindNotify(notifyTui)
       overlay.bindNotify(notifyTui)
     }
     republishCompositorState()
-    clientRunner.bindTransport(mux.requestAgent)
+    clientRunner.bindTransport(mux.requestAgent, notifyTui)
     sessionConfig.bindTransport(mux.requestTui)
     connection.resume?.()
     connection.muxed = true

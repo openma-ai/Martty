@@ -94,8 +94,10 @@ pub enum CtlEvent {
     },
     /// Host skill catalog arrived (`available_commands_update`).
     Skills { skills: Vec<SkillInfo> },
-    /// Dynamic plugins owned by the current Host Agent.
-    Plugins { plugins: Vec<DynamicPluginItem> },
+    /// Read-only Loader inventory, matching the Web plugin list.
+    StaticPlugins { plugins: Vec<StaticPluginItem> },
+    /// Dynamic Cordis plugins owned by the current Host Agent.
+    CordisPlugins { plugins: Vec<CordisPluginItem> },
     /// ACP session modes (permission / `session/set_mode`).
     SessionModes {
         modes: Vec<CatalogPreset>,
@@ -143,13 +145,45 @@ pub struct SessionListItem {
     pub updated_at: Option<String>,
 }
 
+/// One configured Loader entry exposed by the Host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticPluginItem {
+    pub entry_id: String,
+    pub module_name: String,
+    pub enabled: bool,
+    pub fiber_phase: Option<String>,
+}
+
 /// One backend-owned dynamic Cordis plugin exposed to the TUI picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynamicPluginItem {
+pub struct CordisPluginItem {
     pub id: String,
     pub name: String,
     pub package_id: String,
-    pub running: bool,
+    pub status: String,
+    pub approval_request_id: Option<String>,
+}
+
+/// One model-requested dynamic Cordis activation awaiting a user decision.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCordisApproval {
+    pub request_id: String,
+    pub agent_id: String,
+    pub plugin_id: String,
+    pub package_id: String,
+    pub mode: String,
+    pub name: String,
+    pub purpose: String,
+}
+
+/// One ACP-carried UI Plugin catalog row from the Client registry.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct UiPluginItem {
+    pub id: String,
+    pub label: String,
+    pub source: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -247,15 +281,22 @@ pub enum Cmd {
     FetchCatalog,
     /// Fetch user-invocable host skills for the slash menu.
     FetchSkills,
-    /// Fetch dynamic plugins owned by this Agent from the Host registry.
-    FetchPlugins {
+    /// Fetch the Host's read-only Loader inventory.
+    FetchStaticPlugins,
+    /// Fetch dynamic Cordis plugins owned by this Agent from the Host registry.
+    FetchCordisPlugins {
         agent_id: String,
     },
     /// Stop or restore one backend-owned dynamic plugin.
-    SetPluginEnabled {
+    SetCordisPluginEnabled {
         agent_id: String,
         plugin_id: String,
         enabled: bool,
+    },
+    /// Answer one pending model-requested dynamic Cordis activation.
+    RespondCordisApproval {
+        request_id: String,
+        decision: String,
     },
     /// Invoke a Client Plugin command on the compositor plane. This must not
     /// enter the ACP session prompt/history.
@@ -265,6 +306,11 @@ pub enum Cmd {
     },
     /// A native `/theme` or picker selection committed on the Client tree.
     PluginThemeSelected {
+        agent_id: String,
+        id: String,
+    },
+    /// A native `/ui` selection committed through the Client ACP plane.
+    PluginUiSelected {
         agent_id: String,
         id: String,
     },

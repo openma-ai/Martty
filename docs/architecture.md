@@ -44,8 +44,8 @@ Client 进程：独立 Cordis root
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
   tui-presets  提供 tuiPresets，注册持久化 /ui 选择与组合生命周期
-  martty-preset default UI Preset，组合 welcome.hero + welcome.info
-  deepseek-logo 注入 tuiPresets + tuiSlots，注册 deepseek UI Preset；
+  martty-preset default UI Plugin，组合 welcome.hero + welcome.info
+  deepseek-logo 注入 tuiPresets + tuiSlots，注册 deepseek UI Plugin；
                组合 DeepSeek welcome.hero + 动态 welcome.info
   acp-session-status 提供 acpSessionStatus（连接/服务端/认证/会话/
                模型/effort/权限/plan/agent 等运行状态事实）
@@ -53,7 +53,7 @@ Client 进程：独立 Cordis root
                conversation.input.dock / conversation.composer.dock
   tui-theme    提供 tuiTheme
   tui-local-plugins 合并已安装 package entries 与 $MARTTY_HOME/plugins，
-               恢复 UI Preset，并按 /theme owner 启停 Theme Plugin
+               恢复 UI Plugin，并按 /theme owner 启停 Theme Plugin
   acp-client   attach Host stdio，提供 acpClient
         │ Client 进程 fd 3/4 仅传 TTY
   Rust painter stdin/stdout 占 TTY；自己的 fd 3/4 是 compositor mux
@@ -96,8 +96,8 @@ tui-slots     TuiNode 树 → welcome.hero / welcome.info / chrome.right / input
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
-martty-preset default UI Preset → Martty Hero + 原生动态信息区
-deepseek-logo deepseek UI Preset → DeepSeek Hero + 原生动态信息区
+martty-preset default UI Plugin → Martty Hero + 原生动态信息区
+deepseek-logo deepseek UI Plugin → DeepSeek Hero + 原生动态信息区
 acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/
               effort/权限/plan/agent —— 不累计 token 或耗时（那是
               acpSessionStats 的职责）
@@ -136,7 +136,7 @@ Token **名**封闭，见 [plugins.md](plugins.md)。内置 `default` 的色值�
 
 `ctrl+t` 切当前主题的 dark/light。`/theme` 切整个 Theme Plugin。kitty 宠物是 RGBA
 精灵，不随 token 重上色；启动锁屏的 `MAR` 读海洋渐变，`TTY` 读终端前景黑/白。
-UI Preset 是 UI Plugin 的组合，不等同于 Theme。`default`（Martty）与
+UI Plugin 可以组合多个结构性 UI contribution，但不等同于 Theme。`default`（Martty）与
 `deepseek` 都同时装配 `welcome.hero` 和 `welcome.info`：前者是居中的
 `logo + hint` 品牌区，后者是左下的版本、模型、workspace、session、凭据、访问说明
 与帮助区。两套 preset 当前复用同一个原生动态 info renderer，但该区域可以独立被
@@ -149,7 +149,8 @@ Creator 的 `cordis_define/run` Package 属于 Session 进程内预览。显式�
 重新发现。第三方 package 则继续由 dsh profile 安装，其 Host registrar 只向
 `tuiClientPlugins` 登记 `{ id, kind, entry }`，runner 把这个可序列化快照交给独立
 Client import。两类来源进入同一个 lifecycle manager；同 id 时安装 package 优先。
-UI Preset 只组合结构性 UI contribution，不拥有 Theme；保存的 `uiPreset`、`theme`
+新磁盘 artifact 使用 `kind: "ui"`；旧 `ui-preset` 与内部 `uiPreset` key 仅为兼容。
+UI Plugin 只组合结构性 UI contribution，不拥有 Theme；保存的 `uiPreset`、`theme`
 和 dark/light 相互独立。
 
 `MARTTY_HOME` 依次取显式环境变量、`$DSH_HOME/.martty`、`~/.martty`。默认 Session

@@ -10,13 +10,35 @@
  */
 
 import { createReadStream, createWriteStream } from 'node:fs'
+import { createConnection } from 'node:net'
 
-if (!process.argv.includes('--attach-fds')) {
-  throw new Error('profile-smoke-tui requires --attach-fds')
+const tcpIndex = process.argv.indexOf('--attach-tcp')
+let incoming
+let outgoing
+if (tcpIndex >= 0) {
+  const address = process.argv[tcpIndex + 1]
+  const separator = address?.lastIndexOf(':') ?? -1
+  const token = process.env.DSH_TUI_ATTACH_TOKEN
+  if (separator <= 0 || token === undefined) {
+    throw new Error('profile-smoke-tui requires a TCP address and attach token')
+  }
+  const socket = createConnection({
+    host: address.slice(0, separator),
+    port: Number(address.slice(separator + 1)),
+  })
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve)
+    socket.once('error', reject)
+  })
+  socket.write(`${token}\n`)
+  incoming = socket
+  outgoing = socket
+} else if (process.argv.includes('--attach-fds')) {
+  incoming = createReadStream(null, { fd: 3, autoClose: false })
+  outgoing = createWriteStream(null, { fd: 4, autoClose: false })
+} else {
+  throw new Error('profile-smoke-tui requires --attach-fds or --attach-tcp')
 }
-
-const incoming = createReadStream(null, { fd: 3, autoClose: false })
-const outgoing = createWriteStream(null, { fd: 4, autoClose: false })
 let buffer = ''
 let initialized
 

@@ -30,8 +30,10 @@ const packageLib = path.join(import.meta.dirname, '../npm/lib')
 const requireFromTui = createRequire(path.join(packageLib, '../package.json'))
 const ownAcpPlugin = requireFromTui.resolve('@openma/deepseek-harness-acp/plugin')
 const ownAcpBridge = requireFromTui.resolve('@openma/deepseek-harness-acp/bridge')
+const ownAcpPluginUrl = pathToFileURL(ownAcpPlugin).href
+const ownAcpBridgeUrl = pathToFileURL(ownAcpBridge).href
 
-test('Host entries resolve ACP from the TUI dependency graph through the profile loader', async () => {
+test('Host entries pass resolved ACP modules to the profile loader as file URLs', async () => {
   const imports = []
   const embedded = {
     name: 'embedded-acp',
@@ -41,8 +43,8 @@ test('Host entries resolve ACP from the TUI dependency graph through the profile
   const loader = {
     async import(specifier) {
       imports.push(specifier)
-      if (specifier === ownAcpPlugin) return embedded
-      if (specifier === ownAcpBridge) {
+      if (specifier === ownAcpPluginUrl) return embedded
+      if (specifier === ownAcpBridgeUrl) {
         return { nodeAcpStream: harness.nodeAcpStream }
       }
       throw new Error(`unexpected loader import ${specifier}`)
@@ -90,7 +92,7 @@ test('Host entries resolve ACP from the TUI dependency graph through the profile
     'loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins',
   ])
   assert.deepEqual(imports, [
-    ownAcpPlugin,
-    ownAcpBridge,
+    ownAcpPluginUrl,
+    ownAcpBridgeUrl,
   ])
 })

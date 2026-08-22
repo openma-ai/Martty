@@ -72,7 +72,11 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
                     out.push(code_frame_bottom(width, theme));
                     in_code = false;
                 } else {
-                    out.push(code_frame_top(text.trim_start_matches('`').trim(), width, theme));
+                    out.push(code_frame_top(
+                        text.trim_start_matches('`').trim(),
+                        width,
+                        theme,
+                    ));
                     in_code = true;
                 }
                 continue;
@@ -115,11 +119,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             // Data rows get their own frame line: tui-markdown only draws
             // the header separator, so insert a `├─┼─┤` junction whenever a
             // `│` row follows another `│` row (i.e. between body rows).
-            let is_data_row = row
-                .spans
-                .first()
-                .and_then(|s| s.content.chars().next())
-                == Some('│');
+            let is_data_row = row.spans.first().and_then(|s| s.content.chars().next()) == Some('│');
             if is_data_row && prev_table_row {
                 out.push(table_row_separator(&row, theme));
             }
@@ -141,7 +141,10 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         // raw markdown source.
         let prefix = task_list_glyphs(prefix, theme);
         let body = two_tone(body, theme);
-        let indent: usize = prefix.iter().map(|s| UnicodeWidthStr::width(s.text.as_str())).sum();
+        let indent: usize = prefix
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.text.as_str()))
+            .sum();
         let mut wrapped = wrap_segments(body, width.saturating_sub(indent));
         if wrapped.is_empty() && !prefix.is_empty() {
             wrapped.push(Line::default());
@@ -249,7 +252,9 @@ impl StyleSheet for DeepSeekStyleSheet {
     }
 
     fn image_alt(&self) -> Style {
-        Style::default().fg(self.0.brand).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(self.0.brand)
+            .add_modifier(Modifier::BOLD)
     }
 }
 
@@ -269,8 +274,7 @@ fn is_plain_rule(segs: &[Seg]) -> bool {
 
 /// Table lines start with a box-drawing border character.
 fn is_table_line(segs: &[Seg]) -> bool {
-    segs
-        .first()
+    segs.first()
         .and_then(|s| s.text.chars().next())
         .map(|c| matches!(c, '┌' | '├' | '└' | '│'))
         .unwrap_or(false)
@@ -448,9 +452,7 @@ fn is_body_style(style: Style, theme: &Theme) -> bool {
         None => true,
         Some(fg) => fg == theme.fg_secondary || fg == theme.fg_tertiary,
     };
-    style.bg.is_none()
-        && fg_ok
-        && style.add_modifier.difference(Modifier::ITALIC).is_empty()
+    style.bg.is_none() && fg_ok && style.add_modifier.difference(Modifier::ITALIC).is_empty()
 }
 
 /// Code block frame: top edge with an optional language label
@@ -930,7 +932,12 @@ mod tests {
             "no literal markers:\n{text}"
         );
         // The glyph carries its status color; the dash keeps the list style.
-        let line_text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let line_text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
         let done = lines
             .iter()
             .find(|l| line_text(l).contains("✓ done"))
@@ -994,19 +1001,16 @@ mod tests {
         let lines = render_dark("# a\n## b\n### c\n#### d\n##### e\n###### f", 40);
         let heads: Vec<&Line> = lines.iter().filter(|l| !l.spans.is_empty()).collect();
         assert_eq!(heads.len(), 6, "six headings: {}", plain(&lines));
-        let mut colors: Vec<Option<ratatui::style::Color>> = heads
-            .iter()
-            .map(|l| l.spans[0].style.fg)
-            .collect();
+        let mut colors: Vec<Option<ratatui::style::Color>> =
+            heads.iter().map(|l| l.spans[0].style.fg).collect();
         colors.dedup();
         assert!(
             colors.len() >= 4,
             "heading sizes should span several colors: {colors:?}"
         );
-        assert!(heads.iter().all(|l| l.spans[0]
-            .style
-            .add_modifier
-            .contains(Modifier::BOLD)));
+        assert!(heads
+            .iter()
+            .all(|l| l.spans[0].style.add_modifier.contains(Modifier::BOLD)));
     }
 
     #[test]
@@ -1027,7 +1031,11 @@ mod tests {
             Some(theme.fg_secondary),
             "CJK stays the body gray"
         );
-        assert_eq!(latin.style.fg, Some(theme.fg), "Latin/digits render brighter");
+        assert_eq!(
+            latin.style.fg,
+            Some(theme.fg),
+            "Latin/digits render brighter"
+        );
         assert_ne!(cjk.style.fg, latin.style.fg);
     }
 
@@ -1045,10 +1053,9 @@ mod tests {
         // The `---` delimiter row must not leak through as literal text.
         assert!(!text.contains("---"), "delimiter hidden: {text}");
         // Header cells are bold; inline code in a cell keeps its chip style.
-        assert!(lines.iter().any(|l| l
-            .spans
-            .iter()
-            .any(|s| { s.content.contains("样式") && s.style.add_modifier.contains(Modifier::BOLD) })));
+        assert!(lines.iter().any(|l| l.spans.iter().any(|s| {
+            s.content.contains("样式") && s.style.add_modifier.contains(Modifier::BOLD)
+        })));
         assert!(lines.iter().any(|l| l
             .spans
             .iter()
@@ -1086,7 +1093,10 @@ mod tests {
         let joined = order.join("\n");
         let i1 = joined.find("│ 1").unwrap();
         let i3 = joined.find("│ 3").unwrap();
-        assert!(joined[i1..i3].contains('├'), "separator between rows: {joined}");
+        assert!(
+            joined[i1..i3].contains('├'),
+            "separator between rows: {joined}"
+        );
     }
 
     #[test]
@@ -1099,7 +1109,8 @@ mod tests {
         let first = widths[0];
         for (l, w) in lines.iter().zip(&widths) {
             assert_eq!(
-                *w, first,
+                *w,
+                first,
                 "all frame lines share the box width: {}",
                 plain(std::slice::from_ref(l))
             );
@@ -1201,18 +1212,9 @@ mod tests {
         let lines = render("> outer\n> > inner", &theme, 60);
         let text = plain(&lines);
         assert!(text.contains(">> inner"), "nested markers: {text}");
-        assert!(lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
-            s.content == ">" && s.style.fg == Some(theme.fg_tertiary)
-        }));
+        assert!(lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| { s.content == ">" && s.style.fg == Some(theme.fg_tertiary) }));
     }
 }
-
-
-
-
-
-
-
-
-
-

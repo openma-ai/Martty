@@ -9,7 +9,7 @@
 
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const name = 'dsh-tui-runner'
 export const inject = ['loader', 'acpServer', 'cmdlineArgs', 'appExit', 'tuiClientPlugins']
@@ -20,7 +20,7 @@ const requireFromTui = createRequire(import.meta.url)
 function ownAcpBridge() {
   const specifier = '@openma/deepseek-harness-acp/bridge'
   try {
-    return requireFromTui.resolve(specifier)
+    return pathToFileURL(requireFromTui.resolve(specifier)).href
   } catch {
     // A source-linked package may rely on the active profile's installation.
     return specifier

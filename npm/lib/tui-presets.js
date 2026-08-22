@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
+import { CORDIS_METHODS } from './cordis-protocol.js'
 
 export const name = 'tui-presets'
 export const inject = ['tuiCommands', 'tuiOverlay']
@@ -19,12 +20,36 @@ class TuiPresetsService extends Service {
     return this.core.register(options, mount)
   }
 
+  registerOwned(owner, options, mount, registerOptions) {
+    return this.core.registerOwned(owner, options, mount, registerOptions)
+  }
+
   activate(id) {
     return this.core.activate(id)
   }
 
   list() {
     return this.core.list()
+  }
+
+  catalog() {
+    return this.core.catalog()
+  }
+
+  owner(id) {
+    return this.core.owner(id)
+  }
+
+  isLoaded(id) {
+    return this.core.isLoaded(id)
+  }
+
+  bindLifecycle(fn) {
+    return this.core.bindLifecycle(fn)
+  }
+
+  bindNotify(fn) {
+    return this.core.bindNotify(fn)
   }
 
   active() {
@@ -67,6 +92,26 @@ export function installTuiPresets(ctx, options = {}) {
   let releaseActive
   let presetSelector
   let disposed = false
+  let lifecycle
+  let send = typeof options.notify === 'function' ? options.notify : undefined
+  const queue = []
+
+  function emit(params) {
+    if (send !== undefined) send(CORDIS_METHODS.uiUpdate, params)
+    else queue.push(params)
+  }
+
+  function publish() {
+    emit({ protocol: 0, plugins: catalog() })
+  }
+
+  function bindNotify(fn) {
+    if (typeof fn !== 'function') throw new Error('tuiPresets.bindNotify needs a function')
+    send = fn
+    const pending = queue.splice(0, queue.length)
+    for (const params of pending) send(CORDIS_METHODS.uiUpdate, params)
+    publish()
+  }
 
   function mount(entry) {
     const mounted = entry.mount()
@@ -109,31 +154,45 @@ export function installTuiPresets(ctx, options = {}) {
     if (entry === undefined) {
       throw new Error(`tuiPresets.activate: preset "${id}" is not registered`)
     }
+    if (!entry.loaded) {
+      throw new Error(`tuiPresets.activate: UI Plugin for "${id}" is not loaded`)
+    }
     switchTo(entry)
     if (persist) {
       preferredId = id
       writePreferred(settingsPath, id)
     }
+    publish()
   }
 
   function fallback() {
-    const next = entries.get(preferredId) ?? entries.get('default') ?? entries.values().next().value
+    const preferred = entries.get(preferredId)
+    const stock = entries.get('default')
+    const next = (preferred?.loaded === true ? preferred : undefined)
+      ?? (stock?.loaded === true ? stock : undefined)
+      ?? [...entries.values()].find((entry) => entry.loaded)
     if (next !== undefined) switchTo(next)
   }
 
   function refreshCommandInput() {
     stopCommand?.update?.({
       input: {
-        hint: 'preset',
-        options: list().map((entry) => ({
+        hint: 'plugin',
+        options: catalog().map((entry) => ({
           value: entry.id,
           label: entry.label,
+          description: `${entry.source} · ${entry.status}`,
         })),
       },
     })
+    publish()
   }
 
   function register(options, mountPreset) {
+    return registerOwned(undefined, options, mountPreset, { source: 'static' })
+  }
+
+  function registerOwned(owner, options, mountPreset, registerOptions = {}) {
     if (disposed) throw new Error('tuiPresets: registry is disposed')
     if (options === null || typeof options !== 'object' || Array.isArray(options)) {
       throw new Error('tuiPresets.register: options must be an object')
@@ -151,10 +210,23 @@ export function installTuiPresets(ctx, options = {}) {
     if (typeof mountPreset !== 'function') {
       throw new Error('tuiPresets.register: mount must be a function')
     }
-    if (entries.has(options.id)) {
+    if (owner !== undefined && (typeof owner !== 'string' || owner.length === 0)) {
+      throw new Error('tuiPresets.registerOwned: owner must be a non-empty string')
+    }
+    const source = owner === undefined ? 'static' : registerOptions.source ?? 'dynamic'
+    if (source !== 'static' && source !== 'dynamic') {
+      throw new Error('tuiPresets.register: source must be static or dynamic')
+    }
+    const retained = entries.get(options.id)
+    const resumesOwner = owner !== undefined
+      && retained?.owner === owner
+      && retained.loaded === false
+    if (retained !== undefined && !resumesOwner) {
       throw new Error(`tuiPresets.register: preset "${options.id}" is already registered`)
     }
-    const entry = { id: options.id, label: options.label, mount: mountPreset }
+    const entry = resumesOwner
+      ? Object.assign(retained, { label: options.label, mount: mountPreset, source, loaded: true })
+      : { id: options.id, label: options.label, mount: mountPreset, owner, source, loaded: true }
     entries.set(entry.id, entry)
     refreshCommandInput()
     if (activeEntry === undefined || entry.id === preferredId) fallback()
@@ -170,7 +242,8 @@ export function installTuiPresets(ctx, options = {}) {
         activeEntry = undefined
         releaseActive = undefined
       }
-      entries.delete(entry.id)
+      if (entry.owner === undefined) entries.delete(entry.id)
+      else entry.loaded = false
       refreshCommandInput()
       if (wasActive) fallback()
     }
@@ -180,30 +253,69 @@ export function installTuiPresets(ctx, options = {}) {
     return [...entries.values()].map(({ id, label }) => ({ id, label }))
   }
 
+  function catalog() {
+    return [...entries.values()].map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      source: entry.source,
+      status: activeEntry === entry ? 'active' : entry.loaded
+        ? (entry.source === 'dynamic' ? 'running' : 'ready')
+        : 'stopped',
+      ...(entry.owner === undefined ? {} : { owner: { pluginId: entry.owner } }),
+    }))
+  }
+
+  function owner(id) {
+    return entries.get(id)?.owner
+  }
+
+  function isLoaded(id) {
+    return entries.get(id)?.loaded === true
+  }
+
+  function bindLifecycle(fn) {
+    if (typeof fn !== 'function') throw new Error('tuiPresets.bindLifecycle needs a function')
+    lifecycle = fn
+    return () => {
+      if (lifecycle === fn) lifecycle = undefined
+    }
+  }
+
+  async function requestActivate(id) {
+    const entry = entries.get(id)
+    if (entry === undefined) throw new Error(`tuiPresets.activate: preset "${id}" is not registered`)
+    if (entry.loaded) return activate(id)
+    if (lifecycle === undefined || entry.owner === undefined) {
+      throw new Error(`tuiPresets.activate: UI Plugin for "${id}" is not loaded`)
+    }
+    await lifecycle(id, entry.owner)
+    if (entries.get(id)?.loaded === true && active() !== id) activate(id)
+  }
+
   function active() {
     return activeEntry?.id
   }
 
   const stopCommand = ctx.tuiCommands.register({
     name: 'ui',
-    description: 'Switch UI preset',
+    description: 'Switch UI Plugin',
   }, async (args = '') => {
     const id = args.trim().toLowerCase()
     if (id.length === 0) {
-      const choices = list()
       presetSelector?.close()
       presetSelector = ctx.tuiOverlay.openSelect({
         id: 'ui-preset',
-        title: 'UI preset',
+        title: 'UI Plugin',
         value: active(),
-        options: choices.map((entry) => ({
+        options: catalog().map((entry) => ({
           value: entry.id,
           label: entry.label,
+          description: `${entry.source} · ${entry.status}`,
         })),
       }, {
         onSubmit(value) {
           presetSelector = undefined
-          activate(value)
+          return requestActivate(value)
         },
         onCancel() {
           presetSelector = undefined
@@ -211,7 +323,7 @@ export function installTuiPresets(ctx, options = {}) {
       })
       return
     }
-    activate(id)
+    await requestActivate(id)
   })
   refreshCommandInput()
 
@@ -225,9 +337,13 @@ export function installTuiPresets(ctx, options = {}) {
     activeEntry = undefined
     releaseActive = undefined
     entries.clear()
+    lifecycle = undefined
   }
 
-  const core = { register, activate, list, active, dispose }
+  const core = {
+    register, registerOwned, activate, list, catalog, owner, isLoaded, bindLifecycle, bindNotify,
+    active, dispose,
+  }
   const service = typeof ctx.provide === 'function'
     ? new TuiPresetsService(ctx, core)
     : core
