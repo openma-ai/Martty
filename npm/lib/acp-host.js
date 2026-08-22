@@ -36,9 +36,19 @@ function shippedPresetRoot(ctx) {
 
 async function mountService(ctx, service, specifier, config) {
   if (ctx.get(service) !== undefined) return
-  const exports = await import(resolvedModule(ctx, specifier))
+  const resolved = resolvedModule(ctx, specifier)
+  let exports
+  try {
+    exports = await import(resolved)
+  } catch (cause) {
+    throw new Error(`dsh-tui: failed to import ${specifier} from ${resolved}`, { cause })
+  }
   const plugin = ctx.loader.unwrapExports(exports)
-  await ctx.plugin(plugin, config)
+  try {
+    await ctx.plugin(plugin, config)
+  } catch (cause) {
+    throw new Error(`dsh-tui: failed to mount ${specifier}`, { cause })
+  }
   if (ctx.get(service) === undefined) {
     throw new Error(`dsh-tui: ${specifier} did not provide ${service}`)
   }
@@ -54,7 +64,18 @@ export async function apply(ctx, config) {
   })
   await mountService(ctx, 'dynamicCordisRunner', '@deepseek-ai/dsh-cordis-host-runner')
 
-  const exports = await import(resolvedModule(ctx, '@openma/deepseek-harness-acp/plugin'))
+  const specifier = '@openma/deepseek-harness-acp/plugin'
+  const resolved = resolvedModule(ctx, specifier)
+  let exports
+  try {
+    exports = await import(resolved)
+  } catch (cause) {
+    throw new Error(`dsh-tui: failed to import ${specifier} from ${resolved}`, { cause })
+  }
   const plugin = ctx.loader.unwrapExports(exports)
-  await ctx.plugin(plugin, config)
+  try {
+    await ctx.plugin(plugin, config)
+  } catch (cause) {
+    throw new Error(`dsh-tui: failed to mount ${specifier}`, { cause })
+  }
 }
