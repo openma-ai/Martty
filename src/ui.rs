@@ -1532,11 +1532,14 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let prompt = "❯ ";
     let pw = prompt.width();
-    // The amber prompt is the composer's working indicator now that the
-    // brand-blue glow bar is gone (issue #27).
+    // The prompt doubles as the working indicator that used to be the brand
+    // glow bar: amber while working, brand blue when idle (issue #27).
+    let working = !matches!(app.state, RunState::Idle);
     let prompt_span = Span::styled(
         prompt.to_string(),
-        Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(if working { theme.warn } else { theme.brand })
+            .add_modifier(Modifier::BOLD),
     );
 
     if app.input.is_empty() {
@@ -4086,29 +4089,40 @@ mod tests {
         }
     }
     #[test]
-    fn composer_running_state_has_no_glow_bar_and_amber_prompt() {
+    fn composer_glow_bar_is_gone_and_prompt_tints_while_working() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut app = test_app();
         app.show_banner = false;
-        // The working state used to draw the brand-blue glow bar (issue #27).
-        app.state = crate::app::RunState::Running;
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("test terminal");
+        let theme = app.theme;
+
+        // Idle: the prompt stays brand blue.
+        app.state = crate::app::RunState::Idle;
         terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
         let buf = terminal.backend().buffer().clone();
-        let theme = app.theme;
-        // The glow bar (brand `▎` column) is gone while running.
-        for cell in buf.content.iter() {
-            assert_ne!(cell.symbol(), "▎", "glow bar must not render while running");
-        }
-        // The composer prompt is amber instead.
         let prompt_cell = buf
             .content
             .iter()
             .find(|cell| cell.symbol() == "❯")
             .expect("composer prompt");
-        assert_eq!(prompt_cell.fg, theme.warn, "prompt turns amber");
+        assert_eq!(prompt_cell.fg, theme.brand, "idle prompt stays brand blue");
+
+        // Working: the glow bar (brand `▎` column) is gone and the prompt
+        // turns amber — the old glow's indicator role (issue #27).
+        app.state = crate::app::RunState::Running;
+        terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+        let buf = terminal.backend().buffer().clone();
+        for cell in buf.content.iter() {
+            assert_ne!(cell.symbol(), "▎", "glow bar must not render while running");
+        }
+        let prompt_cell = buf
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "❯")
+            .expect("composer prompt");
+        assert_eq!(prompt_cell.fg, theme.warn, "working prompt turns amber");
     }
 
     #[test]
