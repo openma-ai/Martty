@@ -140,6 +140,7 @@ function writeWorkspaceOverride(home, packages) {
       '',
       'nodeLinker: hoisted',
       'autoInstallPeers: false',
+      'ignoreWorkspaceRootCheck: true',
       'overrides:',
       ...overrides.map(([name, specifier]) => (
         `  ${JSON.stringify(name)}: ${JSON.stringify(specifier)}`
