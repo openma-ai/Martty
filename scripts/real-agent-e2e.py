@@ -385,7 +385,7 @@ def drive_real_agent(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         tui_bin = Path(args.tui_bin).resolve()
         if not tui_bin.is_file():
             raise RuntimeError(f"TUI binary does not exist: {tui_bin}")
-        environment["DSH_TUI_BIN"] = str(tui_bin)
+        environment["MARTTY_BIN"] = str(tui_bin)
 
     child = pexpect.spawn(
         dsh,
@@ -508,7 +508,10 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--profile", default="tui-test")
     run.add_argument("--agent-preset")
     run.add_argument("--dsh-bin", default="dsh")
-    run.add_argument("--tui-bin", default=os.environ.get("DSH_TUI_BIN"))
+    run.add_argument(
+        "--tui-bin",
+        default=os.environ.get("MARTTY_BIN") or os.environ.get("DSH_TUI_BIN"),
+    )
     run.add_argument("--root")
     run.add_argument("--report")
     run.add_argument("--ready-pattern", default="describe what you want to build")

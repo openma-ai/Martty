@@ -1,4 +1,4 @@
-//! dsh-tui — a terminal-native ACP client UI.
+//! Martty — a terminal-native ACP client UI.
 
 mod acp;
 mod acp_auth;
@@ -47,10 +47,10 @@ use crate::controller::Controller;
 use crate::runtime::{default_session_root, RuntimeConfig};
 
 const HELP: &str = "\
-dsh-tui — terminal-native ACP client UI
+martty — terminal-native ACP client UI
 
 USAGE:
-  dsh-tui [OPTIONS]
+  martty [OPTIONS]
 
 OPTIONS:
   -w, --workspace <dir>     agent workspace (default: cwd)
@@ -159,7 +159,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 args_out.dump_frame = Some((w, h));
             }
             "-V" | "--version" => {
-                println!("dsh-tui {}", env!("CARGO_PKG_VERSION"));
+                println!("martty {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "-h" | "--help" => {
@@ -242,7 +242,7 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
 }
 
 fn main() -> Result<()> {
-    // Die quietly on closed pipes (dsh-tui --dump-frame | head) instead of
+    // Die quietly on closed pipes (martty --dump-frame | head) instead of
     // panicking in println!.
     #[cfg(unix)]
     unsafe {
@@ -445,7 +445,7 @@ fn main() -> Result<()> {
             if let Some(launch) = app.take_terminal_auth() {
                 restore_terminal();
                 eprintln!(
-                    "\n{} — finish setup in this terminal, then dsh-tui resumes.\n",
+                    "\n{} — finish setup in this terminal, then Martty resumes.\n",
                     launch.label
                 );
                 let result = crate::acp_auth::run_terminal_auth(&launch);
@@ -656,12 +656,12 @@ fn find_demo_skin_script(exe: &std::path::Path) -> Option<std::path::PathBuf> {
 /// fails loud — never silently paint the built-in default pack.
 fn reexec_demo_skin() -> Result<()> {
     let exe = std::env::current_exe()
-        .context("dsh-tui --demo-skin: cannot resolve the current executable (DSH_TUI_BIN)")?;
+        .context("martty --demo-skin: cannot resolve the current executable (MARTTY_BIN)")?;
     let looked =
         demo_skin_script_candidates(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), &exe);
     let script = find_demo_skin_script(&exe).ok_or_else(|| {
         anyhow::anyhow!(
-            "dsh-tui --demo-skin requires npm/lib/demo-skin.js (looked in {}); refusing to fall back to the default palette",
+            "martty --demo-skin requires npm/lib/demo-skin.js (looked in {}); refusing to fall back to the default palette",
             looked
                 .iter()
                 .map(|p| p.display().to_string())
@@ -673,14 +673,14 @@ fn reexec_demo_skin() -> Result<()> {
     let status = std::process::Command::new("node")
         .arg(&script)
         .args(&child_args)
-        .env("DSH_TUI_BIN", &exe)
+        .env("MARTTY_BIN", &exe)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
         .with_context(|| {
             format!(
-                "dsh-tui --demo-skin failed to spawn node {} (is node on PATH?); refusing to fall back to the default palette",
+                "martty --demo-skin failed to spawn node {} (is node on PATH?); refusing to fall back to the default palette",
                 script.display()
             )
         })?;
@@ -690,4 +690,3 @@ fn reexec_demo_skin() -> Result<()> {
 #[cfg(test)]
 #[path = "../tests/unit/main__cli_args_tests.rs"]
 mod cli_args_tests;
-

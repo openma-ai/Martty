@@ -24,7 +24,7 @@ test('npm packaging builds Rust through the scoped Cargo cache guard', () => {
   executable(path.join(bin, 'cargo'), `#!/bin/sh
 printf 'target=%s\nargs=%s\n' "\${CARGO_TARGET_DIR-<unset>}" "$*" > "$DSH_TUI_TEST_CARGO_LOG"
 mkdir -p "$CARGO_TARGET_DIR/release"
-: > "$CARGO_TARGET_DIR/release/dsh-tui"
+: > "$CARGO_TARGET_DIR/release/martty"
 `)
   executable(path.join(bin, 'node'), `#!/bin/sh
 case "$*" in
@@ -61,7 +61,7 @@ esac
     )
     assert.equal(
       readFileSync(nodeLog, 'utf8'),
-      `scripts/package-native.mjs stage --source ${canonicalTarget}/release/dsh-tui --platform darwin --arch arm64 --vendor-root npm/vendor\n`,
+      `scripts/package-native.mjs stage --source ${canonicalTarget}/release/martty --platform darwin --arch arm64 --vendor-root npm/vendor\n`,
     )
   } finally {
     rmSync(root, { recursive: true, force: true })

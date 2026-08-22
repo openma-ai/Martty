@@ -105,24 +105,24 @@ test('make tui-test rebuilds the debug binary before launching the development p
     const root = realpathSync(item.root)
     const bin = path.join(root, 'bin')
     const target = path.join(root, 'target')
-    const debugBinary = path.join(target, 'debug', 'dsh-tui')
+    const debugBinary = path.join(target, 'debug', 'martty')
     mkdirSync(bin)
     writeFileSync(item.cargo, `#!/bin/sh
 printf 'cargo:%s\n' "$*" >> "$DSH_TUI_TEST_DEV_LOG"
 if [ "$1" = build ]; then
   mkdir -p "$CARGO_TARGET_DIR/debug"
-  : > "$CARGO_TARGET_DIR/debug/dsh-tui"
-  chmod +x "$CARGO_TARGET_DIR/debug/dsh-tui"
+  : > "$CARGO_TARGET_DIR/debug/martty"
+  chmod +x "$CARGO_TARGET_DIR/debug/martty"
 fi
 `)
     chmodSync(item.cargo, 0o755)
     const dsh = path.join(bin, 'dsh')
     writeFileSync(dsh, `#!/bin/sh
-if [ ! -x "$DSH_TUI_BIN" ]; then
-  echo "development binary was not built: $DSH_TUI_BIN" >&2
+if [ ! -x "$MARTTY_BIN" ]; then
+  echo "development binary was not built: $MARTTY_BIN" >&2
   exit 9
 fi
-printf 'dsh:%s|bin=%s\n' "$*" "$DSH_TUI_BIN" >> "$DSH_TUI_TEST_DEV_LOG"
+printf 'dsh:%s|bin=%s\n' "$*" "$MARTTY_BIN" >> "$DSH_TUI_TEST_DEV_LOG"
 `)
     chmodSync(dsh, 0o755)
     const devLog = path.join(root, 'dev.log')

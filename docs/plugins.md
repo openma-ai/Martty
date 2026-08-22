@@ -1,5 +1,32 @@
 # 插件 API
 
+## 四个 Plugin 视图
+
+Martty 用四个本地视图区分 contribution、静态加载状态与 Cordis 临时运行状态：
+
+| 视图 | 展示内容 | 生命周期 |
+|---|---|---|
+| `/ui` | 当前可选的 UI contribution | owner 可以是 Client-only 或双向 Package |
+| `/theme` | 当前可选的 Theme contribution | owner 可以是 Client-only 或双向 Package；切换时可联动 owner 启停 |
+| `/plugins` | 当前已经加载的静态 Plugin | 只读；不根据条目推断 Host-only、Client-only 或双向 |
+| `/cordis-plugins` | Cordis 模式刚创建的临时动态 Plugin | 跟随当前 run，可被停止、替换或回收 |
+
+`/ui` 与 `/theme` 是 Plugin 视图，不是 Package 类型。一个动态双向 Package 的
+`code.client` 可以注册 UI 或 Theme contribution，同时由同一 run 的 `code.host`
+提供 Host 能力。`/cordis-plugins` 管理的是这个完整 run，而不是只管理其中一半。
+
+Cordis Plugin Package 有两个可选部分：
+
+```text
+Cordis Plugin Package
+├── code.host       # 可选，运行在 Host Cordis tree
+└── code.client     # 可选，运行在 Martty Client Cordis tree
+```
+
+只包含 `code.host` 是 Host-only，只包含 `code.client` 是 Client-only，两者都有就是
+双向 Package。双向 Package 仍是一个逻辑 Plugin 和一次启动意图；Client half 通过
+`host.call(method, args)` 调用同一 run 的 Host half。
+
 第三方只通过这一页上的 API 扩展 TUI。没有列出的对象、fd、方法，宿主不提供。实现时做成调不到，而不是写在注释里请人别碰。
 
 **当前开放：** 配色包、根级右栏 `chrome.right`、composer 上方的
@@ -78,7 +105,7 @@ transcript accumulator。没有 Client 树的运行（demo、独立 painter）�
 组合 Host/Agent 能力的 Agent Preset 分属 Client/Host 两棵树，也不是 Theme 的别名。
 `ctx.tuiPresets.register({ id, label }, mount)` 的 `mount` 只组合结构性 UI
 contribution（slot、chrome、pet 等），并返回统一 disposer；它不注册、选择或生成
-Theme。`/ui`、`/theme` 与 dark/light 是三个独立状态维度。`/ui` 打开原生单选表单，`/ui ` 复用
+Theme。UI Plugin、Theme Plugin 与 dark/light 是三个独立状态维度。`/ui` 打开原生单选表单，`/ui ` 复用
 composer 上方的 slash 菜单列出候选，也可用 `/ui <id>` 直接切换；选择写入
 `$MARTTY_HOME/settings.json`，重启后恢复。Creator 可以 inspect `UiPresets` 与相邻 Client
 服务，生成调用 `tuiPresets.register` 的 `code.client` Package；`cordis_define/run`
@@ -112,8 +139,10 @@ Token 名封闭：
 
 `bg` `surface` `panel` `fg` `fg_secondary` `fg_tertiary` `caption` `brand` `brand_soft` `bubble_bg` `bubble_fg` `border` `code_bg` `ok` `warn` `err` `hint` `chip_bg`
 
-内置 `default` 仍是现在的冷蓝灰皮，永远不能替换或删除。`ctrl+t` 只在当前主题的
-dark/light 之间切。`/theme` 是一个特殊的 **Theme Plugin 单选开关**：选择一个 id
+内置 `default` 仍是现在的冷蓝灰皮，永远不能替换或删除。`/theme toggle` 与
+`ctrl+t` 只在当前主题的 dark/light 之间切；`/theme ` 的上拉候选将 toggle 与
+Theme Plugin 分区显示。`/theme <id>` 是一个特殊的
+**Theme Plugin 单选开关**：选择一个 id
 会启动它所属的 Client Plugin，并停止此前选中的 Theme Plugin；选择 `default` 会
 停止当前动态 Theme Plugin。显式选择的 theme id 与 `uiPreset` 并列写入
 `$MARTTY_HOME/settings.json`；临时 Creator 预览和自动回退不会改写用户选择。
@@ -270,11 +299,31 @@ return {
 
 ## 持久化与加载
 
+### 从 Cordis 临时 run 升级为常驻 Plugin
+
+`cordis_define` / `cordis_run` 创建的是当前进程内的临时 Plugin。先用
+`cordis_inspect_self(pluginId, packageId)` 读取当前成功 Package 的完整源码和诊断，
+再根据 Package 是否包含 Host half 选择持久化路径。
+
+Client-only Package 在 `cordis_run` 成功后，可以调用 `tui_plugin_save` 写入
+`$MARTTY_HOME/plugins/<artifact-id>/plugin.json`。Client 启动时会重新发现并装载它。
+
+只要存在 `code.host`，无论是 Host-only 还是双向 Package，都必须整理成普通 Cordis
+npm Package 或本地 Package，再使用下面的命令安装到 profile：
+
+```sh
+dsh plugin --profile martty add <package-or-path>
+```
+
+安装后，Harness 在启动时加载 Host registrar，并把可序列化的 Client entry 清单交给
+Martty Client。当前没有通用的 `promote` 工具把动态定义直接写进 profile；动态预览
+与静态安装之间保留显式的保存或打包步骤。
+
 TUI 合并三个来源，按 builtin、已安装 package、Creator artifact 的顺序装入同一
 `/ui` 与 `/theme` catalog：
 
 1. builtin 随 TUI 包发布；
-2. 第三方 package 由 `dsh plugin --profile tui add <package-or-path>` 安装，其 Host
+2. 第三方 package 由 `dsh plugin --profile martty add <package-or-path>` 安装，其 Host
    registrar 向 `tuiClientPlugins` 登记绝对 Client entry；Host runner 只把这份 JSON
    清单交给独立 Client 进程；
 3. Client-only Creator artifact 位于 `$MARTTY_HOME/plugins/<artifact-id>/plugin.json`，由
@@ -320,7 +369,7 @@ Cordis **没有**「挂在某个插件实例下面」的父子指针。`tui-them
 不要在 runner 里 `ctx.plugin(ember)` 来叠第三方。第三方包由组合层作为 sibling
 挂载。Web 的 `ctx.slots` 与终端的 `ctx.tuiSlots` 是不同服务。
 
-本地包走 `dsh plugin --profile tui add ./path`，加载 **package exports**。新 registrar
+本地包走 `dsh plugin --profile martty add ./path`，加载 **package exports**。新 registrar
 要重开 TUI 或以后的 `/refresh`。已挂配色包改源码后的热换按阶段落地。
 
 ## 后续

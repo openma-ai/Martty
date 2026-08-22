@@ -4,11 +4,11 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync } from 'node:f
 import path from 'node:path'
 
 const supported = [
-  { platform: 'darwin', arch: 'arm64', file: 'dsh-tui' },
-  { platform: 'darwin', arch: 'x64', file: 'dsh-tui' },
-  { platform: 'linux', arch: 'x64', file: 'dsh-tui' },
-  { platform: 'linux', arch: 'arm64', file: 'dsh-tui' },
-  { platform: 'win32', arch: 'x64', file: 'dsh-tui.exe' },
+  { platform: 'darwin', arch: 'arm64', file: 'martty' },
+  { platform: 'darwin', arch: 'x64', file: 'martty' },
+  { platform: 'linux', arch: 'x64', file: 'martty' },
+  { platform: 'linux', arch: 'arm64', file: 'martty' },
+  { platform: 'win32', arch: 'x64', file: 'martty.exe' },
 ]
 
 function options(args) {

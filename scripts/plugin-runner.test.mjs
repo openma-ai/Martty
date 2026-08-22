@@ -69,8 +69,8 @@ const { selectNativeBinary } = await import(
 test('a source checkout prefers its current debug painter over a stale packaged binary', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'dsh-tui-native-select-'))
   try {
-    const debug = path.join(root, 'target', 'debug', 'dsh-tui')
-    const packaged = path.join(root, 'npm', 'vendor', 'darwin-arm64', 'dsh-tui')
+    const debug = path.join(root, 'target', 'debug', 'martty')
+    const packaged = path.join(root, 'npm', 'vendor', 'darwin-arm64', 'martty')
     mkdirSync(path.dirname(debug), { recursive: true })
     mkdirSync(path.dirname(packaged), { recursive: true })
     writeFileSync(debug, 'current-debug')
@@ -428,7 +428,7 @@ function makeCtx({ cordisClientRunner } = {}) {
 
 function ensureTestNative() {
   const key = `${process.platform}-${process.arch}`
-  const exe = process.platform === 'win32' ? 'dsh-tui.exe' : 'dsh-tui'
+  const exe = process.platform === 'win32' ? 'martty.exe' : 'martty'
   const dir = path.join(repoRoot, 'npm', 'vendor', key)
   const bin = path.join(dir, exe)
   if (existsSync(bin)) return () => {}

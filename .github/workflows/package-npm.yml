@@ -58,7 +58,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           DSH_TUI_ACP_ROOT: ${{ github.workspace }}/npm/node_modules/@openma/deepseek-harness-acp
-          DSH_TUI_BIN: ${{ github.workspace }}/target/profile-smoke-tui.exe
+          MARTTY_BIN: ${{ github.workspace }}/target/profile-smoke-tui.exe
           DSH_TUI_SMOKE_SCRIPT: ${{ github.workspace }}/scripts/profile-smoke-tui.mjs
           DSH_TUI_MATRIX_CASE: missing
           DSH_TUI_LOCAL_DEPS: "1"
@@ -77,33 +77,33 @@ jobs:
             rust-target: aarch64-apple-darwin
             platform: darwin
             arch: arm64
-            binary: target/aarch64-apple-darwin/release/dsh-tui
+            binary: target/aarch64-apple-darwin/release/martty
           - name: darwin-x64
             runner: macos-15-intel
             rust-target: x86_64-apple-darwin
             platform: darwin
             arch: x64
-            binary: target/x86_64-apple-darwin/release/dsh-tui
+            binary: target/x86_64-apple-darwin/release/martty
           - name: linux-x64
             runner: ubuntu-24.04
             rust-target: x86_64-unknown-linux-musl
             platform: linux
             arch: x64
             smoke-platform: linux/amd64
-            binary: target/x86_64-unknown-linux-musl/release/dsh-tui
+            binary: target/x86_64-unknown-linux-musl/release/martty
           - name: linux-arm64
             runner: ubuntu-24.04
             rust-target: aarch64-unknown-linux-musl
             platform: linux
             arch: arm64
             smoke-platform: linux/arm64
-            binary: target/aarch64-unknown-linux-musl/release/dsh-tui
+            binary: target/aarch64-unknown-linux-musl/release/martty
           - name: win32-x64
             runner: windows-2025
             rust-target: x86_64-pc-windows-msvc
             platform: win32
             arch: x64
-            binary: target/x86_64-pc-windows-msvc/release/dsh-tui.exe
+            binary: target/x86_64-pc-windows-msvc/release/martty.exe
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -171,7 +171,7 @@ jobs:
           path: npm/vendor
           merge-multiple: true
       - name: Restore executable permissions
-        run: chmod +x npm/vendor/darwin-arm64/dsh-tui npm/vendor/darwin-x64/dsh-tui npm/vendor/linux-x64/dsh-tui npm/vendor/linux-arm64/dsh-tui
+        run: chmod +x npm/vendor/darwin-arm64/martty npm/vendor/darwin-x64/martty npm/vendor/linux-x64/martty npm/vendor/linux-arm64/martty
       - run: node scripts/package-native.mjs verify --vendor-root npm/vendor
       - name: Pack npm packages
         run: |

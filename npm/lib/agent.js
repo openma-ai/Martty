@@ -45,7 +45,7 @@ export function resolveStackedAgent(anchor = import.meta.url) {
     // Source checkouts may not have materialized the package dependencies.
   }
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  for (const profile of ['tui-test', 'tui']) {
+  for (const profile of ['tui-test', 'martty', 'tui']) {
     const bin = join(home, 'profiles', profile, 'node_modules', '.bin', 'dsh-acp')
     const creator = join(
       home,

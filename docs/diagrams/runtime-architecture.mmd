@@ -1,0 +1,39 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "IBM Plex Mono, monospace", "primaryColor": "#e8efff", "primaryTextColor": "#16233a", "primaryBorderColor": "#6f96ed", "lineColor": "#64748b", "secondaryColor": "#f7f9fc", "tertiaryColor": "#dce7ff"}}}%%
+flowchart LR
+  terminal["User terminal"]
+
+  subgraph host["DSH Host process"]
+    direction TB
+    base["Cordis Base tree"]
+    acp["Built-in ACP Plugin<br/>ctx.acpClient"]
+    runner["Martty runner"]
+    base --> acp
+    base --> runner
+  end
+
+  subgraph client["Martty Client process"]
+    direction TB
+    transport["ACP transport + mux"]
+    tree["Cordis Client tree"]
+    services["UI · Theme · Slots · Overlay<br/>Commands · Session services"]
+    painter["Rust / ratatui painter"]
+    transport --> tree --> services
+    services -->|"serialized TuiNode + palette"| painter
+  end
+
+  runner -->|"starts"| client
+  acp <-->|"ACP over Client stdin / stdout"| transport
+  terminal <-->|"TTY on fd 3 / 4"| painter
+
+  boundary["No shared services, plugin ids, inject, or fibers"]
+  host -. "process boundary" .-> boundary
+  boundary -. "process boundary" .-> client
+
+  classDef hostNode fill:#e8efff,stroke:#6f96ed,color:#16233a,stroke-width:1.5px;
+  classDef clientNode fill:#f7f9fc,stroke:#7991b4,color:#16233a,stroke-width:1.5px;
+  classDef terminalNode fill:#16233a,stroke:#16233a,color:#ffffff,stroke-width:1.5px;
+  classDef note fill:#fff8e8,stroke:#d8a642,color:#5d4315,stroke-dasharray:4 3;
+  class base,acp,runner hostNode;
+  class transport,tree,services,painter clientNode;
+  class terminal terminalNode;
+  class boundary note;

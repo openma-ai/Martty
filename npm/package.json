@@ -1,6 +1,6 @@
 {
   "name": "@openma/deepseek-harness-tui",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
@@ -51,8 +51,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "dsh-tui": "bin/dsh-tui.js",
-    "dsb": "bin/dsh-tui.js"
+    "martty": "bin/martty.js",
+    "dsh-tui": "bin/martty.js"
   },
   "files": [
     "bin",

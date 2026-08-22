@@ -96,7 +96,8 @@ Closed token names:
 `bg` `surface` `panel` `fg` `fg_secondary` `fg_tertiary` `caption` `brand` `brand_soft` `bubble_bg` `bubble_fg` `border` `code_bg` `ok` `warn` `err` `hint` `chip_bg`
 
 Builtin `default` remains the cold bluish skin and cannot be replaced or removed.
-`ctrl+t` only toggles dark/light inside the current theme. `/theme` is a special
+`/theme toggle` and `ctrl+t` only change dark/light inside the current theme.
+The `/theme ` completion menu separates toggle from Theme Plugins. `/theme <id>` is a special
 **single-select Theme Plugin switch**: selecting an id starts its owning Client
 Plugin and stops the previously selected Theme Plugin; selecting `default` stops
 the current dynamic Theme Plugin. Explicit selection persists beside
@@ -260,7 +261,7 @@ Nodes must not contain RGB; color only by token name. RGB appears only in a pale
 
 TUI merges builtins, installed package entries, and Creator artifacts into the
 same `/ui` and `/theme` catalogs. Install a third-party package with
-`dsh plugin --profile tui add <package-or-path>`. Its Host registrar registers
+`dsh plugin --profile martty add <package-or-path>`. Its Host registrar registers
 an absolute Client module entry with `tuiClientPlugins`; the Host runner sends
 only that serialized directory to the separate Client process. Client-only
 Creator artifacts live under `$MARTTY_HOME/plugins` and are managed by
@@ -308,7 +309,7 @@ Do not stack third parties with `ctx.plugin(ember)` inside the runner. The
 composition mounts third-party packages as siblings. Web
 Web `ctx.slots` and terminal `ctx.tuiSlots` are different services.
 
-Local packages use `dsh plugin --profile tui add ./path` and load **package
+Local packages use `dsh plugin --profile martty add ./path` and load **package
 exports**. A new registrar needs a TUI restart or later `/refresh`. Hot-swap of
 an already-mounted palette ships by phase.
 

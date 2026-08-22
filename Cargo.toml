@@ -1,12 +1,12 @@
 [package]
 name = "deepseek-harness-tui"
-version = "0.2.19"
+version = "0.2.20"
 edition = "2021"
 description = "Terminal-native ACP client UI with a Cordis client plugin tree"
 license = "MIT"
 
 [[bin]]
-name = "dsh-tui"
+name = "martty"
 path = "src/main.rs"
 
 [dependencies]

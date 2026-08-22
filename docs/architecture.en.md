@@ -1,10 +1,10 @@
 # Architecture
 
-The ACP client is a Cordis plugin: it provides `ctx.acpClient`, speaks ACP, and **does not bundle or import any harness**. The TUI is a shell on this **client** tree (Rust owns the TTY). TUI plugins such as palettes `inject` client-side services, not the `dsh-tui` package name and not dsh-acp.
+The ACP client is a Cordis plugin: it provides `ctx.acpClient`, speaks ACP, and **does not bundle or import any harness**. The TUI is a shell on this **client** tree (Rust owns the TTY). TUI plugins such as palettes `inject` client-side services, not the Martty package name and not dsh-acp.
 
-The primary `dsh --profile tui` path starts two processes. The Host process mounts the complete ACP plugin on its Base Cordis tree, then the Host runner starts a separate TUI Client process. They speak ACP only through the TUI Client's standard stdin/stdout; no Cordis services, plugin ids, `inject`, or fibers cross the process boundary. The Client process receives the user TTY on fd 3/4 and maps it to the Rust painter's stdin/stdout. Host↔Client ACP never uses fd 3/4.
+The primary `dsh --profile martty` path starts two processes. The Host process mounts the complete ACP plugin on its Base Cordis tree, then the Host runner starts a separate TUI Client process. They speak ACP only through the TUI Client's standard stdin/stdout; no Cordis services, plugin ids, `inject`, or fibers cross the process boundary. The Client process receives the user TTY on fd 3/4 and maps it to the Rust painter's stdin/stdout. Host↔Client ACP never uses fd 3/4.
 
-The standalone `dsh-tui` entry remains a general ACP client: its Client tree may spawn `dsh-acp`, `dsh --profile acp`, or another ACP agent, or attach a caller-owned stream.
+The standalone `martty` entry remains a general ACP client: its Client tree may spawn `dsh-acp`, `dsh --profile acp`, or another ACP agent, or attach a caller-owned stream.
 
 ## ACP client: root plugin or attached plugin
 
@@ -120,7 +120,7 @@ The `tui-theme` service starts with builtin `default`. A dynamic Theme Plugin
 declares its palette with `tuiTheme.register`; `/theme` is a special single-select
 Plugin switch that starts the target and stops the current Theme Plugin. Its
 palette, commands, overlays, slots, and RPC therefore share one Fiber lifetime.
-`dsh-tui --demo` stays on `default`; `--demo-skin` remains the static gallery path.
+`martty --demo` stays on `default`; `--demo-skin` remains the static gallery path.
 
 ## Control plane vs paint
 
@@ -130,7 +130,7 @@ Control uses existing ACP methods (including `authenticate`, matching Backchat's
 
 Token **names** are closed; see [plugins.md](plugins.en.md). Built-in `default` keeps the cold bluish values. A palette pack may (and must) supply `#RRGGBB` for every token. When conversation nodes open later, nodes still name tokens; they do not carry RGB.
 
-`ctrl+t` toggles dark/light inside the current theme. `/theme` switches the whole
+`/theme toggle` or `ctrl+t` toggles dark/light inside the current theme. `/theme <id>` switches the whole
 Theme Plugin. Kitty pet sprites are RGBA and do not recolor. In the startup
 lockup, `MAR` reads the ocean gradient while `TTY` uses terminal foreground
 (white in dark mode, black in light mode). A UI Plugin can compose several UI

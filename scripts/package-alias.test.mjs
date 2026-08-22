@@ -33,7 +33,7 @@ test('creates a self-contained Martty package without changing the legacy packag
     "export const source = '@openma/deepseek-harness-tui/creator-overlay'\n",
   )
   const binary = Buffer.from([0, 255, 1, 254])
-  writeFileSync(path.join(source, 'vendor', 'linux-x64', 'dsh-tui'), binary)
+  writeFileSync(path.join(source, 'vendor', 'linux-x64', 'martty'), binary)
 
   const result = spawnSync(process.execPath, [script, source, destination, 'martty'], {
     encoding: 'utf8',
@@ -46,7 +46,7 @@ test('creates a self-contained Martty package without changing the legacy packag
   )
   assert.match(readFileSync(path.join(destination, 'cordis.patch.yml'), 'utf8'), /martty\/acp-host/)
   assert.match(readFileSync(path.join(destination, 'lib', 'meta.js'), 'utf8'), /martty\/creator-overlay/)
-  assert.deepEqual(readFileSync(path.join(destination, 'vendor', 'linux-x64', 'dsh-tui')), binary)
+  assert.deepEqual(readFileSync(path.join(destination, 'vendor', 'linux-x64', 'martty')), binary)
   assert.equal(
     JSON.parse(readFileSync(path.join(source, 'package.json'), 'utf8')).name,
     '@openma/deepseek-harness-tui',

@@ -14,7 +14,7 @@ TARGET_DIR="$(CDPATH= cd -- "$TARGET_DIR" && pwd -P)"
 
 PLATFORM="$(node -p 'process.platform')"
 ARCH="$(node -p 'process.arch')"
-BINARY="$TARGET_DIR/release/dsh-tui"
+BINARY="$TARGET_DIR/release/martty"
 if [[ "$PLATFORM" == "win32" ]]; then
   BINARY="${BINARY}.exe"
 fi

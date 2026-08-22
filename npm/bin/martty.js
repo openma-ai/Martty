@@ -9,11 +9,13 @@ import { bootClient, parseClientArgv, painterArgs } from '../lib/boot.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const platformKey = process.platform + '-' + process.arch
 const vendorDir = path.join(__dirname, '..', 'vendor')
-const binaryName = process.platform === 'win32' ? 'dsh-tui.exe' : 'dsh-tui'
+const binaryName = process.platform === 'win32' ? 'martty.exe' : 'martty'
 const packaged = path.join(vendorDir, platformKey, binaryName)
-const envBin = process.env.DSH_TUI_BIN
-const binaryPath = typeof envBin === 'string' && envBin.length > 0 && fs.existsSync(envBin)
-  ? envBin
+const configuredBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
+const binaryPath = typeof configuredBin === 'string'
+  && configuredBin.length > 0
+  && fs.existsSync(configuredBin)
+  ? configuredBin
   : packaged
 
 const argv = process.argv.slice(2)
@@ -32,7 +34,7 @@ if (!fs.existsSync(binaryPath)) {
   } catch {
     // vendor dir missing entirely
   }
-  console.error('dsh-tui: no bundled binary for this platform (' + platformKey + ').')
+  console.error('martty: no bundled binary for this platform (' + platformKey + ').')
   if (available.length > 0) {
     console.error('Bundled platforms: ' + available.join(', '))
   } else {
@@ -54,7 +56,7 @@ if (wantHelp || wantVersion || wantDemo) {
 }
 
 if (wantDemoSkin) {
-  process.env.DSH_TUI_BIN ??= binaryPath
+  process.env.MARTTY_BIN ??= binaryPath
   const demoSkinPath = path.join(__dirname, '..', 'lib', 'demo-skin.js')
   const args = argv.filter((arg) => arg !== '--demo-skin')
   exitFromSpawn(spawnSync(process.execPath, [demoSkinPath, ...args], {
@@ -63,6 +65,6 @@ if (wantDemoSkin) {
   }))
 }
 
-process.env.DSH_TUI_BIN ??= binaryPath
+process.env.MARTTY_BIN ??= binaryPath
 const parsed = parseClientArgv(argv)
 await bootClient({ agent: parsed.agent, extraArgs: painterArgs(parsed) })

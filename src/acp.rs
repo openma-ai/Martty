@@ -169,7 +169,7 @@ pub fn check_blocking(argv: Vec<String>) -> Result<String> {
         let agent = AcpAgent::from_args(argv).map_err(acp_err)?;
         Client
             .builder()
-            .name("dsh-tui")
+            .name("martty")
             .connect_with(agent, |cx: ConnectionTo<Agent>| async move {
                 let init = cx.send_request(initialize_request()).block_task().await?;
                 Ok(init
@@ -188,7 +188,7 @@ fn acp_err(err: AcpError) -> anyhow::Error {
 
 pub(crate) fn initialize_request() -> InitializeRequest {
     InitializeRequest::new(ProtocolVersion::V1)
-        .client_info(Implementation::new("dsh-tui", env!("CARGO_PKG_VERSION")))
+        .client_info(Implementation::new("martty", env!("CARGO_PKG_VERSION")))
         .client_capabilities(
             ClientCapabilities::new()
                 .fs(FileSystemCapabilities::new()
@@ -971,7 +971,7 @@ where
 
     Client
         .builder()
-        .name("dsh-tui")
+        .name("martty")
         .on_receive_notification(
             {
                 let bus_n = bus_n.clone();

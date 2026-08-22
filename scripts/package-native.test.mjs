@@ -22,11 +22,11 @@ test('stages native binaries under npm platform keys', () => {
   writeFileSync(source, 'native-binary-fixture')
 
   const cases = [
-    ['darwin', 'arm64', 'darwin-arm64/dsh-tui'],
-    ['darwin', 'x64', 'darwin-x64/dsh-tui'],
-    ['linux', 'x64', 'linux-x64/dsh-tui'],
-    ['linux', 'arm64', 'linux-arm64/dsh-tui'],
-    ['win32', 'x64', 'win32-x64/dsh-tui.exe'],
+    ['darwin', 'arm64', 'darwin-arm64/martty'],
+    ['darwin', 'x64', 'darwin-x64/martty'],
+    ['linux', 'x64', 'linux-x64/martty'],
+    ['linux', 'arm64', 'linux-arm64/martty'],
+    ['win32', 'x64', 'win32-x64/martty.exe'],
   ]
 
   for (const [platform, arch, expectedPath] of cases) {

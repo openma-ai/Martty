@@ -192,8 +192,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "theme",
-        usage: "/theme [id]",
-        desc: "switch theme plugin · ctrl+t toggles dark/light",
+        usage: "/theme [id|toggle]",
+        desc: "switch Theme Plugin or toggle dark/light",
     },
     SlashCommand {
         name: "ui",
@@ -526,6 +526,9 @@ pub struct SlashEntry {
     pub desc: String,
     pub skill: bool,
     pub plugin: bool,
+    /// Visual group for argument candidates. The group label is rendered on
+    /// its first option without adding a selectable separator row.
+    pub section: Option<String>,
     /// Full composer text for an argument candidate. Command-name rows leave
     /// this empty and retain the historical `/name ` tab completion.
     pub completion: Option<String>,
@@ -1458,6 +1461,7 @@ impl App {
     fn apply_theme_arg(&mut self, arg: &str, ctl: &Controller) {
         match arg {
             "" => self.open_theme_picker(),
+            "toggle" => self.toggle_theme_mode(),
             id => {
                 if self.palettes.iter().any(|p| p.id == id) {
                     self.select_palette(id, ctl);
@@ -1468,6 +1472,15 @@ impl App {
                 }
             }
         }
+    }
+
+    fn toggle_theme_mode(&mut self) {
+        self.theme = self.theme.toggled();
+        self.show_tip(format!(
+            "theme: {} {}",
+            self.active_palette_id,
+            self.theme.mode.as_str()
+        ));
     }
 
     fn open_theme_picker(&mut self) {
@@ -1496,8 +1509,8 @@ impl App {
             title: self
                 .locale
                 .tr(
-                    " theme · enter apply · esc close · ctrl+t dark/light ",
-                    " 主题 · enter 应用 · esc 关闭 · ctrl+t 切换明暗 ",
+                    " theme · enter apply · esc close · /theme toggle · ctrl+t ",
+                    " 主题 · enter 应用 · esc 关闭 · /theme toggle · ctrl+t ",
                 )
                 .into(),
             sel,
@@ -1659,6 +1672,7 @@ impl App {
                 desc: self.locale.command_desc(c.name, c.desc).to_string(),
                 skill: false,
                 plugin: false,
+                section: None,
                 completion: None,
             })
             .collect();
@@ -1676,6 +1690,7 @@ impl App {
                     desc: command.description.clone(),
                     skill: false,
                     plugin: true,
+                    section: None,
                     completion: None,
                 });
             }
@@ -1700,6 +1715,7 @@ impl App {
                     desc: s.description.clone(),
                     skill: !s.client_command,
                     plugin: s.client_command,
+                    section: None,
                     completion: None,
                 });
             }
@@ -1733,6 +1749,7 @@ impl App {
                         desc: option.description.clone().unwrap_or_default(),
                         skill: false,
                         plugin: true,
+                        section: None,
                         completion: Some(format!("/{name} {}", option.value)),
                     })
                     .collect();
@@ -1743,6 +1760,13 @@ impl App {
             .into_iter()
             .filter(|(value, _, _)| value.starts_with(prefix))
             .map(|(value, label, desc)| SlashEntry {
+                section: match (name, value.as_str()) {
+                    ("theme", "toggle") => {
+                        Some(self.locale.tr("Appearance", "明暗模式").to_string())
+                    }
+                    ("theme", _) => Some("Theme Plugins".to_string()),
+                    _ => None,
+                },
                 name: name.to_string(),
                 usage: label,
                 desc,
@@ -1824,10 +1848,17 @@ impl App {
                 plain("on", "enable plan mode"),
                 plain("off", "disable plan mode"),
             ],
-            "theme" => self
-                .palettes
-                .iter()
-                .map(|palette| {
+            "theme" => {
+                let mut options = vec![(
+                    "toggle".to_string(),
+                    self.locale
+                        .tr("Toggle dark / light", "切换 dark / light")
+                        .to_string(),
+                    self.locale
+                        .tr("switch the current theme mode", "切换当前主题的明暗模式")
+                        .to_string(),
+                )];
+                options.extend(self.palettes.iter().map(|palette| {
                     (
                         palette.id.clone(),
                         palette.label.clone(),
@@ -1837,8 +1868,9 @@ impl App {
                             "theme plugin · stopped".to_string()
                         },
                     )
-                })
-                .collect(),
+                }));
+                options
+            }
             "ui" => self
                 .ui_plugins
                 .iter()
@@ -3216,12 +3248,7 @@ impl App {
                     .push_notice(NoticeLevel::Info, "scrollback cleared".into());
             }
             Action::ToggleTheme => {
-                self.theme = self.theme.toggled();
-                self.show_tip(format!(
-                    "theme: {} {}",
-                    self.active_palette_id,
-                    self.theme.mode.as_str()
-                ));
+                self.toggle_theme_mode();
             }
             Action::ToggleExpandAll => {
                 self.transcript.expand_all = !self.transcript.expand_all;
@@ -5481,4 +5508,3 @@ mod palette_tests;
 #[cfg(test)]
 #[path = "../tests/unit/app__right_slot_tests.rs"]
 mod right_slot_tests;
-

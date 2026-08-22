@@ -1,10 +1,22 @@
 # 架构
 
-ACP client 是一个 Cordis 插件：提供 `ctx.acpClient`，讲 ACP，**不包、不 import 任何 harness**。TUI 是挂在这棵 **client 树** 上的壳（Rust 占 TTY）。配色等 TUI 插件 `inject` 的是 client 侧服务，不是 `dsh-tui` 包名，也不是 dsh-acp。
+## Plugin Package 与视图
 
-主路径 `dsh --profile tui` 启动两个进程：Host 进程的 Base Cordis 树直接挂完整 ACP plugin；Host runner 再启动独立的 TUI Client 进程。两者只通过 TUI Client 的标准 stdin/stdout 讲 ACP，不共享 Cordis service、plugin id、`inject` 或 fiber。Client 进程的 fd 3/4 只继承用户 TTY，再映射为 Rust painter 的 stdin/stdout；Host↔Client ACP 不走 fd 3/4。
+Cordis Plugin Package 可以带可选的 `code.host`、`code.client`，因此形成 Host-only、
+Client-only 与双向三种运行形态。双向不是两棵树合并：两个 half 分别运行在 Host 与
+Martty Client 的 Cordis tree，由同一个 run 管理，并通过 ACP 上的 Package RPC 交换
+JSON 数据。
 
-独立入口 `dsh-tui` 保留通用 ACP client 语义：它的 Client 树可以 spawn `dsh-acp`、`dsh --profile acp` 或其它 ACP agent，也可以接调用方提供的 stream。
+TUI 中的四个入口是不同的数据视图：`/ui`、`/theme` 展示 UI 与 Theme contribution；
+它们的 owner 可以是 Client-only 或双向 Package。`/plugins` 只读展示当前已加载的
+静态 Plugin。`/cordis-plugins` 展示 Cordis 模式创建的临时 Plugin run，它们可随当前
+运行生命周期被停止、替换或回收。
+
+ACP client 是一个 Cordis 插件：提供 `ctx.acpClient`，讲 ACP，**不包、不 import 任何 harness**。TUI 是挂在这棵 **client 树** 上的壳（Rust 占 TTY）。配色等 TUI 插件 `inject` 的是 client 侧服务，不是 Martty 包名，也不是 dsh-acp。
+
+主路径 `dsh --profile martty` 启动两个进程：Host 进程的 Base Cordis 树直接挂完整 ACP plugin；Host runner 再启动独立的 TUI Client 进程。两者只通过 TUI Client 的标准 stdin/stdout 讲 ACP，不共享 Cordis service、plugin id、`inject` 或 fiber。Client 进程的 fd 3/4 只继承用户 TTY，再映射为 Rust painter 的 stdin/stdout；Host↔Client ACP 不走 fd 3/4。
+
+独立入口 `martty` 保持通用 ACP client 语义：它的 Client 树可以 spawn `dsh-acp`、`dsh --profile acp` 或其它 ACP agent，也可以接调用方提供的 stream。
 
 ## ACP client：根插件或附加插件
 
@@ -123,7 +135,7 @@ Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
 
 本体只有内置 `default`。动态 Theme Plugin 用 `tuiTheme.register` 声明 palette；
 `/theme` 是特殊的单选 Plugin 开关，启动目标 Plugin 并停止当前 Theme Plugin，因而
-palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。`dsh-tui --demo`
+palette、command、overlay、slot 与 RPC 随同一个 Fiber 一起上下线。`martty --demo`
 保持 `default`；`--demo-skin` 仍是静态 gallery 演示路径。常驻 gallery 包
 `ayu`（dark=Ayu、light=Ayu
 Light）、`catppuccin`（dark=Catppuccin Mocha、light=Catppuccin
@@ -141,7 +153,7 @@ Lotus）与 `everforest` / `iceberg` /
 
 Token **名**封闭，见 [plugins.md](plugins.md)。内置 `default` 的色值仍是冷蓝灰。配色包可以（也必须）为全部 token 提供 `#RRGGBB`。对话节点以后若开放，节点上仍然只写 token 名，不写 RGB。
 
-`ctrl+t` 切当前主题的 dark/light。`/theme` 切整个 Theme Plugin。kitty 宠物是 RGBA
+`/theme toggle` 或 `ctrl+t` 切当前主题的 dark/light。`/theme <id>` 切整个 Theme Plugin。kitty 宠物是 RGBA
 精灵，不随 token 重上色；启动锁屏的 `MAR` 读海洋渐变，`TTY` 读终端前景黑/白。
 UI Plugin 可以组合多个结构性 UI contribution，但不等同于 Theme。`default`（Martty）与
 `deepseek` 都同时装配 `welcome.hero` 和 `welcome.info`：前者是居中的

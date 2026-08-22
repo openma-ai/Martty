@@ -1,8 +1,12 @@
 <p align="center">
-  <img src="assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
+  <img src="assets/martty-lockup.svg" width="650" alt="Martty terminal lockup" />
 </p>
 
-<h1 align="center">DeepSeek Harness TUI</h1>
+<h1 align="center">Martty</h1>
+
+<p align="center">
+  DeepSeek Harness TUI is now <strong>Martty</strong>.
+</p>
 
 <p align="center">
   DeepSeek Harness in your terminal: streamed reasoning, tools, skills, multi-image prompts, and durable sessions.
@@ -22,14 +26,14 @@
 
 ---
 
-## Sleek and powerful DSH-TUI
+## Martty: Agent TUI
 
 - A high-performance interface written in Rust/ratatui.
-- 100% built on official DeepSeek Harness AI capabilities.
+- **DSH-first:** built on the same Cordis composition and plugin model as DeepSeek Harness, while also supporting other compatible ACP agents.
 
-`dsh-tui` is a terminal-native ACP client and an extensible terminal on a
+`martty` is the primary command. It is a terminal-native ACP client and an extensible terminal on a
 Cordis **client** tree. It presents streamed reasoning, tool calls, subagents,
-token usage, and durable sessions in a Rust/ratatui interface. The recommended
+token usage, durable sessions, and other Agent UI elements in a Rust/ratatui interface. The recommended
 profile path mounts the ACP plugin on the dsh Base Host tree and starts an
 independent TUI Client process; standalone may spawn or attach any ACP agent.
 Its long-term direction is not to
@@ -37,7 +41,11 @@ hard-wire more features into the TUI, but to compose themes, views, commands,
 and interactions as plugins until Creator can inspect, create, run, diagnose,
 and iterate on its own terminal capabilities.
 
-![The DeepSeek Harness home screen in dsh-tui 0.2](assets/screenshots/banner-v020.png)
+> **Rename note:** the project and recommended npm package have moved from
+> DeepSeek Harness TUI / `@openma/deepseek-harness-tui` to **Martty** / `martty`.
+> This is a brand and package-name migration, not a runtime rewrite: `dsh-tui`,
+> configuration, and session data remain compatible. The production
+> profile is now named `martty`; the legacy `tui` profile remains compatible.
 
 ## Quick start
 
@@ -45,35 +53,36 @@ and iterate on its own terminal capabilities.
 
 Requires Node.js 18+. Install the official
 [DeepSeek Harness](https://github.com/deepseek-ai/dsh), then add the TUI
-directly to the `tui` profile:
+directly to the `martty` profile:
 
 ```sh
 npm install -g @deepseek-ai/dsh
-dsh plugin --profile tui add martty@latest
-dsh --profile tui
+dsh plugin --profile martty add martty@latest
+dsh --profile martty
 ```
 
 `dsh plugin ... add` is the recommended installation and upgrade entry point.
 It creates the profile and installs the TUI plus its ACP dependency; no global
-`dsh-tui` or separate pnpm installation is required.
+`martty` or separate pnpm installation is required.
 The legacy `@openma/deepseek-harness-tui` name continues to receive the same
 versions, so existing installs do not need to migrate immediately.
 
-### Migrating from the legacy package name
+### Migrating from DeepSeek Harness TUI / the legacy package name
 
-`martty` is the new recommended package name. Starting with `0.2.13`, `martty`
+The project is now named **Martty**, and `martty` is the recommended package
+name. Starting with `0.2.13`, `martty`
 and `@openma/deepseek-harness-tui` are published by the same CI run with the
 same version and artifacts; the scoped name remains as a compatibility alias.
-To switch, replace only the package spec in the `tui` profile:
+To migrate both the legacy package name and profile:
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
-dsh plugin --profile tui add martty@latest
+dsh plugin --profile martty add martty@latest
 ```
 
-Migration does not change the `dsh-tui` / `dsb` commands, the `tui` profile
-name, or runtime behavior, and it requires no config or session-data migration.
-You may continue using the legacy package name if you do not want to switch yet.
+Migration changes the recommended profile from `tui` to `martty`, but requires
+no config or session-data migration. `dsh-tui` remains a compatibility
+commands, and the legacy package and profile continue to work.
 
 An install guide for AI agents: [docs/agent-setup.md](docs/agent-setup.md)
 
@@ -84,17 +93,48 @@ old provider/transport rows and mounts only the ACP plugin resolved from TUI's
 dependency graph. Supported profile compositions therefore do not start two
 ACP surfaces, and users do not have to normalize an existing ACP profile first.
 
-### Standalone: any ACP agent
+### Global: an Agent TUI out of the box
+
+One global install provides the Martty Agent TUI and its built-in ACP connection layer:
 
 ```sh
-dsh-tui --agent dsh-acp
-dsh-tui --agent dsh --agent-arg --profile --agent-arg acp
+npm install --global martty
+martty
 ```
 
-From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, binary in `npm/vendor/<platform>/`, or `DSH_TUI_BIN`):
+Martty directly depends on our `@openma/deepseek-harness-acp` implementation.
+The default launch resolves this built-in ACP from Martty's dependency graph,
+connects DSH, and mounts the Creator overlay; no separate ACP installation is
+required. `martty` is therefore the complete DSH-first Agent TUI entry.
+
+Run the same entry point ephemerally when you do not want a global install:
 
 ```sh
-DSH_TUI_BIN=$(pwd)/target/release/dsh-tui dsh-tui --agent dsh-acp
+npx --yes martty
+npx --yes martty --demo
+```
+
+The built-in ACP can also connect another ACP server. This changes its
+connection configuration; it does not replace Martty's ACP client. For a
+standalone launch, configure `DSH_TUI_AGENT`:
+
+```sh
+DSH_TUI_AGENT="<acp-command> [args...]" martty
+```
+
+Cordis embedding uses `config.agent: { command, args }` to spawn a server, or
+`config.stream` to attach caller-owned standard pipes. `martty --agent <cmd>`
+plus repeated `--agent-arg` flags are standalone command-line overrides for
+the same configuration.
+
+For an existing DSH environment with a durable `martty` profile and standard
+plugin management, the recommended path remains
+`dsh plugin --profile martty add martty@latest`.
+
+From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, binary in `npm/vendor/<platform>/`, or `MARTTY_BIN`):
+
+```sh
+MARTTY_BIN=$(pwd)/target/release/martty martty --agent dsh-acp
 ```
 
 Third-party capabilities are ordinary Cordis plugins on the client tree: they
@@ -113,10 +153,11 @@ The demo needs neither a runtime nor an API key:
 
 ```sh
 npm install --global martty
-dsh-tui --demo
+martty --demo
 ```
 
-`dsh-tui` is the primary command; `dsb` remains as a compatibility alias.
+You can also run `npx --yes martty --demo`. `martty` is the primary command;
+`dsh-tui` remains a compatibility alias.
 
 ## Highlights
 
@@ -224,7 +265,7 @@ browser DOM into the terminal.
 
 ## Runtime architecture
 
-The primary `dsh --profile tui` path mounts the ACP plugin on the Host Base
+The primary `dsh --profile martty` path mounts the ACP plugin on the Host Base
 Cordis tree, then starts a Node Cordis Client tree in a separate process:
 `tui-theme` provides the palette
 registry, `tui-cordis-client-runner` serves Client inspect/run requests from
@@ -324,7 +365,7 @@ the slot/overlay protocols.
 
 #### Return to the classic DeepSeek view
 
-After `dsh --profile tui` starts, run `/ui deepseek` directly, or enter `/ui`
+After `dsh --profile martty` starts, run `/ui deepseek` directly, or enter `/ui`
 and choose DeepSeek in the ordinary single-select form. Typing one trailing
 space after `/ui` (that is, `/ui `) opens the same candidates above the
 composer.
@@ -380,7 +421,7 @@ explicitly; override the thresholds with `RUST_CACHE_MAX_GIB` /
 `RUST_DISK_MIN_GIB`.
 
 Use `make tui-test` for the real development profile. It rebuilds
-`target/debug/dsh-tui` first, then launches `tui-test` with `DSH_TUI_BIN`, so
+`target/debug/martty` first, then launches `tui-test` with `MARTTY_BIN`, so
 Node HMR cannot leave the Rust painter on an older process image.
 
 The local script builds only the current platform and writes a tarball to
@@ -388,10 +429,10 @@ The local script builds only the current platform and writes a tarball to
 assembles these paths into one npm package:
 
 ```text
-npm/vendor/darwin-arm64/dsh-tui
-npm/vendor/darwin-x64/dsh-tui
-npm/vendor/linux-x64/dsh-tui
-npm/vendor/win32-x64/dsh-tui.exe
+npm/vendor/darwin-arm64/martty
+npm/vendor/darwin-x64/martty
+npm/vendor/linux-x64/martty
+npm/vendor/win32-x64/martty.exe
 ```
 
 Pushing a tag that matches both `npm/package.json` and `Cargo.toml` (for example,
@@ -404,8 +445,9 @@ publishing.
 - **`no native binary for ...`**: the installed package does not contain your
   platform. Confirm that you installed the latest version and check the support
   matrix.
-- **`spawn dsh-acp ENOENT`**: install `dsh-acp`, or point `--agent <cmd>` at a
-  different ACP server.
+- **Built-in ACP cannot start:** reinstall the latest `martty`; a source
+  checkout must have its `npm/` dependencies installed. Configure
+  `DSH_TUI_AGENT`, `config.agent`, or `config.stream` for another ACP server.
 - **No pixel pet**: the terminal may not support kitty graphics protocol; the
   rest of the UI is unaffected.
 

@@ -333,7 +333,10 @@ fn slash_theme_options_match_the_picker_catalog() {
         .filter_map(|entry| entry.completion)
         .collect::<Vec<_>>();
 
-    assert_eq!(completions, ["/theme default", "/theme ember"]);
+    assert_eq!(
+        completions,
+        ["/theme toggle", "/theme default", "/theme ember"]
+    );
 }
 
 #[test]

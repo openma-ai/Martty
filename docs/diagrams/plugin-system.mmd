@@ -1,0 +1,60 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "IBM Plex Mono, monospace", "primaryColor": "#e8efff", "primaryTextColor": "#16233a", "primaryBorderColor": "#6f96ed", "lineColor": "#64748b", "secondaryColor": "#f7f9fc", "tertiaryColor": "#dce7ff"}}}%%
+flowchart TB
+  package["Cordis Plugin Package"]
+  hostCode["code.host<br/>optional"]
+  clientCode["code.client<br/>optional"]
+  shapes["Valid shapes<br/>Host-only · Client-only · Bidirectional"]
+  package --> hostCode
+  package --> clientCode
+  package -.-> shapes
+
+  subgraph runtime["Runtime"]
+    direction LR
+
+    subgraph host["Host Cordis tree"]
+      direction TB
+      static["Loaded static Plugins<br/>read-only view"]
+      registry["Cordis-mode temporary Plugins<br/>run lifecycle"]
+      hostFiber["Host Plugin Fiber"]
+      handler["harness.handle(method)"]
+      static --> pluginsCmd["/plugins<br/>static Plugin view"]
+      registry --> cordisCmd["/cordis-plugins<br/>temporary Plugin view"]
+      registry --> hostFiber --> handler
+    end
+
+    bridge["Protocol 0 over ACP<br/>client code delivery · lifecycle · Package RPC"]
+
+    subgraph client["Martty Client Cordis tree"]
+      direction TB
+      clientFiber["Client Plugin Fiber"]
+      services["Client services<br/>UI · Theme · Slots · Commands · Overlay · Session"]
+      uiCatalog["/ui<br/>UI Plugin view"]
+      themeCatalog["/theme<br/>Theme Plugin view"]
+      painter["Rust painter<br/>local compositor"]
+      clientFiber --> services
+      services --> uiCatalog
+      services --> themeCatalog
+      services --> painter
+    end
+
+    handler <-->|"_dsh/cordis/plugin/invoke<br/>host.call(method, args)"| bridge
+    bridge <--> clientFiber
+  end
+
+  hostCode --> hostFiber
+  clientCode -. "dynamic: serialized over ACP" .-> bridge
+  bridge -.-> clientFiber
+
+  installed["Installed npm Package<br/>Client entry registry"]
+  local["$MARTTY_HOME/plugins<br/>Client-only artifact"]
+  installed -. "JSON environment snapshot" .-> clientFiber
+  local --> clientFiber
+
+  classDef hostNode fill:#fff4dc,stroke:#c48a2c,color:#503612,stroke-width:1.5px;
+  classDef clientNode fill:#e8efff,stroke:#6f96ed,color:#16233a,stroke-width:1.5px;
+  classDef packageNode fill:#f7f9fc,stroke:#7991b4,color:#16233a,stroke-width:1.5px;
+  classDef bridgeNode fill:#16233a,stroke:#16233a,color:#ffffff,stroke-width:1.5px;
+  class package,hostCode,clientCode,shapes,installed,local packageNode;
+  class static,registry,hostFiber,handler,pluginsCmd,cordisCmd hostNode;
+  class clientFiber,services,uiCatalog,themeCatalog,painter clientNode;
+  class bridge bridgeNode;

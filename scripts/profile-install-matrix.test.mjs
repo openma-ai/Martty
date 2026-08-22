@@ -21,7 +21,7 @@ const acpRoot = path.resolve(
   process.env.DSH_TUI_ACP_ROOT ?? path.resolve(repoRoot, '../openma/deepseek-harness-acp'),
 )
 const smokeTui = path.join(import.meta.dirname, 'profile-smoke-tui.mjs')
-const smokeBin = path.resolve(process.env.DSH_TUI_BIN ?? smokeTui)
+const smokeBin = path.resolve(process.env.MARTTY_BIN ?? process.env.DSH_TUI_BIN ?? smokeTui)
 const dshCli = path.join(packageRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 function run(command, args, options = {}) {
@@ -180,7 +180,7 @@ function runDsh(home, args, cwd = repoRoot, timeout = 120_000) {
     env: {
       DSH_HOME: home,
       DSH_TELEMETRY_DISABLED: '1',
-      DSH_TUI_BIN: smokeBin,
+      MARTTY_BIN: smokeBin,
       DSH_TUI_AGENT: 'dsh-tui-matrix-must-not-spawn-an-acp-process',
       DEEPSEEK_API_KEY: 'sk-profile-smoke-not-a-real-key',
       npm_config_ignore_workspace_root_check: 'true',

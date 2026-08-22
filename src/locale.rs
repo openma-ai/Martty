@@ -73,7 +73,7 @@ impl Locale {
             "the footer under the composer shows token usage + cache hit rate",
             "answers render markdown: headings, code, links, and images",
             "/agent or ctrl+shift+a switches the agent preset",
-            "/new starts a fresh session · /theme switches packs · ctrl+t toggles dark/light",
+            "/new starts a fresh session · /theme switches packs or toggles dark/light",
         ];
         const ZH: [&str; 8] = [
             "esc 可中断当前轮次，草稿会保留",
@@ -83,7 +83,7 @@ impl Locale {
             "输入框下方显示 token 用量和缓存命中率",
             "回答支持 Markdown：标题、代码、链接和图片",
             "/agent 或 ctrl+shift+a 可切换 Agent 预设",
-            "/new 新建会话 · /theme 切换主题包 · ctrl+t 切换明暗模式",
+            "/new 新建会话 · /theme 切换主题包或明暗模式",
         ];
         match self {
             Self::En => EN[index % EN.len()],

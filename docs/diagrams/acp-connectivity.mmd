@@ -1,0 +1,40 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "IBM Plex Mono, monospace", "primaryColor": "#e8efff", "primaryTextColor": "#16233a", "primaryBorderColor": "#6f96ed", "lineColor": "#64748b", "secondaryColor": "#f7f9fc", "tertiaryColor": "#dce7ff"}}}%%
+flowchart LR
+  martty["Martty<br/>Agent TUI"]
+  client["Built-in ACP Client<br/>Cordis plugin · ctx.acpClient"]
+  martty --> client
+
+  subgraph default["DSH-first default"]
+    dshProfile["dsh --profile martty"]
+    dshServer["DSH ACP Server"]
+    dshProfile --> dshServer
+  end
+
+  subgraph configured["Connect other ACP servers by configuration"]
+    spawn["Spawn<br/>config.agent / DSH_TUI_AGENT"]
+    stream["Attach<br/>config.stream"]
+    override["One-run override<br/>--agent"]
+    other["Any compatible ACP Server"]
+    spawn --> other
+    stream --> other
+    override --> other
+  end
+
+  client -->|"default"| dshProfile
+  client -->|"configured"| spawn
+  client -->|"configured"| stream
+  client -->|"CLI override"| override
+
+  contract["Standard ACP<br/>initialize · auth · session · prompt · updates"]
+  dshServer --> contract
+  other --> contract
+  contract --> martty
+
+  classDef core fill:#16233a,stroke:#16233a,color:#ffffff,stroke-width:1.5px;
+  classDef defaultNode fill:#e8efff,stroke:#6f96ed,color:#16233a,stroke-width:1.5px;
+  classDef configuredNode fill:#f7f9fc,stroke:#7991b4,color:#16233a,stroke-width:1.5px;
+  classDef contractNode fill:#fff4dc,stroke:#c48a2c,color:#503612,stroke-width:1.5px;
+  class martty,client core;
+  class dshProfile,dshServer defaultNode;
+  class spawn,stream,override,other configuredNode;
+  class contract contractNode;

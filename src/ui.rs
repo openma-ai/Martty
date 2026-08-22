@@ -1770,17 +1770,35 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
         } else {
             cmd.desc.to_string()
         };
+        let begins_section = cmd.section.is_some()
+            && (i == start
+                || matches
+                    .get(i.saturating_sub(1))
+                    .and_then(|previous| previous.section.as_deref())
+                    != cmd.section.as_deref());
         // Desc column absorbs the remaining width and ellipsizes; a long
         // skill description must never hard-clip at the box edge.
-        let desc_cells = (w as usize).saturating_sub(name_w + 5);
-        lines.push(Line::from(vec![
+        let section_cells = if begins_section {
+            cmd.section.as_deref().unwrap_or_default().width() + 3
+        } else {
+            0
+        };
+        let desc_cells = (w as usize).saturating_sub(name_w + 5 + section_cells);
+        let mut spans = vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
             Span::styled(pad_or_ellipsize(&cmd.usage, name_w), name_style),
-            Span::styled(
-                format!(" {}", ellipsize_to(&desc, desc_cells)),
-                Style::default().fg(theme.caption),
-            ),
-        ]));
+        ];
+        if begins_section {
+            spans.push(Span::styled(
+                format!(" {} ·", cmd.section.as_deref().unwrap_or_default()),
+                Style::default().fg(theme.hint),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" {}", ellipsize_to(&desc, desc_cells)),
+            Style::default().fg(theme.caption),
+        ));
+        lines.push(Line::from(spans));
     }
     let title = if matches.iter().any(|m| m.completion.is_some()) {
         app.locale.tr(" options ", " 候选 ")
@@ -2458,4 +2476,3 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/unit/ui__rpc_probe.rs"]
 mod rpc_probe;
-

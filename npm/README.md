@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/openma-ai/Martty/main/assets/tui-whale.svg" width="424" alt="DeepSeek Harness TUI whale" />
+  <img src="https://raw.githubusercontent.com/openma-ai/Martty/main/assets/martty-lockup.svg" width="650" alt="Martty terminal lockup" />
 </p>
 
-<h1 align="center">DeepSeek Harness TUI</h1>
+<h1 align="center">Martty</h1>
 
 <p align="center">
-  Terminal-native ACP client UI with a Cordis client plugin tree.
+  A DSH-first terminal with the same Cordis plugin model, plus support for other ACP agents.
 </p>
 
 ---
@@ -13,19 +13,39 @@
 Native binaries are packaged for macOS arm64, macOS x64, Linux x64, and Windows
 x64. Requires Node.js 18+.
 
+> **Rename note:** the project and recommended npm package have moved from
+> DeepSeek Harness TUI / `@openma/deepseek-harness-tui` to **Martty** / `martty`.
+> The `dsh-tui` command, configuration, and session data remain compatible.
+> The production profile is now `martty`; legacy `tui` profiles
+> continue to work.
+
+## Global Agent TUI
+
+```sh
+npm install --global martty
+martty
+```
+
+Martty directly depends on our `@openma/deepseek-harness-acp` implementation.
+It resolves this built-in ACP from its own dependency graph, connects DSH by
+default, and requires no separate ACP installation. For another ACP server,
+configure `DSH_TUI_AGENT`; Cordis embedding can instead provide `config.agent`
+or `config.stream`. `--agent` is only the standalone CLI override for the same
+connection configuration.
+
 ## Recommended
 
 ```sh
 npm install --global @deepseek-ai/dsh
-dsh plugin --profile tui add martty@latest
-dsh --profile tui
+dsh plugin --profile martty add martty@latest
+dsh --profile martty
 ```
 
 The profile command is the recommended install and upgrade path. It creates a
 missing profile and installs the TUI plus its ACP dependency; no global
-`dsh-tui` installation is required.
+`martty` installation is required.
 
-## Migrating from the scoped package
+## Migrating from DeepSeek Harness TUI / the scoped package
 
 `martty` is the recommended package name. Starting with `0.2.13`, it and the
 legacy `@openma/deepseek-harness-tui` package are published by the same CI run
@@ -34,15 +54,16 @@ supported. To switch package names:
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
-dsh plugin --profile tui add martty@latest
+dsh plugin --profile martty add martty@latest
 ```
 
-Only the package spec changes. The `dsh-tui` / `dsb` commands, `tui` profile,
-runtime behavior, config, and session data remain unchanged.
+The recommended profile changes from `tui` to `martty`; runtime behavior,
+config, and session data remain unchanged. `dsh-tui` and legacy `tui`
+profiles remain compatible.
 
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
-`dsh-tui` and use `--agent <cmd>` plus repeated `--agent-arg <arg>` for another
+`martty` and use `--agent <cmd>` plus repeated `--agent-arg <arg>` for another
 ACP server. The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
 `tui-cordis-client-runner` publishes TUI Client capabilities and evaluates
 approved `code.client` packages from `dsh-tool-cordis` against that client tree.
@@ -79,11 +100,19 @@ agent traffic remains ACP.
 ## Demo
 
 ```sh
-dsh-tui --demo
-dsh-tui --demo-skin
+martty --demo
+martty --demo-skin
 ```
 
-`dsh-tui` is the primary command. `dsb` is a compatibility alias.
+Without a global installation:
+
+```sh
+npx --yes martty --demo
+```
+
+The profile path remains recommended for an existing DSH installation that
+wants standard plugin management and a durable `martty` profile. `martty` is the
+primary command; `dsh-tui` remains a compatibility alias.
 
 ## Highlights
 
@@ -122,18 +151,18 @@ absolute coordinates, compositor fds, or private transport methods.
 The versioned contract and examples live in the repository's
 [plugin API](https://github.com/openma-ai/Martty/blob/main/docs/plugins.en.md).
 
-The demo needs no API key or agent. Run `dsh-tui --help` for agent, model,
+The demo needs no API key or agent. Run `martty --help` for agent, model,
 credential, session, theme, and demo options.
 
 ## Supported platforms
 
 | Node platform key | Binary |
 |---|---|
-| `darwin-arm64` | `vendor/darwin-arm64/dsh-tui` |
-| `darwin-x64` | `vendor/darwin-x64/dsh-tui` |
-| `linux-x64` | `vendor/linux-x64/dsh-tui` |
-| `linux-arm64` | `vendor/linux-arm64/dsh-tui` |
-| `win32-x64` | `vendor/win32-x64/dsh-tui.exe` |
+| `darwin-arm64` | `vendor/darwin-arm64/martty` |
+| `darwin-x64` | `vendor/darwin-x64/martty` |
+| `linux-x64` | `vendor/linux-x64/martty` |
+| `linux-arm64` | `vendor/linux-arm64/martty` |
+| `win32-x64` | `vendor/win32-x64/martty.exe` |
 
 If installation succeeds but launch reports `no native binary for ...`, confirm
 that you installed the latest version and that your platform appears above.

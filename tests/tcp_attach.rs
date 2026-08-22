@@ -12,14 +12,14 @@ fn attach_tcp_connects_to_loopback_and_authenticates_first() {
         .expect("nonblocking listener");
     let address = listener.local_addr().expect("listener address");
     let token = "test-one-time-token";
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dsh-tui"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_martty"))
         .args(["--attach-tcp", &address.to_string()])
         .env("DSH_TUI_ATTACH_TOKEN", token)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn dsh-tui");
+        .expect("spawn martty");
 
     let deadline = Instant::now() + Duration::from_secs(3);
     let (stream, _) = loop {
@@ -28,10 +28,10 @@ fn attach_tcp_connects_to_loopback_and_authenticates_first() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => panic!("accept loopback connection: {error}"),
         }
-        if let Some(status) = child.try_wait().expect("inspect dsh-tui") {
-            panic!("dsh-tui exited before connecting: {status}");
+        if let Some(status) = child.try_wait().expect("inspect martty") {
+            panic!("martty exited before connecting: {status}");
         }
-        assert!(Instant::now() < deadline, "dsh-tui did not connect in time");
+        assert!(Instant::now() < deadline, "martty did not connect in time");
         thread::sleep(Duration::from_millis(10));
     };
 

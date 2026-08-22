@@ -2,7 +2,7 @@ RUST_CACHE_MAX_GIB ?= 20
 RUST_DISK_MIN_GIB ?= 10
 CARGO_ARGS ?= test --locked
 RUST_TARGET_DIR ?= $(if $(DSH_TUI_CARGO_TARGET_DIR),$(DSH_TUI_CARGO_TARGET_DIR),$(CURDIR)/target)
-TUI_DEBUG_BIN ?= $(RUST_TARGET_DIR)/debug/dsh-tui
+TUI_DEBUG_BIN ?= $(RUST_TARGET_DIR)/debug/martty
 REAL_AGENT_E2E_SPEC ?= scripts/real-agent-e2e.config-slider.json
 REAL_AGENT_E2E_ARGS ?=
 
@@ -29,10 +29,10 @@ rust-cache-prune:
 	$(CARGO_GUARD) prune
 
 tui-test: rust-build
-	DSH_TUI_BIN="$(TUI_DEBUG_BIN)" dsh --profile tui-test
+	MARTTY_BIN="$(TUI_DEBUG_BIN)" dsh --profile tui-test
 
 # Opt-in: drives the real tui-test/ACP/Creator stack and consumes model tokens.
 # Override REAL_AGENT_E2E_SPEC or pass generic runner flags via REAL_AGENT_E2E_ARGS.
 real-agent-e2e: rust-build
-	DSH_TUI_BIN="$(TUI_DEBUG_BIN)" python3 ./scripts/real-agent-e2e.py run \
+	MARTTY_BIN="$(TUI_DEBUG_BIN)" python3 ./scripts/real-agent-e2e.py run \
 		--spec "$(REAL_AGENT_E2E_SPEC)" $(REAL_AGENT_E2E_ARGS)

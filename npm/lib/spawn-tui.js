@@ -1,5 +1,5 @@
 /**
- * Spawn the platform-native `dsh-tui` binary for plugin / demo-skin attach.
+ * Spawn the platform-native `martty` binary for plugin / demo-skin attach.
  *
  * Unix extra fds: 3 = Node→TUI (Rust reads), 4 = TUI→Node (Rust writes).
  * Windows (and DSH_TUI_FORCE_TCP=1): authenticated loopback TCP.
@@ -26,13 +26,13 @@ export function selectNativeBinary({ envBin, devBin, packagedBin }) {
 
 /**
  * Packaged native binary for this platform, or throw if it was not staged.
- * Honors `DSH_TUI_BIN` when that path exists (source / cargo re-exec).
+ * Honors `MARTTY_BIN`, with `DSH_TUI_BIN` as a compatibility fallback.
  * @returns {string}
  */
 export function nativeBinary() {
-  const envBin = process.env.DSH_TUI_BIN
+  const envBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
   const key = `${process.platform}-${process.arch}`
-  const exe = process.platform === 'win32' ? 'dsh-tui.exe' : 'dsh-tui'
+  const exe = process.platform === 'win32' ? 'martty.exe' : 'martty'
   const bin = path.join(__dirname, '..', 'vendor', key, exe)
   const devBin = path.join(__dirname, '..', '..', 'target', 'debug', exe)
   const selected = selectNativeBinary({ envBin, devBin, packagedBin: bin })
@@ -90,7 +90,7 @@ export async function spawnPluginTui(bin, extraArgs = [], tty = {}) {
   const address = server.address()
   if (address === null || typeof address === 'string') {
     server.close()
-    throw new Error('dsh-tui runner failed to allocate a loopback TCP port')
+    throw new Error('martty runner failed to allocate a loopback TCP port')
   }
 
   const authenticated = waitForAuthenticatedSocket(server, token)
@@ -103,7 +103,7 @@ export async function spawnPluginTui(bin, extraArgs = [], tty = {}) {
   const childFailed = new Promise((_, reject) => {
     onChildError = reject
     onChildExit = (code, signal) => {
-      reject(new Error(`dsh-tui exited before connecting (code=${code}, signal=${signal})`))
+      reject(new Error(`martty exited before connecting (code=${code}, signal=${signal})`))
     }
     child.once('error', onChildError)
     child.once('exit', onChildExit)
@@ -129,7 +129,7 @@ function waitForAuthenticatedSocket(server, token) {
     const timeout = setTimeout(() => {
       cleanup()
       server.close()
-      reject(new Error('dsh-tui timed out connecting to the loopback transport'))
+      reject(new Error('martty timed out connecting to the loopback transport'))
     }, 10_000)
     timeout.unref?.()
 

@@ -37,7 +37,7 @@ export async function runDemoSkin(argv = process.argv.slice(2)) {
   const theme = ctx.tuiTheme
   ctx.tuiTheme.activate('ember')
 
-  const bin = process.env.DSH_TUI_BIN || nativeBinary()
+  const bin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN || nativeBinary()
   const connection = await spawnPluginTui(bin, extraBinaryArgs(argv))
   const { child } = connection
   const transport = new JsonRpcLineTransport(connection.input, connection.output)
@@ -50,7 +50,7 @@ export async function runDemoSkin(argv = process.argv.slice(2)) {
   transport.onRequest(async (method) => {
     switch (method) {
       case 'initialize':
-        return { serverInfo: { name: 'dsh-tui-demo-skin', version } }
+        return { serverInfo: { name: 'martty-demo-skin', version } }
       case 'session/prompt':
         return { messageId: 'demo-skin' }
       case 'shutdown':
@@ -67,7 +67,7 @@ export async function runDemoSkin(argv = process.argv.slice(2)) {
     process.exit(code === null ? 0 : code)
   })
   child.on('error', (err) => {
-    console.error(`dsh-tui demo-skin failed: ${err.message}`)
+    console.error(`martty demo-skin failed: ${err.message}`)
     process.exit(1)
   })
 }

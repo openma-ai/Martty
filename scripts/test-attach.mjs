@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Attach-mode wire test: emulates the dsh plugin host role implemented by
- * npm/lib/index.js and drives the native `dsh-tui --attach-fds` binary end to
+ * npm/lib/index.js and drives the native `martty --attach-fds` binary end to
  * end over fds 3/4.
  *
  * Needs a TTY on stdio (run under `script -q /dev/null …` in CI-ish shells).
@@ -15,7 +15,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const bin = process.env.DSH_TUI_BIN ?? path.join(root, 'target', 'debug', 'dsh-tui')
+const bin = process.env.MARTTY_BIN
+  ?? process.env.DSH_TUI_BIN
+  ?? path.join(root, 'target', 'debug', 'martty')
 
 const child = spawn(bin, ['--attach-fds'], {
   stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
