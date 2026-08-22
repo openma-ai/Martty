@@ -706,27 +706,19 @@ fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
 
 /// The composer card fallback for short terminals (no cap row fits): a
 /// borderless tinted surface (panel bg) that owns the status row and the
-/// input well. A brand-blue edge bar glows while working. `pet_pad`
-/// columns at the right stay text-free for the whale pet. Tall enough
-/// terminals get `draw_composer_box` instead — the same surface wrapped
-/// in the rounded frame that also carries the cap row.
+/// input well. The amber prompt owns the working indicator now (the old
+/// brand-blue edge bar glow is gone). `pet_pad` columns at the right stay
+/// text-free for the whale pet. Tall enough terminals get
+/// `draw_composer_box` instead — the same surface wrapped in the rounded
+/// frame that also carries the cap row.
 fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
-    let running = !matches!(app.state, RunState::Idle);
 
     // Surface fill: contrast against the chat bg does the framing.
     f.render_widget(
         Block::default().style(Style::default().bg(theme.panel)),
         area,
     );
-    // Left edge bar: the working "glow" (the old border used to do this).
-    if running {
-        let bar: Vec<Line> = (0..area.height).map(|_| Line::from("▎")).collect();
-        f.render_widget(
-            Paragraph::new(bar).style(Style::default().fg(theme.brand)),
-            Rect::new(area.x, area.y, 1, area.height),
-        );
-    }
 
     let inner = Rect::new(
         area.x + 1,
@@ -1127,7 +1119,7 @@ fn compact_node_spans(
         }
         spans.push(Span::styled(
             title.clone(),
-            Style::default().fg(theme.fg_secondary),
+            Style::default().fg(theme.fg_tertiary),
         ));
         return Some(spans);
     }
@@ -1374,7 +1366,6 @@ fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'
 /// border while a turn runs.
 fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let theme = app.theme;
-    let running = !matches!(app.state, RunState::Idle);
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
     let workspace = workspace_cap_title(app, area.width as usize);
     let workspace_width = span_widths(&workspace.spans);
@@ -1428,16 +1419,6 @@ fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
             }
             x = x.saturating_add(section_width);
         }
-    }
-
-    // Running glow: the brand bar replaces the left border (corners and
-    // both title rows stay intact).
-    if running {
-        let bar: Vec<Line> = (0..inner.height).map(|_| Line::from("▎")).collect();
-        f.render_widget(
-            Paragraph::new(bar).style(Style::default().fg(theme.brand)),
-            Rect::new(area.x, area.y + 1, 1, inner.height),
-        );
     }
 
     // The pet keeps clear of the text: content is inset from the right
@@ -1551,11 +1532,11 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let prompt = "❯ ";
     let pw = prompt.width();
+    // The amber prompt is the composer's working indicator now that the
+    // brand-blue glow bar is gone (issue #27).
     let prompt_span = Span::styled(
         prompt.to_string(),
-        Style::default()
-            .fg(theme.brand)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
     );
 
     if app.input.is_empty() {
@@ -4103,6 +4084,54 @@ mod tests {
         for line in preview {
             assert!(line.width() <= 34, "preview line fits the box:\n{frame}");
         }
+    }
+    #[test]
+    fn composer_running_state_has_no_glow_bar_and_amber_prompt() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = test_app();
+        app.show_banner = false;
+        // The working state used to draw the brand-blue glow bar (issue #27).
+        app.state = crate::app::RunState::Running;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+        let buf = terminal.backend().buffer().clone();
+        let theme = app.theme;
+        // The glow bar (brand `▎` column) is gone while running.
+        for cell in buf.content.iter() {
+            assert_ne!(cell.symbol(), "▎", "glow bar must not render while running");
+        }
+        // The composer prompt is amber instead.
+        let prompt_cell = buf
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "❯")
+            .expect("composer prompt");
+        assert_eq!(prompt_cell.fg, theme.warn, "prompt turns amber");
+    }
+
+    #[test]
+    fn composer_dock_title_uses_the_tertiary_tone() {
+        let app = test_app();
+        let theme = app.theme;
+        let node = crate::slots::TuiNode::Generic {
+            id: "stats".into(),
+            title: "1.2k tokens".into(),
+            body: String::new(),
+            status: Some("ok".into()),
+            action: None,
+        };
+        let spans = compact_node_spans(&node, &theme, 60).expect("generic spans");
+        let title = spans
+            .iter()
+            .find(|s| s.content == "1.2k tokens")
+            .expect("title span");
+        assert_eq!(
+            title.style.fg,
+            Some(theme.fg_tertiary),
+            "dock text sits one tone lighter"
+        );
     }
 }
 
