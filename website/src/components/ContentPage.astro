@@ -22,13 +22,13 @@ const year = new Date().getFullYear();
   </head>
   <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
     <div class="mx-auto flex min-h-screen max-w-4xl flex-col px-5 sm:px-8">
-      <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
+      <header class="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b border-[#171d25] bg-[#05070a] py-4">
         <a href="/en" aria-label="Martty home"><img src="/martty-lockup.svg" alt="Martty" width="125" height="36" class="h-9 w-auto" /></a>
-        <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]" aria-label="Primary">
+        <nav class="flex max-w-full items-center gap-3 overflow-x-auto whitespace-nowrap text-sm text-[#9aa5b1]" aria-label="Primary">
           <a href="/en#install" class="hover:text-[#e7eaee]">Install</a>
           <a href="/plugins" class="hover:text-[#e7eaee]">Plugins</a>
           <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
-          <a href="https://github.com/openma-ai/Martty" class="text-[#3aa0ff]">GitHub</a>
+          <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#1f4a73] px-2.5 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">GitHub</a>
         </nav>
       </header>
       <main class="flex-1 py-14">

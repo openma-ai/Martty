@@ -16,15 +16,16 @@ const year = new Date().getFullYear();
   <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
     <div class="mx-auto flex min-h-screen max-w-5xl flex-col px-5 sm:px-8">
       <!-- Header -->
-      <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
+      <header class="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b border-[#171d25] bg-[#05070a] py-4">
         <a href="/" class="flex items-center gap-3 no-underline">
           <img src="/martty-lockup.svg" alt="Martty" width="125" height="36" class="h-9 w-auto" />
         </a>
-        <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]">
+        <nav class="flex max-w-full items-center gap-3 overflow-x-auto whitespace-nowrap text-sm text-[#9aa5b1]" aria-label="主导航">
           <a href="#install" class="hover:text-[#e7eaee]">安装</a>
           <a href="#ui" class="hover:text-[#e7eaee]">UI 简介</a>
           <a href="#usage" class="hover:text-[#e7eaee]">使用方法</a>
           <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
+          <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#1f4a73] px-2.5 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">GitHub</a>
           <a href="/en" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">English</a>
         </nav>
       </header>
@@ -48,7 +49,6 @@ const year = new Date().getFullYear();
             <a href="#install" class="rounded border border-[#1f4a73] bg-[rgba(58,160,255,0.12)] px-5 py-2.5 text-sm no-underline hover:border-[#3aa0ff]">安装 Martty</a>
             <a href="#ui" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">看看界面</a>
             <a href="https://www.npmjs.com/package/martty" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">npm</a>
-            <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">GitHub</a>
           </div>
         </section>
 

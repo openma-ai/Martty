@@ -41,7 +41,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   /* No horizontal scroll under any viewport width. */
-  overflow-x: hidden;
+  overflow-x: clip;
   max-width: 100%;
 }
 
