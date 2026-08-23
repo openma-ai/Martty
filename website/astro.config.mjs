@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
-  site: "https://dshsuite.dev",
+  site: "https://martty.sh",
   output: "server",
   adapter: cloudflare({ imageService: "passthrough" }),
   integrations: [react()],

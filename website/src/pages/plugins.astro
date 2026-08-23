@@ -1,0 +1,21 @@
+---
+import ContentPage from "../components/ContentPage.astro";
+const title = "Native DSH UI Plugins for a Terminal TUI | Martty";
+const description = "Extend Martty with Cordis-powered DSH UI plugins for themes, welcome slots, commands, overlays, session views, and persistent UI compositions.";
+---
+<ContentPage {title} {description} path="/plugins" eyebrow="Cordis UI plugins">
+  <h2>Web-style extensibility with terminal-safe primitives</h2>
+  <p>Martty runs UI plugin code on a Cordis client tree. A plugin can contribute several capabilities through one lifecycle: a theme, welcome content, a right rail, local commands, argument candidates, forms, overlays, and session-aware views. Loading, updating, stopping, and rollback remain observable operations.</p>
+  <h2>What plugins can contribute</h2>
+  <div class="content-grid">
+    <div class="content-card"><h3>Themes</h3><p>Register complete palettes and switch the active Theme Plugin with <code>/theme</code>.</p></div>
+    <div class="content-card"><h3>Slots</h3><p>Compose welcome, composer, input-context, and chrome regions using validated nodes.</p></div>
+    <div class="content-card"><h3>Commands</h3><p>Add local slash commands, dynamic argument candidates, sliders, selectors, and views.</p></div>
+    <div class="content-card"><h3>UI compositions</h3><p>Bundle multiple contributions into a persistent UI Plugin selected through <code>/ui</code>.</p></div>
+  </div>
+  <h2>Martty and DeepSeek views</h2>
+  <p>The built-in Martty and classic DeepSeek welcome surfaces are ordinary UI compositions. Run <code>/ui deepseek</code> to select the DeepSeek view and <code>/ui default</code> to return to Martty. The selection persists in Martty settings and does not enter the conversation transcript.</p>
+  <h2>Creator workflow</h2>
+  <p>A Creator-capable DSH profile can inspect the real services, slots, schemas, and tokens available to the client, generate a package, run it, observe load or rendering failures, and update or roll it back. The same package lifecycle serves built-in and dynamically created plugins.</p>
+  <div class="content-callout">Read the <a href="https://github.com/openma-ai/Martty/blob/main/docs/plugins.en.md">complete plugin API</a> or start with <a href="/blog/building-cordis-tui-plugins">the plugin architecture guide</a>.</div>
+</ContentPage>

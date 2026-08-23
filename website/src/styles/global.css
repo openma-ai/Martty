@@ -63,6 +63,24 @@ a {
   color: inherit;
 }
 
+.content-article { max-width: 46rem; }
+.content-article h1 { margin: 0; font-size: clamp(2rem, 6vw, 3.35rem); line-height: 1.12; letter-spacing: -0.035em; }
+.content-article h2 { margin: 3rem 0 0.8rem; font-size: 1.45rem; line-height: 1.3; }
+.content-article h3 { margin: 2rem 0 0.55rem; font-size: 1rem; color: var(--accent); }
+.content-article p, .content-article li { color: var(--fg-secondary); line-height: 1.8; }
+.content-article a { color: var(--accent); text-underline-offset: 0.2em; }
+.content-article ul, .content-article ol { padding-left: 1.4rem; }
+.content-article li + li { margin-top: 0.45rem; }
+.content-article pre { overflow-x: auto; margin: 1.3rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: 0.3rem; background: var(--surface); color: var(--fg); }
+.content-article code { color: var(--fg); }
+.content-article__lede { margin: 1.4rem 0 0; font-size: 1.08rem; }
+.content-article__date { margin: 1rem 0 2.7rem; color: var(--caption) !important; font-size: 0.78rem; }
+.content-callout { margin: 2rem 0; padding: 1rem 1.1rem; border-left: 2px solid var(--accent); background: var(--surface); }
+.content-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+.content-card { padding: 1rem; border: 1px solid var(--border); background: var(--surface); }
+.content-card h3 { margin-top: 0; }
+@media (max-width: 640px) { .content-grid { grid-template-columns: 1fr; } }
+
 /* Visible keyboard focus everywhere; never remove it. */
 a:focus-visible,
 button:focus-visible,

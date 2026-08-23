@@ -1,0 +1,91 @@
+---
+interface Props {
+  title: string;
+  description: string;
+  lang: "zh-CN" | "en";
+  path: string;
+  imageAlt: string;
+  kind?: "software" | "article" | "webpage";
+  translated?: boolean;
+  publishedTime?: string;
+}
+
+const { title, description, lang, path, imageAlt, kind = "software", translated = false, publishedTime } = Astro.props;
+const origin = Astro.site ?? new URL("https://martty.sh");
+const canonical = new URL(path, origin);
+// The legacy social-preview still carries the pre-Martty brand. Reuse the
+// current product screenshot until a dedicated Martty 2:1 card is shipped.
+const socialImage = new URL("/ui_start.png", origin);
+const pageData = kind === "software" ? {
+  "@type": "SoftwareApplication",
+  "@id": `${origin.origin}/#software`,
+  name: "Martty",
+  alternateName: ["martty", "DeepSeek Harness TUI", "dsh-tui"],
+  url: canonical.href,
+  description,
+  applicationCategory: "DeveloperApplication",
+  applicationSubCategory: "Terminal client for AI coding agents",
+  operatingSystem: "macOS, Linux, Windows",
+  softwareRequirements: "Node.js 18 or newer",
+  downloadUrl: "https://www.npmjs.com/package/martty",
+  codeRepository: "https://github.com/openma-ai/Martty",
+  license: "https://opensource.org/license/mit",
+  isAccessibleForFree: true,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+} : {
+  "@type": kind === "article" ? "TechArticle" : "WebPage",
+  "@id": canonical.href,
+  url: canonical.href,
+  headline: title,
+  description,
+  inLanguage: lang,
+  ...(publishedTime ? { datePublished: publishedTime, dateModified: publishedTime } : {}),
+  author: { "@type": "Organization", name: "OpenMA", url: "https://github.com/openma-ai" },
+  publisher: { "@type": "Organization", name: "OpenMA", url: "https://github.com/openma-ai" },
+};
+const structuredData = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${origin.origin}/#website`,
+      url: `${origin.origin}/`,
+      name: "Martty",
+      inLanguage: ["zh-CN", "en"],
+    },
+    pageData,
+  ],
+};
+---
+
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width" />
+<meta name="theme-color" content="#05070a" />
+<meta name="color-scheme" content="dark" />
+<meta name="description" content={description} />
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+<link rel="canonical" href={canonical} />
+{translated && <link rel="alternate" hreflang="zh-CN" href={new URL("/", origin)} />}
+{translated && <link rel="alternate" hreflang="en" href={new URL("/en", origin)} />}
+{translated && <link rel="alternate" hreflang="x-default" href={new URL("/en", origin)} />}
+<link rel="icon" href="/favicon.ico" sizes="any" />
+<link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />
+<meta property="og:type" content={kind === "article" ? "article" : "website"} />
+<meta property="og:site_name" content="Martty" />
+<meta property="og:locale" content={lang === "zh-CN" ? "zh_CN" : "en_US"} />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:url" content={canonical} />
+<meta property="og:image" content={socialImage} />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="2134" />
+<meta property="og:image:height" content="1648" />
+<meta property="og:image:alt" content={imageAlt} />
+{publishedTime && <meta property="article:published_time" content={publishedTime} />}
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={socialImage} />
+<meta name="twitter:image:alt" content={imageAlt} />
+<script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
+<title>{title}</title>

@@ -1,0 +1,50 @@
+---
+import SeoHead from "./SeoHead.astro";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description: string;
+  path: string;
+  eyebrow: string;
+  publishedTime?: string;
+  article?: boolean;
+}
+
+const { title, description, path, eyebrow, publishedTime, article = false } = Astro.props;
+const year = new Date().getFullYear();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <SeoHead title={title} description={description} lang="en" path={path} imageAlt="Martty terminal agent client" kind={article ? "article" : "webpage"} publishedTime={publishedTime} />
+  </head>
+  <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
+    <div class="mx-auto flex min-h-screen max-w-4xl flex-col px-5 sm:px-8">
+      <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
+        <a href="/en" aria-label="Martty home"><img src="/martty-lockup.svg" alt="Martty" width="125" height="36" class="h-9 w-auto" /></a>
+        <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]" aria-label="Primary">
+          <a href="/en#install" class="hover:text-[#e7eaee]">Install</a>
+          <a href="/plugins" class="hover:text-[#e7eaee]">Plugins</a>
+          <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
+          <a href="https://github.com/openma-ai/Martty" class="text-[#3aa0ff]">GitHub</a>
+        </nav>
+      </header>
+      <main class="flex-1 py-14">
+        <nav aria-label="Breadcrumb" class="mb-7 text-xs text-[#66707c]"><a href="/en" class="hover:text-[#9aa5b1]">Martty</a> <span aria-hidden="true">/</span> {eyebrow}</nav>
+        <article class="content-article">
+          <p class="mb-3 text-xs uppercase tracking-[0.18em] text-[#3aa0ff]">{eyebrow}</p>
+          <h1>{title.replace(/ \| Martty$/, "")}</h1>
+          <p class="content-article__lede">{description}</p>
+          {publishedTime && <p class="content-article__date"><time datetime={publishedTime}>Published August 23, 2026</time> · OpenMA</p>}
+          <slot />
+        </article>
+      </main>
+      <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-[#171d25] py-6 text-xs text-[#4c5560]">
+        <span>© {year} Martty · MIT License</span>
+        <nav class="flex gap-4"><a href="https://www.npmjs.com/package/martty">npm</a><a href="https://github.com/openma-ai/Martty">GitHub</a><a href="/">中文</a></nav>
+      </footer>
+    </div>
+  </body>
+</html>

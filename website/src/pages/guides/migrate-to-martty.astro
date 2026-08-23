@@ -1,0 +1,27 @@
+---
+import ContentPage from "../../components/ContentPage.astro";
+const title = "Migrate DeepSeek Harness TUI to Martty";
+const description = "Move from deepseek-harness-tui, dsh-tui, or the old scoped npm package to Martty without migrating configuration or durable session data.";
+---
+<ContentPage {title} {description} path="/guides/migrate-to-martty" eyebrow="Migration guide">
+  <h2>What changed?</h2>
+  <p>The project formerly presented as DeepSeek Harness TUI is now named <strong>Martty</strong>. The recommended npm package and command are both <code>martty</code>. This is a brand and package migration, not a rewrite of the runtime or session format.</p>
+  <h2>Update an existing DSH profile</h2>
+  <pre><code>dsh plugin --profile tui remove @openma/deepseek-harness-tui
+dsh plugin --profile martty add martty@latest
+dsh --profile martty</code></pre>
+  <p>The recommended profile name is now <code>martty</code>. Existing configuration and JSONL session data do not need conversion. The legacy <code>tui</code> profile and <code>dsh-tui</code> executable remain compatibility paths.</p>
+  <h2>Update standalone installations</h2>
+  <pre><code>npm uninstall --global @openma/deepseek-harness-tui
+npm install --global martty
+martty</code></pre>
+  <h2>Compatibility summary</h2>
+  <ul>
+    <li><code>martty</code> is the preferred npm package and CLI command.</li>
+    <li><code>@openma/deepseek-harness-tui</code> remains a compatibility package.</li>
+    <li><code>dsh-tui</code> remains a compatibility executable alias.</li>
+    <li>The GitHub repository is <a href="https://github.com/openma-ai/Martty">openma-ai/Martty</a>.</li>
+    <li>The official website is <a href="https://martty.sh">martty.sh</a>.</li>
+  </ul>
+  <p>New directory listings, articles, and integrations should use the name Martty. Mention the former name only when explaining migration or preserving an existing reference.</p>
+</ContentPage>

@@ -1,0 +1,19 @@
+---
+import ContentPage from "../../components/ContentPage.astro";
+const title = "Building Cordis UI Plugins for a Ratatui TUI";
+const description = "Learn how Martty combines Cordis plugin lifecycle with validated semantic terminal nodes for themes, slots, commands, overlays, and persistent UI compositions.";
+---
+<ContentPage {title} {description} path="/blog/building-cordis-tui-plugins" eyebrow="Plugin architecture" article publishedTime="2026-08-23">
+  <h2>One plugin lifecycle</h2>
+  <p>Martty uses the same Cordis loader and fiber lifecycle for static packages and dynamically created client code. A package can be inspected, run, updated, stopped, rolled back, and eventually saved. Contributions are attached to the package lifecycle, so unloading removes them without one-off cleanup paths.</p>
+  <h2>Contribute semantics, not terminal control</h2>
+  <p>A plugin never receives the TTY, raw mode, ratatui objects, kitty escape sequences, or absolute coordinates. It submits validated <code>TuiNode</code> structures and uses services for themes, slots, commands, selectors, sliders, and overlays. The Rust renderer adapts these semantics to terminal dimensions and capabilities.</p>
+  <h2>Compose several surfaces in one package</h2>
+  <p>A single plugin may register a palette, add content to <code>welcome.hero</code>, expose a local slash command, and open an overlay. Shared state stays inside the Cordis package instead of being copied into the Rust shell. Host-side and client-side halves can communicate through negotiated package RPC.</p>
+  <h2>Build a persistent UI composition</h2>
+  <p>UI Plugins group contributions into a named selection. Martty ships a default composition and a classic DeepSeek composition. New packages can register another choice, which appears in the <code>/ui</code> selector and persists in <code>$MARTTY_HOME/settings.json</code>.</p>
+  <h2>Inspect before generating</h2>
+  <p>A Creator workflow should inspect the live client services, slot catalog, theme tokens, command APIs, and node schema before producing code. After loading, schema and rendering errors remain observable so the package can be updated or rolled back. This closed loop is safer than allowing generated code to manipulate terminal primitives.</p>
+  <h2>Continue with the API reference</h2>
+  <p>The <a href="https://github.com/openma-ai/Martty/blob/main/docs/plugins.en.md">plugin documentation</a> contains the current contracts and examples. The <a href="/plugins">Martty plugin overview</a> explains the product-level model and built-in compositions.</p>
+</ContentPage>

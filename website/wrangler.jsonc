@@ -3,10 +3,10 @@
 	"name": "deepseek-harness-tui",
 	"main": "@astrojs/cloudflare/entrypoints/server",
 	"workers_dev": false,
-	"preview_urls": false,
+	"preview_urls": true,
 	"routes": [
 		{
-			"pattern": "dshsuite.dev",
+			"pattern": "martty.sh",
 			"custom_domain": true
 		}
 	],

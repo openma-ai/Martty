@@ -1,0 +1,17 @@
+---
+import ContentPage from "../../components/ContentPage.astro";
+const title = "Martty Blog — ACP, DeepSeek Harness, and Terminal UI";
+const description = "Practical guides about running DeepSeek Harness, connecting ACP coding agents, and building extensible Rust and ratatui terminal interfaces with Martty.";
+const posts = [
+  { href: "/blog/using-deepseek-harness-in-martty", title: "Using DeepSeek Harness in Martty", body: "Install the dedicated profile, understand the Host/client boundary, and start a durable coding session." },
+  { href: "/blog/connect-acp-agent-to-martty", title: "Connect an ACP Agent to Martty", body: "Attach an ACP-compatible command and see how Martty maps advertised capabilities into terminal controls." },
+  { href: "/blog/building-cordis-tui-plugins", title: "Building Cordis TUI Plugins", body: "Understand Martty's client tree, semantic nodes, slots, commands, overlays, and plugin lifecycle." },
+];
+---
+<ContentPage {title} {description} path="/blog" eyebrow="Blog">
+  <h2>Guides for terminal-native agent workflows</h2>
+  <p>These articles focus on reproducible setup, protocol boundaries, and implementation details. Product reference pages live under <a href="/deepseek-harness-tui">DeepSeek Harness TUI</a>, <a href="/acp-terminal-client">ACP terminal client</a>, and <a href="/plugins">UI plugins</a>.</p>
+  <div class="content-grid">
+    {posts.map((post) => <div class="content-card"><h3><a href={post.href}>{post.title}</a></h3><p>{post.body}</p><a href={post.href}>Read guide →</a></div>)}
+  </div>
+</ContentPage>

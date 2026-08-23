@@ -1,0 +1,20 @@
+---
+import ContentPage from "../../components/ContentPage.astro";
+const title = "Connect an ACP Coding Agent to Martty";
+const description = "Launch Martty with an ACP-compatible coding agent and understand how models, authentication, permissions, images, tools, and session updates map into the TUI.";
+---
+<ContentPage {title} {description} path="/blog/connect-acp-agent-to-martty" eyebrow="ACP integration guide" article publishedTime="2026-08-23">
+  <h2>Start with an ACP command</h2>
+  <p>Martty can spawn a command that speaks Agent Client Protocol over standard input and output. With the DeepSeek Harness adapter installed, the smallest example is:</p>
+  <pre><code>martty --agent dsh-acp</code></pre>
+  <p>For another agent, replace the command and pass its arguments separately. Keeping the executable and arguments explicit avoids shell parsing surprises and makes the connection easy to reproduce.</p>
+  <h2>Capability negotiation</h2>
+  <p>At initialization, the agent advertises what it supports. Martty uses those facts to decide whether to expose model selection, authentication, permission modes, session loading, commands, and image prompts. Unsupported controls are not simulated.</p>
+  <h2>How updates become a terminal timeline</h2>
+  <p>ACP session updates arrive as structured events. Martty renders assistant text, reasoning, tool calls and results, plans, subagent status, and usage without scraping formatted transcript text. This also lets plugins consume structured session facts for status or configuration views.</p>
+  <h2>Images and resources</h2>
+  <p>Use <code>/image &lt;path&gt;</code> to add a local image. On supported desktop terminals, <code>/clip</code> or paste can stage clipboard images. If the agent advertises image prompts, Martty sends ACP image blocks; otherwise it can fall back to a resource link.</p>
+  <h2>Authentication and permissions</h2>
+  <p><code>/auth</code> opens the method advertised by the agent. <code>/permission</code> chooses a permission mode, and <code>shift+tab</code> cycles available modes. An agent that reports authentication is required mid-session opens the same flow.</p>
+  <div class="content-callout">Martty is DSH-first but protocol-oriented. Read the <a href="/acp-terminal-client">ACP terminal client overview</a> or inspect the <a href="https://github.com/openma-ai/Martty">source on GitHub</a>.</div>
+</ContentPage>

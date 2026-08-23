@@ -1,0 +1,24 @@
+---
+import ContentPage from "../components/ContentPage.astro";
+const title = "Rust and Ratatui Agent TUI | Martty";
+const description = "Explore how Martty uses Rust and ratatui for a responsive cross-platform coding-agent TUI while Cordis plugins extend themes, commands, slots, and overlays.";
+---
+<ContentPage {title} {description} path="/ratatui-agent-tui" eyebrow="Rust / ratatui">
+  <h2>Why build an agent interface with ratatui?</h2>
+  <p>Long coding-agent sessions combine streaming text, tool output, interactive selectors, images, and keyboard-heavy editing. Martty uses Rust and ratatui for deterministic terminal ownership, responsive rendering, and a compact native binary on macOS, Linux, and Windows.</p>
+  <p>The renderer is deliberately small. Agent behavior arrives through ACP, while plugins contribute semantic UI descriptions through a Cordis client tree. Rust decides how those nodes fit the current terminal rather than exposing raw terminal control to plugins.</p>
+  <h2>Terminal-native interaction</h2>
+  <ul>
+    <li>Responsive narrow layouts and scrollable agent timelines.</li>
+    <li>Readline-style editing with platform-aware macOS, Linux, and Windows shortcuts.</li>
+    <li>Native, tmux, and OSC 52 clipboard routes.</li>
+    <li>Kitty graphics previews when the terminal supports them.</li>
+    <li>Mouse selection and expandable tool results without embedding a browser.</li>
+  </ul>
+  <h2>A plugin boundary that protects the TTY</h2>
+  <p>Web plugin systems often hand components a DOM. Martty instead accepts typed terminal semantics: text, layout groups, tables, forms, overlays, and registered slots. The renderer validates these nodes and remains the only owner of raw mode and terminal coordinates.</p>
+  <h2>Try the interface without an agent</h2>
+  <pre><code>npm install --global martty
+martty --demo</code></pre>
+  <p>The demo path needs no API key. To run real sessions, use the <a href="/deepseek-harness-tui">DeepSeek Harness profile</a> or connect <a href="/acp-terminal-client">another ACP agent</a>.</p>
+</ContentPage>

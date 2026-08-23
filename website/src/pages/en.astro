@@ -1,46 +1,30 @@
 ---
+import SeoHead from "../components/SeoHead.astro";
 import "../styles/global.css";
 
-const title = "Martty — Agent TUI for the terminal";
+const title = "Martty — Rust TUI for DeepSeek Harness & ACP Agents";
 const description =
-  "Martty is a DSH-first Agent TUI: streamed reasoning, tool calls, subagents, multi-image prompts, and durable sessions in a fast Rust terminal, composed from Cordis plugins.";
-const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url.origin);
+  "Martty is a Rust/ratatui terminal client for DeepSeek Harness and ACP coding agents, with streamed reasoning, tools, subagents, images, durable sessions, and Cordis UI plugins.";
 const year = new Date().getFullYear();
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width" />
-    <meta name="theme-color" content="#05070a" />
-    <meta name="description" content={description} />
-    <meta name="robots" content="index, follow, max-image-preview:large" />
-    <link rel="canonical" href={canonical} />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Martty" />
-    <meta property="og:title" content={title} />
-    <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonical} />
-    <meta property="og:image" content={new URL("/social-preview.png", Astro.site ?? Astro.url.origin)} />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content={title} />
-    <meta name="twitter:description" content={description} />
-    <title>{title}</title>
+    <SeoHead title={title} description={description} lang="en" path="/en" imageAlt="Martty terminal agent client preview" translated />
   </head>
   <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
     <div class="mx-auto flex min-h-screen max-w-5xl flex-col px-5 sm:px-8">
       <!-- Header -->
       <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
         <a href="/" class="flex items-center gap-3 no-underline">
-          <img src="/martty-lockup.svg" alt="Martty" class="h-9 w-auto" />
+          <img src="/martty-lockup.svg" alt="Martty" width="125" height="36" class="h-9 w-auto" />
         </a>
         <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]">
           <a href="#install" class="hover:text-[#e7eaee]">Install</a>
           <a href="#ui" class="hover:text-[#e7eaee]">UI overview</a>
           <a href="#usage" class="hover:text-[#e7eaee]">Usage</a>
+          <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
           <a href="/" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">中文</a>
         </nav>
       </header>
@@ -55,7 +39,8 @@ const year = new Date().getFullYear();
             See exactly what your agent is doing — <span class="text-[#3aa0ff]">in the terminal</span>.
           </h1>
           <p class="mt-5 max-w-2xl text-base leading-relaxed text-[#9aa5b1]">
-            Martty is a high-performance Agent TUI (rendered in Rust / ratatui) that presents
+            Martty is a high-performance Agent TUI for DeepSeek Harness and other ACP-compatible
+            coding agents (rendered in Rust / ratatui) that presents
             streamed reasoning, tool calls, subagents, token usage, and durable sessions; images
             join prompts from files or the clipboard. Themes, views, commands, and interactions
             are composed from Cordis plugins instead of being welded into the shell.
@@ -101,17 +86,17 @@ const year = new Date().getFullYear();
           </p>
 
           <figure class="mb-8">
-            <img src="/ui_start.png" alt="Martty start screen" class="w-full rounded border border-[#202832]" loading="lazy" />
+            <img src="/ui_start.png" alt="Martty start screen" width="2134" height="1648" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
             <figcaption class="mt-2 text-xs text-[#66707c]">Start screen: the welcome surface shows brand, version, model, workspace, and session info.</figcaption>
           </figure>
 
           <div class="grid gap-8 md:grid-cols-2">
             <figure>
-              <img src="/ui_resume.png" alt="Martty session resume" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <img src="/ui_resume.png" alt="Martty session resume" width="1098" height="1598" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
               <figcaption class="mt-2 text-xs text-[#66707c]">Session resume: `/resume` or `--session-id` restores durable JSONL sessions, along with workspace, model, and permission settings.</figcaption>
             </figure>
             <figure>
-              <img src="/ui_modelsel.png" alt="Martty model selection" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <img src="/ui_modelsel.png" alt="Martty model selection" width="1272" height="474" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
               <figcaption class="mt-2 text-xs text-[#66707c]">Model selection: `/model` picks an agent-advertised model directly; typing filters the candidates.</figcaption>
             </figure>
           </div>
@@ -130,6 +115,19 @@ const year = new Date().getFullYear();
               <p class="text-xs leading-relaxed text-[#9aa5b1]">Read the agent's models, compositions, permissions, authentication methods, and commands. Skills and built-in commands share one searchable slash menu.</p>
             </div>
           </div>
+        </section>
+
+        <section class="border-b border-[#171d25] py-14" aria-labelledby="guides-heading">
+          <h2 id="guides-heading" class="mb-2 text-2xl font-semibold">Guides and architecture</h2>
+          <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">Go deeper into a specific setup or implementation path.</p>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <a href="/deepseek-harness-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">DeepSeek Harness TUI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Profile installation, runtime boundary, session controls, and capabilities.</span></a>
+            <a href="/acp-terminal-client" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">ACP terminal client</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Connect other Agent Client Protocol coding agents.</span></a>
+            <a href="/ratatui-agent-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Rust / ratatui architecture</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Terminal rendering, input, portability, and safe extension boundaries.</span></a>
+            <a href="/plugins" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Native DSH UI plugins</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Themes, slots, commands, overlays, and persistent UI compositions.</span></a>
+          </div>
+          <p class="mt-6 text-sm"><a href="/blog" class="text-[#3aa0ff]">Read all Martty guides →</a></p>
+          <p class="mt-2 text-xs text-[#66707c]">Previously used DeepSeek Harness TUI? Follow the <a href="/guides/migrate-to-martty" class="text-[#3aa0ff]">Martty migration guide</a>.</p>
         </section>
 
         <!-- Usage -->

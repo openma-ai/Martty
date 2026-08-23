@@ -1,0 +1,25 @@
+---
+import ContentPage from "../components/ContentPage.astro";
+const title = "DeepSeek Harness TUI for the Terminal | Martty";
+const description = "Run DeepSeek Harness in Martty, a fast Rust and ratatui terminal client with reasoning, tool calls, subagents, permissions, images, and durable sessions.";
+---
+<ContentPage {title} {description} path="/deepseek-harness-tui" eyebrow="DeepSeek Harness TUI">
+  <h2>A native terminal surface for DeepSeek Harness</h2>
+  <p>Martty is a DSH-first terminal interface. It keeps the complete agent timeline visible: streamed reasoning, replies, tool arguments and results, subagent activity, plan state, token usage, and queue depth. The interface is rendered by Rust and ratatui while the agent connection uses Agent Client Protocol.</p>
+  <p>Unlike a wrapper that launches a second agent, the recommended profile setup mounts the ACP plugin on the existing DeepSeek Harness host and starts Martty as a separate client process.</p>
+  <h2>Install Martty with DSH</h2>
+  <pre><code>npm install --global @deepseek-ai/dsh
+dsh plugin --profile martty add martty@latest
+dsh --profile martty</code></pre>
+  <p>The profile owns the Martty package and its ACP dependency, so upgrades use the same <code>dsh plugin</code> workflow. For a quick preview without a runtime or API key, install <code>martty</code> and run <code>martty --demo</code>.</p>
+  <h2>What you can do</h2>
+  <div class="content-grid">
+    <div class="content-card"><h3>Inspect every turn</h3><p>Follow reasoning, tools, plans, subagents, usage, and status without leaving the terminal.</p></div>
+    <div class="content-card"><h3>Control the session</h3><p>Choose models and permissions, authenticate, steer active work, and queue follow-up prompts.</p></div>
+    <div class="content-card"><h3>Resume durable work</h3><p>Restore JSONL sessions with <code>/resume</code> or <code>--session-id</code>, including workspace facts.</p></div>
+    <div class="content-card"><h3>Compose the UI</h3><p>Switch themes and UI plugins or add validated slots, commands, overlays, and views.</p></div>
+  </div>
+  <h2>DeepSeek Harness, ACP, and Martty</h2>
+  <p>DeepSeek Harness remains the host and agent runtime. ACP carries session lifecycle, prompts, authentication, configuration, permissions, and updates. Martty owns the terminal, input scheduling, layout, and rendering. This boundary keeps the agent reusable and lets the same terminal client connect to <a href="/acp-terminal-client">other ACP-compatible agents</a>.</p>
+  <div class="content-callout">Ready to try it? <a href="/en#install">Install Martty</a>, then explore its <a href="/plugins">native DSH UI plugin system</a>.</div>
+</ContentPage>

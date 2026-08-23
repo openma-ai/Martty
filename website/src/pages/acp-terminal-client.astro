@@ -1,0 +1,24 @@
+---
+import ContentPage from "../components/ContentPage.astro";
+const title = "ACP Terminal Client for Coding Agents | Martty";
+const description = "Use Martty as a terminal-native Agent Client Protocol client for DSH and other ACP-compatible coding agents, with models, auth, permissions, images, and sessions.";
+---
+<ContentPage {title} {description} path="/acp-terminal-client" eyebrow="Agent Client Protocol">
+  <h2>A terminal client built around ACP</h2>
+  <p>Martty is an ACP client rather than a hard-coded frontend for one model. It reads the capabilities advertised by the connected agent and turns them into terminal-native controls. Models, authentication methods, permission modes, session configuration, plans, commands, and image support come from the protocol instead of assumptions in the UI.</p>
+  <h2>Connect an ACP agent</h2>
+  <pre><code>martty --agent dsh-acp</code></pre>
+  <p>You can replace <code>dsh-acp</code> with another ACP-compatible command and pass additional process arguments with <code>--agent-arg</code>. Martty can also attach through its programmatic client configuration when another process owns the pipes.</p>
+  <h2>Protocol capabilities surfaced in the TUI</h2>
+  <ul>
+    <li>Session creation, loading, cancellation, steering, and streamed updates.</li>
+    <li>Agent-advertised model, mode, permission, and configuration selectors.</li>
+    <li>Terminal authentication and ACP authentication methods.</li>
+    <li>Text, images, resource links, tool calls, plans, and usage information.</li>
+    <li>Durable local session history without converting the transcript into a web app.</li>
+  </ul>
+  <h2>Safe separation between agent and terminal</h2>
+  <p>The agent never owns the TTY. Martty's Rust painter controls raw mode, layout, clipboard behavior, and image protocols. Plugins contribute validated semantic nodes rather than terminal escape sequences or absolute coordinates. That keeps third-party UI extensions composable and preserves a consistent terminal lifecycle.</p>
+  <h2>DSH-first, not DSH-only</h2>
+  <p>The default experience is optimized for <a href="/deepseek-harness-tui">DeepSeek Harness</a>, including its Cordis capabilities. Standard ACP agents still work as ordinary agents when they do not advertise DSH extensions. This makes Martty useful both as a daily DSH client and as a practical ACP client implementation for protocol developers.</p>
+</ContentPage>

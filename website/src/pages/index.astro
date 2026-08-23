@@ -1,46 +1,30 @@
 ---
+import SeoHead from "../components/SeoHead.astro";
 import "../styles/global.css";
 
-const title = "Martty — 终端里的 Agent TUI";
+const title = "Martty — DeepSeek Harness 与 ACP Agent 终端客户端";
 const description =
-  "Martty 是一个 DSH-first 的 Agent TUI:在终端中流式呈现推理、工具调用、subagent、多图 prompt 与持久化会话,界面由 Cordis 插件组合。";
-const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url.origin);
+  "Martty 是面向 DeepSeek Harness 和 ACP coding agents 的 Rust/ratatui 终端客户端，支持流式推理、工具调用、subagent、多图提示词、持久会话与 Cordis UI 插件。";
 const year = new Date().getFullYear();
 ---
 
 <!doctype html>
 <html lang="zh-CN">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width" />
-    <meta name="theme-color" content="#05070a" />
-    <meta name="description" content={description} />
-    <meta name="robots" content="index, follow, max-image-preview:large" />
-    <link rel="canonical" href={canonical} />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Martty" />
-    <meta property="og:title" content={title} />
-    <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonical} />
-    <meta property="og:image" content={new URL("/social-preview.png", Astro.site ?? Astro.url.origin)} />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content={title} />
-    <meta name="twitter:description" content={description} />
-    <title>{title}</title>
+    <SeoHead title={title} description={description} lang="zh-CN" path="/" imageAlt="Martty 终端 Agent 客户端预览" translated />
   </head>
   <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
     <div class="mx-auto flex min-h-screen max-w-5xl flex-col px-5 sm:px-8">
       <!-- Header -->
       <header class="flex items-center justify-between gap-4 border-b border-[#171d25] py-5">
         <a href="/" class="flex items-center gap-3 no-underline">
-          <img src="/martty-lockup.svg" alt="Martty" class="h-9 w-auto" />
+          <img src="/martty-lockup.svg" alt="Martty" width="125" height="36" class="h-9 w-auto" />
         </a>
         <nav class="flex items-center gap-4 text-sm text-[#9aa5b1]">
           <a href="#install" class="hover:text-[#e7eaee]">安装</a>
           <a href="#ui" class="hover:text-[#e7eaee]">UI 简介</a>
           <a href="#usage" class="hover:text-[#e7eaee]">使用方法</a>
+          <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
           <a href="/en" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">English</a>
         </nav>
       </header>
@@ -55,7 +39,8 @@ const year = new Date().getFullYear();
             在终端里,<span class="text-[#3aa0ff]">完整地看见</span>你的 Agent 在做什么。
           </h1>
           <p class="mt-5 max-w-2xl text-base leading-relaxed text-[#9aa5b1]">
-            Martty 是一个高性能的 Agent TUI(Rust / ratatui 渲染),流式呈现推理、工具调用、
+            Martty 是一个面向 DeepSeek Harness 和其他 ACP-compatible coding agents 的高性能
+            Agent TUI（Rust / ratatui 渲染），流式呈现推理、工具调用、
             subagent、token 用量和持久化会话;图片可从文件或剪贴板加入 prompt。界面、主题、
             命令与视图都由 Cordis 插件组合,而不是写死在 shell 里。
           </p>
@@ -99,17 +84,17 @@ const year = new Date().getFullYear();
           </p>
 
           <figure class="mb-8">
-            <img src="/ui_start.png" alt="Martty 启动界面" class="w-full rounded border border-[#202832]" loading="lazy" />
+            <img src="/ui_start.png" alt="Martty 启动界面" width="2134" height="1648" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
             <figcaption class="mt-2 text-xs text-[#66707c]">启动界面:欢迎页展示品牌、版本、模型、workspace 与 session 信息。</figcaption>
           </figure>
 
           <div class="grid gap-8 md:grid-cols-2">
             <figure>
-              <img src="/ui_resume.png" alt="Martty 会话恢复界面" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <img src="/ui_resume.png" alt="Martty 会话恢复界面" width="1098" height="1598" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
               <figcaption class="mt-2 text-xs text-[#66707c]">会话恢复:`/resume` 或 `--session-id` 恢复持久化 JSONL 会话,workspace、模型与权限设置一并还原。</figcaption>
             </figure>
             <figure>
-              <img src="/ui_modelsel.png" alt="Martty 模型选择界面" class="w-full rounded border border-[#202832]" loading="lazy" />
+              <img src="/ui_modelsel.png" alt="Martty 模型选择界面" width="1272" height="474" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
               <figcaption class="mt-2 text-xs text-[#66707c]">模型选择:`/model` 直接选择 agent 宣告的模型,输入前缀即可过滤候选。</figcaption>
             </figure>
           </div>
@@ -128,6 +113,19 @@ const year = new Date().getFullYear();
               <p class="text-xs leading-relaxed text-[#9aa5b1]">直接读取模型的 model、compositions、permissions、认证方式与可用命令;技能与内置命令共用一个可搜索的斜杠菜单。</p>
             </div>
           </div>
+        </section>
+
+        <section class="border-b border-[#171d25] py-14" aria-labelledby="guides-heading">
+          <h2 id="guides-heading" class="mb-2 text-2xl font-semibold">指南与架构</h2>
+          <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">针对 DeepSeek Harness、ACP、Ratatui 和插件开发的英文专题页。</p>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <a href="/deepseek-harness-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">DeepSeek Harness TUI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Profile 安装、运行边界、会话控制与完整能力。</span></a>
+            <a href="/acp-terminal-client" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">ACP terminal client</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">连接其他 Agent Client Protocol coding agents。</span></a>
+            <a href="/ratatui-agent-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Rust / ratatui 架构</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">终端渲染、跨平台输入和安全插件边界。</span></a>
+            <a href="/plugins" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">原生 DSH UI 插件</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">主题、slots、commands、overlays 与 UI 组合。</span></a>
+          </div>
+          <p class="mt-6 text-sm"><a href="/blog" class="text-[#3aa0ff]">查看全部 Martty 指南 →</a></p>
+          <p class="mt-2 text-xs text-[#66707c]">曾经使用 DeepSeek Harness TUI？查看 <a href="/guides/migrate-to-martty" class="text-[#3aa0ff]">Martty 更名迁移指南</a>。</p>
         </section>
 
         <!-- Usage -->

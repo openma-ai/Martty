@@ -1,0 +1,30 @@
+---
+import ContentPage from "../../components/ContentPage.astro";
+const title = "Using DeepSeek Harness in Martty | Martty";
+const description = "Install Martty as a DeepSeek Harness profile, launch the Rust terminal client, manage models and permissions, and resume durable coding-agent sessions.";
+---
+<ContentPage {title} {description} path="/blog/using-deepseek-harness-in-martty" eyebrow="DeepSeek Harness guide" article publishedTime="2026-08-23">
+  <h2>Install the Martty profile</h2>
+  <p>Martty's recommended path lets DeepSeek Harness manage the terminal package and its ACP adapter. You need Node.js 18 or newer.</p>
+  <pre><code>npm install --global @deepseek-ai/dsh
+dsh plugin --profile martty add martty@latest
+dsh --profile martty</code></pre>
+  <p>The first command installs DSH. The second creates or updates a dedicated profile and mounts Martty with its runtime dependencies. The final command starts the Host and launches the Martty client.</p>
+  <h2>Understand what is running</h2>
+  <p>DeepSeek Harness runs once in the Host process. Its ACP plugin exposes the session over standard input and output. Martty starts a separate Cordis client process and a Rust painter. The client does not spawn another agent, so model state, tools, skills, and permissions stay with the original Host.</p>
+  <h2>Choose model, mode, and permissions</h2>
+  <p>Type <code>/model</code> to select a model advertised by the agent, <code>/agent</code> for an Agent Preset, and <code>/permission</code> or <code>shift+tab</code> to choose a permission mode. Use <code>/auth</code> when authentication is required. These controls reflect ACP capabilities rather than a static list baked into Martty.</p>
+  <h2>Work with long-running turns</h2>
+  <ul>
+    <li>Press <code>enter</code> during a turn to queue a follow-up.</li>
+    <li>Press <code>ctrl+x</code> to steer the active turn immediately.</li>
+    <li>Press <code>esc</code> to interrupt while preserving the draft.</li>
+    <li>Use <code>/status</code> and <code>/session</code> for connection and usage facts.</li>
+  </ul>
+  <h2>Resume later</h2>
+  <p>Use <code>/resume</code> to select a saved JSONL session, or launch with <code>--session-id</code>. Martty restores the durable conversation alongside cached workspace, model, and permission information. Start cleanly with <code>/new</code>.</p>
+  <h2>Preview before connecting an API</h2>
+  <pre><code>npm install --global martty
+martty --demo</code></pre>
+  <p>The demo renders the interface without a runtime or API key. When you are ready for real work, return to the DSH profile above. See the full <a href="/deepseek-harness-tui">DeepSeek Harness TUI reference</a> for capabilities and architecture.</p>
+</ContentPage>
