@@ -9,11 +9,11 @@
     </clipPath>
   </defs>
   <g clip-path="url(#openma-mark)" shape-rendering="crispEdges">
-    <rect x="240" y="244" width="548" height="76" fill="#4176e6"/>
-    <rect x="240" y="320" width="548" height="76" fill="#5e8ceb"/>
-    <rect x="240" y="396" width="548" height="76" fill="#7ba1f0"/>
-    <rect x="240" y="472" width="548" height="76" fill="#99b7f5"/>
-    <rect x="240" y="548" width="548" height="76" fill="#b6ccfa"/>
-    <rect x="240" y="624" width="548" height="76" fill="#d3e2ff"/>
+    <rect x="240" y="244" width="548" height="62" fill="#4176e6"/>
+    <rect x="240" y="322" width="548" height="62" fill="#5e8ceb"/>
+    <rect x="240" y="400" width="548" height="62" fill="#7ba1f0"/>
+    <rect x="240" y="478" width="548" height="62" fill="#99b7f5"/>
+    <rect x="240" y="556" width="548" height="62" fill="#b6ccfa"/>
+    <rect x="240" y="634" width="548" height="64" fill="#d3e2ff"/>
   </g>
 </svg>

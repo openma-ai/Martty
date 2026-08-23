@@ -35,6 +35,20 @@ describe("Martty favicon", () => {
     expect(opaqueColors).toEqual(palette);
   });
 
+  it("separates the color bands with transparent terminal scanline gaps", async () => {
+    const svg = readIfPresent("favicon.svg");
+    const { data, info } = await sharp(Buffer.from(svg))
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const alphaAt = (x: number, y: number) => data[(y * info.width + x) * info.channels + 3];
+    const bracketX = 270 - 240;
+
+    for (const gapY of [392, 470, 548, 626]) {
+      expect(alphaAt(bracketX, gapY - 244)).toBe(0);
+    }
+  });
+
   it("ships browser and home-screen bitmap fallbacks", () => {
     expect(existsSync(assetPath("favicon.png"))).toBe(true);
     expect(existsSync(assetPath("favicon.ico"))).toBe(true);
