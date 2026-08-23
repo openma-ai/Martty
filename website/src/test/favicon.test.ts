@@ -10,14 +10,12 @@ const readIfPresent = (name: string) => {
 };
 
 describe("Martty favicon", () => {
-  it("renders the canonical OpenMA mark in six hard terminal-like color bands", async () => {
+  it("renders the canonical OpenMA mark in four hard terminal-like color bands", async () => {
     const svg = readIfPresent("favicon.svg");
     const palette = new Set([
       "65,118,230",
-      "94,140,235",
       "123,161,240",
       "153,183,245",
-      "182,204,250",
       "211,226,255",
     ]);
     const { data } = await sharp(Buffer.from(svg)).raw().toBuffer({ resolveWithObject: true });
@@ -35,7 +33,7 @@ describe("Martty favicon", () => {
     expect(opaqueColors).toEqual(palette);
   });
 
-  it("separates the color bands with transparent terminal scanline gaps", async () => {
+  it("separates the color bands with exactly three transparent terminal cracks", async () => {
     const svg = readIfPresent("favicon.svg");
     const { data, info } = await sharp(Buffer.from(svg))
       .ensureAlpha()
@@ -43,10 +41,16 @@ describe("Martty favicon", () => {
       .toBuffer({ resolveWithObject: true });
     const alphaAt = (x: number, y: number) => data[(y * info.width + x) * info.channels + 3];
     const bracketX = 270 - 240;
+    let transparentRuns = 0;
+    let wasTransparent = false;
 
-    for (const gapY of [392, 470, 548, 626]) {
-      expect(alphaAt(bracketX, gapY - 244)).toBe(0);
+    for (let markY = 370; markY <= 675; markY += 1) {
+      const isTransparent = alphaAt(bracketX, markY - 244) === 0;
+      if (isTransparent && !wasTransparent) transparentRuns += 1;
+      wasTransparent = isTransparent;
     }
+
+    expect(transparentRuns).toBe(3);
   });
 
   it("ships browser and home-screen bitmap fallbacks", () => {
