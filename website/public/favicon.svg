@@ -9,9 +9,8 @@
     </clipPath>
   </defs>
   <g clip-path="url(#openma-mark)" shape-rendering="crispEdges">
-    <rect x="240" y="244" width="548" height="183" fill="#4176e6"/>
-    <rect x="240" y="443" width="548" height="64" fill="#7ba1f0"/>
-    <rect x="240" y="523" width="548" height="64" fill="#99b7f5"/>
-    <rect x="240" y="603" width="548" height="95" fill="#d3e2ff"/>
+    <rect x="240" y="244" width="548" height="210" fill="#4176e6"/>
+    <rect x="240" y="470" width="548" height="92" fill="#99b7f5"/>
+    <rect x="240" y="578" width="548" height="120" fill="#d3e2ff"/>
   </g>
 </svg>

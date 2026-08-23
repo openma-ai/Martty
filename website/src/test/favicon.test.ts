@@ -10,11 +10,10 @@ const readIfPresent = (name: string) => {
 };
 
 describe("Martty favicon", () => {
-  it("renders the canonical OpenMA mark in four hard terminal-like color bands", async () => {
+  it("renders the canonical OpenMA mark in three hard terminal-like color bands", async () => {
     const svg = readIfPresent("favicon.svg");
     const palette = new Set([
       "65,118,230",
-      "123,161,240",
       "153,183,245",
       "211,226,255",
     ]);
@@ -33,7 +32,7 @@ describe("Martty favicon", () => {
     expect(opaqueColors).toEqual(palette);
   });
 
-  it("separates the color bands with exactly three transparent terminal cracks", async () => {
+  it("separates the color bands with exactly two transparent terminal cracks", async () => {
     const svg = readIfPresent("favicon.svg");
     const { data, info } = await sharp(Buffer.from(svg))
       .ensureAlpha()
@@ -50,7 +49,7 @@ describe("Martty favicon", () => {
       wasTransparent = isTransparent;
     }
 
-    expect(transparentRuns).toBe(3);
+    expect(transparentRuns).toBe(2);
   });
 
   it("ships browser and home-screen bitmap fallbacks", () => {
