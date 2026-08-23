@@ -131,8 +131,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let gap_h = if child_view { 0 } else { 1 };
     // Exactly one cap row tops the box (the `╭ … ─╮` border line). The
     // plugin input dock (plan-view's PLAN summary) wins the row when it
-    // has nodes; otherwise the tip line carries it.
-    let cap_h = if !child_view && main.height >= 16 {
+    // has nodes; otherwise the tip line carries it. The row is worth
+    // keeping down to 10 rows tall — below that (chat would drop under
+    // ~5 rows) the borderless fallback takes over instead.
+    let cap_h = if !child_view && main.height >= 10 {
         1
     } else {
         0
