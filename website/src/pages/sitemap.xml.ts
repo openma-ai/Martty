@@ -12,6 +12,7 @@ export const GET: APIRoute = ({ site, url }) => {
     "/guides/migrate-to-martty",
     "/blog",
     "/blog/plug-in-and-be-plugged-into",
+    "/en/blog/plug-in-and-be-plugged-into",
     "/blog/using-deepseek-harness-in-martty",
     "/blog/connect-acp-agent-to-martty",
     "/blog/building-cordis-tui-plugins",

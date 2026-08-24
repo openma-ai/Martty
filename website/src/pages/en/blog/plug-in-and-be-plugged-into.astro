@@ -1,0 +1,267 @@
+---
+import ContentPage from "../../../components/ContentPage.astro";
+const title = "I Added Four Essential Agent Components to DeepSeek Harness — DSH Plugin Best Practices | Martty";
+const description = "A full account of DSH Plugin loading, composition and inheritance, Web Host/Client trees, dynamic Plugins, Presets, and Martty's practice of plugging in and being plugged into.";
+---
+<ContentPage {title} {description} path="/en/blog/plug-in-and-be-plugged-into" alternatePath="/blog/plug-in-and-be-plugged-into" eyebrow="Architecture and practice" article lang="en" publishedTime="2026-08-23" showDescription={false}>
+  <img src="/blog/dsh-plugin-best-practices/01-framework-cover.png" alt="Four Agent components and their relationship to a DSH Profile" loading="eager" decoding="async" />
+
+  <h2>TL;DR</h2>
+
+  <ul>
+    <li>Plugin lets new Agent capabilities grow out of the community without waiting for the next core release.</li>
+    <li>What makes DSH Plugin different is that it does more than <strong>compose</strong> Plugins: an Agent may also <strong>inherit</strong> capabilities along a Scope parent chain. Reuse becomes easier, while the development model, implicit dependencies, and same-name shadowing become harder to reason about.</li>
+    <li>Plugin is a useful unit for developers who split capabilities. For users, Preset provides a higher-level unit for selecting a complete capability set. AgentPreset composes an Agent's capabilities and configuration; PermissionPreset composes a set of execution policies.</li>
+    <li><strong>A good Plugin should both plug in and be plugged into.</strong></li>
+  </ul>
+
+  <p>Over the past week, I built four Plugins around DeepSeek Harness:</p>
+
+  <ul>
+    <li><strong><a href="https://github.com/openma-ai/Martty">Martty</a></strong>: a TUI Plugin and an ACP Client that can connect to DSH or another ACP Agent. It also exposes extension points for themes, commands, panels, and dynamic Cordis Client Plugins. It can be plugged in, and it lets others plug into it.<br /><a href="https://github.com/openma-ai/Martty">GitHub: https://github.com/openma-ai/Martty</a></li>
+    <li><strong><a href="https://github.com/openma-ai/deepseek-harness-acp">DeepSeek Harness ACP</a></strong>: makes DSH available to ACP Clients such as Zed and terminal interfaces.<br /><a href="https://github.com/openma-ai/deepseek-harness-acp">GitHub: https://github.com/openma-ai/deepseek-harness-acp</a></li>
+    <li><strong><a href="https://github.com/openma-ai/dsh-agents-plugins">DSH Agent Plugins Bridge</a></strong>: converts Agent Plugins, Codex, Claude Code, and Pi Plugins into capabilities DSH can manage.<br /><a href="https://github.com/openma-ai/dsh-agents-plugins">GitHub: https://github.com/openma-ai/dsh-agents-plugins</a></li>
+    <li><strong><a href="https://github.com/openma-ai/dsh-mcp-apps">DSH MCP Apps</a></strong>: completes MCP Apps on top of DSH's existing MCP support, so a Tool can deliver an interactive interface.<br /><a href="https://github.com/openma-ai/dsh-mcp-apps">GitHub: https://github.com/openma-ai/dsh-mcp-apps</a></li>
+  </ul>
+
+  <p>In retrospect, these four projects pushed the same Plugin mechanism across four different boundaries. <a href="https://github.com/openma-ai/deepseek-harness-acp">DeepSeek Harness ACP</a> translates DSH Sessions, Tools, and permissions into ACP messages, so Clients such as Zed and Martty can connect directly to DSH. <a href="https://github.com/openma-ai/dsh-agents-plugins">DSH Agent Plugins Bridge</a> turns Plugins from other Agent ecosystems into capabilities DSH can manage. <a href="https://github.com/openma-ai/dsh-mcp-apps">DSH MCP Apps</a> adds the application layer missing from the existing MCP support. <a href="https://github.com/openma-ai/Martty">Martty</a> makes the TUI Plugin itself an extensible component.</p>
+
+  <p>Those boundaries look unrelated, yet inside Harness they repeatedly raise the same questions: how a Plugin declares dependencies, how a package enters a Profile, how the Loader creates a Fiber, why Web owns a separate Client tree, how dynamic code follows the same lifecycle, and how Preset turns a group of Plugins into a selectable Agent. The community can use these official abstractions to add Agent capabilities without putting every capability into the Harness core.</p>
+
+  <p>We will begin with a minimal Plugin, follow its loading path into external ecosystems, Web, dynamic Plugins, and Presets, then return to the reusable practices these four projects revealed.</p>
+
+  <h2>Start with the most basic Plugin</h2>
+
+  <p>The stdio transport in <a href="https://github.com/openma-ai/deepseek-harness-acp">DeepSeek Harness ACP</a> is almost the smallest possible DSH Plugin:</p>
+
+  <pre><code>export const inject = ['acpServer']
+
+export function apply(ctx) &#123;
+  const stream = nodeAcpStream(process.stdin, process.stdout)
+  return ctx.acpServer.connect(stream)
+&#125;</code></pre>
+
+  <p>This module does only two things:</p>
+
+  <ol>
+    <li><code>inject</code> declares that it needs <code>acpServer</code>.</li>
+    <li><code>apply(ctx)</code> receives a Context whose dependencies are satisfied and connects a stdio stream to the Service.</li>
+  </ol>
+
+  <p>These few lines already contain the basic principle of “plugging in.” The Plugin does not search for a global ACP Server, nor does it create a second Harness. It waits for the Host to provide a Service, then connects a transport to it. The resulting runtime resource is owned by a Fiber and is reclaimed according to ownership when the parent exits. Events, timers, and registry contributions are commonly paired with cleanup through <code>ctx.effect()</code>; they follow the same lifecycle.</p>
+
+  <p>For DSH to discover this module, the package also declares its Bundle patch:</p>
+
+  <pre><code>&#123;
+  "dsh": &#123; "bundle": &#123; "patch": "./cordis.patch.yml" &#125; &#125;
+&#125;</code></pre>
+
+  <p>The patch then writes the module as a Loader row:</p>
+
+  <pre><code>- insert:
+    - id: acp-bridge
+      name: '@openma/deepseek-harness-acp/stdio'</code></pre>
+
+  <p>The TypeScript module defines the Plugin's shape. <code>package.json</code> tells DSH where to find the composition declaration. The Bundle patch decides where the Plugin enters the profile. Together, these three pieces form a minimal, installable DSH Plugin.</p>
+
+  <p>A qualified Plugin therefore needs four properties:</p>
+
+  <ul>
+    <li><strong>Dependencies can be declared</strong>: <code>inject</code> names the required Services and forms an explicit dependency graph.</li>
+    <li><strong>Capabilities can be composed</strong>: the Plugin contributes through Context, without adding a special branch to the Host.</li>
+    <li><strong>Instances can be isolated</strong>: each configured instance is owned by an independent Fiber.</li>
+    <li><strong>The lifecycle is reversible</strong>: disabling the Plugin fully removes its connections, events, and UI contributions.</li>
+  </ul>
+
+  <p>The Host does not need to understand a Plugin's business logic to load, manage, and unload it through the same mechanism.</p>
+
+  <h3>How installation becomes a running capability</h3>
+
+  <p>The DSH loading path can be reduced to five layers:</p>
+
+  <pre><code>Profile
+  └─ ordered Bundle patch layers
+       └─ Loader rows
+            └─ Cordis Fibers
+                 └─ Services / Events / Effects</code></pre>
+
+  <p><strong>Profile</strong> decides which capabilities a DSH instance composes. <code>dsh plugin --profile acp add ...</code> asks pnpm to install the package into the profile and appends the Bundle name to the <code>dsh.profile.bundles</code> list in <code>package.json</code>.</p>
+
+  <p><strong>Bundle patch</strong> is the declarative composition layer. Patch priority comes from this <code>bundles</code> list, not from pnpm's dependency graph or lockfile order. DSH applies each Bundle patch, then the profile, home, and command-line overlays. A later layer may replace an earlier Loader row by <code>id</code>. <code>--dump-config</code> shows the final composition.</p>
+
+  <p><strong>Loader row</strong> represents a manageable Plugin instance. Its position in a configuration array does not express runtime dependency order: the Loader may mount rows concurrently, while each Plugin waits for required Services through <code>inject</code>. The Loader creates a <strong>Fiber</strong> for the row, waits for dependencies, then calls <code>apply</code>. Services, events, and effects registered by the Plugin belong to that Fiber. Disabling the row disposes the Fiber and retracts each contribution along the same path.</p>
+
+  <p>This separates “the npm package is installed” from “the capability is running.” A package delivers code, a Bundle decides where it is composed, a Loader creates an instance, and a Fiber owns runtime resources.</p>
+
+  <img src="/blog/dsh-plugin-best-practices/02-flowchart-plugin-loading.png" alt="The DSH Plugin path from package installation to Fiber runtime and disposal" loading="lazy" decoding="async" />
+
+  <p>The evolution of <a href="https://github.com/openma-ai/deepseek-harness-acp">DeepSeek Harness ACP</a> made this boundary progressively clearer. Initially it behaved more like a standalone adapter with its own boot logic: locate Harness, create a Session, occupy stdio, and translate messages in both directions. That worked in isolation. But once the same adapter needed to enter Zed, Martty, or an existing profile, starting another Host would duplicate credentials, Sessions, Tools, and persistence.</p>
+
+  <p>Later changes removed special branches from the launcher. ACP Host became an embeddable Plugin, while stdio, the TUI Client bridge, and user questions became separate child Plugins. Host provides Services such as <code>agents</code>, <code>commands</code>, and <code>approval</code>; ACP only projects them into the protocol. When a Client leaves, only resources belonging to that connection are reclaimed, without affecting other Harness Sessions. This history gives us a first test: <strong>an integration that merely runs is not enough. A good integration must enter someone else's composition and return every resource it owns.</strong></p>
+
+  <h2>Composition and inheritance: what makes DSH Plugin different</h2>
+
+  <p>Codex, Claude Code, Pi, and Agent Plugins all call their extensions Plugins, but the word does not have one shared runtime meaning. Each ecosystem decides where packages are discovered, what a manifest may declare, and which extension point executes the code. A DSH Plugin enters a Cordis composition: a Bundle patch inserts Loader rows into the current Profile, then each Plugin contributes capabilities through Services.</p>
+
+  <p>The <a href="https://agent-plugins.org/">Agent Plugins</a> standard adds a portable package format across those ecosystems. It describes a Plugin with <code>plugin.json</code> and carries standard capabilities through <code>skills/</code> and <code>mcp.json</code>. Its primary question is “how can different Agents recognize the same Plugin package?” DSH continues with another question: “once the package's capabilities enter a runtime, how do they depend on one another, and who owns them?”</p>
+
+  <p>Most Agent Plugin systems begin with package contents: put Skills, MCP, Hooks, and related capabilities into one package, then compose that content into an Agent at installation time. The DSH runtime also manages two structural relationships. <code>inject</code> determines which Service a Plugin waits for. The Fiber parent tree determines who owns a resource and which parent it exits with. For registries that support Scope—such as Tools, Skills, and prompt sections—an Agent may also search along an <code>agent → preset → global</code> parent chain. Ordinary Services do not use this Scope chain; they continue to resolve through Context, realm, and <code>inject</code>.</p>
+
+  <p>This capability inheritance is almost isomorphic to inheritance in programming languages. Shared Tools, Skills, and Prompts are reusable; the costs are equally familiar: implicit dependencies, coupling to a parent, and same-name shadowing. Inspecting only the current composition may not reveal an Agent's effective capabilities; sometimes you must walk up the Scope parent chain. Composition is a better fit for optional and volatile capabilities. Inheritance is a better fit for a stable base.</p>
+
+  <p><code>inject</code> is also a deliberately weak dependency declaration. It names the required Service, but it does not bind that Service to a particular Plugin, provider version, or Scope. The dependency graph closes only inside a concrete composition. That freedom allows implementations to be replaced and Plugins to be recombined, but missing dependencies, provider conflicts, and version incompatibilities appear later.</p>
+
+  <p>The user gains many more extension points: protocols, Tools, Agent compositions, backend connections, Web slots, and Client Surfaces may all be supplied by the community. They can be enabled separately and fail locally. The cost lands on development and governance: authors need to understand Bundles, Loaders, Services, and Fibers; the more open the ecosystem becomes, the more Plugin quality can diverge in cleanup, error handling, UI, permissions, and upgrades.</p>
+
+  <p>An external Plugin therefore cannot be integrated by simply renaming its manifest. A Skill must enter the Skill Service, an MCP Server must become an MCP Client row, and Hooks and Agents must find the registration point that owns them.</p>
+
+  <p>Harness core provides stable Context, Service, Loader, and Fiber mechanisms, while new formats and capabilities grow in community Plugins. This resembles an engineering projection of the <strong>Bitter Lesson</strong> into Plugin systems: instead of having the core team enumerate every capability, first provide a general mechanism that can receive unknown extensions.</p>
+
+  <p><a href="https://github.com/openma-ai/dsh-agents-plugins">Agent Plugins Bridge</a> performs this translation for the existing Harness Plugin ecosystem. It uses Agent Plugins 1.0 as the portable core specification and adds compatibility adapters for Codex, Claude Code, and Pi. Discovery is read-only; only an explicit Import copies content into the current Profile; Activation then materializes each capability as Loader rows.</p>
+
+  <h2>Web Plugin: Host, Client, and two-sided Plugins</h2>
+
+  <p>The official Web runtime contains two independent Cordis trees. One runs in the Node Host and owns Agents, Sessions, and backend Services. The other runs in the browser and owns React, page slots, themes, and interaction state. Settings pages, Tool cards, themes, and other UI contributions visible on the Web all come from Client Plugins in the browser tree. The trees do not share Contexts, Fibers, or object references.</p>
+
+  <p>According to where code actually runs, there are three forms:</p>
+
+  <ol>
+    <li><strong>Host Plugin</strong> runs only in Node. It provides Agents, connections, storage, permissions, or other backend Services, without producing browser UI.</li>
+    <li><strong>Client Plugin</strong> runs only in the browser Cordis tree and contributes slots, themes, or interaction state. Its package still needs a Host row for Modules Service discovery, but the Host entry may be empty.</li>
+    <li><strong>Two-sided Plugin</strong> delivers a Host half and a Client half in one installation unit. The Host half owns data and resources, the Client half presents them, and Remote carries explicit data, calls, and events between the two.</li>
+  </ol>
+
+  <p>All three forms still have dependency and ownership layers. The Host and Client trees each own their own <code>inject</code> dependency graph and Fiber ownership graph. Remote connects the two hierarchies; it does not merge them into one tree.</p>
+
+  <p>A two-sided Plugin contains two Plugin instances. The package root entry is mounted into the Host by the profile Loader. <code>dsh.client</code> in the manifest declares browser dependencies, while <code>./client</code> exports the Client Plugin. Host Modules Service scans enabled rows and creates the browser module graph; the page Loader then creates a separate Fiber for the Client half. “Two-sided” means that one installation unit spans both ends and data can travel in both directions. It does not mean that one Fiber or Context spans two processes.</p>
+
+  <p>The same package name does not imply the same Plugin instance. Host row and browser row own different Contexts and Fibers. A page refresh only rebuilds the Client tree, so Host connections, tasks, and listeners may continue running. Conversely, unloading a Host Plugin does not cross a process boundary and directly destroy a Client Fiber already open in a page; the page receives a new module graph after refresh or recomposition. Web UI is one presentation of a Host capability, not the owner of backend resource lifecycles.</p>
+
+  <img src="/blog/dsh-plugin-best-practices/03-comparison-host-client.png" alt="A two-sided Web Plugin creates independent instances in Node Host and the browser" loading="lazy" decoding="async" />
+
+  <p><a href="https://github.com/openma-ai/dsh-mcp-apps">DSH MCP Apps</a> is a two-sided Plugin. The DSH version we began with already used <code>dsh-mcp-client</code> for MCP connections, Tool discovery, and execution, but it did not yet support MCP Apps. Apps must read a <code>ui://</code> Resource from a Tool definition's <code>_meta</code>, load the interface content, establish AppBridge, and safely run HTML provided by the Server.</p>
+
+  <p>The package delivers both Host and Client Bundles. Host reuses the existing MCP connection. Client takes over the corresponding Tool result slot and places the App in an iframe sandbox; user interaction travels back to Host through Remote. AppBridge and the sandbox provide a dedicated App presentation path, while both halves remain ordinary Loader-managed Plugins and no second MCP connection is created. A TUI can continue to use the same MCP Tools and Resources without executing the browser HTML.</p>
+
+  <h2>Dynamic Cordis Plugins in Creator mode: self-evolving</h2>
+
+  <p>Dynamic Plugins solve a different problem: code does not need to exist in the Profile in advance. An Agent can keep adding Plugins to itself while it is running.</p>
+
+  <p><code>cordis_define</code> validates and registers code, leaving a new immutable version after every change. <code>cordis_run</code> loads it. Stop retracts the running instance; delete removes the definition and every version.</p>
+
+  <p>A dynamic Plugin still follows the loading rules of a static Plugin. Web's <code>cordis-client-runner</code> converts runtime code into an ordinary Loader entry, so the Plugin still waits through <code>inject</code>, activates through <code>apply</code>, and cleans up through a disposer. The running Plugin joins the ownership hierarchy as a child Fiber under Runner and joins the dependency hierarchy through Services. Only the code source and the time it enters the Loader have changed. Dependency and ownership rules are not replaced.</p>
+
+  <p>Separating <code>define</code> from <code>run</code> means definition only records a version; running crosses the trust boundary and creates a Fiber and side effects. A failed experiment can append another version and switch. The official implementation deliberately keeps definitions in Host process memory. Refreshing a page only reconstructs the Client tree, so saved definitions remain; restarting the Host process loses them. A result intended for long-term use should be saved as an ordinary package, returning installation, versioning, and removal to the static Plugin workflow.</p>
+
+  <p>Dynamic Plugins can run outside Web as well. A Host-only Plugin can run in a headless or ACP environment that provides a Host Runner. A Plugin with a Client half needs a Surface that provides the corresponding Runner. Official Web presents it with React and page slots; Martty presents it with <code>TuiNode</code> and terminal Services.</p>
+
+  <h2>Preset: decide which capabilities an Agent brings into the runtime</h2>
+
+  <p>A Plugin package may compose several capabilities, while DSH adds dependencies and inheritance between them. But capabilities installed in the environment are not necessarily capabilities every Agent should receive. Preset moves composition to the Agent layer: it gives a name to a coordinated group of choices, then assigns that group to a concrete Agent.</p>
+
+  <p>A dynamic Plugin Host Runner may always be present in the environment, yet an ordinary Agent may not see the Tool that controls it. The official <code>cordis</code> AgentPreset adds <code>tool-cordis</code> and a supporting Skill to a complete composition. That Agent can inspect the Cordis API, define and run Plugins, and continue editing after a loading error.</p>
+
+  <p>The Cordis dynamic Plugin experience in official Web therefore has three parts: static <code>cordis-client-runner</code> loads code, static <code>ui-cordis</code> provides approval and management UI, and the <code>cordis</code> AgentPreset makes the Agent the author. <strong>Plugin runtime provides the capability; AgentPreset decides which kind of Agent can use it.</strong> Switching back to <code>standard</code> leaves the Host infrastructure running, but the current Agent no longer owns those authoring Tools.</p>
+
+  <p>Once a system exposes prompt, Tool, Skill, model, sandbox, and approval choices, arbitrary combinations quickly produce many untested states. Preset groups decisions that should move together into a named, reusable plan and makes three things explicit:</p>
+
+  <ol>
+    <li><strong>Consistency</strong>: the complete combination expresses one intent.</li>
+    <li><strong>Coordination boundary</strong>: which choices change together and how each failure is handled.</li>
+    <li><strong>Effective time</strong>: when the choice becomes fixed and which later state depends on it.</li>
+  </ol>
+
+  <p>AgentPreset goes deeper than ordinary composition. It turns a composition into an inheritable standing Scope. Selecting a Preset is equivalent to selecting the Agent's capability parent. PermissionPreset merely combines two policy values and does not establish a new Scope inheritance relation. Their names are similar, but one creates a capability hierarchy while the other provides an operational shortcut.</p>
+
+  <p>AgentPreset implements each Preset directly as a Scope. In the official implementation, every Preset is a directory with an <code>agent.cordis.yml</code> file containing ordinary Loader rows. Roster mounts that composition as a standing Scope; when an Agent is created, its Scope is attached below the Preset Scope. Registries that support Scope—Tools, Skills, and prompt sections—therefore resolve through <code>agent → preset → global</code>. A Preset may include or omit prompts, Tools, Skills, models, and compaction. For example, <code>minimal</code> keeps only a few basic Tools and includes neither Skills nor compaction. Plugin instances may be shared while Session- or Agent-keyed state remains isolated.</p>
+
+  <p>The “fragile base class” problem in programming languages becomes the “fragile Preset” problem here. An Agent's effective capabilities come from the full parent chain, so the Session alone is insufficient. Changing a parent Preset affects Agents attached later, while a same-name Tool in a child may shadow the parent version. The official runtime therefore pins a running Agent to the mounted composition generation. New Sessions may use a later Preset file; old Sessions keep the interpretation environment they were created with. This time boundary prevents reuse from breaking reproducibility.</p>
+
+  <p>AgentPreset is therefore heavier than a configuration template. It stores a capability topology: which Tool schemas the model sees on the first turn, which prompt sections enter the prefix, where Skills are discovered, and how compaction participates in long history. Once a conversation begins, this topology becomes the interpretation environment for its history. Official <code>recompose()</code> is consequently limited to a blank Agent. It first ensures the new composition is mounted, then moves the Agent Scope; on failure, the old binding remains. A Session with output is locked because its history may contain Tool calls the new Preset cannot explain or execute.</p>
+
+  <p>PermissionPreset is instead a policy table. A name maps to two independently consumed settings, <code>sandbox/mode</code> and <code>approval/policy</code>, such as <code>workspace-write + ask</code> or <code>danger-full-access + never</code>. Switching records the named choice, then updates the values consumed by the executor and approval service. This path does not have AgentPreset recompose's transactional rollback. If a user edits both settings independently and the result matches no named combination, the UI derives <code>custom</code>. PermissionPreset constrains how the next Tool runs; it does not rewrite the Agent's Tool view or the semantics of its history.</p>
+
+  <img src="/blog/dsh-plugin-best-practices/04-comparison-presets.png" alt="AgentPreset capability Scope compared with PermissionPreset execution policy" loading="lazy" decoding="async" />
+
+  <p>They share only the Preset idea: group decisions that can drift out of sync into one user intention and define when it becomes effective. The name Preset does not itself guarantee transaction semantics. <strong>AgentPreset answers “who is this Agent, and what can it do?” PermissionPreset answers “how far may it go next, and when must it ask a human?”</strong></p>
+
+  <h2>Do not merely plug in—be plugged into: the Martty example</h2>
+
+  <p>Martty's architecture was directly inspired by the official Web two-tree model. We kept DSH's Host Cordis tree and started a separate Node Client tree, connecting them with ACP. Rust owns only the TTY, input, and painting; it does not copy an Agent runtime. The Web React renderer can therefore be replaced by a semantic terminal renderer while Plugin dependencies, Fibers, and lifecycles remain intact.</p>
+
+  <p>This architecture was not complete from the beginning. The early terminal program directly owned colors, the status bar, the plan view, and Session state. Features grew quickly, but every new UI capability taught the Rust main loop another domain concept. Looking back through later changes, Plan and statistics first moved into Client Plugins, the welcome page became slot contributions, then UI Presets, theme packages, and persistent local Plugin lifecycles arrived. Rust gradually retreated into a painter: it accepts structured <code>TuiNode</code> values, handles layout, keyboard input, and terminal compatibility, and does not know whether a region came from Plan, Bridge, or a model-generated dynamic Plugin.</p>
+
+  <p>Martty follows the Web boundary and retains process isolation. Host tree and Client tree share no Loader graph, <code>ctx.*</code>, or Fiber. Standard ACP carries Sessions, commands, and configuration. Once both sides negotiate the <code>_dsh/cordis</code> capability, they may also exchange run requests and serialized Surface updates. An ID used to correlate two instances across the protocol still does not make them one Plugin. We do not synchronize an entire Cordis tree between processes, because dependencies and lifecycles remain intelligible only in the process that owns their resources.</p>
+
+  <p>Martty Client Plugins manage <code>TuiNode</code> values through Services. Themes, slots, commands, and overlays are all Services. A third-party Plugin joins the dependency hierarchy through <code>inject</code> and the ownership hierarchy through the disposer returned by registration. Rust painter sits at the end of these layers and consumes only the final projection; it never becomes a global object on which every UI Plugin depends.</p>
+
+  <p>Martty first plugs into DSH as a Surface Plugin:</p>
+
+  <pre><code>dsh plugin --profile martty add martty@latest</code></pre>
+
+  <p>This Bundle mounts ACP and the Creator overlay into the Base Host tree and establishes the launch relationship between Client and painter. Harness source code does not change for Martty. Removing the Bundle or package retracts the complete TUI Surface.</p>
+
+  <p>Martty also retains its identity as an independent ACP Client. The same Client Plugin can be the root of an independent Client tree and spawn <code>dsh-acp</code> or connect to another ACP Agent; it can also be a row inside an existing Client tree and consume a stream owned by the caller. Installation in a DSH Profile is the first layer of “being plugged in.” Once Martty becomes a row in a caller-managed Client composition, dependency resolution and cleanup belong to the caller as well.</p>
+
+  <p>At the same time, Martty lets other Plugins enter it.</p>
+
+  <p>Consider a build monitor. A Web Plugin registers a React component in a slot. A Martty Plugin registers a group of <code>TuiNode</code> values in <code>chrome.right</code>, and Rust painter draws the terminal right rail. The capability is the same, while each presentation layer adapts locally. The Plugin only describes its contribution.</p>
+
+  <p>Both surfaces limit which resources a Plugin can touch. A terminal Plugin cannot access raw mode, file descriptors, ratatui widgets, or absolute coordinates; a Web Plugin does not directly receive Host Session objects. Plugins receive semantic slots and a Service catalog, while the Host retains physical rendering and resource ownership. The API appears narrower, but that is precisely what allows a contribution to disappear completely with its Fiber and prevents third-party code from binding to Martty internals.</p>
+
+  <p>Martty's <code>default</code> and <code>deepseek</code> welcome pages are UI Plugins as well. They call <code>tuiPresets.register(...)</code> to compose <code>welcome.hero</code> and <code>welcome.info</code>, automatically enter the <code>/ui</code> selector, and share one switching, persistence, and unload flow. This composition belongs to Client UI, while Host AgentPreset belongs to a different tree. It is Preset on the Client side: the user selects a complete interface, but independent slot contributions remain underneath.</p>
+
+  <p>Now “a good Plugin should be plugged into” has its complete meaning. Martty plugs into DSH and can plug into another Agent as an ACP Client. Themes, commands, panels, and dynamic Cordis Client Plugins then plug into Martty. Every layer owns only its own resources and leaves a stable extension point for the next layer.</p>
+
+  <img src="/blog/dsh-plugin-best-practices/05-framework-martty.png" alt="Martty plugs into DSH as an ACP Client and accepts third-party Client Plugins" loading="lazy" decoding="async" />
+
+  <h2>Plugin best practices distilled from these examples</h2>
+
+  <p>This development process left ten reusable practices:</p>
+
+  <ol>
+    <li><strong>Declare dependencies explicitly.</strong> A Plugin waits for Services through <code>inject</code>; it neither scans global objects nor guesses startup order.</li>
+    <li><strong>Use hierarchy to express relationships.</strong> <code>inject</code> expresses Service dependency, the Fiber parent tree expresses ownership, and only Scope-aware registries inherit along a parent chain. Do not encode these relationships in row order.</li>
+    <li><strong>Use inheritance sparingly.</strong> A Scope parent should contain only a stable shared base. Compose optional and volatile capabilities explicitly, and make shadowing and the final effective capability set inspectable.</li>
+    <li><strong>Separate installation from runtime.</strong> A package delivers code, a Bundle patch composes it, a Loader row represents an instance, and a Fiber owns running resources.</li>
+    <li><strong>Make every contribution reversible.</strong> Events, timers, connections, slots, and registry registrations should leave with Fiber disposal, without a half-alive state.</li>
+    <li><strong>Split Plugins by ownership.</strong> Host resources remain in Host; browser and terminal UI remain in their Client trees. One npm package may contain multiple lifecycles.</li>
+    <li><strong>Project capabilities across boundaries.</strong> Remote or ACP carries explicit data and operations; it does not synchronize Contexts, Fibers, or a complete Plugin graph.</li>
+    <li><strong>Send dynamic code through the ordinary Loader.</strong> Source and authorization time may change, while <code>inject</code>, <code>apply</code>, error isolation, and cleanup rules remain the same.</li>
+    <li><strong>Use Preset to compose user intent.</strong> A validated capability set may be selected together, while Agent composition and runtime permission keep their different effective-time boundaries.</li>
+    <li><strong>Plug in and be plugged into.</strong> A Plugin enters another system through public extension points and, where appropriate, exposes Services, slots, or protocols so the next capability does not need to modify its core.</li>
+  </ol>
+
+  <p>All four of our components use extension points already validated by DeepSeek Harness and carry them into protocols, external ecosystems, Web, and terminals:</p>
+
+  <table>
+    <thead><tr><th>Official Harness mechanism</th><th>Our practice</th><th>Invariant principle</th></tr></thead>
+    <tbody>
+      <tr><td>Profile, Bundle patch, Loader, Fiber</td><td>ACP as an embeddable Host Plugin; Bridge compiles external capabilities into rows</td><td>Installation, instances, and lifecycles stay separate</td></tr>
+      <tr><td><code>inject</code>, Fiber parent, Scope parent</td><td>ACP child Plugins; Martty Client Plugins</td><td>Dependency, ownership, and inheritance do not depend on array order</td></tr>
+      <tr><td>AgentPreset standing Scope</td><td>ACP projects the Preset roster; Martty uses <code>/agent</code> to select it</td><td>Host still mounts the composition</td></tr>
+      <tr><td>Web Host/Client dual Cordis trees</td><td>MCP Apps splits Host/Web; Martty builds an independent Client tree</td><td>The two ends do not share Context or Fiber</td></tr>
+      <tr><td>Remote and typed Client slots</td><td>AppBridge Remote; ACP Cordis extensions; <code>TuiNode</code> slots</td><td>Only explicit capabilities and data cross a boundary</td></tr>
+      <tr><td>Dynamic Host/Client Runner</td><td>Web receives the React half; Martty receives terminal <code>code.client</code></td><td>Temporary code still follows the Loader lifecycle</td></tr>
+    </tbody>
+  </table>
+
+  <p>These mappings preserve the boundaries of the original system. Web React components are not forced into the terminal, ACP does not become another Harness, Bridge does not simulate four complete Agent runtimes, and MCP Apps does not copy a second MCP connection. Every extension first looks for a Service the system already owns, then contributes the smallest new capability.</p>
+
+  <p>Looking back at the week, each project found one clear extension point: ACP connects the protocol, Bridge connects external Plugins, MCP Apps connects interactive Tools, and Martty connects the terminal. They use Loader, Service, and Fiber without requiring Harness core to recognize every future capability. This is close to the ideal Plugin state for a community: once installed, a capability feels native; once removed, it exits cleanly. When the next Agent capability appears, another Plugin is enough—no Harness fork required.</p>
+
+  <p>The first nine practices let a Plugin safely enter an existing system. The tenth determines whether it can become the beginning of an ecosystem. A Plugin that only consumes someone else's extension points ends at a leaf. A Plugin that lets the next layer enter turns one integration into something that can keep growing.</p>
+
+  <p>Martty is a practical reference. It can be installed into DSH as a DeepSeek Harness Plugin and connect to another ACP Agent as an independent ACP Client. Themes, commands, panels, and dynamic Cordis Client Plugins can then enter Martty. Neither direction requires a core-code modification, and dependencies and lifecycles stay in the process that owns the resource.</p>
+
+  <h2>Projects and specifications</h2>
+
+  <ul>
+    <li><strong>Martty</strong>: <a href="https://github.com/openma-ai/Martty">https://github.com/openma-ai/Martty</a></li>
+    <li><strong>DeepSeek Harness ACP</strong>: <a href="https://github.com/openma-ai/deepseek-harness-acp">https://github.com/openma-ai/deepseek-harness-acp</a></li>
+    <li><strong>DSH Agent Plugins Bridge</strong>: <a href="https://github.com/openma-ai/dsh-agents-plugins">https://github.com/openma-ai/dsh-agents-plugins</a></li>
+    <li><strong>DSH MCP Apps</strong>: <a href="https://github.com/openma-ai/dsh-mcp-apps">https://github.com/openma-ai/dsh-mcp-apps</a></li>
+    <li><strong>DeepSeek Harness</strong>: <a href="https://github.com/deepseek-ai/deepseek-harness">https://github.com/deepseek-ai/deepseek-harness</a></li>
+    <li><strong>Agent Plugins standard</strong>: <a href="https://agent-plugins.org/">https://agent-plugins.org/</a></li>
+  </ul>
+</ContentPage>

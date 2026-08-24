@@ -7,12 +7,19 @@ interface Props {
   imageAlt: string;
   kind?: "software" | "article" | "webpage";
   translated?: boolean;
+  alternatePath?: string;
   publishedTime?: string;
 }
 
-const { title, description, lang, path, imageAlt, kind = "software", translated = false, publishedTime } = Astro.props;
+const { title, description, lang, path, imageAlt, kind = "software", translated = false, alternatePath, publishedTime } = Astro.props;
 const origin = Astro.site ?? new URL("https://martty.sh");
 const canonical = new URL(path, origin);
+const zhAlternate = alternatePath
+  ? new URL(lang === "zh-CN" ? path : alternatePath, origin)
+  : translated ? new URL("/", origin) : undefined;
+const enAlternate = alternatePath
+  ? new URL(lang === "en" ? path : alternatePath, origin)
+  : translated ? new URL("/en", origin) : undefined;
 // The legacy social-preview still carries the pre-Martty brand. Reuse the
 // current product screenshot until a dedicated Martty 2:1 card is shipped.
 const socialImage = new URL("/ui_start.png", origin);
@@ -65,9 +72,9 @@ const structuredData = {
 <meta name="description" content={description} />
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
 <link rel="canonical" href={canonical} />
-{translated && <link rel="alternate" hreflang="zh-CN" href={new URL("/", origin)} />}
-{translated && <link rel="alternate" hreflang="en" href={new URL("/en", origin)} />}
-{translated && <link rel="alternate" hreflang="x-default" href={new URL("/en", origin)} />}
+{zhAlternate && <link rel="alternate" hreflang="zh-CN" href={zhAlternate} />}
+{enAlternate && <link rel="alternate" hreflang="en" href={enAlternate} />}
+{enAlternate && <link rel="alternate" hreflang="x-default" href={enAlternate} />}
 <link rel="icon" href="/favicon.ico" sizes="any" />
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />

@@ -10,6 +10,7 @@ interface Props {
   publishedTime?: string;
   article?: boolean;
   lang?: "zh-CN" | "en";
+  alternatePath?: string;
   publishedLabel?: string;
   showDescription?: boolean;
 }
@@ -22,6 +23,7 @@ const {
   publishedTime,
   article = false,
   lang = "en",
+  alternatePath,
   publishedLabel,
   showDescription = true,
 } = Astro.props;
@@ -32,7 +34,7 @@ const isChinese = lang === "zh-CN";
 <!doctype html>
 <html lang={lang}>
   <head>
-    <SeoHead title={title} description={description} {lang} path={path} imageAlt="Martty terminal agent client" kind={article ? "article" : "webpage"} publishedTime={publishedTime} />
+    <SeoHead title={title} description={description} {lang} path={path} imageAlt="Martty terminal agent client" kind={article ? "article" : "webpage"} {alternatePath} publishedTime={publishedTime} />
   </head>
   <body class="min-h-screen bg-[#05070a] text-[#e7eaee] antialiased">
     <div class="mx-auto flex min-h-screen max-w-4xl flex-col px-5 sm:px-8">
@@ -57,7 +59,7 @@ const isChinese = lang === "zh-CN";
       </main>
       <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-[#171d25] py-6 text-xs text-[#4c5560]">
         <span>© {year} Martty · MIT License</span>
-        <nav class="flex gap-4"><a href="https://www.npmjs.com/package/martty">npm</a><a href="https://github.com/openma-ai/Martty">GitHub</a><a href={isChinese ? "/en" : "/"}>{isChinese ? "English" : "中文"}</a></nav>
+        <nav class="flex gap-4"><a href="https://www.npmjs.com/package/martty">npm</a><a href="https://github.com/openma-ai/Martty">GitHub</a><a href={alternatePath ?? (isChinese ? "/en" : "/")}>{isChinese ? "English" : "中文"}</a></nav>
       </footer>
     </div>
   </body>
