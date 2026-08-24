@@ -940,7 +940,7 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn new_session_applies_initial_config_before_binding() {
+async fn new_session_binds_before_applying_initial_config() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeResponse, NewSessionResponse, SessionConfigOption,
         SessionConfigSelectOption,
@@ -1012,7 +1012,7 @@ async fn new_session_applies_initial_config_before_binding() {
         }
     }
 
-    assert_eq!(order, ["plan", "bound"]);
+    assert_eq!(order, ["bound", "plan"]);
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
@@ -1246,7 +1246,7 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_session_applies_initial_config_before_binding_the_loaded_id() {
+async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse,
         SessionConfigOption, SessionConfigSelectOption,
@@ -1338,7 +1338,7 @@ async fn load_session_applies_initial_config_before_binding_the_loaded_id() {
         }
     }
 
-    assert_eq!(order, ["plan", "bound"]);
+    assert_eq!(order, ["bound", "plan"]);
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }

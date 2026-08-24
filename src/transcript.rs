@@ -694,6 +694,7 @@ impl Transcript {
             UiEvent::AgentPreset { preset, .. } => {
                 self.push_notice(NoticeLevel::Info, format!("⚙ agent preset · {preset}"));
             }
+            UiEvent::ReasoningEffort { .. } => {}
             UiEvent::ApprovalAsked { tool, reason, .. } => {
                 let why = reason.map(|r| format!(" · {r}")).unwrap_or_default();
                 self.push_notice(

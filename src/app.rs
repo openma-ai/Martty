@@ -1068,6 +1068,7 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::ApprovalPolicy { session, .. }
         | UiEvent::PermissionPreset { session, .. }
         | UiEvent::AgentPreset { session, .. }
+        | UiEvent::ReasoningEffort { session, .. }
         | UiEvent::ApprovalAsked { session, .. }
         | UiEvent::ApprovalDecided { session, .. } => Some(session),
         UiEvent::SubagentStarted { .. }
@@ -1338,7 +1339,7 @@ impl App {
             slot_actions: Vec::new(),
             att_thumbs: Vec::new(),
             hover_att: None,
-            modes: Self::load_modes_cache(&cfg).unwrap_or_default(),
+            modes: Modes::default(),
             skills: Vec::new(),
             plugin_commands: Vec::new(),
             static_plugins: Vec::new(),
@@ -2052,15 +2053,9 @@ impl App {
     }
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
-        let modes_before = self.modes.clone();
         let queue_before = (!self.demo).then(|| self.queue_snapshot());
         let agents_before = (!self.demo).then(|| self.agents_snapshot());
         self.handle_inner(ev, ctl);
-        // Persist mode-fact changes (chips survive restarts — the cache is
-        // the landing state's source of truth until the host reports).
-        if self.modes != modes_before {
-            self.save_modes_cache();
-        }
         // A turn ran on the picked model → the stream is the truth again.
         if self.selected_model.is_some()
             && self.selected_model.as_deref() == self.transcript.last_model.as_deref()
@@ -2729,6 +2724,10 @@ impl App {
                 self.modes.agent_preset = Some(preset.clone());
                 apply_to_transcript = false;
             }
+            E::ReasoningEffort { session, effort } if *session == self.session_id => {
+                self.modes.effort = Some(effort.clone());
+                apply_to_transcript = false;
+            }
             E::SessionTitle { session, title } if *session == self.session_id => {
                 self.session_title = Some(title.clone());
             }
@@ -3126,46 +3125,6 @@ impl App {
         self.selecting = false;
         let word = word.clone();
         self.copy_text(&word);
-    }
-
-    /// Where the per-workspace mode cache lives (beside the session logs).
-    fn modes_cache_path(cfg: &RuntimeConfig) -> std::path::PathBuf {
-        std::path::Path::new(&cfg.session_root).join("dsh-tui-modes.json")
-    }
-
-    /// Last-known client preferences for this workspace. Host-authoritative
-    /// session facts never carry over into a new session.
-    fn load_modes_cache(cfg: &RuntimeConfig) -> Option<Modes> {
-        let text = std::fs::read_to_string(Self::modes_cache_path(cfg)).ok()?;
-        let root: serde_json::Value = serde_json::from_str(&text).ok()?;
-        let entry = root.get("workspaces")?.get(&cfg.workspace)?;
-        let mut modes: Modes = serde_json::from_value(entry.clone()).ok()?;
-        modes.plan = false;
-        modes.sandbox = None;
-        modes.approval = None;
-        modes.permission = None;
-        Some(modes)
-    }
-
-    /// Merge this workspace's mode facts into the cache file; failures are
-    /// silent (the cache is a convenience, never a requirement).
-    fn save_modes_cache(&self) {
-        let path = Self::modes_cache_path(&self.cfg);
-        let mut root: serde_json::Value = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        if !root.is_object() {
-            root = serde_json::json!({});
-        }
-        let Ok(entry) = serde_json::to_value(&self.modes) else {
-            return;
-        };
-        root["workspaces"][&self.cfg.workspace] = entry;
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(&path, root.to_string());
     }
 
     fn locale_settings_path(cfg: &RuntimeConfig) -> std::path::PathBuf {
@@ -4270,8 +4229,8 @@ impl App {
         self.reset_subagent_views();
         self.transcript.clear();
         self.transcript.set_root_session(session.id.clone());
-        // Replay folds the session's real mode facts over the cached ones.
-        self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+        // Replay folds the session's own authoritative mode facts from empty.
+        self.modes = Modes::default();
         // The resumed stream's own model is the truth for the chip.
         self.selected_model = None;
         self.show_banner = false;
@@ -4322,7 +4281,7 @@ impl App {
     fn reset_session_ui(&mut self) {
         self.reset_subagent_views();
         self.transcript.clear();
-        self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+        self.modes = Modes::default();
         self.selected_model = None;
         self.session_title = None;
         self.show_banner = false;
@@ -4983,7 +4942,7 @@ impl App {
                     self.reset_subagent_views();
                     self.session_id = id.clone();
                     self.transcript.set_root_session(id.clone());
-                    self.modes = Self::load_modes_cache(&self.cfg).unwrap_or_default();
+                    self.modes = Modes::default();
                     self.session_title = None;
                     ctl.send(Cmd::FetchSkills);
                     self.transcript.push_notice(

@@ -569,14 +569,14 @@ fn apply_created(
     bus: &Sender<AppEvent>,
     notice: Option<String>,
 ) {
+    // Bind the authoritative id before decomposing the setup snapshot into
+    // session-scoped UI facts. Otherwise App correctly rejects those facts as
+    // belonging to a session that is not current yet.
+    emit_session_bound(bus, &created.session_id, notice);
     if let Ok(value) = serde_json::to_value(created) {
         let session = created.session_id.to_string();
         apply_setup(&value, Some(&session), surface, bus);
     }
-    // Queue the Host's authoritative model/effort/permission facts before
-    // making the session visible; otherwise one frame renders workspace
-    // cache values and then jumps to the Host state.
-    emit_session_bound(bus, &created.session_id, notice);
 }
 
 fn apply_config_response(
@@ -2272,10 +2272,6 @@ where
                             {
                                 Ok(loaded) => {
                                     session_id = Some(sid.clone());
-                                    if let Ok(value) = serde_json::to_value(&loaded) {
-                                        let session = sid.to_string();
-                                        apply_setup(&value, Some(&session), &surface, &bus);
-                                    }
                                     emit_session_bound(
                                         &bus,
                                         &sid,
@@ -2283,6 +2279,10 @@ where
                                             "⟲ loaded {id} — transcript from session/update"
                                         )),
                                     );
+                                    if let Ok(value) = serde_json::to_value(&loaded) {
+                                        let session = sid.to_string();
+                                        apply_setup(&value, Some(&session), &surface, &bus);
+                                    }
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
                                     emit_needs_auth_open(

@@ -5,8 +5,7 @@ use crate::bus::{
 };
 use std::sync::mpsc::Receiver;
 
-/// Unique session root per call — keeps the modes cache from leaking
-/// between tests and runs.
+/// Unique session root per call — keeps persisted UI fixtures isolated.
 fn fresh_root() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
@@ -42,9 +41,26 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
 }
 
 #[test]
-fn only_client_preferences_cache_per_workspace_across_instances() {
+fn legacy_mode_cache_is_neither_read_nor_written() {
     let cfg = test_cfg();
-    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let cache = std::path::Path::new(&cfg.session_root).join("dsh-tui-modes.json");
+    let legacy = serde_json::json!({
+        "workspaces": {
+            cfg.workspace.clone(): {
+                "plan": true,
+                "sandbox": "danger-full-access",
+                "approval": "never",
+                "permission": "danger-full-access",
+                "agent_preset": "code",
+                "effort": "max"
+            }
+        }
+    })
+    .to_string();
+    std::fs::write(&cache, &legacy).expect("seed legacy modes cache");
+
+    let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+    let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
     let mut app = App::new(
         Theme::dark(),
         cfg.clone(),
@@ -53,36 +69,21 @@ fn only_client_preferences_cache_per_workspace_across_instances() {
         false,
         tx.clone(),
     );
-    app.modes.agent_preset = Some("code".into());
-    app.modes.sandbox = Some("danger-full-access".into());
-    app.modes.approval = Some("never".into());
-    app.modes.permission = Some("danger-full-access".into());
-    app.modes.effort = Some("max".into());
-    app.modes.plan = true;
-    app.save_modes_cache();
+    assert!(app.modes == Modes::default());
 
-    // A second instance keeps client preferences, but session-authoritative
-    // permission facts must wait for the new host session to report them.
-    let app2 = App::new(
-        Theme::dark(),
-        cfg.clone(),
-        "s2".into(),
-        true,
-        false,
-        tx.clone(),
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::AgentPreset {
+            session: "s1".into(),
+            preset: "standard".into(),
+        }),
+        &ctl,
     );
-    assert_eq!(app2.modes.agent_preset.as_deref(), Some("code"));
-    assert_eq!(app2.modes.effort.as_deref(), Some("max"));
-    assert!(app2.modes.sandbox.is_none());
-    assert!(app2.modes.approval.is_none());
-    assert!(app2.modes.permission.is_none());
-    assert!(!app2.modes.plan, "plan is per-session");
-
-    // Another workspace in the same root stays untouched.
-    let mut other = cfg;
-    other.workspace = "/elsewhere".into();
-    let app3 = App::new(Theme::dark(), other, "s3".into(), true, false, tx);
-    assert!(app3.modes.agent_preset.is_none(), "cache is per workspace");
+    assert_eq!(
+        std::fs::read_to_string(cache).expect("legacy file remains inspectable"),
+        legacy,
+        "live ACP state must never be written into the retired cache",
+    );
+    drop(rx);
 }
 
 #[test]
@@ -1094,7 +1095,7 @@ fn demo_mode_selection_round_trips_the_durable_event() {
 }
 
 #[test]
-fn preset_ack_folds_the_chip_and_new_session_keeps_the_cached_mode() {
+fn preset_ack_folds_the_chip_and_new_session_waits_for_the_host_mode() {
     let (mut app, ctl, _rx) = test_app();
     app.handle(
         AppEvent::Ctl(CtlEvent::PresetSet {
@@ -1105,14 +1106,11 @@ fn preset_ack_folds_the_chip_and_new_session_keeps_the_cached_mode() {
     assert_eq!(app.modes.agent_preset.as_deref(), Some("cordis"));
     app.run_slash("new", "fresh", &ctl);
     assert_eq!(app.session_id, "fresh");
-    // The ack was cached for this workspace — /new boots from it (the
-    // host echoes the real facts when the session composes).
-    assert_eq!(
-        app.modes.agent_preset.as_deref(),
-        Some("cordis"),
-        "/new keeps the cached workspace mode"
+    assert!(
+        app.modes.agent_preset.is_none(),
+        "/new must not reuse the previous session's agent preset"
     );
-    assert_eq!(app.current_mode(), "cordis");
+    assert_eq!(app.current_mode(), "standard");
 }
 
 #[test]

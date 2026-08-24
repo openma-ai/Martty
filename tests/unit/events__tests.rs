@@ -696,17 +696,24 @@ fn session_update_maps_chunks_tools_and_agent_option() {
                 "sessionUpdate": "config_option_update",
                 "configOptions": [
                     {"type": "select", "id": "mode", "category": "mode", "currentValue": "read-only", "options": []},
-                    {"type": "select", "id": "agent", "currentValue": "cordis", "options": [{"value": "cordis", "name": "Cordis"}]}
+                    {"type": "select", "id": "agent", "currentValue": "cordis", "options": [{"value": "cordis", "name": "Cordis"}]},
+                    {"type": "select", "id": "effort", "currentValue": "max", "options": [{"value": "high", "name": "High"}, {"value": "max", "name": "Max"}]}
                 ]
             }
         }),
     );
     assert_eq!(
         ev,
-        vec![UiEvent::AgentPreset {
-            session: "s".into(),
-            preset: "cordis".into()
-        }]
+        vec![
+            UiEvent::AgentPreset {
+                session: "s".into(),
+                preset: "cordis".into()
+            },
+            UiEvent::ReasoningEffort {
+                session: "s".into(),
+                effort: "max".into()
+            }
+        ]
     );
 }
 

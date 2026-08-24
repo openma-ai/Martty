@@ -108,6 +108,11 @@ pub enum UiEvent {
         session: String,
         preset: String,
     },
+    /// ACP `configOptions.effort.currentValue` — Host-owned reasoning default.
+    ReasoningEffort {
+        session: String,
+        effort: String,
+    },
     /// `approval/asked` — one pending approval request.
     ApprovalAsked {
         session: String,
@@ -663,7 +668,26 @@ pub fn config_option_events(session: String, options: &Value) -> Vec<UiEvent> {
         });
     }
     if let Some(preset) = composition_current_value(Some(options)) {
-        events.push(UiEvent::AgentPreset { session, preset });
+        events.push(UiEvent::AgentPreset {
+            session: session.clone(),
+            preset,
+        });
+    }
+    if let Some(effort) = options.as_array().and_then(|entries| {
+        entries
+            .iter()
+            .find(|option| option.get("id").and_then(Value::as_str) == Some("effort"))
+            .and_then(|option| {
+                option
+                    .get("currentValue")
+                    .or_else(|| option.get("current_value"))
+                    .and_then(Value::as_str)
+            })
+    }) {
+        events.push(UiEvent::ReasoningEffort {
+            session,
+            effort: effort.to_string(),
+        });
     }
     events
 }
