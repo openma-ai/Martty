@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-08-24
+
 ### Fixed
 
 - TUI Client process now converts SIGTERM/SIGINT/SIGHUP into an orderly
