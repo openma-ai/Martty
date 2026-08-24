@@ -73,6 +73,11 @@ a {
 .content-article li + li { margin-top: 0.45rem; }
 .content-article pre { overflow-x: auto; margin: 1.3rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: 0.3rem; background: var(--surface); color: var(--fg); }
 .content-article code { color: var(--fg); }
+.content-article > img { display: block; width: 100%; height: auto; margin: 2rem 0; border: 1px solid var(--border); border-radius: 0.3rem; }
+.content-article table { display: block; width: 100%; overflow-x: auto; margin: 1.5rem 0; border-collapse: collapse; font-size: 0.86rem; }
+.content-article th, .content-article td { min-width: 10rem; padding: 0.7rem 0.8rem; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+.content-article th { background: var(--surface); color: var(--fg); }
+.content-article td { color: var(--fg-secondary); }
 .content-article__lede { margin: 1.4rem 0 0; font-size: 1.08rem; }
 .content-article__date { margin: 1rem 0 2.7rem; color: var(--caption) !important; font-size: 0.78rem; }
 .content-callout { margin: 2rem 0; padding: 1rem 1.1rem; border-left: 2px solid var(--accent); background: var(--surface); }
