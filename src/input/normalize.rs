@@ -59,4 +59,3 @@ fn rescue_with(key: KeyEvent, held: ModifierState) -> KeyEvent {
 #[cfg(test)]
 #[path = "../../tests/unit/input__normalize__tests.rs"]
 mod tests;
-

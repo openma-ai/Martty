@@ -24,6 +24,12 @@ pub enum UiEvent {
         session: String,
         text: String,
     },
+    /// A tool-call block started, but its streamed arguments are not yet a
+    /// complete request. This is a presentation transition only: the later
+    /// `ToolCall` remains the authoritative request event.
+    ToolCallPreparing {
+        session: String,
+    },
     AssistantFinal {
         session: String,
         text: String,
@@ -60,6 +66,7 @@ pub enum UiEvent {
     },
     SubagentFinished {
         child: String,
+        failed: bool,
     },
     /// ACP `user_message_chunk` (session/load replay needs user lines).
     UserMessage {
@@ -139,6 +146,7 @@ pub fn parse_notification(method: &str, params: &Value) -> Vec<UiEvent> {
         }],
         "subagent.finished" => vec![UiEvent::SubagentFinished {
             child: str_field(params, "childSessionId"),
+            failed: false,
         }],
         "session.event" => parse_session_event(params),
         "session/update" => parse_session_update(params),
@@ -325,6 +333,26 @@ fn parse_session_update(params: &Value) -> Vec<UiEvent> {
         }
         "session_info_update" => {
             let dsh = update.get("_meta").and_then(|meta| meta.get("dsh"));
+            if let Some(subagent) = dsh
+                .filter(|dsh| {
+                    dsh.get("event").and_then(Value::as_str) == Some("subagent/lifecycle")
+                })
+                .and_then(|dsh| dsh.get("subagent"))
+            {
+                let child = str_field(subagent, "childSessionId");
+                return match subagent.get("state").and_then(Value::as_str) {
+                    Some("started") => vec![UiEvent::SubagentStarted {
+                        parent: root_session,
+                        child,
+                    }],
+                    Some("finished") => vec![UiEvent::SubagentFinished {
+                        child,
+                        failed: subagent.get("stopReason").and_then(Value::as_str)
+                            != Some("completed"),
+                    }],
+                    _ => Vec::new(),
+                };
+            }
             if let Some(usage) = dsh
                 .filter(|dsh| dsh.get("event").and_then(Value::as_str) == Some("prompt/usage"))
                 .and_then(|dsh| dsh.get("usage"))
@@ -379,42 +407,43 @@ fn parse_session_update(params: &Value) -> Vec<UiEvent> {
                 .and_then(Value::as_str)
                 == Some("started") =>
         {
-            vec![UiEvent::SubagentStarted {
-                parent: root_session,
-                child: session,
-            }]
+            vec![
+                acp_tool_call(root_session.clone(), update),
+                UiEvent::SubagentStarted {
+                    parent: root_session,
+                    child: session,
+                },
+            ]
         }
-        "tool_call" => vec![UiEvent::ToolCall {
-            session,
-            call_id: first_str(update, &["toolCallId", "tool_call_id"]),
-            name: first_str(update, &["title", "kind", "toolName"]),
-            arguments: update
-                .get("rawInput")
-                .or_else(|| update.get("raw_input"))
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        }],
+        "tool_call" => vec![acp_tool_call(session, update)],
         "tool_call_update"
             if subagent
                 .and_then(|subagent| subagent.get("state"))
                 .and_then(Value::as_str)
                 == Some("finished") =>
         {
-            vec![UiEvent::SubagentFinished { child: session }]
+            let mut events = acp_tool_result(root_session, update)
+                .into_iter()
+                .collect::<Vec<_>>();
+            events.push(UiEvent::SubagentFinished {
+                child: session,
+                failed: update.get("status").and_then(Value::as_str) == Some("failed"),
+            });
+            events
         }
         "tool_call_update" => {
             let status = first_str(update, &["status"]);
-            if status != "completed" && status != "failed" {
-                return Vec::new();
+            if status == "completed" || status == "failed" {
+                acp_tool_result(session, update).into_iter().collect()
+            } else if (status == "pending" || status == "in_progress")
+                && (update.get("rawInput").is_some()
+                    || update.get("raw_input").is_some()
+                    || update.get("title").is_some())
+            {
+                vec![acp_tool_call(session, update)]
+            } else {
+                Vec::new()
             }
-            let text = acp_tool_output_text(update);
-            vec![UiEvent::ToolResult {
-                session,
-                call_id: first_str(update, &["toolCallId", "tool_call_id"]),
-                is_error: status == "failed",
-                text,
-                error: None,
-            }]
         }
         "current_mode_update" => {
             let mode = first_str(update, &["currentModeId", "current_mode_id"]);
@@ -453,6 +482,33 @@ fn acp_text_content(content: Option<&Value>) -> String {
         return text.to_string();
     }
     concat_text_blocks(content)
+}
+
+fn acp_tool_call(session: String, update: &Value) -> UiEvent {
+    UiEvent::ToolCall {
+        session,
+        call_id: first_str(update, &["toolCallId", "tool_call_id"]),
+        name: first_str(update, &["title", "kind", "toolName"]),
+        arguments: update
+            .get("rawInput")
+            .or_else(|| update.get("raw_input"))
+            .map(Value::to_string)
+            .unwrap_or_default(),
+    }
+}
+
+fn acp_tool_result(session: String, update: &Value) -> Option<UiEvent> {
+    let status = first_str(update, &["status"]);
+    if status != "completed" && status != "failed" {
+        return None;
+    }
+    Some(UiEvent::ToolResult {
+        session,
+        call_id: first_str(update, &["toolCallId", "tool_call_id"]),
+        is_error: status == "failed",
+        text: acp_tool_output_text(update),
+        error: None,
+    })
 }
 
 fn acp_tool_output_text(update: &Value) -> String {
@@ -778,6 +834,11 @@ fn parse_assistant_chunk(session: String, data: &Value) -> Vec<UiEvent> {
             session,
             text: str_field(chunk, "text"),
         }],
+        Some("block-start")
+            if chunk.get("blockType").and_then(Value::as_str) == Some("tool-call") =>
+        {
+            vec![UiEvent::ToolCallPreparing { session }]
+        }
         Some("usage") => {
             let usage = chunk.get("usage").unwrap_or(&Value::Null);
             let cached = u64_field(usage, "cacheReadTokens")
@@ -899,8 +960,6 @@ fn u64_field(v: &Value, key: &str) -> Option<u64> {
 #[path = "../tests/unit/events__tests.rs"]
 mod tests;
 
-
 #[cfg(test)]
 #[path = "../tests/unit/events__mode_event_tests.rs"]
 mod mode_event_tests;
-

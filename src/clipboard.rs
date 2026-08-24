@@ -131,4 +131,3 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 #[path = "../tests/unit/clipboard__tests.rs"]
 mod tests;
-

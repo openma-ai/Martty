@@ -243,6 +243,41 @@ pub enum PromptBlock {
     Image(ImagePart),
 }
 
+/// Native Queue projection consumed by the Client-side `queue-view` Plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueSnapshot {
+    pub count: usize,
+    pub items: Vec<QueueSnapshotItem>,
+    pub selected_id: Option<u64>,
+    pub editing_id: Option<u64>,
+    pub delete_confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueSnapshotItem {
+    pub id: u64,
+    pub ordinal: usize,
+    pub summary: String,
+}
+
+/// Native Agent/session navigation projected into the Client-side
+/// `tuiAgents` service. It is local compositor state, not ACP history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentsSnapshot {
+    pub active_id: String,
+    pub selected_id: Option<String>,
+    pub items: Vec<AgentsSnapshotItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentsSnapshotItem {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub status: String,
+    pub current: bool,
+}
+
 /// UI → controller commands.
 #[derive(Debug, Clone)]
 pub enum Cmd {
@@ -304,6 +339,15 @@ pub enum Cmd {
         name: String,
         args: String,
     },
+    /// Publish client-owned Queue state to the local Cordis compositor. This
+    /// is presentation state, never an ACP Session prompt or update.
+    QueueSnapshot {
+        snapshot: QueueSnapshot,
+    },
+    /// Publish Agent transcript navigation to the local Client compositor.
+    AgentsSnapshot {
+        snapshot: AgentsSnapshot,
+    },
     /// A native `/theme` or picker selection committed on the Client tree.
     PluginThemeSelected {
         agent_id: String,
@@ -362,4 +406,3 @@ pub enum Cmd {
 #[cfg(test)]
 #[path = "../tests/unit/bus__tests.rs"]
 mod tests;
-

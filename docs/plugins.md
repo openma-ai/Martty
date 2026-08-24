@@ -29,9 +29,10 @@ Cordis Plugin Package
 
 第三方只通过这一页上的 API 扩展 TUI。没有列出的对象、fd、方法，宿主不提供。实现时做成调不到，而不是写在注释里请人别碰。
 
-**当前开放：** 配色包、根级右栏 `chrome.right`、composer 上方的
-`conversation.input.dock`、composer 下方的 `conversation.composer.dock`、本地命令/
-语义 overlay，以及标准 ACP 当前 Session 的配置、Plan、统计与运行状态目录。三个 Slot 都是
+**当前开放：** 配色包、根级右栏 `chrome.right`、composer 顶沿及内部的
+`conversation.input.dock`、位于 composer 内部、输入区与模式行之间的 `conversation.navigation.dock`、
+最外层的 `conversation.composer.dock`、本地命令/语义 overlay，以及标准 ACP 当前
+Session 的配置、Plan、统计与运行状态目录。四个 Slot 都是
 可叠加的 list seat，接收结构化 `TuiNode` 树，不进入会话日志。
 
 ## 当前可调用：`acpSessionConfig`
@@ -98,6 +99,32 @@ token 或耗时——统计只有 `acpSessionStats` 这一套口径。
 两处读数不会漂移）。Rust painter 只渲染序列化后的 `TuiNode`，不读自己的
 transcript accumulator。没有 Client 树的运行（demo、独立 painter）由 Rust 的
 精简 fallback 只画运行状态与 ACP 事实，同样不读 token/耗时累计器。
+
+## 内置 Queue 投影
+
+follow-up FIFO 是 Rust Client 的交互状态，不是 ACP Session 内容，也不作为第三方服务
+开放。painter 只把 `{ count, items, selectedId, editingId, deleteConfirm }` 快照送到本地
+Client compositor；内置 `tuiQueue` service 管理订阅，内置 `queue-view` Client Plugin
+把它注册进 `conversation.input.dock`。因此排队消息不会先进入 timeline，也不会由 Rust
+硬编码一份正常态业务 UI：composer 顶沿显示标题，所有等待条目始终在同一个圆角
+composer 内可见；选择/编辑态只增加焦点与操作提示。没有 Client tree 时，原生 shelf 仅作为降级路径。
+composer 为空时，标题常驻提示 `enter send first`；Enter 会把队首立即 steer 给
+当前轮次，agent deferred 时原条目仍回到队首。
+
+## 内置 Agent 导航投影
+
+主会话与 subagent 列表同样属于 Rust Client 的本地交互状态。painter 把
+`{ activeId, selectedId, items: [{ id, label, kind, status }] }` 快照送到内置 `tuiAgents` service；
+内置 `agents-view` Client Plugin 把它注册到 `conversation.navigation.dock`，并注册
+`/agents` 命令。默认只显示淡色的 `· Agents · 完成/总数` 折叠摘要；`↓` 后在原地展开
+主会话与全部 subagent，`←/→` 移动、`Enter` 打开、`Esc` 折叠；整个过程不创建
+overlay 或鼠标 action。
+没有 Client tree 时由 Rust 原生导航降级显示。
+
+Agent 导航没有引入业务专用颜色 token。`generic.tone` 只接受既有的通用 token 名；
+折叠态标签使用 `caption`，运行中的 `完成/总数` 在 `brand_soft` 与 `brand` 间轮换，
+失败态使用 `err`，其余沿用 `fg`、`panel` 与 `border`。Theme Plugin 仍只维护一套
+小而通用的 token 系统。Plan 摘要使用相同的视觉语法。
 
 ## UI Plugin 与两个欢迎页 slot
 
@@ -192,8 +219,9 @@ ctx.tuiTheme.register(palette, { activate: true })
 
 ## 当前可调用：`tuiSlots`
 
-宿主声明三个 list slot：根级独立右栏 `chrome.right`、位于 composer 上方的
-`conversation.input.dock`，以及紧贴 composer 下方的
+宿主声明四个 list slot：根级独立右栏 `chrome.right`、占 composer 顶沿且可在其边框内
+展开的 `conversation.input.dock`、composer 内部位于输入区与模式行之间的
+`conversation.navigation.dock`，以及 composer 外侧的紧凑统计席
 `conversation.composer.dock`。插件先
 `inject` 等待槽位，再用稳定的
 contribution id `register` 任意 `TuiNode[]` 组合：`group`、`markdown`、
@@ -222,11 +250,18 @@ export function apply(ctx) {
 终端过窄时宿主暂时隐藏右栏但保留状态，变宽后自动恢复。节点 id 在一个
 contribution 内稳定即可，聚合器会用 contribution id 做命名空间。
 
-两个 composer dock 使用相同 API，只需把 `name` 改为对应 slot。需要独立一行或可能
-换行的 Plan、任务、Goal 放 `conversation.input.dock`（占 cap 行，与 Tip 竞争同一行、
-优先于 Tip）；环境统计等紧凑读数放 `conversation.composer.dock`（内置 stats-view
-插件就是默认消费者）。完整内容应由本地 command 打开 overlay，而不是把多行内容塞进
-紧凑统计席。
+三个 conversation dock 使用相同 API，只需把 `name` 改为对应 slot。`generic` 节点在
+`conversation.input.dock` 中聚合到 cap 行，与 Tip 竞争并优先于 Tip；同一 contribution
+临时发布的非 `generic` 结构化节点会在圆角 composer 内、输入区上方展开。内置
+`queue-view` 用这个机制持续呈现全部 Queue 条目，并在选择态增加焦点。Plan、Goal 等正常态仍应保持一行摘要，完整审阅内容
+用本地 command 打开 overlay。Agent、branch、session 等横向导航放
+`conversation.navigation.dock`；环境统计等紧凑读数放 `conversation.composer.dock`
+（内置 stats-view 是默认消费者），不要向该统计席塞入多行内容。
+
+`generic` 节点可选的 `tone` 字段直接引用既有通用 Theme token（例如 `brand`、`ok`、
+`warn`、`err`、`caption`），不能声明新 token，也不要为单一业务发明颜色语义。瞬时
+键盘焦点可用通用布尔字段 `selected: true`，painter 会以反显样式绘制；不要把它当作
+持久选中值或另一个状态颜色。
 
 ## 当前可调用：`tuiOverlay`
 

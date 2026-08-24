@@ -112,10 +112,6 @@ impl Controller {
     }
 }
 
-
-
-
-
 fn controller_loop(
     mut cfg: RuntimeConfig,
     demo: bool,
@@ -584,6 +580,9 @@ fn controller_loop(
                     "session/new, session/list, and session/load need a live ACP connection".into(),
                 )));
             }
+            Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } => {
+                // The legacy/demo controller has no local Cordis compositor.
+            }
             Cmd::Shutdown => {
                 let mut guard = runtime.lock().unwrap();
                 if let Some(rt) = guard.take() {
@@ -920,4 +919,3 @@ fn stock_presets() -> Vec<CatalogPreset> {
 #[cfg(test)]
 #[path = "../tests/unit/controller__tests.rs"]
 pub(crate) mod tests;
-

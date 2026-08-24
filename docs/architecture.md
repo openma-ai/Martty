@@ -42,6 +42,29 @@ Server 树（profile 主路径里的 Base + ACP plugin，或 standalone dsh-acp�
 
 Server 插件要让任意 client 看见：投影成标准 ACP（命令、config、update）。Client 插件（换皮、槽）只改本树。TUI 作为 Cordis **Client** 把可发现的能力目录（`Theme.listTokens`、`Slots.list`）序列化到 `_dsh/cordis/*` 扩展，和网页同步 inspect manifest 是同一类工作。双方必须先在 initialize capability 的 `_meta.dsh.cordis.protocol` 上达成版本 0；普通 ACP agent 没有该 capability 时，TUI 不发送也不消费这些扩展。
 
+运行中由 Enter 产生的 follow-up FIFO 属于 Martty Client：composer 为空时按
+Enter 会把队首立即 steer 给当前轮次，deferred 时放回队首；否则在 session 变为
+空闲后作为下一次 `session/prompt` 发出。Rust 把 FIFO 的只读投影经
+本地 `_dsh/cordis/tui/queue/update` 交给 Client tree；内置 `tuiQueue` service 折叠快照，
+`queue-view` Client Plugin 再向现有 `conversation.input.dock` 注册 composer 展示。
+Queue 标题位于 composer 顶沿，全部等待条目始终在同一个 composer 边框内、输入区上方
+展开；`Alt+↑` 进入选择态后可用 `↑/↓` 任选一条编辑。等待内容不进入 timeline，出队时才
+创建普通 user timeline cell；编辑、删除和预览更新也都不进入 ACP。没有 Client tree 的
+独立 painter 保留原生 shelf 作为降级显示。
+`Send Now` 的并发 prompt 若被 agent 拒绝，ACP transport
+只向 Client 回报 deferred，由同一 Client FIFO 接管，不在 transport 内保留第二份重试队列。
+
+Agent/subagent 导航也走同一条 Client compositor 边界：Rust painter 把主会话与子会话的
+只读快照送到内置 `tuiAgents` service，`agents-view` Client Plugin 再把紧凑导航注册到
+`conversation.navigation.dock`。这个 slot 位于 composer 内部，输入区与 `Standard`
+模式行之间；默认只画 `· Agents · 完成/总数` 摘要，`↓` 后才展开全部条目；
+`←/→` 移动、`Enter` 打开、`Esc` 折叠，不创建弹窗或鼠标 action。无 Client tree 时
+Rust 保留同语义的原生导航作为降级路径。
+
+标准 ACP `tool_call` 即使携带 subagent `_meta` 也始终先按原事件进入父会话 transcript；
+解析器只在其后追加 `SubagentStarted` 投影。终态 `tool_call_update` 同样先生成原始
+`ToolResult` 闭合请求块，再追加 `SubagentFinished`，subagent 生命周期不会替换工具事件。
+
 ```text
 Host 进程：Base Cordis + ACP plugin
   tui-client-plugin-registry 收集已安装 package 的绝对 Client entry
@@ -52,6 +75,10 @@ Client 进程：独立 Cordis root
   Client runner inject ['tuiTheme', 'tuiPresets', 'tuiSlots', ...]，执行 dsh-tool-cordis 的 code.client
   TUI 壳       注入 acpClient 与 Client services，只占 TTY
   plan-view    注入 acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
+  tui-queue    接收 Rust painter 的本地 Queue 快照，提供 tuiQueue
+  queue-view   注入 tuiQueue + tuiSlots，向 conversation.input.dock 注册全部条目与选择状态
+  tui-agents   接收 Rust painter 的本地 Agent 快照，提供 tuiAgents
+  agents-view  注入 tuiAgents + tuiSlots，向 conversation.navigation.dock 注册导航
   stats-view   注入 acpSessionStats + tuiSlots
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
@@ -62,7 +89,8 @@ Client 进程：独立 Cordis root
   acp-session-status 提供 acpSessionStatus（连接/服务端/认证/会话/
                模型/effort/权限/plan/agent 等运行状态事实）
   tui-slots    提供 tuiSlots，声明 welcome.hero / welcome.info / chrome.right /
-               conversation.input.dock / conversation.composer.dock
+               conversation.input.dock / conversation.navigation.dock /
+               conversation.composer.dock
   tui-theme    提供 tuiTheme
   tui-local-plugins 合并已安装 package entries 与 $MARTTY_HOME/plugins，
                恢复 UI Plugin，并按 /theme owner 启停 Theme Plugin
@@ -104,8 +132,12 @@ Client inspect/run 通道。
               sibling insert + inject ['tuiSlots'] → slot register
 tui-theme     配色表 → Theme registry
 tui-presets   多个 UI contribution → 持久化 /ui 单选组合
-tui-slots     TuiNode 树 → welcome.hero / welcome.info / chrome.right / input dock / composer dock registry
+tui-slots     TuiNode 树 → welcome.hero / welcome.info / chrome.right / input / navigation / telemetry dock registry
 plan-view     标准 ACP Plan 投影 → input dock 摘要 + /plan-view overlay
+tui-queue     Rust Client FIFO 快照 → Client tree 的 tuiQueue service
+queue-view    tuiQueue → input dock 顶沿标题 + composer 内全部等待条目
+tui-agents    Rust Agent/session 快照 → Client tree 的 tuiAgents service
+agents-view   tuiAgents → composer 内部 navigation dock + inline 会话选择
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
 martty-preset default UI Plugin → Martty Hero + 原生动态信息区
@@ -114,14 +146,14 @@ acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会�
               effort/权限/plan/agent —— 不累计 token 或耗时（那是
               acpSessionStats 的职责）
 Client runner Client inspect + code.client 挂载/停止
-TUI 壳        消费 Theme、slot 与通用 overlay 快照树
+TUI 壳        消费 Theme、slot 与通用 overlay 快照树；把本地 Queue/Agent 快照路由给对应 service
 acp-client    session/new · authenticate · prompt · cancel · config · commands
               提供 acpSessionConfig（观察标准快照；set 仍由 Rust 发标准 ACP）
               提供 acpSessionPlan（观察标准 plan update；内置 Plan 插件只是消费者）
               提供 acpSessionStats 与通用、随 effect 回收的 ACP observer registry
               `_dsh/cordis/*` 是 initialize 协商后的 Cordis 扩展
               `_dsh/cordis/tui/*` 是 mux 隔离的 painter 子域
-Rust 画布     输入、keymap、现有 widget 读 Theme、kitty、剪贴板
+Rust 画布     输入、keymap、Client FIFO、现有 widget 读 Theme/slot、kitty、剪贴板
 ```
 
 | 层 | 职责 | 不负责 |

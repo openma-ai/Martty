@@ -4,8 +4,9 @@ Third parties extend the TUI only through the APIs on this page. Objects, fds, a
 
 **Open now:** palette packs, the root `chrome.right` rail,
 `conversation.input.dock` above the composer,
-`conversation.composer.dock` below it, local commands and semantic overlays,
-plus standard ACP Session config, Plan, statistics, and run-state facts. All three slots
+`conversation.navigation.dock` between the input and composer metadata, the outer
+`conversation.composer.dock` telemetry row, local commands and semantic overlays,
+plus standard ACP Session config, Plan, statistics, and run-state facts. All four slots
 are additive list seats. They accept structured `TuiNode` trees and never become
 session history.
 
@@ -46,6 +47,26 @@ painter only renders the serialized `TuiNode`s and reads none of its own
 transcript accumulators for this command. Runs without a Client tree (demo,
 standalone painter) keep a lean Rust fallback that renders run-state and ACP
 facts only, also without touching token/timing accumulators.
+
+## Builtin Queue and Agent projections
+
+Queue and Agent/session state are local Client interaction state, not timeline
+content and not public domain services. The Rust painter sends snapshots to the
+builtin `tuiQueue` and `tuiAgents` services. `queue-view` contributes the Queue
+summary and every queued item to `conversation.input.dock`; `agents-view` contributes the
+compact session rail to `conversation.navigation.dock` and registers `/agents`.
+The normal Queue title keeps `enter send first` visible. With an empty composer,
+Enter steers the FIFO head into the active turn; a deferred steer returns to the front.
+The default rail is a muted `· Agents · completed/total` summary. `↓` expands main and
+every subagent in place; `←/→` moves, Enter opens, and Escape collapses.
+No overlay or mouse action is created.
+Native views remain as no-Client-tree fallbacks.
+
+Agent navigation adds no business-specific color tokens. Optional
+`generic.tone` values reference the existing general Theme tokens. The collapsed
+label uses `caption`; running progress alternates between `brand_soft` and `brand`,
+failure uses `err`, and the remaining text and chrome use `fg`, `panel`, and
+`border`. Plan summaries use the same visual grammar.
 
 ## UI Plugins and the two welcome slots
 
@@ -155,9 +176,10 @@ whole Plugin.
 
 ## Open: `tuiSlots`
 
-The shell declares three additive list slots: the root `chrome.right` rail,
-`conversation.input.dock` above the composer, and the compact
-`conversation.composer.dock` below it. A plugin waits with
+The shell declares four additive list slots: the root `chrome.right` rail,
+`conversation.input.dock` above the composer,
+`conversation.navigation.dock` inside the composer above its metadata row, and the
+outer compact `conversation.composer.dock` telemetry row. A plugin waits with
 `inject`, then `register`s any composition of the node kinds in
 [tui-node.v0.schema.json](tui-node.v0.schema.json).
 
@@ -180,11 +202,17 @@ temporarily hide the rail without deleting state. Dynamic Creator plugins query
 `Slots.list` and inject `tuiSlots`, not Web React `ctx.slots`. The optional
 `@openma/deepseek-harness-tui/right-demo` export is a rich gallery plugin.
 
-Use the same registration API for both composer docks. Put Plan, Todo, Goal, or
+Use the same registration API for all three conversation docks. Put Plan, Todo, Goal, or
 other content needing its own line in `conversation.input.dock` — it owns the
 single cap row and displaces the tip line while present; put ambient compact
-statistics in `conversation.composer.dock`. Open detailed content in a
-command-owned overlay instead of expanding the compact stats seat.
+navigation such as Agents, branches, or sessions in
+`conversation.navigation.dock`; put ambient compact statistics in
+`conversation.composer.dock`. Open detailed content in a command-owned overlay
+instead of expanding the compact stats seat. A generic node's optional `tone`
+references an existing general Theme token; it cannot add a token and should not
+invent business-specific color semantics. Use the general boolean
+`selected: true` for transient keyboard focus; the painter renders it reversed.
+It is not a persistent value or another status color.
 
 ## Open: `tuiOverlay`
 

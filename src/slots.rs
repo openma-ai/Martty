@@ -87,6 +87,10 @@ pub enum TuiNode {
         #[serde(default)]
         status: Option<String>,
         #[serde(default)]
+        tone: Option<String>,
+        #[serde(default)]
+        selected: bool,
+        #[serde(default)]
         action: Option<TuiAction>,
     },
     Terminal {
@@ -126,7 +130,7 @@ pub enum TuiNode {
 }
 
 impl TuiNode {
-    fn id(&self) -> &str {
+    pub(crate) fn id(&self) -> &str {
         match self {
             Self::Ascii { id, .. }
             | Self::Logo { id, .. }
@@ -193,12 +197,23 @@ fn validate_nodes(nodes: &[TuiNode], ids: &mut HashSet<String>) -> Result<(), St
                 }
                 validate_nodes(children, ids)?;
             }
-            TuiNode::Generic { status, action, .. } => {
+            TuiNode::Generic {
+                status,
+                tone,
+                action,
+                ..
+            } => {
                 if status
                     .as_deref()
-                    .is_some_and(|status| !matches!(status, "running" | "ok" | "err"))
+                    .is_some_and(|status| !matches!(status, "running" | "done" | "ok" | "err"))
                 {
-                    return Err("tui generic status must be running, ok, or err".into());
+                    return Err("tui generic status must be running, done, ok, or err".into());
+                }
+                if tone.as_deref().is_some_and(theme_color_name_invalid) {
+                    return Err(format!(
+                        "unknown tui theme token: {}",
+                        tone.as_deref().unwrap_or("")
+                    ));
                 }
                 if action.as_ref().is_some_and(|action| match action {
                     TuiAction::Command { name, .. } => name.is_empty(),
@@ -256,6 +271,7 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
             | "welcome.info"
             | "chrome.right"
             | "conversation.input.dock"
+            | "conversation.navigation.dock"
             | "conversation.composer.dock"
     ) {
         return Ok(None);
@@ -273,7 +289,7 @@ pub fn parse_snapshot(value: &Value) -> Result<Option<SlotSnapshot>, String> {
     Ok(Some(snapshot))
 }
 
-fn token_color(theme: &Theme, name: &str) -> Color {
+pub(crate) fn token_color(theme: &Theme, name: &str) -> Color {
     match name {
         "bg" => theme.bg,
         "surface" => theme.surface,
@@ -433,21 +449,40 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
             title,
             body,
             status,
+            tone,
+            selected,
             ..
         } => {
             let (icon, color) = match status.as_deref() {
                 Some("running") => ("●", theme.brand),
+                Some("done") => ("✓", theme.caption),
                 Some("ok") => ("✓", theme.ok),
                 Some("err") => ("×", theme.err),
                 _ => ("◇", theme.caption),
             };
-            let mut lines = vec![Line::from(vec![
-                Span::styled(format!("{icon} "), Style::default().fg(color)),
-                Span::styled(
-                    title.clone(),
-                    Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-                ),
-            ])];
+            let title_color = tone
+                .as_deref()
+                .map(|name| token_color(theme, name))
+                .unwrap_or(theme.fg);
+            let header = if *selected {
+                vec![Span::styled(
+                    format!(" {icon} {title} "),
+                    Style::default()
+                        .fg(title_color)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                )]
+            } else {
+                vec![
+                    Span::styled(format!("{icon} "), Style::default().fg(color)),
+                    Span::styled(
+                        title.clone(),
+                        Style::default()
+                            .fg(title_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]
+            };
+            let mut lines = vec![Line::from(header)];
             lines.extend(indent(
                 styled_wrapped(
                     body,

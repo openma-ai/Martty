@@ -21,6 +21,7 @@ pub enum Action {
     ToggleTheme,
     ToggleExpandAll,
     SendNow,
+    EditQueuedPrompt,
     AttachClipboard,
     ModelPicker,
     CycleAgent,
@@ -83,6 +84,7 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // transcript" on ⌘→ was evil.
         KeyCode::Char('o') if ctrl => ToggleExpandAll,
         KeyCode::Char('x') if ctrl => SendNow,
+        KeyCode::Up if alt => EditQueuedPrompt,
         KeyCode::Char('v') if ctrl => AttachClipboard,
         // ctrl+p (not ctrl+m): terminals send ctrl+m as the Enter byte.
         KeyCode::Char('p') if ctrl => ModelPicker,
@@ -274,8 +276,8 @@ pub const KEY_ROWS: &[KeyRow] = &[
         chords_mac: &["enter"],
         chords_other: &["enter"],
         ctx: CtxNote::Always,
-        desc_en: "send · follow-ups queue while a turn runs",
-        desc_zh: "发送；轮次运行时后续输入排队",
+        desc_en: "send · empty Enter sends the Queue head now",
+        desc_zh: "发送；空输入时立即发送 Queue 队首",
         probes: &[p(KeyCode::Enter, NONE, false)],
     },
     KeyRow {
@@ -299,13 +301,23 @@ pub const KEY_ROWS: &[KeyRow] = &[
         probes: &[p(KeyCode::Char('x'), CTRL, false)],
     },
     KeyRow {
+        action: EditQueuedPrompt,
+        group: KeyGroup::Send,
+        chords_mac: &["⌥↑"],
+        chords_other: &["alt+↑"],
+        ctx: CtxNote::Always,
+        desc_en: "choose a queued prompt to edit",
+        desc_zh: "选择一条排队消息编辑",
+        probes: &[p(KeyCode::Up, ALT, true)],
+    },
+    KeyRow {
         action: Esc,
         group: KeyGroup::Send,
         chords_mac: &["esc"],
         chords_other: &["esc"],
         ctx: CtxNote::Always,
-        desc_en: "interrupt · draft survives; clears when idle",
-        desc_zh: "中断（草稿保留）；空闲时清除草稿",
+        desc_en: "close / suggestions · cancel edit · interrupt",
+        desc_zh: "关闭 / 推荐 · 取消编辑 · 中断",
         probes: &[p(KeyCode::Esc, NONE, false)],
     },
     KeyRow {
@@ -727,4 +739,3 @@ pub fn keys_markdown(zh: bool, mac: bool) -> String {
 #[cfg(test)]
 #[path = "../../tests/unit/input__keymap__tests.rs"]
 mod tests;
-

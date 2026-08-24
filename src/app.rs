@@ -6,7 +6,7 @@
 //! `!` runs a command in the session's local shell; `/` opens the slash menu; Up recalls
 //! history on an empty prompt.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -482,6 +482,10 @@ pub struct ThumbPlacement {
 pub struct ChatView {
     pub area: ratatui::layout::Rect,
     pub top: usize,
+    /// Absolute top line while the user explores scrollback. `None` follows
+    /// the streaming tail; a scroll gesture is resolved into a fresh anchor
+    /// by the next draw.
+    pub(crate) manual_top: Option<usize>,
     pub lines: Vec<String>,
     /// Per layout line, the transcript cell that owns it (only tool cells
     /// claim ownership) — the seam for click-to-expand.
@@ -499,11 +503,11 @@ pub enum PickerKind {
     UiPlugin,
     Permission,
     Session,
-    Subagent,
     Auth,
     StaticPlugin,
     CordisPlugin,
     CordisApproval,
+    AgentHistory,
 }
 
 #[derive(Clone)]
@@ -682,8 +686,11 @@ pub struct SubagentView {
     pub parent: String,
     pub label: String,
     pub running: bool,
+    pub failed: bool,
     pub transcript: Transcript,
 }
+
+pub(crate) const AGENT_HISTORY_ID: &str = "__martty_internal__:agent-history";
 
 /// Overlay for one ACP `session/request_permission` ask.
 pub struct PermissionAskOverlay {
@@ -719,8 +726,9 @@ impl Drop for PermissionAskOverlay {
 }
 
 /// Folded per-session mode state (from the durable event stream — the same
-/// facts the Web UI chips read). Cached per workspace so chips and pickers
-/// show the last-known values immediately on launch.
+/// facts the Web UI chips read). Only client preferences such as Agent preset
+/// and effort survive across sessions; permission facts must come from the
+/// current Host session.
 #[derive(Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Modes {
@@ -900,7 +908,10 @@ pub struct App {
     pub slot_snapshots: HashMap<String, crate::slots::SlotSnapshot>,
     pub transcript: Transcript,
     pub subagents: Vec<SubagentView>,
+    current_subagents: HashSet<String>,
+    next_subagent_starts_batch: bool,
     pub active_subagent: Option<String>,
+    pub(crate) agent_selection: Option<String>,
     pub input: Input,
     /// Display-cell width of the composer text well from the latest frame.
     pub(crate) composer_wrap_width: usize,
@@ -1012,11 +1023,17 @@ pub struct App {
     /// Leave the TUI and run this agent login, then `authenticate`.
     pending_terminal_auth: Option<crate::acp_auth::TerminalAuthLaunch>,
     pub quit: bool,
+    /// Escape suppresses slash recommendations for the current draft without
+    /// deleting it. Text edits or an explicit Tab completion reopen them.
+    slash_completion_dismissed: bool,
     pub queued: usize,
-    /// Transcript cells grouped by the client FIFO prompt that owns them.
-    queued_cells: VecDeque<Vec<usize>>,
+    /// Follow-ups not yet sent over ACP. The Agent only sees the front item
+    /// after the active turn settles.
+    prompt_queue: VecDeque<ClientQueuedPrompt>,
+    queue_selection: Option<usize>,
+    queue_edit: Option<QueueEditState>,
     /// Send Now bubbles awaiting the concurrent ACP request result.
-    pending_steer_cells: HashMap<u64, Vec<usize>>,
+    pending_steer_cells: HashMap<u64, PendingSteer>,
     next_prompt_id: u64,
     /// A first prompt was handed to the controller but has not reached the
     /// ACP request task yet. Runtime startup alone does not make a turn busy.
@@ -1037,6 +1054,7 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::TurnEnd { session, .. }
         | UiEvent::TextDelta { session, .. }
         | UiEvent::ReasoningDelta { session, .. }
+        | UiEvent::ToolCallPreparing { session }
         | UiEvent::AssistantFinal { session, .. }
         | UiEvent::ToolCall { session, .. }
         | UiEvent::ToolResult { session, .. }
@@ -1064,9 +1082,35 @@ fn byte_of(s: &str, i: usize) -> usize {
 }
 
 /// Draft pieces after stripping `[image n]` chips, still in reading order.
+#[derive(Clone)]
 enum StagedBlock {
     Text(String),
     Image(crate::attachments::Attachment),
+}
+
+struct ClientQueuedPrompt {
+    id: u64,
+    blocks: Vec<StagedBlock>,
+}
+
+struct QueueEditState {
+    prompt_id: u64,
+    delete_confirm: bool,
+}
+
+pub(crate) struct QueuePreview {
+    pub(crate) id: u64,
+    pub(crate) ordinal: usize,
+    pub(crate) summary: String,
+    pub(crate) selected: bool,
+    pub(crate) editing: bool,
+}
+
+struct PendingSteer {
+    cells: Vec<usize>,
+    blocks: Vec<StagedBlock>,
+    /// Queue-head retries keep their original FIFO position when deferred.
+    requeue_front: bool,
 }
 
 fn token_spans_in(
@@ -1257,7 +1301,10 @@ impl App {
             slot_snapshots: HashMap::new(),
             transcript: Transcript::new(session_id.clone()),
             subagents: Vec::new(),
+            current_subagents: HashSet::new(),
+            next_subagent_starts_batch: true,
             active_subagent: None,
+            agent_selection: None,
             input: Input::new(),
             composer_wrap_width: 80,
             state: RunState::Idle,
@@ -1316,8 +1363,11 @@ impl App {
             auth: crate::acp_auth::AuthSnapshot::none(),
             pending_terminal_auth: None,
             quit: false,
+            slash_completion_dismissed: false,
             queued: 0,
-            queued_cells: VecDeque::new(),
+            prompt_queue: VecDeque::new(),
+            queue_selection: None,
+            queue_edit: None,
             pending_steer_cells: HashMap::new(),
             next_prompt_id: 1,
             prompt_pending: false,
@@ -1688,6 +1738,74 @@ impl App {
             .any(|command| command.name == name)
     }
 
+    pub(crate) fn slash_completion_open(&self) -> bool {
+        !self.slash_completion_dismissed && !self.slash_matches().is_empty()
+    }
+
+    pub(crate) fn queue_editing(&self) -> bool {
+        self.queue_edit.is_some()
+    }
+
+    pub(crate) fn queue_selecting(&self) -> bool {
+        self.queue_selection.is_some()
+    }
+
+    pub(crate) fn queue_delete_confirming(&self) -> bool {
+        self.queue_edit
+            .as_ref()
+            .is_some_and(|edit| edit.delete_confirm)
+    }
+
+    pub(crate) fn queue_previews(&self, limit: usize) -> Vec<QueuePreview> {
+        let editing_id = self.queue_edit.as_ref().map(|edit| edit.prompt_id);
+        let focused = self.queue_selection.or_else(|| {
+            editing_id.and_then(|id| self.prompt_queue.iter().position(|prompt| prompt.id == id))
+        });
+        let start = if limit == 0 || self.prompt_queue.len() <= limit {
+            0
+        } else {
+            focused
+                .unwrap_or(0)
+                .saturating_sub(limit - 1)
+                .min(self.prompt_queue.len() - limit)
+        };
+        self.prompt_queue
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(if limit == 0 {
+                self.prompt_queue.len()
+            } else {
+                limit
+            })
+            .map(|(index, prompt)| {
+                let mut parts = Vec::new();
+                for block in &prompt.blocks {
+                    match block {
+                        StagedBlock::Text(text) => {
+                            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !text.is_empty() {
+                                parts.push(text);
+                            }
+                        }
+                        StagedBlock::Image(image) => parts.push(format!("▣ {}", image.name)),
+                    }
+                }
+                QueuePreview {
+                    id: prompt.id,
+                    ordinal: index + 1,
+                    summary: if parts.is_empty() {
+                        "empty prompt".into()
+                    } else {
+                        parts.join(" ")
+                    },
+                    selected: self.queue_selection == Some(index),
+                    editing: editing_id == Some(prompt.id),
+                }
+            })
+            .collect()
+    }
+
     pub fn slash_matches(&self) -> Vec<SlashEntry> {
         if !self.input.buf.starts_with('/') {
             return Vec::new();
@@ -1935,6 +2053,8 @@ impl App {
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
         let modes_before = self.modes.clone();
+        let queue_before = (!self.demo).then(|| self.queue_snapshot());
+        let agents_before = (!self.demo).then(|| self.agents_snapshot());
         self.handle_inner(ev, ctl);
         // Persist mode-fact changes (chips survive restarts — the cache is
         // the landing state's source of truth until the host reports).
@@ -1947,6 +2067,102 @@ impl App {
         {
             self.selected_model = None;
         }
+        if let Some(before) = queue_before {
+            let after = self.queue_snapshot();
+            if after != before {
+                ctl.send(Cmd::QueueSnapshot { snapshot: after });
+            }
+        }
+        if let Some(before) = agents_before {
+            let after = self.agents_snapshot();
+            if after != before {
+                ctl.send(Cmd::AgentsSnapshot { snapshot: after });
+            }
+        }
+    }
+
+    fn queue_snapshot(&self) -> crate::bus::QueueSnapshot {
+        let editing_id = self.queue_edit.as_ref().map(|edit| edit.prompt_id);
+        let selected_id = self
+            .queue_selection
+            .and_then(|index| self.prompt_queue.get(index))
+            .map(|prompt| prompt.id);
+        crate::bus::QueueSnapshot {
+            count: self.prompt_queue.len(),
+            items: self
+                .queue_previews(0)
+                .into_iter()
+                .map(|preview| crate::bus::QueueSnapshotItem {
+                    id: preview.id,
+                    ordinal: preview.ordinal,
+                    summary: preview.summary,
+                })
+                .collect(),
+            selected_id,
+            editing_id,
+            delete_confirm: self.queue_delete_confirming(),
+        }
+    }
+
+    fn agents_snapshot(&self) -> crate::bus::AgentsSnapshot {
+        let active_id = match self.active_subagent.as_deref() {
+            Some(id) if !self.subagent_in_current_batch(id) => AGENT_HISTORY_ID.into(),
+            Some(id) => id.into(),
+            None => self.session_id.clone(),
+        };
+        let root_running = !matches!(self.state, RunState::Idle) || self.prompt_pending;
+        let mut items = vec![crate::bus::AgentsSnapshotItem {
+            id: self.session_id.clone(),
+            label: self.locale.tr("main", "主会话").into(),
+            kind: "main".into(),
+            status: if root_running { "running" } else { "idle" }.into(),
+            current: false,
+        }];
+        items.extend(self.subagents.iter().map(|view| {
+            crate::bus::AgentsSnapshotItem {
+                id: view.id.clone(),
+                label: view.label.clone(),
+                kind: "subagent".into(),
+                status: if view.running {
+                    "running"
+                } else if view.failed {
+                    "failed"
+                } else {
+                    "finished"
+                }
+                .into(),
+                current: self.subagent_in_current_batch(&view.id),
+            }
+        }));
+        let history_count = self
+            .subagents
+            .iter()
+            .filter(|view| !self.subagent_in_current_batch(&view.id))
+            .count();
+        if history_count > 0 {
+            items.push(crate::bus::AgentsSnapshotItem {
+                id: AGENT_HISTORY_ID.into(),
+                label: format!("History ({history_count})"),
+                kind: "history".into(),
+                status: "idle".into(),
+                current: false,
+            });
+        }
+        let selected_id = self.agent_selection.as_ref().and_then(|selected| {
+            items
+                .iter()
+                .any(|item| item.id == *selected)
+                .then(|| selected.clone())
+        });
+        crate::bus::AgentsSnapshot {
+            active_id,
+            selected_id,
+            items,
+        }
+    }
+
+    pub(crate) fn subagent_in_current_batch(&self, id: &str) -> bool {
+        self.current_subagents.is_empty() || self.current_subagents.contains(id)
     }
 
     fn handle_inner(&mut self, ev: AppEvent, ctl: &Controller) {
@@ -1955,8 +2171,45 @@ impl App {
                 self.quit = true;
             }
             AppEvent::Term(term) => self.handle_term(term, ctl),
-            AppEvent::Ui(ui) => self.apply_ui(ui),
+            AppEvent::Ui(ui) => {
+                let became_idle = matches!(
+                    &ui,
+                    crate::events::UiEvent::SessionStatus { session, running: false }
+                        if session == &self.session_id
+                ) && matches!(self.state, RunState::Running);
+                self.apply_ui(ui);
+                if became_idle {
+                    self.dispatch_next_queued(ctl);
+                }
+            }
             AppEvent::Rpc { method, params } => {
+                if method == crate::cordis::AGENTS_NAVIGATE {
+                    let protocol = params.get("protocol").and_then(serde_json::Value::as_u64);
+                    let action = params.get("action").and_then(serde_json::Value::as_str);
+                    if protocol == Some(crate::cordis::PROTOCOL) {
+                        match action {
+                            Some("begin") => self.begin_agent_navigation(),
+                            Some("previous") => self.move_agent_selection(-1),
+                            Some("next") => self.move_agent_selection(1),
+                            Some("confirm") => self.confirm_agent_selection(),
+                            Some("cancel") => self.cancel_agent_selection(),
+                            _ => {}
+                        }
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
+                if method == crate::cordis::AGENTS_SELECT {
+                    let protocol = params.get("protocol").and_then(serde_json::Value::as_u64);
+                    let id = params.get("id").and_then(serde_json::Value::as_str);
+                    if protocol == Some(crate::cordis::PROTOCOL) {
+                        if let Some(id) = id {
+                            self.select_agent_transcript(id);
+                        }
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
                 if method == crate::cordis::UI_UPDATE {
                     match serde_json::from_value::<UiPluginCatalog>(params) {
                         Ok(catalog) if catalog.protocol == 0 => self.ui_plugins = catalog.plugins,
@@ -2084,7 +2337,15 @@ impl App {
                     return;
                 }
                 for ui in parse_notification(&method, &params) {
+                    let became_idle = matches!(
+                        &ui,
+                        crate::events::UiEvent::SessionStatus { session, running: false }
+                            if session == &self.session_id
+                    ) && matches!(self.state, RunState::Running);
                     self.apply_ui(ui);
+                    if became_idle {
+                        self.dispatch_next_queued(ctl);
+                    }
                 }
                 self.needs_redraw = true;
             }
@@ -2094,7 +2355,9 @@ impl App {
             AppEvent::RuntimeExited(code) => {
                 self.prompt_pending = false;
                 self.queued = 0;
-                self.queued_cells.clear();
+                self.prompt_queue.clear();
+                self.queue_selection = None;
+                self.queue_edit = None;
                 self.pending_steer_cells.clear();
                 if self.state != RunState::Idle {
                     self.state = RunState::Idle;
@@ -2126,28 +2389,29 @@ impl App {
                         }
                     }
                     CtlEvent::PromptQueued { .. } => {
-                        let started_queued_prompt = !self.prompt_pending && self.queued > 0;
                         self.prompt_pending = false;
                         if self.state == RunState::Starting {
                             self.state = RunState::Running;
                         }
                         self.state_note.clear();
-                        if started_queued_prompt {
-                            self.queued = self.queued.saturating_sub(1);
-                            if let Some(cells) = self.queued_cells.pop_front() {
-                                self.transcript.mark_prompt_delivered(&cells);
-                            }
-                        }
                     }
                     CtlEvent::SteerSettled {
                         message_id,
                         deferred,
                     } => {
-                        if let Some(cells) = self.pending_steer_cells.remove(&message_id) {
+                        if let Some(pending) = self.pending_steer_cells.remove(&message_id) {
                             if deferred {
-                                self.transcript.mark_prompt_queued(&cells);
-                                self.queued += 1;
-                                self.queued_cells.push_back(cells);
+                                self.transcript.hide_cells(&pending.cells);
+                                let queued = ClientQueuedPrompt {
+                                    id: message_id,
+                                    blocks: pending.blocks,
+                                };
+                                if pending.requeue_front {
+                                    self.prompt_queue.push_front(queued);
+                                } else {
+                                    self.prompt_queue.push_back(queued);
+                                }
+                                self.queued = self.prompt_queue.len();
                                 self.show_tip(
                                     "agent deferred Send Now — queued after the active turn",
                                 );
@@ -2159,6 +2423,7 @@ impl App {
                         self.state = RunState::Idle;
                         self.run_started = None;
                         self.transcript.push_notice(NoticeLevel::Error, err);
+                        self.dispatch_next_queued(ctl);
                     }
                     CtlEvent::CancelRequested => {
                         self.state_note = "cancelling".into();
@@ -2172,6 +2437,7 @@ impl App {
                         self.transcript.cancel_open_work();
                         self.transcript
                             .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                        self.dispatch_next_queued(ctl);
                     }
                     CtlEvent::Skills { skills } => {
                         self.skills = skills;
@@ -2376,13 +2642,28 @@ impl App {
     fn apply_ui(&mut self, ui: crate::events::UiEvent) {
         use crate::events::UiEvent as E;
 
+        if let E::TurnStart { session, .. } = &ui {
+            if session == &self.session_id {
+                self.next_subagent_starts_batch = true;
+            }
+        }
+
         if let E::SubagentStarted { parent, child } = &ui {
-            if !self.subagents.iter().any(|view| view.id == *child) {
+            if self.next_subagent_starts_batch {
+                self.current_subagents.clear();
+                self.next_subagent_starts_batch = false;
+            }
+            self.current_subagents.insert(child.clone());
+            if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *child) {
+                view.running = true;
+                view.failed = false;
+            } else {
                 self.subagents.push(SubagentView {
                     id: child.clone(),
                     parent: parent.clone(),
                     label: format!("subagent {}", self.subagents.len() + 1),
                     running: true,
+                    failed: false,
                     transcript: Transcript::new(child.clone()),
                 });
             }
@@ -2395,13 +2676,14 @@ impl App {
             return;
         }
 
-        if let E::SubagentFinished { child } = &ui {
+        if let E::SubagentFinished { child, failed } = &ui {
             let parent = self
                 .subagents
                 .iter_mut()
                 .find(|view| view.id == *child)
                 .map(|view| {
                     view.running = false;
+                    view.failed = *failed;
                     view.parent.clone()
                 });
             if parent.as_deref() == Some(self.session_id.as_str()) {
@@ -2500,6 +2782,7 @@ impl App {
                     self.needs_redraw = true;
                     return;
                 }
+                self.slash_completion_dismissed = false;
                 self.input.insert_str(&text.replace('\n', " "));
                 self.reconcile_attachments();
                 self.needs_redraw = true;
@@ -2850,14 +3133,17 @@ impl App {
         std::path::Path::new(&cfg.session_root).join("dsh-tui-modes.json")
     }
 
-    /// Last-known mode facts for this workspace; `plan` never carries over
-    /// (it is a per-session switch).
+    /// Last-known client preferences for this workspace. Host-authoritative
+    /// session facts never carry over into a new session.
     fn load_modes_cache(cfg: &RuntimeConfig) -> Option<Modes> {
         let text = std::fs::read_to_string(Self::modes_cache_path(cfg)).ok()?;
         let root: serde_json::Value = serde_json::from_str(&text).ok()?;
         let entry = root.get("workspaces")?.get(&cfg.workspace)?;
         let mut modes: Modes = serde_json::from_value(entry.clone()).ok()?;
         modes.plan = false;
+        modes.sandbox = None;
+        modes.approval = None;
+        modes.permission = None;
         Some(modes)
     }
 
@@ -2953,7 +3239,12 @@ impl App {
 
     pub fn scroll_by(&mut self, delta: i64) {
         let cur = self.scroll_up as i64;
-        self.scroll_up = (cur + delta).max(0) as usize; // clamped to content in ui::draw
+        // The renderer clamps the relative gesture to the actual content.
+        self.scroll_up = (cur + delta).max(0) as usize;
+        // Apply this gesture relative to the frame the user actually saw.
+        // draw_chat resolves the resulting offset back into an absolute
+        // anchor, which later streaming cannot move.
+        self.chat_view.manual_top = None;
         self.needs_redraw = true;
     }
 
@@ -3179,13 +3470,26 @@ impl App {
             return;
         }
 
+        if self.agent_selection.is_some() {
+            if key.modifiers == KeyModifiers::NONE {
+                match key.code {
+                    KeyCode::Left => self.move_agent_selection(-1),
+                    KeyCode::Right => self.move_agent_selection(1),
+                    KeyCode::Enter => self.confirm_agent_selection(),
+                    KeyCode::Esc => self.cancel_agent_selection(),
+                    _ => {}
+                }
+            }
+            return;
+        }
+
         if self.active_subagent.is_some() {
             if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::NONE {
                 self.handle_esc(ctl);
                 return;
             }
             if key.code == KeyCode::Down && key.modifiers == KeyModifiers::NONE {
-                self.open_subagent_switcher();
+                self.begin_agent_navigation();
                 return;
             }
             let ctx = crate::input::KeyCtx { input_empty: true };
@@ -3206,6 +3510,46 @@ impl App {
             return;
         }
 
+        if let Some(selected) = self.queue_selection {
+            let n = self.prompt_queue.len();
+            if n == 0 {
+                self.queue_selection = None;
+                return;
+            }
+            match (key.code, key.modifiers) {
+                (KeyCode::Up, KeyModifiers::NONE) => {
+                    self.queue_selection = Some(selected.checked_sub(1).unwrap_or(n - 1));
+                }
+                (KeyCode::Down, KeyModifiers::NONE) => {
+                    self.queue_selection = Some((selected + 1) % n);
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    self.begin_queue_edit_at(selected.min(n - 1));
+                }
+                (KeyCode::Esc, KeyModifiers::NONE) => {
+                    self.queue_selection = None;
+                    self.show_tip("queue selection closed");
+                    if matches!(self.state, RunState::Idle) {
+                        self.dispatch_next_queued(ctl);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if key.code == KeyCode::Char('d')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self.queue_edit.is_some()
+        {
+            if let Some(edit) = &mut self.queue_edit {
+                edit.delete_confirm = true;
+            }
+            self.slash_completion_dismissed = true;
+            self.show_tip("delete queued prompt? · enter confirm · esc back");
+            return;
+        }
+
         if key.code == KeyCode::Down
             && key.modifiers == KeyModifiers::NONE
             && self.active_subagent.is_none()
@@ -3213,13 +3557,13 @@ impl App {
             && self.input.hist_pos.is_none()
             && !self.subagents.is_empty()
         {
-            self.open_subagent_switcher();
+            self.begin_agent_navigation();
             return;
         }
 
         // The slash menu owns vertical arrows while it is visible. Ordinary
         // non-empty drafts use them for visual-line cursor motion below.
-        if key.modifiers == KeyModifiers::NONE && self.input.buf.starts_with('/') {
+        if key.modifiers == KeyModifiers::NONE && self.slash_completion_open() {
             let n = self.slash_matches().len();
             if n > 0 {
                 match key.code {
@@ -3230,6 +3574,26 @@ impl App {
                 if matches!(key.code, KeyCode::Up | KeyCode::Down) {
                     return;
                 }
+            }
+        }
+
+        // Once Escape dismisses recommendations, the same single-line slash
+        // draft participates in history navigation. The editor stash restores
+        // it when Down returns past the newest history entry.
+        if key.modifiers == KeyModifiers::NONE
+            && self.slash_completion_dismissed
+            && self.queue_edit.is_none()
+        {
+            match key.code {
+                KeyCode::Up => {
+                    self.history_prev_from_draft();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.history_next();
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -3247,22 +3611,48 @@ impl App {
     /// Apply one classified [`Action`] — the only place key semantics touch
     /// app state, so `input::keymap` stays a pure table.
     fn dispatch(&mut self, action: Action, ctl: &Controller) {
+        if matches!(
+            action,
+            Action::Insert(_)
+                | Action::Newline
+                | Action::Backspace
+                | Action::DeleteForward
+                | Action::DeleteWordBack
+                | Action::KillToEnd
+                | Action::KillToStart
+        ) {
+            self.slash_completion_dismissed = false;
+        }
         match action {
             Action::Insert(ch) => {
                 self.input.insert(ch);
                 self.slash_sel = 0;
             }
-            Action::Newline => self.input.insert('\n'),
+            Action::Newline => {
+                self.input.insert('\n');
+            }
             Action::Enter => {
-                let menu = self.slash_matches();
+                let menu = if self.slash_completion_open() {
+                    self.slash_matches()
+                } else {
+                    Vec::new()
+                };
                 if !menu.is_empty() {
                     let entry = menu[self.slash_sel.min(menu.len() - 1)].clone();
                     self.accept_slash(&entry, ctl);
+                } else if self.queue_edit.is_some() {
+                    self.save_queue_edit(ctl);
+                } else if self.input.is_empty()
+                    && self.pending_images.is_empty()
+                    && !self.prompt_queue.is_empty()
+                {
+                    self.send_queue_head_now(ctl);
                 } else {
                     self.submit(ctl);
                 }
             }
             Action::TabComplete => {
+                self.slash_completion_dismissed = false;
                 let menu = self.slash_matches();
                 if !menu.is_empty() {
                     let entry = &menu[self.slash_sel.min(menu.len() - 1)];
@@ -3295,6 +3685,7 @@ impl App {
                 });
             }
             Action::SendNow => self.send_now(ctl),
+            Action::EditQueuedPrompt => self.open_queue_selector(),
             Action::AttachClipboard => self.clip_image("", ctl),
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
@@ -3306,8 +3697,14 @@ impl App {
             Action::ScrollHalfDown => self.scroll_by(-10),
             Action::PageUp => self.scroll_by(20),
             Action::PageDown => self.scroll_by(-20),
-            Action::JumpTop => self.scroll_up = usize::MAX,
-            Action::JumpTail => self.scroll_up = 0,
+            Action::JumpTop => {
+                self.scroll_up = usize::MAX;
+                self.chat_view.manual_top = None;
+            }
+            Action::JumpTail => {
+                self.scroll_up = 0;
+                self.chat_view.manual_top = None;
+            }
             Action::CursorLeft => {
                 self.input.cursor = self.input.cursor.saturating_sub(1);
                 self.input.reset_vertical_goal();
@@ -3517,17 +3914,6 @@ impl App {
                             self.resume_session(&item.id, ctl);
                         }
                     }
-                    PickerKind::Subagent => {
-                        self.active_subagent = if item.id == self.session_id {
-                            None
-                        } else if self.subagents.iter().any(|view| view.id == item.id) {
-                            Some(item.id)
-                        } else {
-                            None
-                        };
-                        self.scroll_up = 0;
-                        self.sel = None;
-                    }
                     PickerKind::Effort => {
                         let effort = item.id;
                         self.modes.effort = Some(effort.clone());
@@ -3582,47 +3968,117 @@ impl App {
                             });
                         }
                     }
+                    PickerKind::AgentHistory => self.select_agent_transcript(&item.id),
                 }
             }
             _ => {}
         }
     }
 
-    fn open_subagent_switcher(&mut self) {
-        let mut items = vec![PickerItem {
-            id: self.session_id.clone(),
-            label: self.locale.tr("main", "主会话").into(),
-            meta: self.locale.tr("current session", "当前会话").into(),
-            provider: None,
-        }];
-        items.extend(self.subagents.iter().map(|view| PickerItem {
-            id: view.id.clone(),
-            label: view.label.clone(),
-            meta: if view.running {
-                self.locale.tr("running", "运行中").into()
-            } else {
-                self.locale.tr("finished", "已完成").into()
-            },
-            provider: None,
-        }));
-        let current = self.active_subagent.as_deref().unwrap_or(&self.session_id);
-        let current_index = items
+    fn agent_navigation_ids(&self) -> Vec<String> {
+        let mut ids = vec![self.session_id.clone()];
+        ids.extend(
+            self.subagents
+                .iter()
+                .filter(|view| self.subagent_in_current_batch(&view.id))
+                .map(|view| view.id.clone()),
+        );
+        if self
+            .subagents
             .iter()
-            .position(|item| item.id == current)
-            .unwrap_or(0);
-        let sel = (current_index + 1) % items.len();
-        self.picker = Some(Picker {
-            kind: PickerKind::Subagent,
-            title: self
-                .locale
-                .tr(
-                    " agents · ↑/↓ select · enter open · esc close ",
-                    " Agent · ↑/↓ 选择 · enter 打开 · esc 关闭 ",
-                )
+            .any(|view| !self.subagent_in_current_batch(&view.id))
+        {
+            ids.push(AGENT_HISTORY_ID.into());
+        }
+        ids
+    }
+
+    fn begin_agent_navigation(&mut self) {
+        if self.subagents.is_empty() {
+            return;
+        }
+        self.agent_selection = Some(match self.active_subagent.as_deref() {
+            Some(id) if !self.subagent_in_current_batch(id) => AGENT_HISTORY_ID.into(),
+            Some(id) => id.into(),
+            None => self.session_id.clone(),
+        });
+        self.needs_redraw = true;
+    }
+
+    fn move_agent_selection(&mut self, delta: isize) {
+        let ids = self.agent_navigation_ids();
+        if ids.len() < 2 {
+            self.agent_selection = None;
+            return;
+        }
+        let current = self
+            .agent_selection
+            .as_deref()
+            .unwrap_or_else(|| self.active_subagent.as_deref().unwrap_or(&self.session_id));
+        let index = ids.iter().position(|id| id == current).unwrap_or(0);
+        let next = (index as isize + delta).rem_euclid(ids.len() as isize) as usize;
+        self.agent_selection = Some(ids[next].clone());
+        self.needs_redraw = true;
+    }
+
+    fn confirm_agent_selection(&mut self) {
+        let Some(id) = self.agent_selection.take() else {
+            return;
+        };
+        self.select_agent_transcript(&id);
+    }
+
+    fn cancel_agent_selection(&mut self) {
+        self.agent_selection = None;
+        self.needs_redraw = true;
+    }
+
+    fn select_agent_transcript(&mut self, id: &str) {
+        self.agent_selection = None;
+        if id == AGENT_HISTORY_ID {
+            self.open_agent_history_picker();
+            return;
+        } else if id == self.session_id {
+            self.active_subagent = None;
+        } else if self.subagents.iter().any(|view| view.id == id) {
+            self.active_subagent = Some(id.to_string());
+        } else {
+            return;
+        }
+        self.scroll_up = 0;
+        self.sel = None;
+    }
+
+    fn open_agent_history_picker(&mut self) {
+        let items = self
+            .subagents
+            .iter()
+            .rev()
+            .filter(|view| !self.subagent_in_current_batch(&view.id))
+            .map(|view| PickerItem {
+                id: view.id.clone(),
+                label: view.label.clone(),
+                meta: if view.running {
+                    "running"
+                } else if view.failed {
+                    "failed"
+                } else {
+                    "completed"
+                }
                 .into(),
-            sel,
+                provider: None,
+            })
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            return;
+        }
+        self.picker = Some(Picker {
+            kind: PickerKind::AgentHistory,
+            title: "Agent history".into(),
+            sel: 0,
             items,
         });
+        self.needs_redraw = true;
     }
 
     fn open_model_picker(&mut self, ctl: &Controller) {
@@ -3820,7 +4276,9 @@ impl App {
         self.selected_model = None;
         self.show_banner = false;
         self.queued = 0;
-        self.queued_cells.clear();
+        self.prompt_queue.clear();
+        self.queue_selection = None;
+        self.queue_edit = None;
         self.pending_steer_cells.clear();
         self.prompt_pending = false;
         self.sel = None;
@@ -3869,7 +4327,9 @@ impl App {
         self.session_title = None;
         self.show_banner = false;
         self.queued = 0;
-        self.queued_cells.clear();
+        self.prompt_queue.clear();
+        self.queue_selection = None;
+        self.queue_edit = None;
         self.pending_steer_cells.clear();
         self.prompt_pending = false;
         self.sel = None;
@@ -3883,13 +4343,10 @@ impl App {
 
     fn reset_subagent_views(&mut self) {
         self.subagents.clear();
+        self.current_subagents.clear();
+        self.next_subagent_starts_batch = true;
         self.active_subagent = None;
-        if matches!(
-            self.picker.as_ref().map(|picker| picker.kind),
-            Some(PickerKind::Subagent)
-        ) {
-            self.picker = None;
-        }
+        self.agent_selection = None;
     }
 
     fn load_acp_session(&mut self, id: &str, ctl: &Controller) {
@@ -4272,8 +4729,24 @@ impl App {
             self.needs_redraw = true;
             return;
         }
-        if self.input.buf.starts_with('/') && !self.slash_matches().is_empty() {
-            self.input.clear();
+        if self.slash_completion_open() {
+            self.slash_completion_dismissed = true;
+            return;
+        }
+        if let Some(edit) = &mut self.queue_edit {
+            if edit.delete_confirm {
+                edit.delete_confirm = false;
+                self.show_tip("delete cancelled · still editing queued prompt");
+            } else {
+                self.queue_edit = None;
+                self.input.clear();
+                self.slash_completion_dismissed = false;
+                self.reconcile_attachments();
+                self.show_tip("queued prompt edit cancelled");
+                if matches!(self.state, RunState::Idle) {
+                    self.dispatch_next_queued(ctl);
+                }
+            }
             return;
         }
         match self.state {
@@ -4346,6 +4819,22 @@ impl App {
                 self.input.stash = self.input.buf.clone();
                 self.input.history.len() - 1
             }
+            Some(0) => 0,
+            Some(p) => p - 1,
+        };
+        self.input.hist_pos = Some(pos);
+        self.input.set(self.input.history[pos].clone());
+    }
+
+    fn history_prev_from_draft(&mut self) {
+        if self.input.history.is_empty() {
+            return;
+        }
+        if self.input.hist_pos.is_none() {
+            self.input.stash = self.input.buf.clone();
+        }
+        let pos = match self.input.hist_pos {
+            None => self.input.history.len() - 1,
             Some(0) => 0,
             Some(p) => p - 1,
         };
@@ -4755,13 +5244,15 @@ impl App {
             let text = "\
 ## help
 
-- enter · 发送；当前轮次运行时将后续消息排队
+- enter · 发送；空 composer 且 Queue 非空时立即发送队首
+- alt+↑ · 选择任意排队消息；↑/↓ 选择，enter 编辑/保存，ctrl+d 删除，esc 退出
 - ctrl+x · 立即 steer 当前轮次
-- esc · 中断（保留草稿）；空闲时清除草稿
+- esc · 优先退出 / 推荐；队列编辑时取消；否则中断（保留草稿），空闲时清草稿
 - ctrl+c · 有草稿先清除；无草稿时连按 2 次退出（不中断）
 - shift+tab · 轮换权限预设 · /permission 打开选择器
 - ctrl+p · 打开模型选择器，然后选择推理强度
 - ctrl+shift+a · 直接轮换 Agent 预设
+- ↓ · 空输入时展开 Agent 会话导航；←/→ 选择，enter 打开，esc 折叠
 - /agent · 切换 ACP 广告的 Agent 预设
 - /lang · 切换界面语言：/lang zh 或 /lang en
 - /auth · ACP 登录；多种方式时打开选择器
@@ -4785,13 +5276,15 @@ token 用量（含缓存命中）以及轮次结束原因。";
         let text = "\
 ## help
 
-- enter · send · queues a follow-up while a turn runs
+- enter · send · with an empty composer, sends the Queue head now
+- alt+↑ · choose any queued prompt · ↑/↓ select, enter edits/saves, ctrl+d deletes, esc closes
 - ctrl+x · steer the active turn immediately
-- esc · interrupt (draft survives) · clears the draft when idle
+- esc · first closes / suggestions; cancels queue edits; otherwise interrupts (draft survives) or clears an idle draft
 - ctrl+c · clear a draft; 2× quits with no draft (never interrupts)
 - shift+tab · cycle permission (workspace-write ⇄ full access) · /permission opens the preset picker
 - ctrl+p · model picker (host catalog) → effort picker
 - ctrl+shift+a · cycle agent preset directly
+- ↓ · expand Agent transcript navigation from an empty prompt · ←/→ choose, enter opens, esc collapses
 - /agent · switch the agent preset advertised over ACP
 - /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
@@ -5125,13 +5618,16 @@ impl App {
     fn send_agent_text(&mut self, text: String, ctl: &Controller) {
         self.show_banner = false;
         let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
-        let cell = self.transcript.cells.len();
-        self.transcript.push_user(text.clone(), running);
         if running {
+            let id = self.next_prompt_id();
+            self.prompt_queue.push_back(ClientQueuedPrompt {
+                id,
+                blocks: vec![StagedBlock::Text(text.clone())],
+            });
             self.queued += 1;
-            self.queued_cells.push_back(vec![cell]);
-            self.show_tip("queued — lands after this turn · ctrl+x would send now");
+            self.show_tip("queued · empty enter sends first · alt+↑ edit");
         } else {
+            self.transcript.push_user(text.clone(), false);
             self.prompt_pending = true;
             self.state = RunState::Starting;
             self.run_started = Some(Instant::now());
@@ -5142,10 +5638,226 @@ impl App {
             };
         }
         self.scroll_up = 0;
-        ctl.send(Cmd::Prompt {
-            session_id: self.session_id.clone(),
-            text,
+        if !running {
+            ctl.send(Cmd::Prompt {
+                session_id: self.session_id.clone(),
+                text,
+            });
+        }
+    }
+
+    fn dispatch_next_queued(&mut self, ctl: &Controller) {
+        if self.queue_selection.is_some() || self.queue_edit.is_some() {
+            self.state_note = "queue paused for selection/edit".into();
+            self.show_tip("queue paused · finish or close the queue editor");
+            return;
+        }
+        let Some(prompt) = self.prompt_queue.pop_front() else {
+            return;
+        };
+        self.queued = self.prompt_queue.len();
+        self.echo_staged_blocks(&prompt.blocks);
+        self.prompt_pending = true;
+        self.state = RunState::Starting;
+        self.run_started = Some(Instant::now());
+        self.state_note = "sending queued followup".into();
+        self.scroll_up = 0;
+
+        match prompt.blocks.as_slice() {
+            [StagedBlock::Text(text)] => ctl.send(Cmd::Prompt {
+                session_id: self.session_id.clone(),
+                text: text.clone(),
+            }),
+            _ => ctl.send(Cmd::PromptImages {
+                session_id: self.session_id.clone(),
+                blocks: prompt_blocks_from_staged(prompt.blocks),
+            }),
+        }
+    }
+
+    /// Empty Enter promotes the FIFO head into the active turn. If the agent
+    /// cannot accept the steer, settlement restores the item to the front.
+    fn send_queue_head_now(&mut self, ctl: &Controller) {
+        if !self.input.is_empty()
+            || !self.pending_images.is_empty()
+            || self.queue_selection.is_some()
+            || self.queue_edit.is_some()
+        {
+            return;
+        }
+        let Some(prompt) = self.prompt_queue.pop_front() else {
+            return;
+        };
+        self.queued = self.prompt_queue.len();
+        self.show_banner = false;
+        self.scroll_up = 0;
+
+        let running = self.state == RunState::Running || self.prompt_pending;
+        let message_id = prompt.id;
+        let blocks = prompt.blocks;
+        let cells = self.echo_staged_blocks(&blocks);
+        let text = match blocks.as_slice() {
+            [StagedBlock::Text(text)] => Some(text.clone()),
+            _ => None,
+        };
+
+        if running {
+            self.pending_steer_cells.insert(
+                message_id,
+                PendingSteer {
+                    cells,
+                    blocks: blocks.clone(),
+                    requeue_front: true,
+                },
+            );
+            self.show_tip("queue head sent now — lands at the next agent step");
+            ctl.send(if let Some(text) = text {
+                Cmd::Steer {
+                    session_id: self.session_id.clone(),
+                    message_id,
+                    text,
+                }
+            } else {
+                Cmd::SteerImages {
+                    session_id: self.session_id.clone(),
+                    message_id,
+                    blocks: prompt_blocks_from_staged(blocks),
+                }
+            });
+            return;
+        }
+
+        self.prompt_pending = true;
+        self.state = RunState::Starting;
+        self.run_started = Some(Instant::now());
+        self.state_note = "sending queued followup".into();
+        ctl.send(if let Some(text) = text {
+            Cmd::Prompt {
+                session_id: self.session_id.clone(),
+                text,
+            }
+        } else {
+            Cmd::PromptImages {
+                session_id: self.session_id.clone(),
+                blocks: prompt_blocks_from_staged(blocks),
+            }
         });
+    }
+
+    fn open_queue_selector(&mut self) {
+        if self.queue_selection.is_some() || self.queue_edit.is_some() {
+            return;
+        }
+        if !self.input.is_empty() {
+            self.show_tip("send or clear the current draft before editing the queue");
+            return;
+        }
+        if self.prompt_queue.is_empty() {
+            self.show_tip("no queued prompt to edit");
+            return;
+        }
+        self.queue_selection = Some(self.prompt_queue.len() - 1);
+        self.slash_completion_dismissed = true;
+        self.show_tip("select queued prompt · ↑/↓ choose · enter edit · esc close");
+    }
+
+    fn begin_queue_edit_at(&mut self, index: usize) {
+        let Some(prompt) = self.prompt_queue.get(index) else {
+            self.queue_selection = None;
+            self.show_tip("queued prompt already left the queue");
+            return;
+        };
+        let prompt_id = prompt.id;
+        let blocks = prompt.blocks.clone();
+        self.queue_selection = None;
+        let mut text = String::new();
+        for block in blocks {
+            match block {
+                StagedBlock::Text(block_text) => text.push_str(&block_text),
+                StagedBlock::Image(image) => {
+                    let token = image.token.clone();
+                    if self.pending_images.restore(image).is_ok() {
+                        text.push_str(&token);
+                    }
+                }
+            }
+        }
+        self.queue_edit = Some(QueueEditState {
+            prompt_id,
+            delete_confirm: false,
+        });
+        self.input.set(text);
+        self.slash_completion_dismissed = false;
+        self.show_tip(format!(
+            "editing queued prompt {} · enter save · ctrl+d delete · esc cancel",
+            index + 1
+        ));
+    }
+
+    fn save_queue_edit(&mut self, ctl: &Controller) {
+        let Some(edit) = self.queue_edit.as_ref() else {
+            return;
+        };
+        let prompt_id = edit.prompt_id;
+        if edit.delete_confirm {
+            self.delete_queue_edit(ctl);
+            return;
+        }
+        let raw = self.input.buf.trim().to_string();
+        if raw.is_empty() && self.pending_images.is_empty() {
+            self.show_tip("queued prompt cannot be empty · ctrl+d deletes it");
+            return;
+        }
+        let blocks = if self.pending_images.is_empty() {
+            vec![StagedBlock::Text(raw)]
+        } else {
+            self.take_staged_blocks()
+        };
+        let Some(index) = self
+            .prompt_queue
+            .iter()
+            .position(|prompt| prompt.id == prompt_id)
+        else {
+            self.queue_edit = None;
+            self.input.clear();
+            self.show_tip("queued prompt already left the queue");
+            return;
+        };
+        self.prompt_queue[index].blocks = blocks;
+        self.queue_edit = None;
+        self.input.clear();
+        self.slash_completion_dismissed = false;
+        self.reconcile_attachments();
+        self.show_tip(format!("queued prompt {} updated", index + 1));
+        if matches!(self.state, RunState::Idle) {
+            self.dispatch_next_queued(ctl);
+        }
+    }
+
+    fn delete_queue_edit(&mut self, ctl: &Controller) {
+        let Some(prompt_id) = self.queue_edit.as_ref().map(|edit| edit.prompt_id) else {
+            return;
+        };
+        let Some(index) = self
+            .prompt_queue
+            .iter()
+            .position(|prompt| prompt.id == prompt_id)
+        else {
+            self.queue_edit = None;
+            self.input.clear();
+            self.show_tip("queued prompt already left the queue");
+            return;
+        };
+        self.prompt_queue.remove(index);
+        self.queued = self.prompt_queue.len();
+        self.queue_edit = None;
+        self.input.clear();
+        self.slash_completion_dismissed = false;
+        self.reconcile_attachments();
+        self.show_tip(format!("queued prompt {} deleted", index + 1));
+        if matches!(self.state, RunState::Idle) {
+            self.dispatch_next_queued(ctl);
+        }
     }
 
     /// `/image <path> [caption]` — stage a local raster in the composer; it is
@@ -5243,35 +5955,39 @@ impl App {
 
     /// Echo staged blocks in the transcript (text and image thumbnails in
     /// draft order) and send one prompt whose ACP blocks match that order.
-    fn emit_staged_prompt(
-        &mut self,
-        staged: Vec<StagedBlock>,
-        queued: bool,
-        steer_message_id: Option<u64>,
-        ctl: &Controller,
-    ) {
-        self.show_banner = false;
+    fn echo_staged_blocks(&mut self, staged: &[StagedBlock]) -> Vec<usize> {
         let first_cell = self.transcript.cells.len();
-        for block in &staged {
+        for block in staged {
             match block {
-                StagedBlock::Text(text) => self.transcript.push_user(text.clone(), queued),
+                StagedBlock::Text(text) => self.transcript.push_user(text.clone(), false),
                 StagedBlock::Image(att) => self.transcript.push_image(
                     att.name.clone(),
                     String::new(),
                     att.path.clone(),
                     att.data.clone(),
-                    queued,
+                    false,
                 ),
             }
         }
-        if queued {
-            self.queued_cells
-                .push_back((first_cell..self.transcript.cells.len()).collect());
-        }
+        (first_cell..self.transcript.cells.len()).collect()
+    }
+
+    fn emit_staged_prompt(
+        &mut self,
+        staged: Vec<StagedBlock>,
+        steer_message_id: Option<u64>,
+        ctl: &Controller,
+    ) {
+        self.show_banner = false;
+        let cells = self.echo_staged_blocks(&staged);
         if let Some(message_id) = steer_message_id {
             self.pending_steer_cells.insert(
                 message_id,
-                (first_cell..self.transcript.cells.len()).collect(),
+                PendingSteer {
+                    cells,
+                    blocks: staged.clone(),
+                    requeue_front: false,
+                },
             );
         }
         self.scroll_up = 0;
@@ -5302,12 +6018,17 @@ impl App {
             .count();
         let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
         if running {
+            let id = self.next_prompt_id();
+            self.prompt_queue
+                .push_back(ClientQueuedPrompt { id, blocks: staged });
             self.queued += 1;
             self.show_tip(if n <= 1 {
-                "image queued — lands after this turn".to_string()
+                "image queued · empty enter sends first".to_string()
             } else {
-                format!("{n} images queued — land after this turn")
+                format!("{n} images queued · empty enter sends first")
             });
+            self.scroll_up = 0;
+            return;
         } else {
             self.prompt_pending = true;
             self.state = RunState::Starting;
@@ -5318,7 +6039,7 @@ impl App {
                 format!("sending {n} images")
             };
         }
-        self.emit_staged_prompt(staged, running, None, ctl);
+        self.emit_staged_prompt(staged, None, ctl);
     }
 
     /// Send-now is ACP steering: issue another prompt immediately while the
@@ -5346,7 +6067,6 @@ impl App {
         self.input.history.push(self.input.buf.clone());
         self.input.clear();
         self.show_banner = false;
-        let queued = false;
         let has_images = staged.iter().any(|b| matches!(b, StagedBlock::Image(_)));
         if has_images {
             let n = staged
@@ -5366,14 +6086,14 @@ impl App {
                 };
             }
             let steer_message_id = running.then(|| self.next_prompt_id());
-            self.emit_staged_prompt(staged, queued, steer_message_id, ctl);
+            self.emit_staged_prompt(staged, steer_message_id, ctl);
         } else {
             let text = match staged.into_iter().next() {
                 Some(StagedBlock::Text(t)) => t,
                 _ => return,
             };
             let cell = self.transcript.cells.len();
-            self.transcript.push_user(text.clone(), queued);
+            self.transcript.push_user(text.clone(), false);
             if running {
                 self.show_tip("steered — lands at the next agent step");
             } else {
@@ -5384,7 +6104,14 @@ impl App {
             self.scroll_up = 0;
             ctl.send(if running {
                 let message_id = self.next_prompt_id();
-                self.pending_steer_cells.insert(message_id, vec![cell]);
+                self.pending_steer_cells.insert(
+                    message_id,
+                    PendingSteer {
+                        cells: vec![cell],
+                        blocks: vec![StagedBlock::Text(text.clone())],
+                        requeue_front: false,
+                    },
+                );
                 Cmd::Steer {
                     session_id: self.session_id.clone(),
                     message_id,
@@ -5432,7 +6159,6 @@ impl App {
 #[cfg(test)]
 #[path = "../tests/unit/app__persistent_shell_tests.rs"]
 mod persistent_shell_tests;
-
 
 pub fn timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -5525,21 +6251,17 @@ pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize, String)
 #[path = "../tests/unit/app__resume_tests.rs"]
 mod resume_tests;
 
-
 #[cfg(test)]
 #[path = "../tests/unit/app__selection_tests.rs"]
 mod selection_tests;
-
 
 #[cfg(test)]
 #[path = "../tests/unit/app__mode_tests.rs"]
 mod mode_tests;
 
-
 #[cfg(test)]
 #[path = "../tests/unit/app__palette_tests.rs"]
 mod palette_tests;
-
 
 #[cfg(test)]
 #[path = "../tests/unit/app__right_slot_tests.rs"]

@@ -23,9 +23,13 @@ import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
 import { apply as applySolarized, inject as solarizedInject } from './solarized.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
+import { apply as applyAgents } from './tui-agents.js'
+import { apply as applyQueue } from './tui-queue.js'
 import { apply as applyPresets, inject as presetsInject } from './tui-presets.js'
 import { apply as applyMarttyPreset, inject as marttyPresetInject } from './martty-preset.js'
 import { apply as applyPlanView, inject as planViewInject } from './plan-view.js'
+import { apply as applyAgentsView, inject as agentsViewInject } from './agents-view.js'
+import { apply as applyQueueView, inject as queueViewInject } from './queue-view.js'
 import { apply as applyStatsView, inject as statsViewInject } from './stats-view.js'
 import { apply as applySessionStatus, inject as sessionStatusInject } from './acp-session-status.js'
 import { apply as applyStatusView, inject as statusViewInject } from './status-view.js'
@@ -64,10 +68,14 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
+    await ctx.plugin({ name: 'tui-agents', inject: [], apply: applyAgents })
+    await ctx.plugin({ name: 'tui-queue', inject: [], apply: applyQueue })
     await ctx.plugin({ name: 'tui-presets', inject: presetsInject, apply: applyPresets }, presetConfig)
     await ctx.plugin({ name: 'martty-preset', inject: marttyPresetInject, apply: applyMarttyPreset })
     await ctx.plugin({ name: 'acp-client', inject: [], apply: applyAcpClient }, acpConfig)
     await ctx.plugin({ name: 'plan-view', inject: planViewInject, apply: applyPlanView })
+    await ctx.plugin({ name: 'agents-view', inject: agentsViewInject, apply: applyAgentsView })
+    await ctx.plugin({ name: 'queue-view', inject: queueViewInject, apply: applyQueueView })
     await ctx.plugin({ name: 'stats-view', inject: statsViewInject, apply: applyStatsView })
     await ctx.plugin({ name: 'acp-session-status', inject: sessionStatusInject, apply: applySessionStatus })
     await ctx.plugin({ name: 'status-view', inject: statusViewInject, apply: applyStatusView })
@@ -100,6 +108,7 @@ export async function bootClient(options = {}) {
         inject: [
           'acpClient', 'tuiTheme', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
           'tuiPresets', 'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
+          'tuiQueue', 'tuiAgents',
         ],
         apply: applyShell,
       },
@@ -116,10 +125,14 @@ export async function bootClient(options = {}) {
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
+    applyAgents(ctx)
+    applyQueue(ctx)
     applyPresets(ctx, presetConfig)
     applyMarttyPreset(ctx)
     applyAcpClient(ctx, acpConfig)
     applyPlanView(ctx)
+    applyAgentsView(ctx)
+    applyQueueView(ctx)
     applyStatsView(ctx)
     applySessionStatus(ctx)
     applyStatusView(ctx)

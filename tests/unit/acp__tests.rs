@@ -2,6 +2,28 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn session_setup_keeps_current_mode_when_the_mode_catalog_is_empty() {
+    let (bus, events) = std::sync::mpsc::channel();
+    let mut surface = Surface::default();
+
+    surface.apply_session_modes(
+        &json!({
+            "currentModeId": "danger-full-access",
+            "availableModes": []
+        }),
+        &bus,
+    );
+
+    match events.try_recv() {
+        Ok(AppEvent::Ctl(CtlEvent::SessionModes { modes, current })) => {
+            assert!(modes.is_empty());
+            assert_eq!(current.as_deref(), Some("danger-full-access"));
+        }
+        _ => panic!("expected the authoritative current mode"),
+    }
+}
+
+#[test]
 fn dynamic_plugin_inventory_uses_the_backend_current_package_and_run_state() {
     let plugins = dynamic_plugins_from_value(&json!([
         {
@@ -244,6 +266,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
                     crate::cordis::COMMAND_INVOKE
                         | crate::cordis::THEME_SELECTED
                         | crate::cordis::OVERLAY_EVENT
+                        | crate::cordis::AGENTS_UPDATE
                 ) {
                     let _ = request_tx.send((
                         "request",
@@ -390,6 +413,48 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
         assert_eq!(method, crate::cordis::OVERLAY_EVENT);
         assert_eq!(params["event"], event);
     }
+    cmd_tx
+        .send(Cmd::AgentsSnapshot {
+            snapshot: crate::bus::AgentsSnapshot {
+                active_id: "child-1".into(),
+                selected_id: None,
+                items: vec![
+                    crate::bus::AgentsSnapshotItem {
+                        id: "s1".into(),
+                        label: "main".into(),
+                        kind: "main".into(),
+                        status: "idle".into(),
+                        current: false,
+                    },
+                    crate::bus::AgentsSnapshotItem {
+                        id: "child-1".into(),
+                        label: "subagent 1".into(),
+                        kind: "subagent".into(),
+                        status: "running".into(),
+                        current: true,
+                    },
+                ],
+            },
+        })
+        .expect("publish Agent navigation");
+    let (kind, method, params) = tokio::time::timeout(Duration::from_secs(2), extension_rx.recv())
+        .await
+        .expect("Agent navigation should reach the compositor plane")
+        .expect("extension channel");
+    assert_eq!(kind, "request");
+    assert_eq!(method, crate::cordis::AGENTS_UPDATE);
+    assert_eq!(
+        params,
+        json!({
+            "protocol": 0,
+            "activeId": "child-1",
+            "selectedId": null,
+            "items": [
+                { "id": "s1", "label": "main", "kind": "main", "status": "idle", "current": false },
+                { "id": "child-1", "label": "subagent 1", "kind": "subagent", "status": "running", "current": true }
+            ]
+        })
+    );
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
@@ -1533,7 +1598,7 @@ async fn composition_catalog_is_ready_before_the_first_prompt() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auth_failure_parks_the_active_prompt_and_preserves_followup_fifo() {
+async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateResponse, InitializeRequest,
         InitializeResponse, NewSessionRequest, NewSessionResponse, PromptResponse, StopReason,
@@ -1696,7 +1761,7 @@ async fn auth_failure_parks_the_active_prompt_and_preserves_followup_fifo() {
     assert_eq!(
         deferred_steers,
         std::collections::BTreeSet::from([7, 8]),
-        "text and image Send Now both degrade to FIFO while authentication is unresolved"
+        "text and image Send Now both return to the client while authentication is unresolved"
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
@@ -1726,31 +1791,20 @@ async fn auth_failure_parks_the_active_prompt_and_preserves_followup_fifo() {
         .await
         .expect("image prompt entered during auth drains in order")
         .expect("image followup text");
-    let deferred_steer = tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
-        .await
-        .expect("deferred steer drains after ordinary followups")
-        .expect("deferred steer text");
-    let deferred_image_steer = tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
-        .await
-        .expect("deferred image steer drains last")
-        .expect("deferred image steer text");
     assert_eq!(
         [
             retried.as_str(),
             followup.as_str(),
             later_followup.as_str(),
             image_followup.as_str(),
-            deferred_steer.as_str(),
-            deferred_image_steer.as_str(),
         ],
-        [
-            "first",
-            "second",
-            "third",
-            "image group during auth",
-            "steer during auth",
-            "image steer during auth",
-        ]
+        ["first", "second", "third", "image group during auth"]
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), prompt_rx.recv())
+            .await
+            .is_err(),
+        "the transport must not retain deferred steers after reporting them to the client"
     );
 
     let _ = cmd_tx.send(Cmd::Shutdown);
@@ -1901,7 +1955,7 @@ async fn session_new_auth_failure_parks_the_first_intent_without_retry_storms() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn late_steer_rejection_waits_behind_a_prompt_parked_for_auth() {
+async fn late_steer_rejection_is_not_retried_by_the_transport_after_auth() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateResponse, InitializeRequest,
         InitializeResponse, NewSessionRequest, NewSessionResponse, PromptResponse, StopReason,
@@ -2073,11 +2127,11 @@ async fn late_steer_rejection_waits_behind_a_prompt_parked_for_auth() {
             Err(err) => panic!("{err}"),
         }
     }
-    assert!(steer_deferred, "rejected steer becomes FIFO");
+    assert!(steer_deferred, "rejected steer returns to the client");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         prompt_rx.try_recv().is_err(),
-        "late steer fallback cannot bypass unresolved authentication"
+        "the rejected steer is not retried while authentication is unresolved"
     );
 
     cmd_tx
@@ -2090,11 +2144,13 @@ async fn late_steer_rejection_waits_behind_a_prompt_parked_for_auth() {
         .await
         .expect("parked active retries")
         .expect("first retry text");
-    let steer = tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
-        .await
-        .expect("steer fallback drains")
-        .expect("steer retry text");
-    assert_eq!([first.as_str(), steer.as_str()], ["first", "steer"]);
+    assert_eq!(first, "first");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), prompt_rx.recv())
+            .await
+            .is_err(),
+        "the transport must not retry the steer after the client was told to defer it"
+    );
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
@@ -2258,7 +2314,7 @@ async fn steer_sends_a_concurrent_prompt_without_interrupting_the_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rejected_steer_falls_back_to_fifo_without_failing_the_active_turn() {
+async fn rejected_steer_reports_deferred_without_transport_retry() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
         NewSessionResponse, PromptResponse, StopReason,
@@ -2381,20 +2437,33 @@ async fn rejected_steer_falls_back_to_fifo_without_failing_the_active_turn() {
         Some("change course")
     );
 
-    let _ = release_first_tx.send(());
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
-            .await
-            .expect("rejected steer is retried after the active prompt")
-            .as_deref(),
-        Some("change course")
-    );
-    while let Ok(event) = bus_rx.try_recv() {
-        assert!(
-            !matches!(event, AppEvent::Ctl(CtlEvent::Error(_))),
-            "steer fallback must not fail the active UI turn"
-        );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut deferred = false;
+    while Instant::now() < deadline && !deferred {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SteerSettled {
+                message_id: 1,
+                deferred: true,
+            })) => deferred = true,
+            Ok(AppEvent::Ctl(CtlEvent::Error(err))) => panic!("steer failed the UI: {err}"),
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
     }
+    assert!(
+        deferred,
+        "the App must be told to enqueue the rejected steer"
+    );
+
+    let _ = release_first_tx.send(());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), prompt_rx.recv())
+            .await
+            .is_err(),
+        "the transport must not retain its own fallback FIFO"
+    );
+    assert_eq!(steer_attempts.load(Ordering::SeqCst), 1);
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;

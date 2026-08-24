@@ -777,4 +777,3 @@ fn chunk_str(s: &str, width: usize) -> Vec<&str> {
 #[cfg(test)]
 #[path = "../tests/unit/markdown__tests.rs"]
 mod tests;
-

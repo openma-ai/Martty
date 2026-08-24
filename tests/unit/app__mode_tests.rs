@@ -42,7 +42,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
 }
 
 #[test]
-fn mode_facts_cache_per_workspace_across_instances() {
+fn only_client_preferences_cache_per_workspace_across_instances() {
     let cfg = test_cfg();
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let mut app = App::new(
@@ -54,14 +54,15 @@ fn mode_facts_cache_per_workspace_across_instances() {
         tx.clone(),
     );
     app.modes.agent_preset = Some("code".into());
-    app.modes.approval = Some("ask".into());
-    app.modes.permission = Some("workspace-write".into());
+    app.modes.sandbox = Some("danger-full-access".into());
+    app.modes.approval = Some("never".into());
+    app.modes.permission = Some("danger-full-access".into());
     app.modes.effort = Some("max".into());
     app.modes.plan = true;
     app.save_modes_cache();
 
-    // A second instance in the same workspace boots with the cached
-    // facts — except plan, which never carries over.
+    // A second instance keeps client preferences, but session-authoritative
+    // permission facts must wait for the new host session to report them.
     let app2 = App::new(
         Theme::dark(),
         cfg.clone(),
@@ -71,9 +72,10 @@ fn mode_facts_cache_per_workspace_across_instances() {
         tx.clone(),
     );
     assert_eq!(app2.modes.agent_preset.as_deref(), Some("code"));
-    assert_eq!(app2.modes.approval.as_deref(), Some("ask"));
-    assert_eq!(app2.modes.permission.as_deref(), Some("workspace-write"));
     assert_eq!(app2.modes.effort.as_deref(), Some("max"));
+    assert!(app2.modes.sandbox.is_none());
+    assert!(app2.modes.approval.is_none());
+    assert!(app2.modes.permission.is_none());
     assert!(!app2.modes.plan, "plan is per-session");
 
     // Another workspace in the same root stays untouched.
@@ -410,6 +412,184 @@ fn child_session_updates_do_not_enter_the_parent_transcript() {
 }
 
 #[test]
+fn subagent_started_updates_navigation_without_a_timeline_notice() {
+    let (mut app, _ctl, _rx) = test_app();
+
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "child-1".into(),
+    });
+
+    assert_eq!(app.subagents.len(), 1);
+    assert!(app.subagents[0].running);
+    let rendered = app
+        .transcript
+        .lines(&Theme::dark(), 80, '⠋')
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect::<String>();
+    assert!(
+        !rendered.contains("subagent 1 started"),
+        "lifecycle belongs in the Agent dock, not the timeline: {rendered}"
+    );
+}
+
+#[test]
+fn subagent_finished_updates_navigation_without_a_timeline_notice() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "child-1".into(),
+    });
+
+    app.apply_ui(crate::events::UiEvent::SubagentFinished {
+        child: "child-1".into(),
+        failed: false,
+    });
+
+    assert!(!app.subagents[0].running);
+    let rendered = app
+        .transcript
+        .lines(&Theme::dark(), 80, '⠋')
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect::<String>();
+    assert!(
+        !rendered.contains("subagent 1 finished"),
+        "lifecycle belongs in the Agent dock, not the timeline: {rendered}"
+    );
+}
+
+#[test]
+fn subagent_tool_call_keeps_its_request_block_when_it_also_carries_lifecycle_metadata() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+
+    app.handle(
+        AppEvent::Rpc {
+            method: "session/update".into(),
+            params: serde_json::json!({
+                "sessionId": "dsh-test",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "subagent:run-1",
+                    "title": "Start subagent child-1",
+                    "status": "in_progress",
+                    "rawInput": {
+                        "childSessionId": "child-1",
+                        "provider": "codex",
+                        "local": false
+                    },
+                    "_meta": {"dsh": {"subagent": {
+                        "state": "started",
+                        "childSessionId": "child-1"
+                    }}}
+                }
+            }),
+        },
+        &ctl,
+    );
+
+    let frame = crate::ui::dump_frame(&mut app, 100, 24);
+    assert!(frame.contains("Start subagent child-1"), "{frame}");
+    assert!(
+        frame.lines().any(|line| line.contains("│ request")),
+        "the pending ACP tool call must expose its request before the child finishes:\n{frame}"
+    );
+    assert!(frame.contains("childSessionId"), "{frame}");
+}
+
+#[test]
+fn metadata_subagent_failure_updates_only_the_agent_status() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+
+    for update in [
+        serde_json::json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {"dsh": {
+                "event": "subagent/lifecycle",
+                "subagent": {"state": "started", "childSessionId": "child-1"}
+            }}
+        }),
+        serde_json::json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {"dsh": {
+                "event": "subagent/lifecycle",
+                "subagent": {
+                    "state": "finished",
+                    "childSessionId": "child-1",
+                    "stopReason": "error"
+                }
+            }}
+        }),
+    ] {
+        app.handle(
+            AppEvent::Rpc {
+                method: "session/update".into(),
+                params: serde_json::json!({"sessionId": "dsh-test", "update": update}),
+            },
+            &ctl,
+        );
+    }
+
+    assert!(!app.subagents[0].running);
+    assert!(app.subagents[0].failed);
+    assert_eq!(app.agents_snapshot().items[1].status, "failed");
+    let frame = crate::ui::dump_frame(&mut app, 100, 24);
+    assert!(frame.contains("Agents · 1/1"), "{frame}");
+    assert!(!frame.contains("Start subagent"), "{frame}");
+    assert!(!frame.contains("│ request"), "{frame}");
+}
+
+#[test]
+fn first_subagent_of_a_new_root_turn_archives_the_previous_batch() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+
+    app.apply_ui(crate::events::UiEvent::TurnStart {
+        session: "dsh-test".into(),
+        turn: 1,
+    });
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "child-1".into(),
+    });
+    app.apply_ui(crate::events::UiEvent::SubagentFinished {
+        child: "child-1".into(),
+        failed: false,
+    });
+    app.apply_ui(crate::events::UiEvent::TurnStart {
+        session: "dsh-test".into(),
+        turn: 2,
+    });
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "child-2".into(),
+    });
+
+    let collapsed = crate::ui::dump_frame(&mut app, 100, 24);
+    assert!(collapsed.contains("Agents · 0/1"), "{collapsed}");
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
+    let expanded = crate::ui::dump_frame(&mut app, 100, 24);
+    assert!(!expanded.contains("subagent 1"), "{expanded}");
+    assert!(expanded.contains("subagent 2"), "{expanded}");
+    assert!(expanded.contains("History (1)"), "{expanded}");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    let picker = app.picker.as_ref().expect("History opens a picker form");
+    assert!(matches!(picker.kind, PickerKind::AgentHistory));
+    assert_eq!(picker.items.len(), 1);
+    assert_eq!(picker.items[0].id, "child-1");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.active_subagent.as_deref(), Some("child-1"));
+}
+
+#[test]
 fn a_running_subagent_keeps_the_spinner_advancing() {
     let (mut app, _ctl, _rx) = test_app();
     app.apply_ui(crate::events::UiEvent::SubagentStarted {
@@ -424,7 +604,7 @@ fn a_running_subagent_keeps_the_spinner_advancing() {
 }
 
 #[test]
-fn down_on_an_empty_prompt_opens_the_agent_switcher() {
+fn down_on_an_empty_prompt_enters_inline_agent_navigation() {
     let (mut app, ctl, _rx) = test_app();
     app.apply_ui(crate::events::UiEvent::SubagentStarted {
         parent: "dsh-test".into(),
@@ -433,10 +613,146 @@ fn down_on_an_empty_prompt_opens_the_agent_switcher() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
 
-    let picker = app.picker.as_ref().expect("agent switcher opens");
-    assert!(picker.title.contains("agents"));
-    let ids: Vec<&str> = picker.items.iter().map(|item| item.id.as_str()).collect();
-    assert_eq!(ids, ["dsh-test", "child-1"]);
+    assert!(app.picker.is_none(), "Agent navigation has no popup");
+    assert_eq!(app.agent_selection.as_deref(), Some("dsh-test"));
+}
+
+#[test]
+fn agent_navigation_is_inline_when_the_view_plugin_is_available() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "child-1".into(),
+    });
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::COMMANDS_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "commands": [{
+                    "name": "agents",
+                    "description": "Switch the visible Agent transcript"
+                }]
+            }),
+        },
+        &ctl,
+    );
+
+    app.handle(
+        AppEvent::Term(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    assert!(
+        app.picker.is_none(),
+        "Agent navigation must not open a popup"
+    );
+
+    app.handle(
+        AppEvent::Term(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Term(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    assert_eq!(
+        app.active_subagent.as_deref(),
+        Some("child-1"),
+        "↓ enters the rail, → focuses the child, and Enter opens its transcript"
+    );
+    while let Ok(command) = commands.try_recv() {
+        assert!(
+            !matches!(command, Cmd::InvokePluginCommand { name, .. } if name == "agents"),
+            "keyboard navigation stays inline instead of reopening the Client overlay"
+        );
+    }
+}
+
+#[test]
+fn the_client_agents_selection_can_open_any_subagent_or_return_to_main() {
+    let (mut app, ctl, _rx) = test_app();
+    for child in ["child-1", "child-2"] {
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(),
+            child: child.into(),
+        });
+    }
+
+    app.handle(
+        AppEvent::Rpc {
+            method: "_dsh/cordis/tui/agents/select".into(),
+            params: serde_json::json!({ "protocol": 0, "id": "child-2" }),
+        },
+        &ctl,
+    );
+    assert_eq!(app.active_subagent.as_deref(), Some("child-2"));
+
+    app.handle(
+        AppEvent::Rpc {
+            method: "_dsh/cordis/tui/agents/select".into(),
+            params: serde_json::json!({ "protocol": 0, "id": "dsh-test" }),
+        },
+        &ctl,
+    );
+    assert!(app.active_subagent.is_none());
+
+    for action in ["begin", "next", "confirm"] {
+        app.handle(
+            AppEvent::Rpc {
+                method: crate::cordis::AGENTS_NAVIGATE.into(),
+                params: serde_json::json!({ "protocol": 0, "action": action }),
+            },
+            &ctl,
+        );
+    }
+    assert_eq!(
+        app.active_subagent.as_deref(),
+        Some("child-1"),
+        "the Client /agents command enters the same inline state machine"
+    );
+    assert!(app.picker.is_none());
+}
+
+#[test]
+fn live_subagent_changes_publish_a_client_compositor_snapshot() {
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let mut app = App::new(Theme::dark(), cfg, "live-session".into(), false, true, tx);
+    let (ctl, commands) = crate::controller::tests::test_controller();
+
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SubagentStarted {
+            parent: "live-session".into(),
+            child: "child-1".into(),
+        }),
+        &ctl,
+    );
+
+    let command = commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("Agent compositor snapshot");
+    let crate::bus::Cmd::AgentsSnapshot { snapshot } = command else {
+        panic!("wrong command: {command:?}");
+    };
+    assert_eq!(snapshot.active_id, "live-session");
+    assert_eq!(snapshot.selected_id, None);
+    assert_eq!(snapshot.items[0].id, "live-session");
+    assert_eq!(snapshot.items[0].kind, "main");
+    assert_eq!(snapshot.items[1].id, "child-1");
+    assert_eq!(snapshot.items[1].kind, "subagent");
+    assert_eq!(snapshot.items[1].status, "running");
 }
 
 #[test]
@@ -453,6 +769,7 @@ fn enter_from_the_agent_switcher_opens_the_child_transcript() {
         text: "child-only output".into(),
     });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
     let frame = crate::ui::dump_frame(&mut app, 100, 24);
@@ -474,6 +791,7 @@ fn esc_from_a_child_transcript_returns_to_main() {
         text: "child-only output".into(),
     });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
@@ -491,6 +809,7 @@ fn child_transcript_view_does_not_accept_composer_input() {
         child: "child-1".into(),
     });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
@@ -510,7 +829,7 @@ fn child_transcript_view_does_not_accept_composer_input() {
 }
 
 #[test]
-fn down_from_a_child_view_preselects_the_next_agent() {
+fn down_from_a_child_view_reenters_inline_agent_navigation() {
     let (mut app, ctl, _rx) = test_app();
     for child in ["child-1", "child-2"] {
         app.apply_ui(crate::events::UiEvent::SubagentStarted {
@@ -519,13 +838,15 @@ fn down_from_a_child_view_preselects_the_next_agent() {
         });
     }
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
     assert_eq!(app.active_subagent.as_deref(), Some("child-1"));
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
-
-    let picker = app.picker.as_ref().expect("agent switcher reopens");
-    assert_eq!(picker.items[picker.sel].id, "child-2");
+    assert_eq!(app.agent_selection.as_deref(), Some("child-1"));
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.active_subagent.as_deref(), Some("child-2"));
 }
 
 #[test]
@@ -536,6 +857,7 @@ fn q_from_a_child_transcript_returns_to_main() {
         child: "child-1".into(),
     });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &ctl);
@@ -1160,6 +1482,72 @@ fn send_now_while_running_is_a_steer_not_a_cancelled_queue_item() {
 }
 
 #[test]
+fn enter_on_an_empty_composer_sends_the_queue_head_now() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first queued followup".into(), &ctl);
+    app.send_agent_text("second queued followup".into(), &ctl);
+    assert!(app.input.is_empty());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Steer { text, .. }) if text == "first queued followup"
+    ));
+    assert_eq!(app.queued, 1);
+    assert_eq!(app.queue_previews(1)[0].summary, "second queued followup");
+    assert!(matches!(
+        app.transcript.cells.last().map(|cell| &cell.kind),
+        Some(crate::transcript::CellKind::User { text, queued: false })
+            if text == "first queued followup"
+    ));
+}
+
+#[test]
+fn a_deferred_queue_head_steer_returns_to_the_front() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first queued followup".into(), &ctl);
+    app.send_agent_text("second queued followup".into(), &ctl);
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+    let message_id = match commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("queue head steer")
+    {
+        Cmd::Steer { message_id, .. } => message_id,
+        other => panic!("expected queue head steer, got {other:?}"),
+    };
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SteerSettled {
+            message_id,
+            deferred: true,
+        }),
+        &ctl,
+    );
+
+    let previews = app.queue_previews(2);
+    assert_eq!(previews[0].summary, "first queued followup");
+    assert_eq!(previews[1].summary, "second queued followup");
+}
+
+#[test]
 fn rejected_send_now_becomes_visible_fifo_without_stopping_the_active_turn() {
     let (mut app, ctl, _rx) = test_app();
     app.state = RunState::Running;
@@ -1181,13 +1569,14 @@ fn rejected_send_now_becomes_visible_fifo_without_stopping_the_active_turn() {
 
     assert!(matches!(app.state, RunState::Running));
     assert_eq!(app.queued, 1);
-    assert!(matches!(
-        app.transcript.cells.last().map(|cell| &cell.kind),
-        Some(crate::transcript::CellKind::User {
-            text,
-            queued: true,
-        }) if text == "change course"
-    ));
+    assert!(app.transcript.cells.iter().any(|cell| {
+        cell.hidden
+            && matches!(
+                &cell.kind,
+                crate::transcript::CellKind::User { text, .. } if text == "change course"
+            )
+    }));
+    assert!(crate::ui::dump_frame(&mut app, 90, 24).contains("change course"));
 }
 
 #[test]
@@ -1285,7 +1674,8 @@ fn first_prompt_during_runtime_start_is_active_and_only_the_second_queues() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(users, [("first", false), ("second", true)]);
+    assert_eq!(users, [("first", false)]);
+    assert_eq!(app.queue_previews(1)[0].summary, "second");
 }
 
 #[test]
@@ -1393,7 +1783,22 @@ fn resetting_the_session_discards_unsettled_steer_bookkeeping() {
 
     assert!(app.pending_steer_cells.is_empty());
     assert_eq!(app.queued, 0, "late settlement cannot taint a new session");
-    assert!(app.queued_cells.is_empty());
+}
+
+#[test]
+fn resetting_the_session_discards_the_client_queue_and_active_edit() {
+    let (mut app, ctl, _rx) = test_app();
+    app.state = RunState::Running;
+    app.send_agent_text("old queued prompt".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.queue_edit.is_some());
+
+    app.reset_session_ui();
+
+    assert!(app.prompt_queue.is_empty());
+    assert!(app.queue_edit.is_none());
+    assert_eq!(app.queued, 0);
 }
 
 #[test]
@@ -1403,36 +1808,45 @@ fn runtime_exit_discards_delivery_state_owned_by_the_dead_actor() {
     app.send_agent_text("queued followup".into(), &ctl);
     app.input.set("unsettled steer".into());
     app.send_now(&ctl);
+    app.input.clear();
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
     assert_eq!(app.queued, 1);
+    assert!(app.queue_edit.is_some());
     assert_eq!(app.pending_steer_cells.len(), 1);
 
     app.handle(AppEvent::RuntimeExited(Some(1)), &ctl);
 
     assert_eq!(app.queued, 0);
-    assert!(app.queued_cells.is_empty());
+    assert!(app.prompt_queue.is_empty());
+    assert!(app.queue_edit.is_none());
     assert!(app.pending_steer_cells.is_empty());
 }
 
 #[test]
-fn interrupted_keeps_client_followups_queued() {
-    let (mut app, ctl, _rx) = test_app();
+fn interrupted_advances_one_client_followup_and_queues_later_input_behind_it() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
     app.state_note = "cancelling".into();
     app.send_agent_text("first followup".into(), &ctl);
     app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
-    assert!(matches!(app.state, RunState::Idle));
-    assert_eq!(app.queued, 1);
-    assert!(app.state_note.is_empty());
+    assert!(matches!(app.state, RunState::Starting));
+    assert_eq!(app.queued, 0);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "first followup"
+    ));
 
     app.send_agent_text("second followup".into(), &ctl);
     assert_eq!(
-        app.queued, 2,
-        "new input joins the surviving FIFO while the actor advances it"
+        app.queued, 1,
+        "new input queues behind the followup already handed to the actor"
     );
-    assert!(matches!(
-        app.transcript.cells.last().map(|cell| &cell.kind),
-        Some(crate::transcript::CellKind::User { queued: true, .. })
-    ));
+    assert!(app.transcript.cells.iter().all(|cell| !matches!(
+        &cell.kind,
+        crate::transcript::CellKind::User { text, .. } if text == "second followup"
+    )));
 }
 
 #[test]
@@ -1480,12 +1894,13 @@ fn staged_input_joins_a_surviving_fifo_after_interrupt() {
         &ctl,
     );
 
-    assert_eq!(app.queued, 2);
-    assert_eq!(app.queued_cells.len(), 2);
-    assert!(matches!(
-        app.transcript.cells.last().map(|cell| &cell.kind),
-        Some(crate::transcript::CellKind::Image { queued: true, .. })
-    ));
+    assert_eq!(app.queued, 1);
+    assert!(app
+        .transcript
+        .cells
+        .iter()
+        .all(|cell| !matches!(&cell.kind, crate::transcript::CellKind::Image { .. })));
+    assert_eq!(app.queue_previews(1)[0].summary, "▣ shot.png");
 }
 
 #[test]
@@ -1498,7 +1913,7 @@ fn send_now_can_steer_while_a_surviving_fifo_is_advancing() {
 
     app.send_now(&ctl);
 
-    assert_eq!(app.queued, 1);
+    assert_eq!(app.queued, 0, "the ordinary followup is already advancing");
     assert_eq!(app.pending_steer_cells.len(), 1);
     assert!(matches!(
         app.transcript.cells.last().map(|cell| &cell.kind),
@@ -1510,34 +1925,605 @@ fn send_now_can_steer_while_a_surviving_fifo_is_advancing() {
 }
 
 #[test]
-fn agent_idle_status_does_not_discard_the_client_owned_fifo() {
-    let (mut app, ctl, _rx) = test_app();
+fn followup_stays_in_the_client_until_the_active_turn_is_idle() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
-    app.send_agent_text("followup".into(), &ctl);
+
+    app.send_agent_text("client-only followup".into(), &ctl);
+
+    assert_eq!(app.queued, 1);
+    assert!(
+        app.transcript.cells.iter().all(|cell| !matches!(
+            &cell.kind,
+            crate::transcript::CellKind::User { text, .. }
+                if text == "client-only followup"
+        )),
+        "a client-owned followup must not enter the timeline before dequeue"
+    );
+    assert!(
+        matches!(
+            commands.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "queueing must not issue session/prompt before the active turn settles"
+    );
+}
+
+#[test]
+fn idle_status_delivers_exactly_one_client_queued_prompt() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first followup".into(), &ctl);
+    app.send_agent_text("second followup".into(), &ctl);
 
     app.handle(
         AppEvent::Ui(crate::events::UiEvent::SessionStatus {
-            session: "dsh-test".into(),
+            session: app.session_id.clone(),
             running: false,
         }),
         &ctl,
     );
 
-    assert_eq!(app.queued, 1);
-    assert_eq!(app.queued_cells.len(), 1);
     assert!(matches!(
-        app.transcript.cells.last().map(|cell| &cell.kind),
-        Some(crate::transcript::CellKind::User { queued: true, .. })
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "first followup"
+    ));
+    assert!(matches!(
+        app.transcript
+            .cells
+            .iter()
+            .find_map(|cell| match &cell.kind {
+                crate::transcript::CellKind::User { text, queued } if text == "first followup" =>
+                    Some(*queued),
+                _ => None,
+            }),
+        Some(false)
+    ));
+    assert!(
+        app.transcript.cells.iter().all(|cell| !matches!(
+            &cell.kind,
+            crate::transcript::CellKind::User { text, .. }
+                if text == "second followup"
+        )),
+        "only the dequeued followup enters the timeline"
+    );
+    assert_eq!(app.queued, 1);
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
     ));
 }
 
 #[test]
-fn actor_prompt_acceptance_delivers_only_the_first_queued_prompt_group() {
+fn repeated_idle_status_cannot_release_two_client_queued_prompts() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first followup".into(), &ctl);
+    app.send_agent_text("second followup".into(), &ctl);
+
+    let idle = AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+        session: app.session_id.clone(),
+        running: false,
+    });
+    app.handle(idle, &ctl);
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "first followup"
+    ));
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    assert_eq!(app.queued, 1);
+}
+
+#[test]
+fn interrupted_turn_releases_one_client_queued_prompt() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first followup".into(), &ctl);
+    app.send_agent_text("second followup".into(), &ctl);
+
+    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "first followup"
+    ));
+    assert_eq!(app.queued, 1);
+}
+
+#[test]
+fn alt_up_preselects_the_latest_client_queued_prompt() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first followup".into(), &ctl);
+    app.send_agent_text("second followup".into(), &ctl);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    assert!(app.input.is_empty());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+    assert_eq!(app.input.buf, "second followup");
+    assert_eq!(app.queued, 2, "editing keeps the original queue slot");
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn alt_up_then_arrows_can_edit_any_client_queued_prompt() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first followup".into(), &ctl);
+    app.send_agent_text("second followup".into(), &ctl);
+    app.send_agent_text("third followup".into(), &ctl);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    assert!(
+        app.input.is_empty(),
+        "Alt+Up opens queue selection before editing"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+    assert_eq!(app.input.buf, "second followup");
+    assert_eq!(app.queued, 3, "selection keeps every FIFO slot in place");
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn queue_selector_keeps_and_highlights_the_selected_shelf_row() {
     let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    for ordinal in ["first", "second", "third", "fourth", "fifth"] {
+        app.send_agent_text(format!("{ordinal} shelf item"), &ctl);
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+
+    let frame = crate::ui::dump_frame(&mut app, 90, 24);
+    assert!(
+        frame.contains("▸ 5  fifth shelf item"),
+        "selected queue row should remain visible and highlighted:\n{frame}"
+    );
+}
+
+#[test]
+fn saving_a_selected_queue_edit_preserves_fifo_position() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first followup".into(), &ctl);
+    app.send_agent_text("second followup".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.input.set("first followup edited".into());
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+    assert!(app.input.is_empty());
+    assert_eq!(app.queued, 2, "saving replaces rather than appends");
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "first followup edited"
+    ));
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::PromptQueued {
+            message_id: "first".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "second followup"
+    ));
+}
+
+#[test]
+fn ctrl_d_then_enter_deletes_the_edited_queue_item() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("keep this".into(), &ctl);
+    app.send_agent_text("delete this".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+    assert_eq!(app.queued, 2, "Ctrl+D only asks for confirmation");
+    assert_eq!(app.input.buf, "delete this");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.queued, 1);
+    assert!(app.input.is_empty());
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "keep this"
+    ));
+}
+
+#[test]
+fn queued_prompts_render_in_a_shelf_above_the_composer_not_the_timeline() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    app.send_agent_text("queue-shelf-marker".into(), &ctl);
+    app.input.set("composer-draft-marker".into());
+
+    assert!(
+        app.transcript.cells.iter().all(|cell| !matches!(
+            &cell.kind,
+            crate::transcript::CellKind::User { text, .. }
+                if text == "queue-shelf-marker"
+        )),
+        "queued content belongs to the client shelf, not the transcript"
+    );
+    let frame = crate::ui::dump_frame(&mut app, 90, 24);
+    assert!(frame.contains("Queue · 1"), "missing queue shelf:\n{frame}");
+    assert!(
+        frame.contains("enter send first"),
+        "Queue should advertise empty Enter's immediate-send behavior:\n{frame}"
+    );
+    let queue_row = frame
+        .lines()
+        .position(|line| line.contains("queue-shelf-marker"))
+        .expect("queued prompt preview");
+    let composer_row = frame
+        .lines()
+        .position(|line| line.contains("composer-draft-marker"))
+        .expect("composer draft");
+    assert!(
+        queue_row < composer_row,
+        "queue shelf must sit above composer"
+    );
+    assert!(
+        composer_row - queue_row <= 3,
+        "queue shelf should be attached to the composer, not float in the timeline:\n{frame}"
+    );
+}
+
+#[test]
+fn native_queue_fallback_shows_every_item_when_space_allows() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    for ordinal in 1..=7 {
+        app.send_agent_text(format!("native queued prompt {ordinal}"), &ctl);
+    }
+
+    let frame = crate::ui::dump_frame(&mut app, 100, 28);
+    for ordinal in 1..=7 {
+        assert!(
+            frame.contains(&format!("native queued prompt {ordinal}")),
+            "native Queue row {ordinal} should remain visible when space allows:\n{frame}"
+        );
+    }
+}
+
+#[test]
+fn deleting_a_queued_prompt_removes_it_from_the_queue_shelf() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    app.send_agent_text("keep-marker".into(), &ctl);
+    app.send_agent_text("remove-marker".into(), &ctl);
+    assert!(crate::ui::dump_frame(&mut app, 90, 24).contains("remove-marker"));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+    let frame = crate::ui::dump_frame(&mut app, 90, 24);
+    assert!(
+        frame.contains("keep-marker"),
+        "unrelated queue item remains"
+    );
+    assert!(
+        !frame.contains("remove-marker"),
+        "deleted queue item must disappear:\n{frame}"
+    );
+}
+
+#[test]
+fn live_queue_changes_publish_a_client_compositor_snapshot() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let mut app = App::new(Theme::dark(), cfg, "live-session".into(), false, true, tx);
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.input.set("queued from composer".into());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let Cmd::QueueSnapshot { snapshot } = commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("Queue compositor snapshot")
+    else {
+        panic!("queueing a follow-up must publish Queue state")
+    };
+    assert_eq!(snapshot.count, 1);
+    assert_eq!(snapshot.items.len(), 1);
+    assert_eq!(snapshot.items[0].ordinal, 1);
+    assert_eq!(snapshot.items[0].summary, "queued from composer");
+    assert_eq!(snapshot.selected_id, None);
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT))),
+        &ctl,
+    );
+    let Cmd::QueueSnapshot { snapshot } = commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("Queue selection snapshot")
+    else {
+        panic!("opening Queue selection must publish its focus")
+    };
+    assert_eq!(snapshot.selected_id, Some(snapshot.items[0].id));
+}
+
+#[test]
+fn live_queue_snapshot_contains_every_queued_prompt() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let mut app = App::new(Theme::dark(), cfg, "live-session".into(), false, true, tx);
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+
+    let mut latest = None;
+    for ordinal in 1..=7 {
+        app.input.set(format!("queued prompt {ordinal}"));
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        let Cmd::QueueSnapshot { snapshot } = commands
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("Queue compositor snapshot")
+        else {
+            panic!("queueing a follow-up must publish Queue state")
+        };
+        latest = Some(snapshot);
+    }
+
+    let snapshot = latest.expect("last Queue snapshot");
+    assert_eq!(snapshot.count, 7);
+    assert_eq!(snapshot.items.len(), 7);
+    assert_eq!(snapshot.items[0].summary, "queued prompt 1");
+    assert_eq!(snapshot.items[6].summary, "queued prompt 7");
+}
+
+#[test]
+fn escape_steps_back_from_delete_confirmation_then_cancels_queue_edit() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("original queued text".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.input.set("unsaved edit".into());
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf, "unsaved edit");
+    assert_eq!(app.queued, 1);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(app.input.is_empty());
+    assert_eq!(app.queued, 1);
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        app.input.buf, "original queued text",
+        "cancelling restores the unmodified queue item"
+    );
+}
+
+#[test]
+fn dismissed_completion_inside_queue_edit_does_not_open_history() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.history.push("old history".into());
+    app.state = RunState::Running;
+    app.send_agent_text("/model".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.slash_completion_open());
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        app.input.buf, "/model",
+        "queue editing owns cursor motion after its completion closes"
+    );
+}
+
+#[test]
+fn queue_delete_confirmation_closes_slash_recommendations() {
+    let (mut app, ctl, _rx) = test_app();
+    app.state = RunState::Running;
+    app.send_agent_text("/model".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.slash_completion_open());
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+
+    assert!(!app.slash_completion_open());
+    assert!(app.queue_delete_confirming());
+}
+
+#[test]
+fn queue_waits_when_the_item_at_the_head_is_being_edited() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("queued original".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.input.set("queued edited".into());
+
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    assert_eq!(app.queued, 1);
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "queued edited"
+    ));
+    assert_eq!(app.queued, 0);
+}
+
+#[test]
+fn queue_waits_if_the_active_turn_ends_before_a_queue_choice_is_made() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("first queued".into(), &ctl);
+    app.send_agent_text("second queued".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    assert_eq!(app.queued, 2);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "first queued"
+    ));
+    assert_eq!(app.queued, 1);
+}
+
+#[test]
+fn cancelling_a_paused_head_edit_releases_the_original_prompt() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.send_agent_text("queued original".into(), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.input.set("unsaved edit".into());
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "queued original"
+    ));
+    assert_eq!(app.queued, 0);
+}
+
+#[test]
+fn queued_image_prompt_stays_client_side_and_restores_its_chip_for_editing() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
     app.send_staged(
         vec![
-            StagedBlock::Text("look".into()),
+            StagedBlock::Text("inspect ".into()),
             StagedBlock::Image(crate::attachments::Attachment {
                 id: crate::attachments::KITTY_ID_BASE + 1,
                 token: "[image 1]".into(),
@@ -1549,39 +2535,104 @@ fn actor_prompt_acceptance_delivers_only_the_first_queued_prompt_group() {
         ],
         &ctl,
     );
-    app.send_agent_text("after".into(), &ctl);
 
+    assert!(matches!(
+        commands.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.input.buf.contains("inspect"));
+    assert!(app.input.buf.contains("[image 1]"));
+    assert_eq!(app.pending_images.len(), 1);
+}
+
+#[test]
+fn saving_a_queued_image_edit_updates_preview_and_dequeued_blocks() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    app.send_staged(
+        vec![
+            StagedBlock::Text("inspect ".into()),
+            StagedBlock::Image(crate::attachments::Attachment {
+                id: crate::attachments::KITTY_ID_BASE + 1,
+                token: "[image 1]".into(),
+                name: "shot.png".into(),
+                path: "clipboard".into(),
+                media_type: "image/png".into(),
+                data: std::sync::Arc::from([1_u8, 2, 3]),
+            }),
+        ],
+        &ctl,
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.input.insert_str(" revised-marker");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+
+    assert!(
+        crate::ui::dump_frame(&mut app, 90, 24).contains("revised-marker"),
+        "the queued preview reflects the saved image draft"
+    );
     app.handle(
-        AppEvent::Ui(crate::events::UiEvent::TurnStart {
-            session: "dsh-test".into(),
-            turn: 2,
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
+        }),
+        &ctl,
+    );
+    let blocks = match commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("dequeued image prompt")
+    {
+        Cmd::PromptImages { blocks, .. } => blocks,
+        _ => panic!("expected image prompt"),
+    };
+    assert!(blocks.iter().any(
+        |block| matches!(block, crate::bus::PromptBlock::Text(text) if text.contains("revised-marker"))
+    ));
+}
+
+#[test]
+fn rejected_steer_falls_back_into_the_client_owned_queue() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.input.set("urgent correction".into());
+    app.send_now(&ctl);
+    let message_id = match commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("steer command")
+    {
+        Cmd::Steer {
+            message_id, text, ..
+        } => {
+            assert_eq!(text, "urgent correction");
+            message_id
+        }
+        _ => panic!("expected text steer"),
+    };
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SteerSettled {
+            message_id,
+            deferred: true,
+        }),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+            session: app.session_id.clone(),
+            running: false,
         }),
         &ctl,
     );
 
-    assert_eq!(
-        app.queued, 2,
-        "TurnStart also fires for the active prompt and cannot identify FIFO delivery"
-    );
-    app.handle(
-        AppEvent::Ctl(CtlEvent::PromptQueued {
-            message_id: "dsh-test".into(),
-        }),
-        &ctl,
-    );
-
-    assert_eq!(app.queued, 1);
-    let queued = app
-        .transcript
-        .cells
-        .iter()
-        .filter_map(|cell| match &cell.kind {
-            crate::transcript::CellKind::User { queued, .. }
-            | crate::transcript::CellKind::Image { queued, .. } => Some(*queued),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(queued, [false, false, true]);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "urgent correction"
+    ));
 }
 
 #[test]
@@ -1854,6 +2905,49 @@ fn tab_completes_a_slash_argument_without_running_it() {
         commands.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
+}
+
+#[test]
+fn escape_dismisses_slash_completion_then_arrows_browse_history() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.history.push("previous prompt".into());
+    app.input.set("/mo".into());
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        app.input.buf, "/mo",
+        "closing recommendations must preserve the current slash draft"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf, "previous prompt");
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        app.input.buf, "/mo",
+        "leaving history restores the dismissed slash draft"
+    );
+}
+
+#[test]
+fn editing_a_dismissed_slash_draft_reopens_completion() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("/mo".into());
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(!app.slash_completion_open());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), &ctl);
+    assert!(app.slash_completion_open());
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    app.handle(
+        AppEvent::Term(crossterm::event::Event::Paste("e".into())),
+        &ctl,
+    );
+    assert!(
+        app.slash_completion_open(),
+        "pasting into a dismissed draft is also an edit"
+    );
 }
 
 #[test]
@@ -2272,7 +3366,6 @@ fn direct_ui_turn_facts_update_client_lifecycle() {
     app.state = RunState::Running;
     app.run_started = Some(Instant::now());
     app.state_note = "working".into();
-    app.queued = 1;
 
     app.handle(
         AppEvent::Ui(crate::events::UiEvent::TurnStart {
@@ -2281,14 +3374,12 @@ fn direct_ui_turn_facts_update_client_lifecycle() {
         }),
         &ctl,
     );
-    assert_eq!(app.queued, 1);
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "dsh-test".into(),
         }),
         &ctl,
     );
-    assert_eq!(app.queued, 0);
 
     app.handle(
         AppEvent::Ui(crate::events::UiEvent::SessionStatus {
@@ -2495,7 +3586,7 @@ fn open_auth_preserves_draft_and_pending_fifo() {
     app.state = RunState::Running;
     app.send_agent_text("queued followup".into(), &ctl);
     assert_eq!(app.queued, 1);
-    assert_eq!(app.queued_cells.len(), 1);
+    assert_eq!(app.prompt_queue.len(), 1);
     app.input.set("keep this draft".into());
     let methods = crate::acp_auth::parse_auth_methods(
         &serde_json::json!([
@@ -2519,19 +3610,11 @@ fn open_auth_preserves_draft_and_pending_fifo() {
     assert_eq!(app.input.buf, "keep this draft");
     assert!(matches!(app.state, RunState::Idle));
     assert_eq!(app.queued, 1);
-    assert_eq!(app.queued_cells.len(), 1);
-    assert!(matches!(
-        app.transcript
-            .cells
-            .iter()
-            .find_map(|cell| match &cell.kind {
-                crate::transcript::CellKind::User { text, queued } if text == "queued followup" => {
-                    Some(*queued)
-                }
-                _ => None,
-            }),
-        Some(true)
-    ));
+    assert_eq!(app.prompt_queue.len(), 1);
+    assert!(app.transcript.cells.iter().all(|cell| !matches!(
+        &cell.kind,
+        crate::transcript::CellKind::User { text, .. } if text == "queued followup"
+    )));
     assert!(matches!(
         app.picker.as_ref().map(|p| p.kind),
         Some(PickerKind::Auth)
@@ -2569,7 +3652,7 @@ fn auth_retry_does_not_consume_the_followup_fifo_marker() {
         app.queued, 1,
         "the retry belongs to the original active prompt, not the FIFO"
     );
-    assert_eq!(app.queued_cells.len(), 1);
+    assert_eq!(app.prompt_queue.len(), 1);
 }
 
 #[test]

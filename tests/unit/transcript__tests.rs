@@ -52,6 +52,35 @@ fn streaming_text_appends_and_finalizes() {
 }
 
 #[test]
+fn streaming_assistant_keeps_its_cursor_without_a_fallback_loading_icon() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "starting subagents".into(),
+    });
+
+    let rendered = |spinner| {
+        tr.lines(&Theme::dark(), 80, spinner)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>()
+    };
+    let first = rendered('⠋');
+    let second = rendered('⠙');
+
+    assert!(first.contains("starting subagents▍"), "{first}");
+    assert!(second.contains("starting subagents▍"), "{second}");
+    assert!(
+        !first.contains('⠋'),
+        "fallback loading icon leaked: {first}"
+    );
+    assert!(
+        !second.contains('⠙'),
+        "fallback loading icon leaked: {second}"
+    );
+}
+
+#[test]
 fn tool_call_pairs_with_result() {
     let mut tr = t("s");
     tr.apply(UiEvent::ToolCall {
@@ -77,6 +106,66 @@ fn tool_call_pairs_with_result() {
         }
         other => panic!("unexpected cell {other:?}"),
     }
+}
+
+#[test]
+fn streamed_tool_request_updates_one_existing_cell() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::ToolCall {
+        session: "s".into(),
+        call_id: "c1".into(),
+        name: "Subagent".into(),
+        arguments: r#"{"arguments":"{\"task\":"}"#.into(),
+    });
+    tr.apply(UiEvent::ToolCall {
+        session: "s".into(),
+        call_id: "c1".into(),
+        name: "Subagent: inspect renderer".into(),
+        arguments: r#"{"task":"inspect renderer"}"#.into(),
+    });
+
+    assert_eq!(
+        tr.cells.len(),
+        1,
+        "a tool update must not append another request"
+    );
+    match &tr.cells[0].kind {
+        CellKind::Tool {
+            name, request, ok, ..
+        } => {
+            assert_eq!(name, "Subagent: inspect renderer");
+            assert_eq!(request, r#"{"task":"inspect renderer"}"#);
+            assert_eq!(*ok, None);
+        }
+        other => panic!("unexpected cell {other:?}"),
+    }
+}
+
+#[test]
+fn turn_end_settles_an_orphaned_tool_in_the_client_presentation() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::ToolCall {
+        session: "s".into(),
+        call_id: "c1".into(),
+        name: "Subagent".into(),
+        arguments: "{}".into(),
+    });
+    tr.apply(UiEvent::TurnEnd {
+        session: "s".into(),
+        kind: "interrupted".into(),
+    });
+
+    match &tr.cells[0].kind {
+        CellKind::Tool { ok, error, .. } => {
+            assert_eq!(*ok, Some(false));
+            assert_eq!(error.as_deref(), Some("interrupted"));
+        }
+        other => panic!("unexpected cell {other:?}"),
+    }
+    assert!(
+        !tr.streaming(),
+        "the stopped turn owns all open presentation state"
+    );
 }
 
 #[test]

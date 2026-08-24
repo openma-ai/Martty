@@ -69,8 +69,17 @@ test('the Plan Client Plugin owns its dock, fallback command, and modal together
     ],
   }
   listener({ sessionId: 's-1', plans: [current] })
-  assert.equal(dockNodes[0].kind, 'generic')
-  assert.match(dockNodes[0].title, /Plan · 1\/2 · Implement/)
+  assert.deepEqual(dockNodes, [
+    {
+      id: 'summary', kind: 'generic', title: '· Plan', body: '1/2',
+      tone: 'caption', status: 'running',
+      action: { kind: 'command', name: 'plan-view', args: '' },
+    },
+    {
+      id: 'focus', kind: 'generic', title: 'Implement', body: '', tone: 'caption',
+      action: { kind: 'command', name: 'plan-view', args: '' },
+    },
+  ])
   assert.deepEqual(dockNodes[0].action, {
     kind: 'command', name: 'plan-view', args: '',
   })

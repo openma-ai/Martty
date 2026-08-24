@@ -50,6 +50,12 @@ const { installTuiCommands } = await import(
 const { installTuiOverlay } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-overlay.js')).href
 )
+const { installTuiQueue } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-queue.js')).href
+)
+const { installTuiAgents } = await import(
+  pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-agents.js')).href
+)
 const { installAcpSessionConfig } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'acp-session-config.js')).href
 )
@@ -158,6 +164,8 @@ test('the bundle carries ACP as a dependency and its Creator overlay internally'
   assert.equal(pkg.dependencies['@openma/deepseek-harness-acp'] !== undefined, true)
   assert.equal(pkg.dependencies['@openma/deepseek-harness-tui-creator'], undefined)
   assert.equal(pkg.exports['./creator-overlay'], './lib/creator-overlay.js')
+  assert.equal(pkg.exports['./agents'], './lib/tui-agents.js')
+  assert.equal(pkg.exports['./agents-view'], './lib/agents-view.js')
   assert.equal(pkg.files.includes('creator'), true)
   assert.equal(pkg.files.includes('skills/tui-plugin-development/SKILL.md'), true)
 })
@@ -179,6 +187,9 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
     assert.equal(typeof ctx.get('tuiOverlay')?.openView, 'function')
     assert.equal(typeof ctx.get('acpSessionPlan')?.current, 'function')
     assert.equal(typeof ctx.get('acpSessionStats')?.current, 'function')
+    assert.equal(typeof ctx.get('tuiQueue')?.current, 'function')
+    assert.equal(typeof ctx.get('tuiAgents')?.current, 'function')
+    assert.equal(typeof ctx.get('tuiAgents')?.select, 'function')
     assert.equal(
       ctx.get('tuiCommands')?.list().some((command) => command.name === 'plan-view'),
       true,
@@ -190,11 +201,19 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
     )
     assert.deepEqual(
       ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.input.dock')?.occupants,
-      [{ id: 'plan-view', order: 0 }],
+      [{ id: 'plan-view', order: 0 }, { id: 'queue-view', order: -10 }],
     )
     assert.deepEqual(
       ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.composer.dock')?.occupants,
       [{ id: 'stats', order: 0 }],
+    )
+    assert.deepEqual(
+      ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.navigation.dock')?.occupants,
+      [{ id: 'agents-view', order: 0 }],
+    )
+    assert.equal(
+      ctx.get('tuiCommands')?.list().some((command) => command.name === 'agents'),
+      true,
     )
   } finally {
     restore()
@@ -403,6 +422,8 @@ function makeCtx({ cordisClientRunner } = {}) {
       if (name === 'tuiSlots') return this.tuiSlots
       if (name === 'tuiCommands') return this.tuiCommands
       if (name === 'tuiOverlay') return this.tuiOverlay
+      if (name === 'tuiQueue') return this.tuiQueue
+      if (name === 'tuiAgents') return this.tuiAgents
       if (name === 'acpSessionConfig') return this.acpSessionConfig
       if (name === 'acpSessionPlan') return this.acpSessionPlan
       if (name === 'acpClientEvents') return this.acpClientEvents
@@ -420,6 +441,8 @@ function makeCtx({ cordisClientRunner } = {}) {
   installTuiSlots(ctx)
   installTuiCommands(ctx)
   installTuiOverlay(ctx)
+  installTuiQueue(ctx)
+  installTuiAgents(ctx)
   installAcpClientEvents(ctx)
   installAcpSessionConfig(ctx)
   installAcpSessionPlan(ctx)

@@ -18,6 +18,7 @@ fn view(lines: &[&str]) -> ChatView {
     ChatView {
         area: ratatui::layout::Rect::new(1, 0, 60, 10),
         top: 0,
+        manual_top: None,
         lines: lines.iter().map(|s| s.to_string()).collect(),
         owners: vec![None; lines.len()],
         images: Vec::new(),
@@ -173,6 +174,7 @@ fn tool_click_in_a_child_view_targets_the_child_transcript() {
         parent: "dsh-test".into(),
         label: "subagent 1".into(),
         running: true,
+        failed: false,
         transcript,
     });
     app.active_subagent = Some("child-1".into());

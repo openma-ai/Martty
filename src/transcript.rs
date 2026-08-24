@@ -63,6 +63,8 @@ pub enum CellKind {
     Tool {
         name: String,
         title: String,
+        /// Raw ACP input, shown as a compact request block while pending.
+        request: String,
         result: String,
         /// None while running.
         ok: Option<bool>,
@@ -96,6 +98,7 @@ pub enum CellKind {
 pub struct Cell {
     pub kind: CellKind,
     pub expanded: bool,
+    pub hidden: bool,
 }
 
 impl Cell {
@@ -103,6 +106,7 @@ impl Cell {
         Cell {
             kind,
             expanded: false,
+            hidden: false,
         }
     }
 }
@@ -283,29 +287,10 @@ impl Transcript {
         }
     }
 
-    /// Mark one client-owned queued prompt group as delivered.
-    pub fn mark_prompt_delivered(&mut self, cells: &[usize]) {
+    pub fn hide_cells(&mut self, cells: &[usize]) {
         for &index in cells {
-            let Some(cell) = self.cells.get_mut(index) else {
-                continue;
-            };
-            match &mut cell.kind {
-                CellKind::User { queued, .. } | CellKind::Image { queued, .. } => *queued = false,
-                _ => {}
-            }
-        }
-    }
-
-    /// Mark a Send Now bubble as a client-owned FIFO item after the agent
-    /// rejects concurrent `session/prompt` delivery.
-    pub fn mark_prompt_queued(&mut self, cells: &[usize]) {
-        for &index in cells {
-            let Some(cell) = self.cells.get_mut(index) else {
-                continue;
-            };
-            match &mut cell.kind {
-                CellKind::User { queued, .. } | CellKind::Image { queued, .. } => *queued = true,
-                _ => {}
+            if let Some(cell) = self.cells.get_mut(index) {
+                cell.hidden = true;
             }
         }
     }
@@ -313,17 +298,9 @@ impl Transcript {
     /// Backchat `session.tool_cancelled` on user stop: in-flight tools and
     /// streams stop spinning before `session/prompt` unwinds.
     pub fn cancel_open_work(&mut self) {
+        self.settle_open_tools("cancelled");
         for cell in &mut self.cells {
             match &mut cell.kind {
-                CellKind::Tool {
-                    ok, result, error, ..
-                } if ok.is_none() => {
-                    *ok = Some(false);
-                    *error = Some("cancelled".into());
-                    if result.is_empty() {
-                        *result = "cancelled".into();
-                    }
-                }
                 CellKind::Reasoning {
                     done,
                     started,
@@ -342,11 +319,34 @@ impl Transcript {
                 _ => {}
             }
         }
-        self.tools.clear();
-        self.tool_started.clear();
         self.open_assistant.clear();
         self.open_reasoning.clear();
         self.last_finish = Some("cancelled".into());
+    }
+
+    /// Settle client presentation for calls whose owning prompt turn stopped
+    /// without a terminal ACP tool update. This is deliberately not a wire
+    /// `failed` event: the adapter's last reported status remains unchanged.
+    fn settle_open_tools(&mut self, reason: &str) {
+        for idx in self.tools.values().copied().collect::<Vec<_>>() {
+            if let Some(Cell {
+                kind: CellKind::Tool {
+                    ok, result, error, ..
+                },
+                ..
+            }) = self.cells.get_mut(idx)
+            {
+                if ok.is_none() {
+                    *ok = Some(false);
+                    *error = Some(reason.into());
+                    if result.is_empty() {
+                        *result = reason.into();
+                    }
+                }
+            }
+        }
+        self.tools.clear();
+        self.tool_started.clear();
     }
 
     fn close_open(&mut self, session: &str) {
@@ -418,6 +418,11 @@ impl Transcript {
             UiEvent::TurnEnd { session, kind } => {
                 self.close_open(&session);
                 if session == self.root_session {
+                    self.settle_open_tools(if kind == "interrupted" {
+                        "interrupted"
+                    } else {
+                        "turn ended"
+                    });
                     self.last_finish = Some(kind.clone());
                     if let Some(t0) = self.turn_started.take() {
                         self.stats.turn_millis += t0.elapsed().as_millis() as u64;
@@ -494,6 +499,9 @@ impl Transcript {
                     }
                 }
             }
+            UiEvent::ToolCallPreparing { session } => {
+                self.close_open(&session);
+            }
             UiEvent::AssistantFinal {
                 session,
                 text,
@@ -543,15 +551,34 @@ impl Transcript {
                 name,
                 arguments,
             } => {
+                self.close_open(&session);
+                let title = tool_title(&name, &arguments);
+                if let Some(&idx) = self.tools.get(&call_id) {
+                    if let Some(Cell {
+                        kind:
+                            CellKind::Tool {
+                                name: current_name,
+                                title: current_title,
+                                request,
+                                ..
+                            },
+                        ..
+                    }) = self.cells.get_mut(idx)
+                    {
+                        *current_name = name;
+                        *current_title = title;
+                        *request = arguments;
+                    }
+                    return;
+                }
                 if session == self.root_session {
                     self.tool_started.insert(call_id.clone(), Instant::now());
                 }
-                self.close_open(&session);
-                let title = tool_title(&name, &arguments);
                 let agent = self.agent_label(&session);
                 self.cells.push(Cell::new(CellKind::Tool {
                     name,
                     title,
+                    request: arguments,
                     result: String::new(),
                     ok: None,
                     error: None,
@@ -593,6 +620,7 @@ impl Transcript {
                         self.cells.push(Cell::new(CellKind::Tool {
                             name: "tool".into(),
                             title: call_id,
+                            request: String::new(),
                             result: text,
                             ok: Some(!is_error),
                             error,
@@ -645,17 +673,9 @@ impl Transcript {
             UiEvent::SubagentStarted { child, .. } => {
                 self.agent_seq += 1;
                 let label = format!("subagent {}", self.agent_seq);
-                self.agents.insert(child, label.clone());
-                self.push_notice(NoticeLevel::Info, format!("⛭ {label} started"));
+                self.agents.insert(child, label);
             }
-            UiEvent::SubagentFinished { child } => {
-                let label = self
-                    .agents
-                    .get(&child)
-                    .cloned()
-                    .unwrap_or_else(|| "subagent".into());
-                self.push_notice(NoticeLevel::Info, format!("⛭ {label} finished"));
-            }
+            UiEvent::SubagentFinished { .. } => {}
             UiEvent::PlanMode { active, .. } => {
                 self.push_notice(
                     NoticeLevel::Info,
@@ -698,6 +718,12 @@ impl Transcript {
         !self.open_assistant.is_empty() || !self.open_reasoning.is_empty()
     }
 
+    /// Reasoning already renders its own live `thinking…` row. Assistant
+    /// streaming does not: its next visible event may be a complete tool call.
+    pub fn reasoning_streaming(&self) -> bool {
+        !self.open_reasoning.is_empty()
+    }
+
     /// Render every cell to wrapped, styled lines for `width` columns.
     #[allow(dead_code)] // kept for tests; the UI uses `layout` for ownership
     pub fn lines(&self, theme: &Theme, width: u16, spinner: char) -> Vec<Line<'static>> {
@@ -720,6 +746,9 @@ impl Transcript {
         let mut owners: Vec<Option<usize>> = Vec::new();
         let mut images: Vec<ImageShot> = Vec::new();
         for (ci, cell) in self.cells.iter().enumerate() {
+            if cell.hidden {
+                continue;
+            }
             let expanded = cell.expanded || self.expand_all;
             match &cell.kind {
                 CellKind::User { text, queued } => {
@@ -942,6 +971,7 @@ impl Transcript {
                 CellKind::Tool {
                     name,
                     title,
+                    request,
                     result,
                     ok,
                     error,
@@ -976,7 +1006,8 @@ impl Transcript {
                             Style::default().fg(theme.caption),
                         ));
                     }
-                    if !title.is_empty() {
+                    let request = if ok.is_none() { request.trim() } else { "" };
+                    if !title.is_empty() && request.is_empty() {
                         let prefix_w: usize = spans.iter().map(|s| s.content.width()).sum();
                         let chevron_w = if has_more { 2 } else { 0 };
                         let budget = width.saturating_sub(prefix_w + 2 + chevron_w);
@@ -992,6 +1023,32 @@ impl Transcript {
                         ));
                     }
                     emit(&mut out, &mut owners, Line::from(spans), Some(ci));
+
+                    if !request.is_empty() {
+                        let label = "request  ";
+                        let request_width = width.saturating_sub(2 + label.width());
+                        let request_lines = wrap(request, request_width.max(1));
+                        for (index, line) in
+                            request_lines.into_iter().take(TOOL_VIEWPORT).enumerate()
+                        {
+                            emit(
+                                &mut out,
+                                &mut owners,
+                                Line::from(vec![
+                                    Span::styled(
+                                        "│ ".to_string(),
+                                        Style::default().fg(theme.border),
+                                    ),
+                                    Span::styled(
+                                        if index == 0 { label } else { "         " }.to_string(),
+                                        Style::default().fg(theme.caption),
+                                    ),
+                                    Span::styled(line, Style::default().fg(theme.fg_tertiary)),
+                                ]),
+                                Some(ci),
+                            );
+                        }
+                    }
 
                     if let Some(err) = error {
                         for l in wrap(err, width.saturating_sub(2)) {
@@ -1379,4 +1436,3 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 #[path = "../tests/unit/transcript__tests.rs"]
 mod tests;
-

@@ -46,22 +46,24 @@ function dockNodes(plan) {
     const focus = plan.entries.find((entry) => entry.status === 'in_progress')
       ?? plan.entries.find((entry) => entry.status !== 'completed')
       ?? plan.entries.at(-1)
-    return [{
-      id: 'summary',
-      kind: 'generic',
-      title: `Plan · ${completed}/${total}${focus ? ` · ${focus.content}` : ''}`,
-      body: '',
-      action: { kind: 'command', name: 'plan-view', args: '' },
-      ...(completed === total ? { status: 'ok' } : { status: 'running' }),
-    }]
+    const action = { kind: 'command', name: 'plan-view', args: '' }
+    return [
+      {
+        id: 'summary', kind: 'generic', title: '· Plan', body: `${completed}/${total}`,
+        tone: 'caption', status: completed === total ? 'done' : 'running', action,
+      },
+      ...(focus ? [{
+        id: 'focus', kind: 'generic', title: focus.content, body: '', tone: 'caption', action,
+      }] : []),
+    ]
   }
   return [{
     id: 'summary',
     kind: 'generic',
-    title: plan.kind === 'file' ? `Plan · ${plan.uri}` : 'Plan · available',
-    body: '',
+    title: '· Plan',
+    body: plan.kind === 'file' ? plan.uri : 'available',
+    tone: 'caption',
     action: { kind: 'command', name: 'plan-view', args: '' },
-    status: 'running',
   }]
 }
 

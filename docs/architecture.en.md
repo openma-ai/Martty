@@ -30,6 +30,26 @@ The Server tree (Base + ACP plugin in the profile path, or standalone dsh-acp) a
 
 A server plugin that any client should see is projected into standard ACP (commands, config, updates). Client plugins (skins, slots) stay on this tree. The TUI is a Cordis **Client**: it serializes the discoverable `Theme.listTokens` and `Slots.list` directories over `_dsh/cordis/*`, the same kind of projection performed by the web Client. Both sides must negotiate protocol 0 at `initialize` `_meta.dsh.cordis.protocol`; without it, the TUI neither sends nor consumes these extensions.
 
+The follow-up FIFO and Agent/session navigation are Client interaction state,
+not timeline content. The Rust painter projects local snapshots into the Client
+compositor. Builtin `tuiQueue`/`queue-view` render Queue state in
+`conversation.input.dock`, with every queued item visible above the input;
+empty Enter steers the FIFO head immediately, and a deferred steer restores it
+to the front. Otherwise the head advances as the next prompt when the turn idles.
+Builtin `tuiAgents`/`agents-view` render session
+navigation in `conversation.navigation.dock`. The navigation row sits inside
+the composer between its input and metadata row. It defaults to a collapsed
+`· Agents · completed/total` summary; `↓` expands every item in place. `←/→` moves,
+Enter opens, and Escape collapses. No popup or mouse action is created. Native
+Queue and Agent views retain
+the same semantics as fallbacks when no Client tree is present.
+
+A standard ACP `tool_call` carrying subagent `_meta` still enters the parent
+transcript as the original tool event; the parser only appends a
+`SubagentStarted` projection. A terminal `tool_call_update` likewise produces
+the original `ToolResult` before appending `SubagentFinished`, so subagent
+lifecycle never replaces the visible tool request.
+
 ```text
 Host process: Base Cordis + ACP plugin
         │ TUI Client child stdin/stdout (ACP)
@@ -38,6 +58,10 @@ Client process: independent Cordis root
   Client runner   injects Client services and runs dsh-tool-cordis code.client
   TUI shell       injects acpClient plus Client services; owns only the TTY
   plan-view       injects acpSessionPlan + tuiSlots + tuiCommands + tuiOverlay
+  tui-queue       receives local FIFO snapshots and provides tuiQueue
+  queue-view      tuiQueue → conversation.input.dock
+  tui-agents      receives local Agent snapshots and provides tuiAgents
+  agents-view     tuiAgents → conversation.navigation.dock + /agents
   stats-view      injects acpSessionStats + tuiSlots
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
@@ -47,7 +71,8 @@ Client process: independent Cordis root
   acp-session-status  provides acpSessionStatus (connection/server/auth/
                   session/model/effort/permission/plan/agent run-state facts)
   tui-slots       provides tuiSlots; declares welcome.hero / welcome.info / chrome.right /
-                  conversation.input.dock / conversation.composer.dock
+                  conversation.input.dock / conversation.navigation.dock /
+                  conversation.composer.dock
   tui-theme       provides tuiTheme
   acp-client      attaches Host stdio, provides acpClient
         │ Client fd 3/4 carries only the inherited TTY
@@ -88,8 +113,12 @@ Third-party plugins   sibling insert + inject ['tuiTheme'] → palette register
                       sibling insert + inject ['tuiSlots'] → slot register
 tui-theme             palette → Theme registry
 tui-presets           several UI contributions → persistent /ui composition
-tui-slots             TuiNode trees → welcome.hero / welcome.info / chrome.right / input dock / composer dock registry
+tui-slots             TuiNode trees → welcome.hero / welcome.info / chrome.right / input / navigation / telemetry dock registry
 plan-view             standard ACP Plan projection → input dock + /plan-view overlay
+tui-queue             local Client FIFO snapshots → tuiQueue service
+queue-view            tuiQueue → input dock summary and in-composer picker
+tui-agents            local Agent/session snapshots → tuiAgents service
+agents-view           tuiAgents → navigation dock + inline session selection
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
 martty-preset         default UI Plugin → Martty Hero + native dynamic information

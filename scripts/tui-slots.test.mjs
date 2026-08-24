@@ -101,6 +101,21 @@ test('slots reject undeclared seats and invalid node trees before painting', () 
   )
 })
 
+test('generic done status survives the Client slot boundary', () => {
+  const sent = []
+  const ctx = makeCtx()
+  slotsPlugin.installTuiSlots(ctx, {
+    notify(method, params) { sent.push({ method, params }) },
+  })
+
+  ctx.tuiSlots.register(
+    { name: 'conversation.navigation.dock', id: 'agents' },
+    [{ id: 'finished', kind: 'generic', title: 'subagent 1', body: '', status: 'done', tone: 'fg' }],
+  )
+
+  assert.equal(sent.at(-1).params.nodes[0].status, 'done')
+})
+
 test('conversation docks are additive slots with independent live snapshots', () => {
   assert.equal(typeof slotsPlugin.installTuiSlots, 'function')
   if (typeof slotsPlugin.installTuiSlots !== 'function') return
@@ -125,6 +140,13 @@ test('conversation docks are additive slots with independent live snapshots', ()
     { name: 'conversation.composer.dock', id: 'stats' },
     [{ id: 'summary', kind: 'generic', title: '1 turn · 2 steps', body: '' }],
   )
+  const agents = ctx.tuiSlots.register(
+    { name: 'conversation.navigation.dock', id: 'agents' },
+    [{
+      id: 'active', kind: 'generic', title: '▸ main', body: '', tone: 'brand', selected: true,
+      action: { kind: 'command', name: 'agents', args: 'root-1' },
+    }],
+  )
 
   const inputSnapshot = sent.findLast((entry) => entry.params.slot === 'conversation.input.dock').params
   assert.deepEqual(inputSnapshot.nodes.map((node) => node.id), ['plan:summary', 'goal:summary'])
@@ -132,13 +154,35 @@ test('conversation docks are additive slots with independent live snapshots', ()
     ctx.tuiSlots.list().find((slot) => slot.name === 'conversation.input.dock').kind,
     'list',
   )
-  assert.equal(sent.at(-1).params.slot, 'conversation.composer.dock')
-  assert.equal(sent.at(-1).params.nodes[0].id, 'stats:summary')
+  assert.equal(sent.at(-1).params.slot, 'conversation.navigation.dock')
+  assert.equal(sent.at(-1).params.nodes[0].id, 'agents:active')
+  assert.equal(sent.at(-1).params.nodes[0].tone, 'brand')
+  assert.equal(sent.at(-1).params.nodes[0].selected, true)
+  assert.equal(
+    ctx.tuiSlots.list().find((slot) => slot.name === 'conversation.navigation.dock').scope,
+    'session',
+  )
 
   plan.dispose()
   goal.dispose()
   stats.dispose()
+  agents.dispose()
   assert.deepEqual(sent.at(-1).params.nodes, [])
+})
+
+test('generic selected state is boolean before reaching the painter', () => {
+  assert.equal(typeof slotsPlugin.installTuiSlots, 'function')
+  if (typeof slotsPlugin.installTuiSlots !== 'function') return
+
+  const ctx = makeCtx()
+  slotsPlugin.installTuiSlots(ctx)
+  assert.throws(
+    () => ctx.tuiSlots.register(
+      { name: 'conversation.navigation.dock', id: 'broken-selection' },
+      [{ id: 'agent', kind: 'generic', title: 'main', body: '', selected: 'yes' }],
+    ),
+    /selected.*boolean/i,
+  )
 })
 
 test('welcome hero and info are independent single root seats', () => {

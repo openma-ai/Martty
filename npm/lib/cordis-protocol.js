@@ -33,6 +33,10 @@ export const CORDIS_METHODS = Object.freeze({
   commandInvoke: '_dsh/cordis/tui/commands/invoke',
   overlayUpdate: '_dsh/cordis/tui/overlay/update',
   overlayEvent: '_dsh/cordis/tui/overlay/event',
+  queueUpdate: '_dsh/cordis/tui/queue/update',
+  agentsUpdate: '_dsh/cordis/tui/agents/update',
+  agentsSelect: '_dsh/cordis/tui/agents/select',
+  agentsNavigate: '_dsh/cordis/tui/agents/navigate',
   sessionConfigSet: '_dsh/cordis/tui/session-config/set',
 })
 

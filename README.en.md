@@ -229,7 +229,8 @@ The ACP client split is in place, together with these primitives on one dynamic
 Package lifecycle:
 
 - `tuiTheme` and the single-select `/theme` Plugin seat;
-- `tuiSlots`, `welcome.hero`, `welcome.info`, both composer docks,
+- `tuiSlots`, `welcome.hero`, `welcome.info`, the input, navigation, and
+  telemetry docks,
   `chrome.right`, and schema-validated `TuiNode` trees;
 - lifecycle-owned local slash commands with refreshable argument candidates,
   plus native slider, single-select, and view overlays;
@@ -310,8 +311,10 @@ Requests/Notifications and never enter prompts or conversation history.
 
 | Key / command | Behavior |
 |---|---|
-| `enter` | Send; queue a follow-up while a turn is running |
+| `enter` | Send; with an empty composer and a non-empty Queue, send its head immediately |
 | `ctrl+x` | Steer the active turn immediately without cancelling it |
+| `alt+↑` | Select any Queue item; `↑/↓` moves, Enter edits, and `ctrl+d` deletes |
+| `↓` · `←/→` · Enter | From an empty prompt, expand Agent navigation, move, and open; Escape collapses it |
 | `esc` | Interrupt the current turn (draft survives); clears the draft when idle |
 | `ctrl+c` | Clear the draft first; press twice when idle, five times while a turn runs, to quit; never interrupts the current turn |
 | `/` | Open the upward command menu and filter by prefix; after `/command ` the same menu shows argument candidates. Enter selects and runs; Tab only completes. Agent-advertised skills still ship as `/name ` prompts |

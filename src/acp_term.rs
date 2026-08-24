@@ -223,4 +223,3 @@ fn exit_status(status: std::process::ExitStatus) -> TerminalExitStatus {
 #[cfg(test)]
 #[path = "../tests/unit/acp_term__tests.rs"]
 mod tests;
-

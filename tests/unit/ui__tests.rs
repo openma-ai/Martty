@@ -170,7 +170,11 @@ fn head_branch_detached_head_has_no_branch() {
     let root = fresh_root();
     let git = std::path::Path::new(&root).join(".git");
     std::fs::create_dir_all(&git).unwrap();
-    std::fs::write(git.join("HEAD"), "9fceb32d0f2d1d2f1d0f2d3a4b5c6d7e8f9a0b1c2\n").unwrap();
+    std::fs::write(
+        git.join("HEAD"),
+        "9fceb32d0f2d1d2f1d0f2d3a4b5c6d7e8f9a0b1c2\n",
+    )
+    .unwrap();
     assert_eq!(crate::ui::head_branch(&root), None);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -432,9 +436,10 @@ fn meta_row_hints_follow_the_state_machine() {
     let s = flat(context_hints(&app));
     assert!(s.contains("⏎ send"), "{s}");
     assert!(!s.contains("keys"), "{s}");
-    // idle · slash / shell drafts relabel enter
+    // idle · slash recommendations own Enter/Esc; shell drafts relabel Enter
     app.input.set("/mo".into());
-    assert!(flat(context_hints(&app)).contains("⏎ command"));
+    let s = flat(context_hints(&app));
+    assert!(s.contains("⏎ select") && s.contains("esc close"), "{s}");
     app.input.set("!ls".into());
     assert!(flat(context_hints(&app)).contains("⏎ shell"));
     // running · empty → interrupt only
@@ -450,6 +455,58 @@ fn meta_row_hints_follow_the_state_machine() {
         s.contains("⏎ queue") && s.contains("^x steer") && s.contains("esc interrupt"),
         "{s}"
     );
+}
+
+#[test]
+fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let flat = |spans: Vec<Span>| -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    };
+    let mut app = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.input.set("queued draft".into());
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT))),
+        &ctl,
+    );
+
+    let selecting = flat(context_hints(&app));
+    assert!(selecting.contains("↑↓ choose"), "{selecting}");
+    assert!(selecting.contains("⏎ edit"), "{selecting}");
+    assert!(selecting.contains("esc close"), "{selecting}");
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let edit = flat(context_hints(&app));
+    assert!(edit.contains("⏎ save"), "{edit}");
+    assert!(edit.contains("^d delete"), "{edit}");
+    assert!(edit.contains("esc cancel"), "{edit}");
+
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        ))),
+        &ctl,
+    );
+    let confirm = flat(context_hints(&app));
+    assert!(confirm.contains("⏎ delete"), "{confirm}");
+    assert!(confirm.contains("esc back"), "{confirm}");
 }
 
 #[test]
@@ -537,7 +594,7 @@ fn usage_footer_drops_sections_on_narrow_screens() {
 }
 
 #[test]
-fn agent_rail_lists_created_subagents_and_their_status() {
+fn native_agent_rail_expands_only_during_selection() {
     let mut app = test_app();
     app.show_banner = false;
     app.subagents.push(crate::app::SubagentView {
@@ -545,6 +602,7 @@ fn agent_rail_lists_created_subagents_and_their_status() {
         parent: "dsh-test".into(),
         label: "subagent 1".into(),
         running: true,
+        failed: false,
         transcript: crate::transcript::Transcript::new("child-1".into()),
     });
     app.subagents.push(crate::app::SubagentView {
@@ -552,13 +610,366 @@ fn agent_rail_lists_created_subagents_and_their_status() {
         parent: "dsh-test".into(),
         label: "subagent 2".into(),
         running: false,
+        failed: false,
         transcript: crate::transcript::Transcript::new("child-2".into()),
     });
 
-    let frame = dump_frame(&mut app, 100, 24);
-    assert!(frame.contains("agents"), "{frame}");
-    assert!(frame.contains("● subagent 1"), "{frame}");
-    assert!(frame.contains("✓ subagent 2"), "{frame}");
+    let collapsed = dump_frame(&mut app, 100, 24);
+    assert!(
+        collapsed.contains("· Agents · 1/2  ↓ expand"),
+        "the keyboard hint stays beside the summary:\n{collapsed}"
+    );
+    assert!(!collapsed.contains("click"), "{collapsed}");
+    assert!(!collapsed.contains("subagent 1"), "{collapsed}");
+    assert!(!collapsed.contains("subagent 2"), "{collapsed}");
+    let before_spinner = collapsed
+        .lines()
+        .find(|line| line.contains("Agents ·"))
+        .expect("collapsed Agent rail")
+        .to_string();
+    app.tick();
+    let after_tick = dump_frame(&mut app, 100, 24);
+    let after_spinner = after_tick
+        .lines()
+        .find(|line| line.contains("Agents ·"))
+        .expect("collapsed Agent rail after tick");
+    assert_eq!(
+        before_spinner, after_spinner,
+        "the collapsed summary has no redundant spinner prefix"
+    );
+    let collapsed_lines = collapsed.lines().collect::<Vec<_>>();
+    let collapsed_agents_y = collapsed_lines
+        .iter()
+        .position(|line| line.contains("Agents ·"))
+        .expect("collapsed Agent rail");
+    let collapsed_meta_y = collapsed_lines
+        .iter()
+        .position(|line| line.contains("· Standard"))
+        .expect("composer meta");
+    assert_eq!(
+        collapsed_agents_y + 1,
+        collapsed_meta_y,
+        "collapsed Agent rail sits immediately above composer meta:\n{collapsed}"
+    );
+
+    app.agent_selection = Some("dsh-test".into());
+    let running_marker = app.spinner();
+    let expanded = dump_frame(&mut app, 100, 24);
+    assert!(
+        expanded.contains(&format!("{running_marker} subagent 1")),
+        "{expanded}"
+    );
+    assert!(expanded.contains("✓ subagent 2"), "{expanded}");
+    assert!(expanded.contains("esc close"), "{expanded}");
+}
+
+#[test]
+fn plugin_agent_navigation_sits_above_composer_meta_with_general_theme_tokens() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-1".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 1".into(),
+        running: true,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-1".into()),
+    });
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-2".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 2".into(),
+        running: false,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-2".into()),
+    });
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.navigation.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "agents-view:label", "kind": "generic", "title": "· Agents", "body": "", "tone": "caption" },
+                    { "id": "agents-view:agent-dsh-test", "kind": "generic", "title": "▸ main", "body": "", "tone": "brand", "selected": true },
+                    { "id": "agents-view:agent-child-1", "kind": "generic", "title": "subagent 1", "body": "", "status": "running", "tone": "fg" },
+                    { "id": "agents-view:agent-child-2", "kind": "generic", "title": "subagent 2", "body": "", "status": "done", "tone": "fg" },
+                    { "id": "agents-view:switch", "kind": "generic", "title": "←/→ · enter · esc close", "body": "", "tone": "brand_soft" }
+                ]
+            }),
+        },
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [{ "id": "stats:counts", "kind": "generic", "title": "4 turns", "body": "" }]
+            }),
+        },
+        &ctl,
+    );
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let frame = (0..24)
+        .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    let meta_y = frame
+        .iter()
+        .position(|line| line.contains("Standard"))
+        .expect("composer meta");
+    let agents_y = frame
+        .iter()
+        .position(|line| line.contains("· Agents"))
+        .expect("Agent dock");
+    let stats_y = frame
+        .iter()
+        .position(|line| line.contains("4 turns"))
+        .expect("stats dock");
+
+    assert_eq!(
+        agents_y + 1,
+        meta_y,
+        "Agent navigation sits immediately above composer meta:\n{}",
+        frame.join("\n")
+    );
+    assert_eq!(
+        stats_y,
+        meta_y + 1,
+        "stats remain outside navigation:\n{}",
+        frame.join("\n")
+    );
+    let meta_x = frame[meta_y].find("· Standard").expect("meta alignment");
+    let agents_x = frame[agents_y].find("· Agents").expect("Agent alignment");
+    assert_eq!(
+        agents_x,
+        meta_x,
+        "TUI rows share one left content edge:\n{}",
+        frame.join("\n")
+    );
+    assert_eq!(
+        buf[(0, meta_y as u16)].symbol(),
+        "╰",
+        "composer meta closes the shared card"
+    );
+    assert_eq!(
+        buf[(0, agents_y as u16)].symbol(),
+        "│",
+        "navigation remains inside the shared card"
+    );
+    assert_eq!(
+        buf[(99, agents_y as u16)].symbol(),
+        "│",
+        "navigation remains inside the shared card"
+    );
+
+    let active_x = frame[agents_y].find("▸ main").expect("active agent") as u16;
+    let finished_x = frame[agents_y].find("subagent 2").expect("finished agent") as u16;
+    assert_eq!(buf[(active_x, agents_y as u16)].fg, app.theme.brand);
+    assert_eq!(buf[(finished_x, agents_y as u16)].fg, app.theme.fg);
+    let finished_status_x = (0..100)
+        .find(|x| buf[(*x, agents_y as u16)].symbol() == "✓")
+        .expect("finished Agent status");
+    assert_eq!(
+        buf[(finished_status_x, agents_y as u16)].fg,
+        app.theme.caption
+    );
+    assert!(
+        frame[agents_y].contains("esc close"),
+        "the expanded rail explains how to collapse:\n{}",
+        frame.join("\n")
+    );
+
+    app.handle(
+        crate::bus::AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.navigation.dock",
+                "rev": 2,
+                "nodes": [
+                    { "id": "agents-view:label", "kind": "generic", "title": "· Agents", "body": "", "tone": "caption" },
+                    { "id": "agents-view:agent-dsh-test", "kind": "generic", "title": "• main", "body": "", "tone": "brand_soft" },
+                    { "id": "agents-view:agent-child-1", "kind": "generic", "title": "subagent 1", "body": "", "status": "running", "tone": "fg" },
+                    { "id": "agents-view:agent-child-2", "kind": "generic", "title": "▸ subagent 2", "body": "", "tone": "brand", "selected": true },
+                    { "id": "agents-view:switch", "kind": "generic", "title": "←/→ · enter · esc close", "body": "", "tone": "brand_soft" }
+                ]
+            }),
+        },
+        &ctl,
+    );
+    terminal
+        .draw(|f| draw(f, &mut app))
+        .expect("draw selection frame");
+    let selecting = terminal.backend().buffer();
+    let selected_x = (0..100)
+        .find(|x| selecting[(*x, agents_y as u16)].symbol() == "▸")
+        .expect("focused Agent marker");
+    assert!(
+        selecting[(selected_x, agents_y as u16)]
+            .modifier
+            .contains(ratatui::style::Modifier::REVERSED),
+        "focused Agent is visibly reversed during inline selection"
+    );
+}
+
+#[test]
+fn native_agent_selection_reverses_the_focused_agent() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-1".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 1".into(),
+        running: true,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-1".into()),
+    });
+    app.agent_selection = Some("child-1".into());
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer();
+    let focused = (0..24)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .find(|(x, y)| buf[(*x, *y)].symbol() == "▸")
+        .expect("focused Agent marker");
+    assert!(
+        buf[focused]
+            .modifier
+            .contains(ratatui::style::Modifier::REVERSED),
+        "native fallback uses the same strong selection state"
+    );
+}
+
+#[test]
+fn native_agent_completion_uses_a_neutral_status_glyph() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-1".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 1".into(),
+        running: false,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-1".into()),
+    });
+    app.agent_selection = Some("dsh-test".into());
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer();
+    let status = (0..24)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .find(|(x, y)| buf[(*x, *y)].symbol() == "✓")
+        .expect("completed Agent glyph");
+    assert_eq!(buf[status].fg, app.theme.caption);
+    assert_eq!(buf[(status.0 + 2, status.1)].fg, app.theme.fg);
+}
+
+#[test]
+fn narrow_agent_navigation_keeps_the_active_item_and_switch_action() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.active_subagent = Some("child-4".into());
+    for index in 1..=4 {
+        app.subagents.push(crate::app::SubagentView {
+            id: format!("child-{index}"),
+            parent: "dsh-test".into(),
+            label: format!("subagent {index}"),
+            running: true,
+            failed: false,
+            transcript: crate::transcript::Transcript::new(format!("child-{index}")),
+        });
+    }
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.navigation.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "agents-view:label", "kind": "generic", "title": "· Agents", "body": "", "tone": "caption" },
+                    { "id": "agents-view:agent-dsh-test", "kind": "generic", "title": "main", "body": "", "tone": "fg" },
+                    { "id": "agents-view:agent-child-1", "kind": "generic", "title": "subagent 1", "body": "", "tone": "fg" },
+                    { "id": "agents-view:agent-child-2", "kind": "generic", "title": "subagent 2", "body": "", "tone": "fg" },
+                    { "id": "agents-view:agent-child-3", "kind": "generic", "title": "subagent 3", "body": "", "tone": "fg" },
+                    { "id": "agents-view:agent-child-4", "kind": "generic", "title": "▸ subagent 4", "body": "", "tone": "brand", "selected": true },
+                    { "id": "agents-view:switch", "kind": "generic", "title": "←/→ · enter · esc close", "body": "", "tone": "brand_soft", "action": { "kind": "command", "name": "agents", "args": "" } }
+                ]
+            }),
+        },
+        &ctl,
+    );
+
+    let frame = dump_frame(&mut app, 50, 20);
+    let rail = frame
+        .lines()
+        .find(|line| line.contains("Agents"))
+        .expect("navigation rail");
+    assert!(
+        rail.contains("▸ subagent 4"),
+        "active item survives:\n{frame}"
+    );
+    assert!(
+        rail.contains("esc close"),
+        "trailing action survives:\n{frame}"
+    );
+}
+
+#[test]
+fn short_terminal_keeps_navigation_before_optional_telemetry() {
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    for (slot, id, title) in [
+        ("conversation.navigation.dock", "agents:active", "▸ main"),
+        ("conversation.composer.dock", "stats:counts", "4 turns"),
+    ] {
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "slot": slot,
+                    "rev": 1,
+                    "nodes": [{ "id": id, "kind": "generic", "title": title, "body": "" }]
+                }),
+            },
+            &ctl,
+        );
+    }
+
+    let frame = dump_frame(&mut app, 80, 20);
+    assert!(
+        frame.contains("▸ main"),
+        "navigation remains operable:\n{frame}"
+    );
+    assert!(
+        !frame.contains("4 turns"),
+        "optional telemetry yields its row first on short terminals:\n{frame}"
+    );
 }
 
 #[test]
@@ -575,6 +986,7 @@ fn child_view_replaces_the_composer_with_read_only_navigation() {
         parent: "dsh-test".into(),
         label: "subagent 1".into(),
         running: true,
+        failed: false,
         transcript,
     });
     app.active_subagent = Some("child-1".into());
@@ -599,6 +1011,7 @@ fn active_running_child_does_not_show_the_main_idle_state() {
         parent: "dsh-test".into(),
         label: "subagent 1".into(),
         running: true,
+        failed: false,
         transcript: crate::transcript::Transcript::new("child-1".into()),
     });
     app.active_subagent = Some("child-1".into());
@@ -606,6 +1019,78 @@ fn active_running_child_does_not_show_the_main_idle_state() {
     let frame = dump_frame(&mut app, 100, 24);
     assert!(frame.contains("working"), "{frame}");
     assert!(!frame.contains("● idle"), "{frame}");
+}
+
+#[test]
+fn hidden_tool_arguments_replace_thinking_with_the_working_placeholder() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    app.transcript
+        .apply(crate::events::UiEvent::ReasoningDelta {
+            session: "dsh-test".into(),
+            text: "I will launch several tools".into(),
+        });
+    assert!(
+        state_line(&app).is_none(),
+        "live reasoning owns the thinking row"
+    );
+
+    app.transcript
+        .apply(crate::events::UiEvent::ToolCallPreparing {
+            session: "dsh-test".into(),
+        });
+
+    let line = state_line(&app).expect("working placeholder while tool arguments stream");
+    let rendered = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(rendered.contains("working"), "{rendered}");
+
+    app.transcript.apply(crate::events::UiEvent::ToolCall {
+        session: "dsh-test".into(),
+        call_id: "call-1".into(),
+        name: "subagent".into(),
+        arguments: r#"{"description":"task"}"#.into(),
+    });
+    let frame = dump_frame(&mut app, 100, 24);
+    assert!(
+        frame.contains("subagent"),
+        "complete tool request still renders: {frame}"
+    );
+    assert!(
+        frame.contains("│ request"),
+        "complete request body remains visible: {frame}"
+    );
+}
+
+#[test]
+fn elicitation_wait_uses_the_state_line_without_claiming_the_agent_is_working() {
+    use crate::app::ElicitationAskOverlay;
+    use crate::elicitation::{ElicitationForm, ElicitationFormState};
+
+    let mut app = test_app();
+    app.state = RunState::Running;
+    app.elicitation_ask = Some(ElicitationAskOverlay {
+        form: ElicitationFormState::new(ElicitationForm {
+            message: "The agent needs your input.".into(),
+            fields: Vec::new(),
+        }),
+        scroll: 0,
+        reply: None,
+    });
+
+    let line = state_line(&app).expect("input wait state");
+    let rendered = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(rendered.contains("waiting for input"), "{rendered}");
+    assert!(!rendered.contains("working"), "{rendered}");
 }
 
 #[test]
@@ -1351,6 +1836,36 @@ fn scroll_up_survives_draw_and_shows_indicator() {
 }
 
 #[test]
+fn streaming_preserves_the_viewport_after_the_user_scrolls_up() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    for i in 0..40 {
+        app.transcript.push_user(format!("history {i}"), false);
+    }
+    app.transcript.apply(crate::events::UiEvent::TextDelta {
+        session: "dsh-test".into(),
+        text: "stream 0".into(),
+    });
+
+    let _ = dump_frame(&mut app, 100, 14);
+    app.scroll_by(20);
+    let _ = dump_frame(&mut app, 100, 14);
+    let anchored_top = app.chat_view.top;
+
+    app.transcript.apply(crate::events::UiEvent::TextDelta {
+        session: "dsh-test".into(),
+        text: (1..=12).map(|i| format!("\nstream {i}")).collect(),
+    });
+    let frame = dump_frame(&mut app, 100, 14);
+
+    assert_eq!(
+        app.chat_view.top, anchored_top,
+        "streaming must not move a manually detached viewport:\n{frame}"
+    );
+}
+
+#[test]
 fn draw_fills_the_chat_view_snapshot() {
     let mut app = test_app();
     let _ = dump_frame(&mut app, 84, 40);
@@ -1590,6 +2105,61 @@ fn elicitation_overlay_renders_a_real_question_form() {
     assert!(frame.contains("enter"), "keyboard affordance\n{frame}");
 }
 
+#[test]
+fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
+    use crate::app::ElicitationAskOverlay;
+    use crate::elicitation::{
+        ElicitationField, ElicitationFieldKind, ElicitationForm, ElicitationFormState,
+    };
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.insert_str("composer draft");
+    let mut form = ElicitationFormState::new(ElicitationForm {
+        message: "The agent needs your input.".into(),
+        fields: vec![ElicitationField {
+            name: "answer".into(),
+            custom_name: None,
+            title: "Answer".into(),
+            description: None,
+            required: true,
+            kind: ElicitationFieldKind::Text { default: None },
+        }],
+    });
+    form.fields[0].input.insert_str("overlay answer");
+    app.elicitation_ask = Some(ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buffer = terminal.backend().buffer();
+    let answer_row = (0..30)
+        .find(|y| {
+            (0..100)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect::<String>()
+                .contains("overlay answer▏")
+        })
+        .expect("elicitation text field");
+    let answer_line = (0..100)
+        .map(|x| buffer[(x, answer_row)].symbol())
+        .collect::<String>();
+    let answer_byte = answer_line.find("overlay answer").expect("answer text");
+    let answer_start = answer_line[..answer_byte].width() as u16;
+    let cursor = terminal
+        .get_cursor_position()
+        .expect("terminal cursor position");
+
+    assert_eq!(cursor.y, answer_row);
+    assert_eq!(cursor.x, answer_start + "overlay answer".width() as u16);
+}
+
 fn box_line(line: &str) -> &str {
     let trimmed = line.trim_start_matches(' ');
     trimmed
@@ -1808,9 +2378,11 @@ fn composer_dock_title_uses_the_tertiary_tone() {
         title: "1.2k tokens".into(),
         body: String::new(),
         status: Some("ok".into()),
+        tone: None,
+        selected: false,
         action: None,
     };
-    let spans = compact_node_spans(&node, &theme, 60).expect("generic spans");
+    let spans = compact_node_spans(&node, &theme, 60, '⣋').expect("generic spans");
     let title = spans
         .iter()
         .find(|s| s.content == "1.2k tokens")
@@ -1819,5 +2391,112 @@ fn composer_dock_title_uses_the_tertiary_tone() {
         title.style.fg,
         Some(theme.fg_tertiary),
         "dock text sits one tone lighter"
+    );
+}
+
+#[test]
+fn composer_control_rows_share_one_left_gutter() {
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    for (slot, nodes) in [
+        (
+            "conversation.input.dock",
+            serde_json::json!([
+                { "id": "plan:summary", "kind": "generic", "title": "· Plan", "body": "2/4", "status": "running", "tone": "caption" },
+                { "id": "plan:focus", "kind": "generic", "title": "Collect results", "body": "", "tone": "caption" }
+            ]),
+        ),
+        (
+            "conversation.navigation.dock",
+            serde_json::json!([
+                { "id": "agents:summary", "kind": "generic", "title": "· Agents", "body": "0/4", "status": "running", "tone": "caption" },
+                { "id": "agents:switch", "kind": "generic", "title": "↓ expand", "body": "", "tone": "caption" }
+            ]),
+        ),
+    ] {
+        app.handle(
+            crate::bus::AppEvent::Rpc {
+                method: crate::cordis::SLOTS_UPDATE.into(),
+                params: serde_json::json!({
+                    "protocol": 0,
+                    "slot": slot,
+                    "rev": 1,
+                    "nodes": nodes,
+                }),
+            },
+            &ctl,
+        );
+    }
+
+    let frame = dump_frame(&mut app, 100, 24);
+    assert!(
+        frame.contains("· Plan · 2/4 · Collect results"),
+        "Plan summary stays quiet while only its progress pulses:\n{frame}"
+    );
+    assert!(
+        frame.contains("· Agents · 0/4  ↓ expand"),
+        "Agent summary uses the same compact grammar:\n{frame}"
+    );
+
+    let lines = frame.lines().collect::<Vec<_>>();
+    let plan_x = lines
+        .iter()
+        .find(|line| line.contains("· Plan"))
+        .and_then(|line| line.find("· Plan"))
+        .expect("Plan marker");
+    let input_x = lines
+        .iter()
+        .find(|line| line.contains("describe what you want to build"))
+        .and_then(|line| line.find('❯'))
+        .expect("composer prompt");
+    let agents_x = lines
+        .iter()
+        .find(|line| line.contains("· Agents"))
+        .and_then(|line| line.find("· Agents"))
+        .expect("Agents marker");
+    let meta_x = lines
+        .iter()
+        .find(|line| line.contains("· Standard"))
+        .and_then(|line| line.find("· Standard"))
+        .expect("composer metadata marker");
+    assert_eq!(
+        (plan_x, input_x, agents_x, meta_x),
+        (plan_x, plan_x, plan_x, plan_x)
+    );
+}
+
+#[test]
+fn compact_running_progress_pulses_without_a_spinner_prefix() {
+    let app = test_app();
+    let node = crate::slots::TuiNode::Generic {
+        id: "agents".into(),
+        title: "· Agents".into(),
+        body: "0/2".into(),
+        status: Some("running".into()),
+        tone: Some("caption".into()),
+        selected: false,
+        action: None,
+    };
+
+    let soft = compact_node_spans(&node, &app.theme, 60, '⠋').expect("generic spans");
+    let bright = compact_node_spans(&node, &app.theme, 60, '⠴').expect("generic spans");
+    let text = |spans: &[Span]| {
+        spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+
+    assert_eq!(text(&soft), "· Agents · 0/2");
+    assert_eq!(text(&bright), "· Agents · 0/2");
+    assert_eq!(soft[0].style.fg, Some(app.theme.caption));
+    assert_eq!(
+        soft.last().expect("progress").style.fg,
+        Some(app.theme.brand_soft)
+    );
+    assert_eq!(
+        bright.last().expect("progress").style.fg,
+        Some(app.theme.brand)
     );
 }

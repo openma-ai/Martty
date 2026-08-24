@@ -405,7 +405,6 @@ pub(crate) fn base64(data: &[u8]) -> String {
 #[path = "../tests/unit/pet__tests.rs"]
 mod tests;
 
-
 /// The XS half-block whale — the pet's fallback art for terminals without
 /// a pixel protocol (drawn by `ui::draw_pet_chars` with a brand gradient).
 /// Formerly part of the generated `logo_data.rs`, now owned by the pet.

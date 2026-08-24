@@ -284,7 +284,7 @@ sleep 1
     '--root', runRoot,
     '--dsh-bin', fakeDsh,
     '--tui-bin', fakeDsh,
-    '--ready-timeout', '2',
+    '--ready-timeout', '10',
     '--preset-timeout', '2',
     '--timeout', '2',
   ], {

@@ -17,7 +17,7 @@ import { muxAcpAndCompositor } from './mux.js'
 export const name = 'dsh-tui-shell'
 export const inject = [
   'acpClient', 'tuiTheme', 'tuiPresets', 'tuiSlots', 'tuiCommands', 'tuiOverlay',
-  'acpClientEvents', 'acpSessionConfig', 'tuiCordisClientRunner',
+  'acpClientEvents', 'acpSessionConfig', 'tuiQueue', 'tuiAgents', 'tuiCordisClientRunner',
 ]
 
 const shellStateKey = Symbol.for('@openma/deepseek-harness-tui/shell-state')
@@ -137,6 +137,15 @@ export async function applyShell(ctx, options = {}) {
       'dsh-tui-shell: ctx.acpClientEvents must expose ACP observers',
     )
   }
+  const queue = ctx.tuiQueue ?? ctx.get?.('tuiQueue')
+  if (queue === undefined || typeof queue.observe !== 'function') {
+    throw new Error('dsh-tui-shell: ctx.tuiQueue must expose observe')
+  }
+  const agents = ctx.tuiAgents ?? ctx.get?.('tuiAgents')
+  if (agents === undefined || typeof agents.observe !== 'function'
+    || typeof agents.bindNotify !== 'function') {
+    throw new Error('dsh-tui-shell: ctx.tuiAgents must expose observe and bindNotify')
+  }
 
   // Config-watch recomposes the tree at boot and disposes this fiber. Keep
   // one painter; do not kill it from ctx.effect or the screen never appears.
@@ -226,6 +235,12 @@ export async function applyShell(ctx, options = {}) {
         if (message.method === CORDIS_METHODS.overlayEvent) {
           return overlay.dispatch(message.params)
         }
+        if (message.method === CORDIS_METHODS.queueUpdate) {
+          return { ok: queue.observe(message.params) }
+        }
+        if (message.method === CORDIS_METHODS.agentsUpdate) {
+          return { ok: agents.observe(message.params) }
+        }
         if (message.method === CORDIS_METHODS.approvalRespond) {
           return clientRunner.respondApproval(message.params)
         }
@@ -242,6 +257,7 @@ export async function applyShell(ctx, options = {}) {
       slots.bindNotify(notifyTui)
       commands.bindNotify(notifyTui)
       overlay.bindNotify(notifyTui)
+      agents.bindNotify(notifyTui)
     }
     republishCompositorState()
     clientRunner.bindTransport(mux.requestAgent, notifyTui)

@@ -706,4 +706,3 @@ pub fn form_from_request(request: &CreateElicitationRequest) -> Result<Elicitati
 #[cfg(test)]
 #[path = "../tests/unit/elicitation__tests.rs"]
 mod tests;
-

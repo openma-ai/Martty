@@ -356,4 +356,3 @@ fn long_conclusion() -> String {
 #[cfg(test)]
 #[path = "../tests/unit/demo__tests.rs"]
 mod tests;
-

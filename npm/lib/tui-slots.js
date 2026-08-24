@@ -14,6 +14,7 @@ export const SLOT_NAMES = Object.freeze([
   'welcome.info',
   'chrome.right',
   'conversation.input.dock',
+  'conversation.navigation.dock',
   'conversation.composer.dock',
 ])
 
@@ -22,6 +23,7 @@ const SLOT_DEFINITIONS = Object.freeze({
   'welcome.info': Object.freeze({ kind: 'single', scope: 'root' }),
   'chrome.right': Object.freeze({ kind: 'list', scope: 'root' }),
   'conversation.input.dock': Object.freeze({ kind: 'list', scope: 'session' }),
+  'conversation.navigation.dock': Object.freeze({ kind: 'list', scope: 'session' }),
   'conversation.composer.dock': Object.freeze({ kind: 'list', scope: 'session' }),
 })
 
@@ -64,7 +66,10 @@ const NODE_FIELDS = Object.freeze({
   markdown: { required: ['id', 'kind', 'text'], optional: ['streaming'] },
   reasoning: { required: ['id', 'kind', 'text', 'done'], optional: ['seconds'] },
   user: { required: ['id', 'kind', 'text'], optional: ['queued'] },
-  generic: { required: ['id', 'kind', 'title', 'body'], optional: ['status', 'action'] },
+  generic: {
+    required: ['id', 'kind', 'title', 'body'],
+    optional: ['status', 'tone', 'selected', 'action'],
+  },
   terminal: { required: ['id', 'kind', 'title', 'body'], optional: ['exit'] },
   diff: { required: ['id', 'kind', 'title', 'unified'], optional: ['path'] },
   image: { required: ['id', 'kind', 'name', 'mime'], optional: ['dataBase64'] },
@@ -168,9 +173,13 @@ function validateNode(node, path, ids) {
     case 'generic':
       string(node.title, `${path}.title`)
       string(node.body, `${path}.body`)
-      if (node.status !== undefined && !['running', 'ok', 'err'].includes(node.status)) {
-        throw new Error(`tuiSlots: ${path}.status must be running, ok, or err`)
+      if (node.status !== undefined && !['running', 'done', 'ok', 'err'].includes(node.status)) {
+        throw new Error(`tuiSlots: ${path}.status must be running, done, ok, or err`)
       }
+      if (node.tone !== undefined && !THEME_TOKENS.has(node.tone)) {
+        throw new Error(`tuiSlots: ${path}.tone must be a theme token`)
+      }
+      optionalBoolean(node.selected, `${path}.selected`)
       optionalAction(node.action, `${path}.action`)
       break
     case 'terminal':

@@ -70,6 +70,18 @@ fn word_hops_accept_both_conventions() {
 }
 
 #[test]
+fn alt_up_opens_the_client_queue_selector() {
+    assert_eq!(
+        classify(&key(KeyCode::Up, ALT), empty()),
+        Some(Action::EditQueuedPrompt)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Up, ALT), typing()),
+        Some(Action::EditQueuedPrompt)
+    );
+}
+
+#[test]
 fn ctrl_a_moves_to_line_start_for_terminals_that_encode_cmd_left_as_readline() {
     assert_eq!(
         classify(&key(KeyCode::Char('a'), CTRL), typing()),
@@ -223,6 +235,7 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::ToggleTheme,
         Action::ToggleExpandAll,
         Action::SendNow,
+        Action::EditQueuedPrompt,
         Action::AttachClipboard,
         Action::ModelPicker,
         Action::CycleAgent,
@@ -374,4 +387,12 @@ fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
     assert!(zh.contains("快捷键"), "zh title missing:\n{zh}");
     assert!(zh.contains("[空输入时]"), "zh context tag missing:\n{zh}");
     assert!(zh.contains("发送"), "zh send group missing:\n{zh}");
+    assert!(
+        zh.contains("关闭 / 推荐"),
+        "Esc completion hint missing:\n{zh}"
+    );
+    assert!(
+        zh.contains("选择一条排队消息编辑"),
+        "queue editor shortcut missing:\n{zh}"
+    );
 }

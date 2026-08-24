@@ -208,6 +208,175 @@ fn conversation_input_dock_is_compact_and_does_not_claim_the_sidebar() {
 }
 
 #[test]
+fn conversation_input_dock_expands_structured_nodes_inside_the_composer_box() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: json!({
+                "protocol": 0,
+                "slot": "conversation.input.dock",
+                "rev": 1,
+                "nodes": [
+                    {
+                        "id": "queue-view:summary",
+                        "kind": "generic",
+                        "title": "Queue · 2 · ↑/↓ choose · enter edit · esc close",
+                        "body": "",
+                        "status": "running"
+                    },
+                    {
+                        "id": "queue-view:items",
+                        "kind": "group",
+                        "children": [
+                            { "id": "queue-view:item-7", "kind": "text", "text": "  1  first queued prompt", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-9", "kind": "text", "text": "▸ 2  second queued prompt", "tone": "brand" }
+                        ]
+                    }
+                ]
+            }),
+        },
+        &ctl,
+    );
+
+    let frame = crate::ui::dump_frame(&mut app, 100, 24);
+    let lines = frame.lines().collect::<Vec<_>>();
+    let cap_y = lines
+        .iter()
+        .position(|line| line.contains("Queue · 2"))
+        .expect("Queue cap");
+    let first_y = lines
+        .iter()
+        .position(|line| line.contains("first queued prompt"))
+        .expect("first Queue row");
+    let second_y = lines
+        .iter()
+        .position(|line| line.contains("second queued prompt"))
+        .expect("second Queue row");
+    let input_y = lines
+        .iter()
+        .enumerate()
+        .skip(cap_y + 1)
+        .find_map(|(index, line)| line.contains('❯').then_some(index))
+        .expect("composer input row");
+
+    assert!(
+        lines[cap_y].starts_with('╭'),
+        "Queue summary stays on the cap:\n{frame}"
+    );
+    assert!(
+        first_y > cap_y && second_y > first_y && input_y > second_y,
+        "Queue rows expand above the input well inside the card:\n{frame}"
+    );
+    assert!(
+        lines[first_y].starts_with('│'),
+        "first Queue row must share the composer border:\n{frame}"
+    );
+    assert!(
+        lines[second_y].starts_with('│'),
+        "second Queue row must share the composer border:\n{frame}"
+    );
+}
+
+#[test]
+fn conversation_input_dock_shows_every_queue_row_when_space_allows() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: json!({
+                "protocol": 0,
+                "slot": "conversation.input.dock",
+                "rev": 1,
+                "nodes": [
+                    {
+                        "id": "queue-view:summary",
+                        "kind": "generic",
+                        "title": "Queue · 7 · ⌥↑ edit",
+                        "body": "",
+                        "status": "running"
+                    },
+                    {
+                        "id": "queue-view:items",
+                        "kind": "group",
+                        "children": [
+                            { "id": "queue-view:item-1", "kind": "text", "text": "› 1  queued prompt 1", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-2", "kind": "text", "text": "› 2  queued prompt 2", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-3", "kind": "text", "text": "› 3  queued prompt 3", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-4", "kind": "text", "text": "› 4  queued prompt 4", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-5", "kind": "text", "text": "› 5  queued prompt 5", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-6", "kind": "text", "text": "› 6  queued prompt 6", "tone": "fg_secondary" },
+                            { "id": "queue-view:item-7", "kind": "text", "text": "› 7  queued prompt 7", "tone": "fg_secondary" }
+                        ]
+                    }
+                ]
+            }),
+        },
+        &ctl,
+    );
+
+    let frame = crate::ui::dump_frame(&mut app, 100, 28);
+    for ordinal in 1..=7 {
+        assert!(
+            frame.contains(&format!("queued prompt {ordinal}")),
+            "Queue row {ordinal} should remain visible when the terminal has space:\n{frame}"
+        );
+    }
+}
+
+#[test]
+fn queue_view_contribution_replaces_the_native_fallback_shelf() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.state = RunState::Running;
+    app.input.set("plugin-owned-queue-marker".into());
+    app.handle(
+        AppEvent::Term(crossterm::event::Event::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        )),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: json!({
+                "protocol": 0,
+                "slot": "conversation.input.dock",
+                "rev": 1,
+                "nodes": [{
+                    "id": "queue-view:summary",
+                    "kind": "generic",
+                    "title": "Queue · 1 · plugin-owned-queue-marker",
+                    "body": "",
+                    "status": "running"
+                }]
+            }),
+        },
+        &ctl,
+    );
+
+    let frame = crate::ui::dump_frame(&mut app, 100, 24);
+    assert_eq!(
+        frame.matches("Queue · 1").count(),
+        1,
+        "the Client Plugin must replace, not duplicate, the native fallback shelf:\n{frame}"
+    );
+    assert_eq!(
+        frame.matches("plugin-owned-queue-marker").count(),
+        1,
+        "Queue content should have one composer-integrated owner:\n{frame}"
+    );
+}
+
+#[test]
 fn conversation_input_dock_routes_each_visible_action() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
@@ -244,7 +413,7 @@ fn conversation_input_dock_routes_each_visible_action() {
     let lines = frame.lines().collect::<Vec<_>>();
     let dock_y = lines
         .iter()
-        .position(|line| line.contains("Plan | Goal"))
+        .position(|line| line.contains("Plan · Goal"))
         .expect("combined dock row") as u16;
     let goal_x = lines[dock_y as usize].find("Goal").expect("Goal title") as u16;
 

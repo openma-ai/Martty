@@ -204,7 +204,8 @@ export function slotInspectProvider(tuiSlots) {
           note:
             'welcome.hero and welcome.info are independent single root regions; '
             + 'chrome.right is a root list slot; conversation.input.dock is the additive row above '
-            + 'the composer; conversation.composer.dock is the additive compact row below it. '
+            + 'the composer; conversation.navigation.dock is compact session navigation inside '
+            + 'the composer above its metadata; conversation.composer.dock is the outer compact telemetry row. '
             + 'Node ids are stable inside one contribution; '
             + 'the compositor namespaces them by contribution id. Compose group/markdown/reasoning/'
             + 'user/generic/terminal/diff/image/notice/unknown nodes. Colors use theme tokens only.',

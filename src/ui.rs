@@ -59,7 +59,7 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
 /// the kitty pixel sync so the pet anchors to the box bottom in both places.
 pub fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u16 {
     if !child_view
-        && main_height >= 20
+        && main_height >= 20 + navigation_dock_height(app, main_height)
         && app
             .slot_snapshots
             .contains_key("conversation.composer.dock")
@@ -68,6 +68,53 @@ pub fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u1
     } else {
         0
     }
+}
+
+/// One compact session-navigation row inside the composer, immediately above
+/// its meta row. A Client Plugin snapshot wins; the native Agent rail is only
+/// the no-Client-tree fallback.
+pub fn navigation_dock_height(app: &App, main_height: u16) -> u16 {
+    if main_height >= 8
+        && (slot_has_nodes(app, "conversation.navigation.dock") || !app.subagents.is_empty())
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// Compact client-owned FIFO shelf between the conversation and composer.
+/// It grows just enough to show a few prompts without crowding out chat.
+fn queue_shelf_height(app: &App, main_height: u16, child_view: bool) -> u16 {
+    let plugin_owned = app
+        .slot_snapshots
+        .get("conversation.input.dock")
+        .is_some_and(|snapshot| {
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.id().starts_with("queue-view:"))
+        });
+    if child_view || app.queued == 0 || plugin_owned {
+        return 0;
+    }
+    if main_height >= 12 {
+        let item_rows = main_height.saturating_sub(12).max(1) as usize;
+        1 + app.queued.min(item_rows) as u16
+    } else {
+        1
+    }
+}
+
+/// Structured input-dock nodes expand inside the composer card. Generic
+/// summaries keep using the one-line cap, so Plan/Goal stay compact while a
+/// selector such as Queue can temporarily reveal its rows above the input.
+fn input_dock_body_height(app: &App, main_width: u16, main_height: u16, child_view: bool) -> u16 {
+    if child_view || main_height < 14 {
+        return 0;
+    }
+    let lines = input_dock_body_lines(app, main_width.saturating_sub(2) as usize);
+    (lines.len() as u16).min(main_height.saturating_sub(12))
 }
 
 /// The pet's cell rectangle — the kitty-graphics placement target —
@@ -118,7 +165,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // bottom). The old shortcut-hints row is gone (the tip banner and
     // /keys carry that).
     let child_view = app.active_subagent.is_some();
-    let agents_h = if app.subagents.is_empty() { 0 } else { 1 };
     let approval_h = if !child_view && !app.pending_cordis_approvals.is_empty() && main.height >= 12
     {
         1
@@ -150,34 +196,70 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The composer stats dock (token / cache / timing readout) rides below
     // the box when the terminal is tall enough.
     let composer_dock_h = composer_dock_height(app, main.height, child_view);
-    let chat_h = main
-        .height
-        .saturating_sub(composer_h + cap_h + composer_dock_h + agents_h + approval_h + gap_h);
+    let navigation_dock_h = navigation_dock_height(app, main.height);
+    let input_dock_body_h = input_dock_body_height(app, main.width, main.height, child_view);
+    let queue_shelf_h = queue_shelf_height(app, main.height, child_view);
+    let chat_h = main.height.saturating_sub(
+        composer_h
+            + cap_h
+            + input_dock_body_h
+            + composer_dock_h
+            + navigation_dock_h
+            + queue_shelf_h
+            + approval_h
+            + gap_h,
+    );
 
     let chat = Rect::new(main.x, main.y, main.width, chat_h);
     let chrome_y = main.y + chat_h + gap_h;
-    let agents = Rect::new(main.x, chrome_y, main.width, agents_h);
-    let approval = Rect::new(main.x, chrome_y + agents_h, main.width, approval_h);
+    let approval = Rect::new(main.x, chrome_y, main.width, approval_h);
+    let queue_shelf = Rect::new(main.x, chrome_y + approval_h, main.width, queue_shelf_h);
     let composer_box = Rect::new(
         main.x,
-        chrome_y + agents_h + approval_h,
+        queue_shelf.y + queue_shelf.height,
         main.width,
-        cap_h + composer_h,
+        cap_h + input_dock_body_h + composer_h + navigation_dock_h,
     );
-    let composer = Rect::new(main.x, composer_box.y + cap_h, main.width, composer_h);
+    let composer = if child_view {
+        Rect::new(
+            main.x,
+            composer_box.y + navigation_dock_h,
+            main.width,
+            composer_h,
+        )
+    } else if cap_h == 0 {
+        composer_box
+    } else {
+        Rect::new(
+            main.x,
+            composer_box.y + cap_h + input_dock_body_h,
+            main.width,
+            composer_h,
+        )
+    };
     let composer_dock = Rect::new(
         main.x,
         composer_box.y + composer_box.height,
         main.width,
         composer_dock_h,
     );
+    let navigation_dock = if child_view {
+        Rect::new(main.x, composer_box.y, main.width, navigation_dock_h)
+    } else {
+        Rect::new(
+            main.x,
+            composer_box.bottom().saturating_sub(1 + navigation_dock_h),
+            main.width,
+            navigation_dock_h,
+        )
+    };
 
     draw_chat(f, app, chat);
-    if agents_h > 0 {
-        draw_agent_rail(f, app, agents);
-    }
     if approval_h > 0 {
         draw_cordis_approval(f, app, approval);
+    }
+    if queue_shelf_h > 0 {
+        draw_queue_shelf(f, app, queue_shelf);
     }
     // The pet floats inside the box's bottom-right; composer text keeps
     // clear of it. Anchor to the box's bottom — when the stats dock sits
@@ -197,9 +279,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if child_view {
         draw_child_navigation(f, app, composer);
     } else if cap_h > 0 {
-        draw_composer_box(f, app, composer_box, pet_pad);
+        draw_composer_box(
+            f,
+            app,
+            composer_box,
+            input_dock_body_h,
+            pet_pad,
+            navigation_dock_h,
+        );
     } else {
-        draw_composer(f, app, composer, pet_pad);
+        draw_composer(f, app, composer, pet_pad, navigation_dock_h);
+    }
+    if navigation_dock_h > 0 {
+        let embedded = !child_view && cap_h > 0;
+        if slot_has_nodes(app, "conversation.navigation.dock") {
+            draw_navigation_dock(f, app, navigation_dock, embedded);
+        } else {
+            draw_agent_rail(f, app, navigation_dock, embedded);
+        }
     }
     if composer_dock_h > 0 {
         draw_composer_dock(f, app, composer_dock, pet_pad);
@@ -215,7 +312,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         // Otherwise main() places the favicon PNG over `cells` after draw.
     }
     if !child_view {
-        draw_slash_menu(f, app, composer, chat);
+        let menu_anchor = if queue_shelf_h > 0 {
+            queue_shelf
+        } else {
+            composer
+        };
+        draw_slash_menu(f, app, menu_anchor, chat);
         // Hover/cursor preview for inline [image n] chips sits above the
         // composer (drawn last so it tops the menu-free chat area).
         draw_attachment_preview(f, app, composer, area);
@@ -255,6 +357,107 @@ fn draw_cordis_approval(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(
         Paragraph::new(line).style(Style::default().bg(theme.panel)),
+        area,
+    );
+}
+
+fn draw_queue_shelf(f: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let theme = app.theme;
+    let title = app.locale.tr("Queue", "队列");
+    let title_text = format!(" {title} · {}", app.queued);
+    let preview_limit = if area.height > 1 {
+        area.height.saturating_sub(1) as usize
+    } else {
+        1
+    };
+    let previews = app.queue_previews(preview_limit);
+    let mut lines = Vec::with_capacity(area.height as usize);
+
+    if area.height == 1 {
+        let prefix = format!("▎{title_text}  ");
+        let summary = previews.first().map(|preview| preview.summary.as_str());
+        let summary = summary
+            .map(|text| {
+                ellipsize_to(
+                    text,
+                    area.width.saturating_sub(prefix.width() as u16) as usize,
+                )
+            })
+            .unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(
+                prefix,
+                Style::default()
+                    .fg(theme.brand)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(summary, Style::default().fg(theme.fg_secondary)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("▎", Style::default().fg(theme.brand)),
+            Span::styled(
+                title_text,
+                Style::default()
+                    .fg(theme.fg_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if app.queue_selecting() {
+                    app.locale
+                        .tr(
+                            "  ·  ↑/↓ choose · enter edit · esc close",
+                            "  ·  ↑/↓ 选择 · enter 编辑 · esc 关闭",
+                        )
+                        .to_string()
+                } else {
+                    app.locale
+                        .tr(
+                            "  ·  enter send first · ⌥↑ edit",
+                            "  ·  enter 发送队首 · ⌥↑ 编辑",
+                        )
+                        .to_string()
+                },
+                Style::default().fg(theme.caption),
+            ),
+        ]));
+        for preview in previews {
+            let confirming_delete = preview.editing && app.queue_delete_confirming();
+            let marker = if confirming_delete {
+                "×"
+            } else if preview.editing {
+                "✎"
+            } else if preview.selected {
+                "▸"
+            } else {
+                "›"
+            };
+            let prefix = format!("  {marker} {}  ", preview.ordinal);
+            let summary = ellipsize_to(
+                &preview.summary,
+                area.width.saturating_sub(prefix.width() as u16 + 1) as usize,
+            );
+            let style = if confirming_delete {
+                Style::default().fg(theme.err)
+            } else if preview.editing {
+                Style::default().fg(theme.warn)
+            } else if preview.selected {
+                Style::default().fg(theme.brand)
+            } else {
+                Style::default().fg(theme.fg_secondary)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
+                Span::styled(summary, style),
+            ]));
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme.surface)),
         area,
     );
 }
@@ -629,52 +832,316 @@ fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect) {
+/// Compact Plugin-owned navigation rail. The leading identity + active item
+/// and the final action survive first when the terminal narrows; middle
+/// entries collapse before navigation becomes ambiguous.
+fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool) {
+    if area.width < 4 || area.height == 0 {
+        return;
+    }
+    let Some(snapshot) = app.slot_snapshots.get("conversation.navigation.dock") else {
+        return;
+    };
     let theme = app.theme;
+    let mut sections = snapshot
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            compact_node_spans(node, &theme, area.width as usize, app.spinner()).map(|spans| {
+                CompactSlotSection {
+                    spans,
+                    action: node.action().cloned(),
+                    essential: matches!(
+                        node,
+                        crate::slots::TuiNode::Generic {
+                            tone: Some(tone),
+                            ..
+                        } if matches!(tone.as_str(), "brand" | "brand_soft")
+                    ),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    if sections.is_empty() {
+        return;
+    }
+
+    let trailing = sections
+        .last()
+        .is_some_and(|section| section.action.is_some())
+        .then(|| sections.pop().expect("last section exists"));
+    let trailing_width = trailing
+        .as_ref()
+        .map(|section| span_widths(&section.spans))
+        .unwrap_or(0);
+    let left_budget = (area.width as usize)
+        .saturating_sub(4 + trailing_width)
+        .max(1);
+    while sections.len() > 2 {
+        let width = sections
+            .iter()
+            .map(|section| span_widths(&section.spans))
+            .sum::<usize>()
+            + sections.len().saturating_sub(1) * 2;
+        if width <= left_budget {
+            break;
+        }
+        let removable = (1..sections.len())
+            .rev()
+            .find(|index| !sections[*index].essential);
+        let Some(index) = removable else {
+            break;
+        };
+        sections.remove(index);
+    }
+
+    let border_style = Style::default().fg(theme.border);
+    let mut spans = vec![Span::styled(if embedded { "│" } else { " " }, border_style)];
+    let mut x = 1usize;
+    if !embedded {
+        spans.push(Span::raw(" "));
+        x += 1;
+    }
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+            x += 2;
+        }
+        let width = span_widths(&section.spans);
+        if let Some(action) = section.action.clone() {
+            app.slot_actions.push((
+                Rect::new(area.x + x as u16, area.y, width as u16, 1),
+                action,
+            ));
+        }
+        spans.extend(section.spans.iter().cloned());
+        x += width;
+    }
+
+    let trailing_start = (area.width as usize).saturating_sub(2 + trailing_width);
+    let fill = trailing_start.saturating_sub(x);
+    spans.push(Span::styled(" ".repeat(fill), border_style));
+    x += fill;
+    if let Some(section) = trailing {
+        if let Some(action) = section.action {
+            app.slot_actions.push((
+                Rect::new(area.x + x as u16, area.y, trailing_width as u16, 1),
+                action,
+            ));
+        }
+        spans.extend(section.spans);
+        x += trailing_width;
+    }
+    if x < area.width.saturating_sub(1) as usize {
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(if embedded { "│" } else { " " }, border_style));
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.panel)),
+        area,
+    );
+}
+
+fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect, embedded: bool) {
+    let theme = app.theme;
+    let choosing = app.agent_selection.is_some();
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.panel)),
+        area,
+    );
+    let content = if embedded && area.width >= 2 {
+        let border_style = Style::default().fg(theme.border).bg(theme.panel);
+        f.buffer_mut()[(area.x, area.y)]
+            .set_symbol("│")
+            .set_style(border_style);
+        f.buffer_mut()[(area.right().saturating_sub(1), area.y)]
+            .set_symbol("│")
+            .set_style(border_style);
+        Rect::new(
+            area.x.saturating_add(1),
+            area.y,
+            area.width.saturating_sub(2),
+            area.height,
+        )
+    } else {
+        area
+    };
+    if !choosing {
+        let current = app
+            .subagents
+            .iter()
+            .filter(|view| app.subagent_in_current_batch(&view.id))
+            .collect::<Vec<_>>();
+        let completed = current.iter().filter(|view| !view.running).count();
+        let running = current.iter().any(|view| view.running);
+        let failed = current.iter().any(|view| view.failed);
+        let title_color = if failed {
+            theme.err
+        } else if running {
+            theme.brand
+        } else {
+            theme.caption
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{}Agents · {completed}/{}",
+                        if embedded { "· " } else { " · " },
+                        current.len(),
+                    ),
+                    Style::default().fg(title_color),
+                ),
+                Span::styled("  ↓ expand", Style::default().fg(theme.caption)),
+            ]))
+            .style(Style::default().bg(theme.panel)),
+            content,
+        );
+        return;
+    }
     let mut spans = vec![Span::styled(
-        " agents  ",
-        Style::default().fg(theme.caption),
+        if embedded { "Agents  " } else { " Agents  " },
+        Style::default()
+            .fg(if choosing { theme.brand } else { theme.caption })
+            .add_modifier(if choosing {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
     )];
     let main_active = app.active_subagent.is_none();
+    let main_focused = app.agent_selection.as_deref() == Some(app.session_id.as_str());
     spans.push(Span::styled(
-        if main_active { "▸ main" } else { "  main" },
+        if main_focused || (main_active && !choosing) {
+            "▸ main"
+        } else if main_active {
+            "• main"
+        } else {
+            "  main"
+        },
         Style::default()
             .fg(if main_active {
                 theme.brand
             } else {
                 theme.fg_secondary
             })
-            .add_modifier(if main_active {
+            .add_modifier(if main_active || main_focused {
                 Modifier::BOLD
+            } else {
+                Modifier::empty()
+            })
+            .add_modifier(if main_focused {
+                Modifier::REVERSED
             } else {
                 Modifier::empty()
             }),
     ));
-    for view in &app.subagents {
+    let history_count = app
+        .subagents
+        .iter()
+        .filter(|view| !app.subagent_in_current_batch(&view.id))
+        .count();
+    for view in app
+        .subagents
+        .iter()
+        .filter(|view| app.subagent_in_current_batch(&view.id))
+    {
         let active = app.active_subagent.as_deref() == Some(view.id.as_str());
-        let marker = if view.running { '●' } else { '✓' };
+        let focused = app.agent_selection.as_deref() == Some(view.id.as_str());
+        let marker = if view.running {
+            app.spinner()
+        } else if view.failed {
+            '×'
+        } else {
+            '✓'
+        };
+        let modifiers = if active || focused {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        } | if focused {
+            Modifier::REVERSED
+        } else {
+            Modifier::empty()
+        };
+        let label_color = if active || focused {
+            theme.brand
+        } else {
+            theme.fg
+        };
         spans.push(Span::styled(
             format!(
-                "  {}{marker} {}",
-                if active { "▸ " } else { "" },
-                view.label
+                "  {}",
+                if focused || (active && !choosing) {
+                    "▸ "
+                } else if active {
+                    "• "
+                } else {
+                    ""
+                }
+            ),
+            Style::default().fg(label_color).add_modifier(modifiers),
+        ));
+        spans.push(Span::styled(
+            format!("{marker} "),
+            Style::default()
+                .fg(if view.running {
+                    theme.brand
+                } else if view.failed {
+                    theme.err
+                } else {
+                    theme.caption
+                })
+                .add_modifier(modifiers),
+        ));
+        spans.push(Span::styled(
+            view.label.clone(),
+            Style::default().fg(label_color).add_modifier(modifiers),
+        ));
+    }
+    if history_count > 0 {
+        let active = app
+            .active_subagent
+            .as_deref()
+            .is_some_and(|id| !app.subagent_in_current_batch(id));
+        let focused = app.agent_selection.as_deref() == Some(crate::app::AGENT_HISTORY_ID);
+        spans.push(Span::styled(
+            format!(
+                "  {}History ({history_count})",
+                if focused || (active && !choosing) {
+                    "▸ "
+                } else if active {
+                    "• "
+                } else {
+                    ""
+                }
             ),
             Style::default()
-                .fg(if view.running { theme.brand } else { theme.ok })
-                .add_modifier(if active {
+                .fg(if active || focused {
+                    theme.brand
+                } else {
+                    theme.caption
+                })
+                .add_modifier(if active || focused {
                     Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                })
+                .add_modifier(if focused {
+                    Modifier::REVERSED
                 } else {
                     Modifier::empty()
                 }),
         ));
     }
     spans.push(Span::styled(
-        "  ↓ switch",
-        Style::default().fg(theme.caption),
+        "  ←/→ · enter · esc close",
+        Style::default().fg(theme.brand_soft),
     ));
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
-        area,
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.panel)),
+        content,
     );
 }
 
@@ -713,7 +1180,7 @@ fn draw_pet_chars(f: &mut Frame, theme: Theme, cells: Rect) {
 /// text-free for the whale pet. Tall enough terminals get
 /// `draw_composer_box` instead — the same surface wrapped in the rounded
 /// frame that also carries the cap row.
-fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
+fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16, navigation_dock_h: u16) {
     let theme = app.theme;
 
     // Surface fill: contrast against the chat bg does the framing.
@@ -737,7 +1204,12 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     // them and records their rects for hover/preview hit-tests.
     app.att_chips.clear();
     app.att_thumbs.clear();
-    let well = Rect::new(inner.x, inner.y, inner.width, inner.height - 1);
+    let well = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(1 + navigation_dock_h),
+    );
     app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, well);
     draw_meta_row(
@@ -818,20 +1290,31 @@ fn state_line(app: &App) -> Option<Line<'static>> {
             }
         })
         .unwrap_or(app.state);
-    // Open reasoning/assistant cells already own the live presentation
-    // (`thinking…` or the streaming cursor). Adding another `streaming` row
-    // made the same phase alternate between one and two status rows.
-    if state == RunState::Running && transcript.streaming() {
+    // Reasoning owns its live `thinking…` row. Assistant text may be followed
+    // by tool arguments that ACP cannot render until the call is complete, so
+    // the ordinary working placeholder remains visible during that stream.
+    if state == RunState::Running && transcript.reasoning_streaming() {
         return None;
     }
     match state {
         RunState::Idle => return None,
         RunState::Starting | RunState::Running => {
+            let waiting_for_input = app.elicitation_ask.is_some();
             spans.push(Span::styled(
-                format!("{} ", app.spinner()),
-                Style::default().fg(theme.brand),
+                if waiting_for_input {
+                    "? ".to_string()
+                } else {
+                    format!("{} ", app.spinner())
+                },
+                Style::default().fg(if waiting_for_input {
+                    theme.warn_soft()
+                } else {
+                    theme.brand
+                }),
             ));
-            let label = if state == RunState::Starting {
+            let label = if waiting_for_input {
+                app.locale.tr("waiting for input", "等待输入").to_string()
+            } else if state == RunState::Starting {
                 if app.state_note.is_empty() {
                     app.locale.tr("starting", "启动中").to_string()
                 } else {
@@ -843,7 +1326,7 @@ fn state_line(app: &App) -> Option<Line<'static>> {
                 app.locale.tr("working", "工作中").to_string()
             };
             spans.push(Span::styled(label, Style::default().fg(theme.brand_soft)));
-            if active_child.is_none() {
+            if active_child.is_none() && !waiting_for_input {
                 if let Some(t0) = app.run_started {
                     spans.push(Span::styled(
                         format!(" {}s", t0.elapsed().as_secs()),
@@ -933,23 +1416,60 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
         .add_modifier(Modifier::BOLD);
     let lbl = Style::default().fg(theme.caption);
     let running = !matches!(app.state, RunState::Idle);
-    let pairs: Vec<(&str, &str)> = match (running, app.input.is_empty()) {
-        // Working, nothing typed: the only move is stopping it.
-        (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
-        // Working with a draft: enter queues; ^x steers without cancellation.
-        (true, false) => vec![
-            ("⏎", app.locale.tr("queue", "排队")),
-            ("^x", "steer"),
-            ("esc", app.locale.tr("interrupt", "中断")),
-        ],
-        // Idle, empty: point at the full shortcut list.
-        (false, true) => vec![("^k", app.locale.tr("keys", "快捷键"))],
-        // Idle with a draft: enter's meaning follows the prefix.
-        (false, false) if app.input.buf.starts_with('/') => {
-            vec![("⏎", app.locale.tr("command", "命令"))]
+    let edit_queue_key = if cfg!(target_os = "macos") {
+        "⌥↑"
+    } else {
+        "alt+↑"
+    };
+    let pairs: Vec<(&str, &str)> = if app.queue_delete_confirming() {
+        vec![
+            ("⏎", app.locale.tr("delete", "删除")),
+            ("esc", app.locale.tr("back", "返回")),
+        ]
+    } else if app.queue_selecting() {
+        vec![
+            ("↑↓", app.locale.tr("choose", "选择")),
+            ("⏎", app.locale.tr("edit", "编辑")),
+            ("esc", app.locale.tr("close", "关闭")),
+        ]
+    } else if app.slash_completion_open() {
+        vec![
+            ("⏎", app.locale.tr("select", "选择")),
+            ("esc", app.locale.tr("close", "关闭")),
+        ]
+    } else if app.queue_editing() {
+        vec![
+            ("⏎", app.locale.tr("save", "保存")),
+            ("^d", app.locale.tr("delete", "删除")),
+            ("esc", app.locale.tr("cancel", "取消")),
+        ]
+    } else {
+        match (running, app.input.is_empty()) {
+            // Working, nothing typed: stop it or edit the pending FIFO.
+            (true, true) if app.queued > 0 => vec![
+                (edit_queue_key, app.locale.tr("edit queue", "编辑队列")),
+                ("esc", app.locale.tr("interrupt", "中断")),
+            ],
+            (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
+            // Working with a draft: enter queues; ^x steers without cancellation.
+            (true, false) => vec![
+                ("⏎", app.locale.tr("queue", "排队")),
+                ("^x", "steer"),
+                ("esc", app.locale.tr("interrupt", "中断")),
+            ],
+            // Idle, empty: point at the FIFO editor or full shortcut list.
+            (false, true) if app.queued > 0 => vec![
+                (edit_queue_key, app.locale.tr("edit queue", "编辑队列")),
+                ("^k", app.locale.tr("keys", "快捷键")),
+            ],
+            (false, true) => vec![("^k", app.locale.tr("keys", "快捷键"))],
+            // Idle with a draft: enter's meaning follows the prefix.
+            (false, false) if app.input.buf.starts_with('/') => {
+                vec![("⏎", app.locale.tr("command", "命令"))]
+            }
+            (false, false) if app.input.buf.starts_with('!') => vec![("⏎", "shell")],
+            (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
         }
-        (false, false) if app.input.buf.starts_with('!') => vec![("⏎", "shell")],
-        (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
     };
     let mut spans = Vec::new();
     for (i, (k, l)) in pairs.iter().enumerate() {
@@ -1021,23 +1541,27 @@ fn slot_has_nodes(app: &App, name: &str) -> bool {
         .is_some_and(|snapshot| !snapshot.nodes.is_empty())
 }
 
+#[derive(Clone)]
 struct CompactSlotSection {
     spans: Vec<Span<'static>>,
     action: Option<crate::slots::TuiAction>,
+    essential: bool,
 }
 
 fn compact_slot_sections(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
     width: usize,
+    spinner: char,
 ) -> Vec<CompactSlotSection> {
     let mut sections = snapshot
         .nodes
         .iter()
         .filter_map(|node| {
-            compact_node_spans(node, theme, width).map(|spans| CompactSlotSection {
+            compact_node_spans(node, theme, width, spinner).map(|spans| CompactSlotSection {
                 spans,
                 action: node.action().cloned(),
+                essential: false,
             })
         })
         .collect::<Vec<_>>();
@@ -1053,6 +1577,51 @@ fn compact_slot_sections(
         sections.pop();
     }
     sections
+}
+
+fn compact_input_dock_sections(
+    snapshot: &crate::slots::SlotSnapshot,
+    theme: &Theme,
+    width: usize,
+    spinner: char,
+) -> Vec<CompactSlotSection> {
+    let mut sections = snapshot
+        .nodes
+        .iter()
+        .filter(|node| matches!(node, crate::slots::TuiNode::Generic { .. }))
+        .filter_map(|node| {
+            compact_node_spans(node, theme, width, spinner).map(|spans| CompactSlotSection {
+                spans,
+                action: node.action().cloned(),
+                essential: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    while sections.len() > 1 {
+        let total = sections
+            .iter()
+            .map(|section| span_widths(&section.spans))
+            .sum::<usize>()
+            + (sections.len() - 1) * 3;
+        if total <= width.saturating_sub(2) {
+            break;
+        }
+        sections.pop();
+    }
+    sections
+}
+
+fn input_dock_body_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let Some(snapshot) = app.slot_snapshots.get("conversation.input.dock") else {
+        return Vec::new();
+    };
+    let nodes = snapshot
+        .nodes
+        .iter()
+        .filter(|node| !matches!(node, crate::slots::TuiNode::Generic { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    crate::slots::render_nodes(&nodes, &app.theme, width)
 }
 
 /// The composer stats dock below the box: one compact row of plugin
@@ -1077,7 +1646,12 @@ fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
         return;
     };
     f.render_widget(
-        Paragraph::new(compact_slot_line(snapshot, &theme, inner.width as usize)),
+        Paragraph::new(compact_slot_line(
+            snapshot,
+            &theme,
+            inner.width as usize,
+            app.spinner(),
+        )),
         inner,
     );
 }
@@ -1086,8 +1660,9 @@ fn compact_slot_line(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
     width: usize,
+    spinner: char,
 ) -> Line<'static> {
-    let sections = compact_slot_sections(snapshot, theme, width);
+    let sections = compact_slot_sections(snapshot, theme, width, spinner);
     compact_slot_sections_line(&sections, theme)
 }
 
@@ -1103,26 +1678,100 @@ fn compact_slot_sections_line(sections: &[CompactSlotSection], theme: &Theme) ->
     Line::from(spans)
 }
 
+fn compact_input_dock_sections_line(
+    sections: &[CompactSlotSection],
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(theme.border)));
+        }
+        spans.extend(section.spans.iter().cloned());
+    }
+    Line::from(spans)
+}
+
+fn running_progress_color(theme: &Theme, spinner: char) -> ratatui::style::Color {
+    let phase = crate::app::SPINNER
+        .iter()
+        .position(|frame| *frame == spinner)
+        .unwrap_or(0);
+    if phase < crate::app::SPINNER.len() / 2 {
+        theme.brand_soft
+    } else {
+        theme.brand
+    }
+}
+
 fn compact_node_spans(
     node: &crate::slots::TuiNode,
     theme: &Theme,
     width: usize,
+    spinner: char,
 ) -> Option<Vec<Span<'static>>> {
-    if let crate::slots::TuiNode::Generic { title, status, .. } = node {
+    if let crate::slots::TuiNode::Generic {
+        title,
+        body,
+        status,
+        tone,
+        selected,
+        ..
+    } = node
+    {
         let mut spans = Vec::new();
         if let Some(status) = status.as_deref() {
             let (icon, color) = match status {
-                "running" => ("●", theme.brand),
-                "ok" => ("✓", theme.ok),
-                "err" => ("×", theme.err),
-                _ => ("◇", theme.caption),
+                "running" => (spinner.to_string(), theme.brand),
+                "done" => ("✓".into(), theme.caption),
+                "ok" => ("✓".into(), theme.ok),
+                "err" => ("×".into(), theme.err),
+                _ => ("◇".into(), theme.caption),
             };
             spans.push(Span::styled(format!("{icon} "), Style::default().fg(color)));
         }
-        spans.push(Span::styled(
-            title.clone(),
-            Style::default().fg(theme.fg_tertiary),
-        ));
+        let title_color = tone
+            .as_deref()
+            .map(|name| crate::slots::token_color(theme, name))
+            .unwrap_or(theme.fg_tertiary);
+        let mut title_style = Style::default().fg(title_color);
+        if tone.as_deref() == Some("brand") {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
+        if *selected {
+            if !body.is_empty() {
+                return Some(vec![Span::styled(
+                    format!(" {title} · {body} "),
+                    title_style.add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                )]);
+            }
+            let status = status.as_deref().map(|status| match status {
+                "running" => format!("{spinner} "),
+                "done" => "✓ ".into(),
+                "ok" => "✓ ".into(),
+                "err" => "× ".into(),
+                _ => "◇ ".into(),
+            });
+            return Some(vec![Span::styled(
+                format!(" {}{} ", status.unwrap_or_default(), title),
+                title_style.add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            )]);
+        }
+        if !body.is_empty() {
+            let body_color = match status.as_deref() {
+                Some("running") => running_progress_color(theme, spinner),
+                Some("done") => theme.caption,
+                Some("ok") => theme.ok,
+                Some("err") => theme.err,
+                _ => title_color,
+            };
+            return Some(vec![
+                Span::styled(title.clone(), title_style),
+                Span::styled(" · ", Style::default().fg(theme.border)),
+                Span::styled(body.clone(), Style::default().fg(body_color)),
+            ]);
+        }
+        spans.push(Span::styled(title.clone(), title_style));
         return Some(spans);
     }
     crate::slots::render_nodes(std::slice::from_ref(node), theme, width)
@@ -1182,11 +1831,24 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let total = lines.len();
     let h = inner.height as usize;
     let max_scroll = total.saturating_sub(h);
-    if app.scroll_up > max_scroll {
-        app.scroll_up = max_scroll;
-    }
-    let end = total - app.scroll_up.min(total);
-    let start = end.saturating_sub(h);
+    let (start, end) = if app.scroll_up == 0 {
+        app.chat_view.manual_top = None;
+        (total.saturating_sub(h), total)
+    } else if let Some(manual_top) = app.chat_view.manual_top {
+        let start = manual_top.min(max_scroll);
+        let end = start.saturating_add(h).min(total);
+        app.scroll_up = total.saturating_sub(end);
+        if app.scroll_up == 0 {
+            app.chat_view.manual_top = None;
+        }
+        (start, end)
+    } else {
+        app.scroll_up = app.scroll_up.min(max_scroll);
+        let end = total - app.scroll_up.min(total);
+        let start = end.saturating_sub(h);
+        app.chat_view.manual_top = Some(start);
+        (start, end)
+    };
     let visible: Vec<Line> = lines[start..end].to_vec();
 
     // Layout snapshot for mouse selection: hit-testing and copy extraction
@@ -1365,8 +2027,7 @@ fn workspace_cap_title(app: &App, area_width: usize) -> Line<'static> {
             text.push_str(&branch_tag);
         }
     }
-    Line::from(Span::styled(text, Style::default().fg(app.theme.caption)))
-        .right_aligned()
+    Line::from(Span::styled(text, Style::default().fg(app.theme.caption))).right_aligned()
 }
 
 fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'static> {
@@ -1404,7 +2065,14 @@ fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'
 /// aligned · workspace title) and the meta row rides the bottom border —
 /// the input well owns every inner row. The brand glow replaces the left
 /// border while a turn runs.
-fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
+fn draw_composer_box(
+    f: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    input_dock_body_h: u16,
+    pet_pad: u16,
+    navigation_dock_h: u16,
+) {
     let theme = app.theme;
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
     let workspace = workspace_cap_title(app, area.width as usize);
@@ -1413,10 +2081,10 @@ fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     let dock_sections = has_input_dock
         .then(|| app.slot_snapshots.get("conversation.input.dock"))
         .flatten()
-        .map(|snapshot| compact_slot_sections(snapshot, &theme, title_budget));
+        .map(|snapshot| compact_input_dock_sections(snapshot, &theme, title_budget, app.spinner()));
     let dock_line = dock_sections
         .as_ref()
-        .map(|sections| compact_slot_sections_line(sections, &theme));
+        .map(|sections| compact_input_dock_sections_line(sections, &theme));
     // The dock (PLAN summary) owns the single cap row; the tip line only
     // appears when no dock is present.
     let title = ellipsize_line(
@@ -1440,7 +2108,7 @@ fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
     }
 
     if let Some(sections) = dock_sections {
-        let mut x = area.x.saturating_add(2);
+        let mut x = area.x.saturating_add(1);
         let visible_right = area
             .x
             .saturating_add(1)
@@ -1467,15 +2135,28 @@ fn draw_composer_box(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16) {
         inner.x,
         inner.y,
         inner.width.saturating_sub(pet_pad),
-        inner.height,
+        inner.height.saturating_sub(navigation_dock_h),
     );
 
-    // Draft first: the well owns every inner row — the meta row lives on
-    // the bottom border.
+    let dock_h = input_dock_body_h.min(content.height);
+    if dock_h > 0 {
+        let dock = Rect::new(content.x, content.y, content.width, dock_h);
+        let lines = input_dock_body_lines(app, dock.width as usize);
+        f.render_widget(Paragraph::new(lines), dock);
+    }
+    let input = Rect::new(
+        content.x,
+        content.y.saturating_add(dock_h),
+        content.width,
+        content.height.saturating_sub(dock_h),
+    );
+
+    // The input well follows any expanded dock rows; both remain inside the
+    // same rounded card and the meta row stays on the bottom border.
     app.att_chips.clear();
     app.att_thumbs.clear();
-    app.composer_wrap_width = content.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
-    draw_input(f, app, content);
+    app.composer_wrap_width = input.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
+    draw_input(f, app, input);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -1567,6 +2248,7 @@ fn draw_attachment_preview(f: &mut Frame, app: &mut App, composer: Rect, screen:
 /// the chip) and their screen rects land in `app.att_chips` for hover.
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
+    let composer_owns_cursor = app.elicitation_ask.is_none();
     if area.width < 4 || area.height == 0 {
         return;
     }
@@ -1608,7 +2290,9 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             ])),
             area,
         );
-        f.set_cursor_position((area.x + pw as u16, area.y));
+        if composer_owns_cursor {
+            f.set_cursor_position((area.x + pw as u16, area.y));
+        }
         return;
     }
 
@@ -1735,7 +2419,9 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
 
     let cy = area.y + (cursor.0 - start).min(h - 1) as u16;
     let cx = area.x + pw as u16 + cursor.1 as u16;
-    f.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), cy));
+    if composer_owns_cursor {
+        f.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), cy));
+    }
 }
 
 /// Rows of menu items shown at once; the window follows the selection
@@ -1743,6 +2429,9 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
 const SLASH_MENU_ROWS: usize = 12;
 
 fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
+    if !app.slash_completion_open() {
+        return;
+    }
     let matches = app.slash_matches();
     if matches.is_empty() {
         return;
@@ -1918,11 +2607,11 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         crate::app::PickerKind::Permission => item.id == current_permission,
         crate::app::PickerKind::Effort
         | crate::app::PickerKind::Session
-        | crate::app::PickerKind::Subagent
         | crate::app::PickerKind::Auth
         | crate::app::PickerKind::StaticPlugin
         | crate::app::PickerKind::CordisPlugin
-        | crate::app::PickerKind::CordisApproval => false,
+        | crate::app::PickerKind::CordisApproval
+        | crate::app::PickerKind::AgentHistory => false,
     };
     // The popup caps at the screen; `ListView` scrolls the overflow instead
     // of clipping it out of reach.
@@ -2104,6 +2793,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
         .map(|text| crate::markdown::render(text, &theme, content_width));
     let mut bottom = Vec::new();
     bottom.push(Line::default());
+    let mut field_cursor = None;
 
     match &state.field.kind {
         crate::elicitation::ElicitationFieldKind::Single { options, .. }
@@ -2153,6 +2843,15 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
                 }
                 bottom.push(Line::from(spans));
                 if option.custom && state.editing_custom {
+                    let cursor_row = bottom.len();
+                    let cursor_col = "      ❯ ".width()
+                        + state
+                            .input
+                            .buf
+                            .chars()
+                            .take(state.input.cursor)
+                            .collect::<String>()
+                            .width();
                     bottom.push(Line::from(vec![
                         Span::styled("      ❯ ", Style::default().fg(theme.brand)),
                         Span::styled(
@@ -2160,6 +2859,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
                             Style::default().fg(theme.fg),
                         ),
                     ]));
+                    field_cursor = Some((cursor_row, cursor_col));
                 }
             }
         }
@@ -2184,6 +2884,15 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
             }
         }
         _ => {
+            let cursor_row = bottom.len();
+            let cursor_col = "❯ ".width()
+                + state
+                    .input
+                    .buf
+                    .chars()
+                    .take(state.input.cursor)
+                    .collect::<String>()
+                    .width();
             bottom.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(theme.brand)),
                 Span::styled(
@@ -2191,6 +2900,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
                     Style::default().fg(theme.fg),
                 ),
             ]));
+            field_cursor = Some((cursor_row, cursor_col));
         }
     }
     if let Some(error) = &ask.form.error {
@@ -2260,15 +2970,22 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
         f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), middle);
     }
     let bottom_h = inner.height as usize - top_h - middle_h;
-    f.render_widget(
-        Paragraph::new(bottom),
-        Rect::new(
-            inner.x,
-            inner.y.saturating_add((top_h + middle_h) as u16),
-            inner.width,
-            bottom_h as u16,
-        ),
+    let bottom_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add((top_h + middle_h) as u16),
+        inner.width,
+        bottom_h as u16,
     );
+    f.render_widget(Paragraph::new(bottom), bottom_area);
+    if let Some((row, col)) = field_cursor.filter(|(row, _)| *row < bottom_h) {
+        f.set_cursor_position((
+            bottom_area
+                .x
+                .saturating_add(col as u16)
+                .min(bottom_area.right().saturating_sub(1)),
+            bottom_area.y.saturating_add(row as u16),
+        ));
+    }
 }
 
 /// Welcome banner: Martty logo, project URL, session facts. Shown while

@@ -96,4 +96,3 @@ pub fn martty_logo_lines(theme: &Theme, width: u16) -> Vec<Line<'static>> {
 #[cfg(test)]
 #[path = "../tests/unit/logo__tests.rs"]
 mod tests;
-

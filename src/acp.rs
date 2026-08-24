@@ -124,10 +124,12 @@ impl Surface {
 
     fn apply_session_modes(&mut self, modes: &Value, bus: &Sender<AppEvent>) {
         let (list, current) = session_modes_from_value(modes);
-        if list.is_empty() {
+        if list.is_empty() && current.is_none() {
             return;
         }
-        self.modes = list.clone();
+        if !list.is_empty() {
+            self.modes = list.clone();
+        }
         let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
             modes: list,
             current,
@@ -230,7 +232,6 @@ struct PromptFinish {
 
 struct SteerFinish {
     message_id: u64,
-    fallback: Cmd,
     result: Result<agent_client_protocol::schema::v1::PromptResponse, AcpError>,
 }
 
@@ -283,7 +284,6 @@ fn spawn_steer_prompt(
     sid: SessionId,
     content: Vec<ContentBlock>,
     message_id: u64,
-    fallback: Cmd,
     done: tokio::sync::mpsc::UnboundedSender<SteerFinish>,
 ) {
     tokio::spawn(async move {
@@ -291,11 +291,7 @@ fn spawn_steer_prompt(
             .send_request(PromptRequest::new(sid, content))
             .block_task()
             .await;
-        let _ = done.send(SteerFinish {
-            message_id,
-            fallback,
-            result,
-        });
+        let _ = done.send(SteerFinish { message_id, result });
     });
 }
 
@@ -1550,24 +1546,15 @@ where
                         Cmd::Steer { message_id, text, .. } => {
                             if inflight.is_some() {
                                 if let Some(sid) = session_id.clone() {
-                                    let fallback = Cmd::Prompt {
-                                        session_id: sid.to_string(),
-                                        text: text.clone(),
-                                    };
                                     spawn_steer_prompt(
                                         cx.clone(),
                                         sid,
                                         vec![text.into()],
                                         message_id,
-                                        fallback,
                                         steer_done_tx.clone(),
                                     );
                                 }
                             } else if parked.is_some() {
-                                prompt_queue.push_back(Cmd::Prompt {
-                                    session_id: String::new(),
-                                    text,
-                                });
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                     message_id,
                                     deferred: true,
@@ -1618,10 +1605,6 @@ where
                         Cmd::SteerImages { message_id, blocks, .. } => {
                             if inflight.is_some() {
                                 if let Some(sid) = session_id.clone() {
-                                    let fallback = Cmd::PromptImages {
-                                        session_id: sid.to_string(),
-                                        blocks: blocks.clone(),
-                                    };
                                     let prompt_image = surface
                                         .lock()
                                         .unwrap_or_else(|e| e.into_inner())
@@ -1632,7 +1615,6 @@ where
                                             sid,
                                             content,
                                             message_id,
-                                            fallback,
                                             steer_done_tx.clone(),
                                         ),
                                         Ok(_) => {
@@ -1646,10 +1628,6 @@ where
                                     }
                                 }
                             } else if parked.is_some() {
-                                prompt_queue.push_back(Cmd::PromptImages {
-                                    session_id: String::new(),
-                                    blocks,
-                                });
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                     message_id,
                                     deferred: true,
@@ -2321,6 +2299,63 @@ where
                                 }
                             }
                         }
+                        Cmd::QueueSnapshot { snapshot } => {
+                            let items = snapshot
+                                .items
+                                .into_iter()
+                                .map(|item| {
+                                    serde_json::json!({
+                                        "id": item.id,
+                                        "ordinal": item.ordinal,
+                                        "summary": item.summary,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            // This method belongs to the local Client compositor.
+                            // Direct native launches may not have one, so absence is
+                            // intentionally silent and never affects prompt flow.
+                            let _ = call_tui_extension(
+                                &cx,
+                                crate::cordis::QUEUE_UPDATE,
+                                serde_json::json!({
+                                    "protocol": crate::cordis::PROTOCOL,
+                                    "count": snapshot.count,
+                                    "items": items,
+                                    "selectedId": snapshot.selected_id,
+                                    "editingId": snapshot.editing_id,
+                                    "deleteConfirm": snapshot.delete_confirm,
+                                }),
+                            )
+                            .await;
+                        }
+                        Cmd::AgentsSnapshot { snapshot } => {
+                            let items = snapshot
+                                .items
+                                .into_iter()
+                                .map(|item| {
+                                    serde_json::json!({
+                                        "id": item.id,
+                                        "label": item.label,
+                                        "kind": item.kind,
+                                        "status": item.status,
+                                        "current": item.current,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            // Agent transcript navigation is Client chrome;
+                            // it never becomes an ACP prompt or timeline cell.
+                            let _ = call_tui_extension(
+                                &cx,
+                                crate::cordis::AGENTS_UPDATE,
+                                serde_json::json!({
+                                    "protocol": crate::cordis::PROTOCOL,
+                                    "activeId": snapshot.active_id,
+                                    "selectedId": snapshot.selected_id,
+                                    "items": items,
+                                }),
+                            )
+                            .await;
+                        }
                         Cmd::Shutdown => break,
                     }
                             if inflight.is_none() && parked.is_none() {
@@ -2340,14 +2375,8 @@ where
                             }
                         }
                         steer = steer_done_rx.recv() => {
-                            if let Some(SteerFinish { message_id, fallback, result }) = steer {
+                            if let Some(SteerFinish { message_id, result }) = steer {
                                 let deferred = result.is_err();
-                                if deferred {
-                                    // Backchat delivery degradation: a rejected immediate
-                                    // steer becomes an ordinary turn-end FIFO prompt. The
-                                    // active request and its UI lifecycle stay untouched.
-                                    prompt_queue.push_back(fallback);
-                                }
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                     message_id,
                                     deferred,
@@ -2440,4 +2469,3 @@ where
 #[cfg(test)]
 #[path = "../tests/unit/acp__tests.rs"]
 mod tests;
-

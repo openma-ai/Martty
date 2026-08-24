@@ -20,6 +20,7 @@
         "welcome.info",
         "chrome.right",
         "conversation.input.dock",
+        "conversation.navigation.dock",
         "conversation.composer.dock"
       ]
     },
@@ -302,9 +303,16 @@
         "status": {
           "enum": [
             "running",
+            "done",
             "ok",
             "err"
           ]
+        },
+        "tone": {
+          "$ref": "#/$defs/ThemeToken"
+        },
+        "selected": {
+          "type": "boolean"
         },
         "action": {
           "$ref": "#/$defs/Action"

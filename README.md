@@ -69,8 +69,10 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 
 | 按键 / 命令 | 行为 |
 |---|---|
-| `enter` | 发送消息；回合运行时排队 follow-up |
+| `enter` | 发送消息；composer 为空且 Queue 非空时立即发送队首 |
 | `ctrl+x` | 立即 steer 当前 agent |
+| `alt+↑` | 选择任意 Queue 条目；`↑/↓` 移动，`enter` 编辑，`ctrl+d` 删除 |
+| `↓` · `←/→` · `enter` | 空输入时展开 Agent 导航、移动并打开；`esc` 折叠 |
 | `esc` | 中断当前回合并保留草稿 |
 | `/` | 打开命令与参数候选 |
 | `/model` · `/agent` | 选择模型和 Agent Preset |
@@ -114,9 +116,9 @@ Theme Plugin 与明暗模式彼此独立。使用 `/theme` 选择 Theme Plugin�
 `/theme toggle` 或 `ctrl+t` 切换当前 Theme Plugin 的 dark/light 变体。输入
 `/theme ` 时，上拉候选会把 `toggle` 与 Theme Plugin 分区显示。
 
-### 五个 Slot
+### 六个 Slot
 
-带有 Client half 的 Plugin 可以通过 `tuiSlots.register` 向五个位置提供界面内容：
+带有 Client half 的 Plugin 可以通过 `tuiSlots.register` 向六个位置提供界面内容：
 
 | Slot | 类型 | 位置与用途 |
 |---|---|---|
@@ -124,7 +126,8 @@ Theme Plugin 与明暗模式彼此独立。使用 `/theme` 选择 Theme Plugin�
 | `welcome.info` | single · root | 欢迎页版本、模型、workspace 与 session 信息 |
 | `chrome.right` | list · root | 主界面右栏，适合监控面板和持续状态 |
 | `conversation.input.dock` | list · session | 输入框上方，适合 Plan、任务和 Goal 摘要 |
-| `conversation.composer.dock` | list · session | 输入框下方，适合 token、耗时等紧凑统计 |
+| `conversation.navigation.dock` | list · session | composer 内部、输入区与模式行之间，适合 Agent、branch 与 session 导航 |
+| `conversation.composer.dock` | list · session | composer 外层底部，适合 token、耗时等紧凑统计 |
 
 节点类型、更新和卸载生命周期见 [Plugin API：`tuiSlots`](docs/plugins.md#当前可调用-tuislots)，
 字段定义见 [`tui-node.v0.schema.json`](docs/tui-node.v0.schema.json)。

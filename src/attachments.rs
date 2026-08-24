@@ -16,6 +16,7 @@ pub const MAX_STAGED: usize = 8;
 /// transcript's `image_seq` counters so the two sync pools never collide.
 pub const KITTY_ID_BASE: u32 = 0x4000_0000;
 
+#[derive(Clone)]
 pub struct Attachment {
     pub id: u32,
     /// The literal draft-text token addressing this image, `[image N]`.
@@ -67,6 +68,15 @@ impl Staged {
         Ok(self.items.last().expect("just pushed"))
     }
 
+    pub fn restore(&mut self, attachment: Attachment) -> Result<&Attachment, &'static str> {
+        if self.items.len() >= MAX_STAGED {
+            return Err("attachment tray is full — send or remove an [image] chip first");
+        }
+        self.seq = self.seq.max(attachment.id.saturating_sub(KITTY_ID_BASE));
+        self.items.push(attachment);
+        Ok(self.items.last().expect("just restored"))
+    }
+
     pub fn remove(&mut self, idx: usize) -> Option<Attachment> {
         (idx < self.items.len()).then(|| self.items.remove(idx))
     }
@@ -106,4 +116,3 @@ impl Staged {
 #[cfg(test)]
 #[path = "../tests/unit/attachments__tests.rs"]
 mod tests;
-

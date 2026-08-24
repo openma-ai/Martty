@@ -241,6 +241,32 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
     })
 }
 
+/// A tool request is a semantic UI transition, not just another foldable
+/// transport update. Stop the current receive burst after applying it so the
+/// pending request gets one real frame before a fast result can complete it.
+fn event_requires_immediate_frame(event: &AppEvent) -> bool {
+    match event {
+        AppEvent::Ui(events::UiEvent::ToolCall { .. }) => true,
+        AppEvent::Rpc { method, params } if method == "session/update" => {
+            params
+                .get("update")
+                .unwrap_or(params)
+                .get("sessionUpdate")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool_call")
+        }
+        AppEvent::Rpc { method, params } if method == "session.event" => {
+            params
+                .get("event")
+                .unwrap_or(params)
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool/call")
+        }
+        _ => false,
+    }
+}
+
 fn main() -> Result<()> {
     // Die quietly on closed pipes (martty --dump-frame | head) instead of
     // panicking in println!.
@@ -405,14 +431,15 @@ fn main() -> Result<()> {
                 let _ = backdrop.sync(&mut std::io::stdout(), app.active_background(), area);
                 let working = !matches!(app.state, RunState::Idle);
                 // Same anchor math as ui::draw: the pet sits inside the
-                // composer box, above the stats dock when it is shown.
+                // composer box, above navigation and stats docks when shown.
                 let dock_h =
                     ui::composer_dock_height(&app, area.height, app.active_subagent.is_some());
+                let navigation_h = ui::navigation_dock_height(&app, area.height);
                 let pet_area = ratatui::layout::Rect::new(
                     0,
                     0,
                     size.width,
-                    size.height.saturating_sub(dock_h),
+                    size.height.saturating_sub(dock_h + navigation_h),
                 );
                 let want = ui::pet_rect(pet_area, &app).map(|r| (r, working));
                 let _ = pet.sync(&mut std::io::stdout(), want);
@@ -433,10 +460,20 @@ fn main() -> Result<()> {
             }
             match bus_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(ev) => {
+                    let render_boundary = event_requires_immediate_frame(&ev);
                     app.handle(ev, &controller);
-                    // drain whatever is queued to batch redraws
-                    while let Ok(ev) = bus_rx.try_recv() {
-                        app.handle(ev, &controller);
+                    // Drain ordinary transport chatter into one frame, but
+                    // never fold a tool start together with its result. Fast
+                    // background tools can otherwise begin and finish inside
+                    // the same receive burst, making the request invisible.
+                    if !render_boundary {
+                        while let Ok(ev) = bus_rx.try_recv() {
+                            let render_boundary = event_requires_immediate_frame(&ev);
+                            app.handle(ev, &controller);
+                            if render_boundary {
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -695,3 +732,7 @@ fn reexec_demo_skin() -> Result<()> {
 #[cfg(test)]
 #[path = "../tests/unit/main__cli_args_tests.rs"]
 mod cli_args_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/main__event_batch_tests.rs"]
+mod event_batch_tests;

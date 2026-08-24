@@ -31,4 +31,3 @@ pub fn snapshot() -> super::ModifierState {
 #[cfg(test)]
 #[path = "../../tests/unit/input__macos_mod__tests.rs"]
 mod tests;
-

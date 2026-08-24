@@ -140,6 +140,7 @@ test('Slots.list reports root shell contracts for dynamic Client plugins', () =>
     { name: 'welcome.info', kind: 'single', scope: 'root', occupants: [] },
     { name: 'chrome.right', kind: 'list', scope: 'root', occupants: [] },
     { name: 'conversation.input.dock', kind: 'list', scope: 'session', occupants: [] },
+    { name: 'conversation.navigation.dock', kind: 'list', scope: 'session', occupants: [] },
     { name: 'conversation.composer.dock', kind: 'list', scope: 'session', occupants: [] },
   ])
   assert.deepEqual(listed.apply.inject, ['tuiSlots'])

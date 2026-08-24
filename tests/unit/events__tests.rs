@@ -43,24 +43,30 @@ fn subagent_started_and_finished() {
     );
 
     let ev = parse_notification("subagent.finished", &json!({"childSessionId": "c"}));
-    assert_eq!(ev, vec![UiEvent::SubagentFinished { child: "c".into() }]);
+    assert_eq!(
+        ev,
+        vec![UiEvent::SubagentFinished {
+            child: "c".into(),
+            failed: false,
+        }]
+    );
 }
 
 #[test]
-fn standard_acp_subagent_tool_calls_restore_the_lifecycle() {
+fn metadata_only_subagent_lifecycle_updates_the_agent_dock() {
     let started = parse_notification(
         "session/update",
         &json!({
             "sessionId": "parent",
             "update": {
-                "sessionUpdate": "tool_call",
-                "toolCallId": "subagent:run-1",
-                "title": "Start subagent child",
-                "status": "in_progress",
-                "_meta": {"dsh": {"subagent": {
-                    "state": "started",
-                    "childSessionId": "child"
-                }}}
+                "sessionUpdate": "session_info_update",
+                "_meta": {"dsh": {
+                    "event": "subagent/lifecycle",
+                    "subagent": {
+                        "state": "started",
+                        "childSessionId": "child"
+                    }
+                }}
             }
         }),
     );
@@ -72,6 +78,67 @@ fn standard_acp_subagent_tool_calls_restore_the_lifecycle() {
         }]
     );
 
+    let failed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "parent",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"dsh": {
+                    "event": "subagent/lifecycle",
+                    "subagent": {
+                        "state": "finished",
+                        "childSessionId": "child",
+                        "stopReason": "error"
+                    }
+                }}
+            }
+        }),
+    );
+    assert_eq!(
+        failed,
+        vec![UiEvent::SubagentFinished {
+            child: "child".into(),
+            failed: true,
+        }]
+    );
+}
+
+#[test]
+fn standard_acp_subagent_tool_calls_keep_the_request_block_and_lifecycle() {
+    let started = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "parent",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "subagent:run-1",
+                "title": "Start subagent child",
+                "status": "in_progress",
+                "rawInput": {"task": "inspect the renderer"},
+                "_meta": {"dsh": {"subagent": {
+                    "state": "started",
+                    "childSessionId": "child"
+                }}}
+            }
+        }),
+    );
+    assert_eq!(
+        started,
+        vec![
+            UiEvent::ToolCall {
+                session: "parent".into(),
+                call_id: "subagent:run-1".into(),
+                name: "Start subagent child".into(),
+                arguments: r#"{"task":"inspect the renderer"}"#.into(),
+            },
+            UiEvent::SubagentStarted {
+                parent: "parent".into(),
+                child: "child".into(),
+            },
+        ]
+    );
+
     let finished = parse_notification(
         "session/update",
         &json!({
@@ -80,6 +147,7 @@ fn standard_acp_subagent_tool_calls_restore_the_lifecycle() {
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "subagent:run-1",
                 "status": "completed",
+                "rawOutput": {"summary": "renderer inspected"},
                 "_meta": {"dsh": {"subagent": {
                     "state": "finished",
                     "childSessionId": "child"
@@ -89,8 +157,44 @@ fn standard_acp_subagent_tool_calls_restore_the_lifecycle() {
     );
     assert_eq!(
         finished,
-        vec![UiEvent::SubagentFinished {
-            child: "child".into(),
+        vec![
+            UiEvent::ToolResult {
+                session: "parent".into(),
+                call_id: "subagent:run-1".into(),
+                is_error: false,
+                text: r#"{"summary":"renderer inspected"}"#.into(),
+                error: None,
+            },
+            UiEvent::SubagentFinished {
+                child: "child".into(),
+                failed: false,
+            },
+        ]
+    );
+}
+
+#[test]
+fn standard_acp_nonterminal_tool_updates_refresh_the_existing_request() {
+    let updates = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "parent",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "title": "Subagent: inspect renderer",
+                "status": "in_progress",
+                "rawInput": {"task": "inspect renderer"}
+            }
+        }),
+    );
+    assert_eq!(
+        updates,
+        vec![UiEvent::ToolCall {
+            session: "parent".into(),
+            call_id: "call-1".into(),
+            name: "Subagent: inspect renderer".into(),
+            arguments: r#"{"task":"inspect renderer"}"#.into(),
         }]
     );
 }
@@ -202,7 +306,7 @@ fn text_and_reasoning_deltas() {
 
 #[test]
 fn silent_chunk_types_emit_nothing() {
-    for t in ["block-start", "block-end", "tool-call-delta", "finish"] {
+    for t in ["block-end", "tool-call-delta", "finish"] {
         let ev = parse_notification(
             "session.event",
             &json!({"sessionId": "s", "event": {"type": "assistant/chunk",
@@ -210,6 +314,32 @@ fn silent_chunk_types_emit_nothing() {
         );
         assert!(ev.is_empty(), "chunk type {t} should emit nothing");
     }
+}
+
+#[test]
+fn tool_call_block_start_exposes_hidden_argument_streaming() {
+    let ev = parse_notification(
+        "session.event",
+        &json!({"sessionId": "s", "event": {"type": "assistant/chunk",
+        "data": {"chunk": {
+            "type": "block-start",
+            "blockType": "tool-call",
+            "index": 1
+        }}}}),
+    );
+    assert_eq!(
+        ev,
+        vec![UiEvent::ToolCallPreparing {
+            session: "s".into()
+        }]
+    );
+
+    let text_block = parse_notification(
+        "session.event",
+        &json!({"sessionId": "s", "event": {"type": "assistant/chunk",
+                "data": {"chunk": {"type": "block-start", "blockType": "text"}}}}),
+    );
+    assert!(text_block.is_empty());
 }
 
 #[test]
