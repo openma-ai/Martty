@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- TUI Client process now converts SIGTERM/SIGINT/SIGHUP into an orderly
+  `process.exit`, so the Rust painter is always torn down (it is killed from
+  the Client's `exit` hook). Previously the Host runner's SIGTERM terminated
+  the Client without running `exit` listeners, orphaning the painter holding
+  the TTY — shutdown appeared to hang until the terminal was closed.
+
+
 ### Added
 
 - New gallery palette pack `kanagawa` (dark from Kanagawa Wave, light from
