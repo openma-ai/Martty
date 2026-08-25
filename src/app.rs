@@ -467,6 +467,18 @@ impl Selection {
     }
 }
 
+/// Composer drag-selection (same gesture as the chat pane): both endpoints
+/// are cells in the input text-area coordinates — `(row, col)` where the
+/// drag began and where the pointer is now. The covered char range is
+/// derived with [`App::input_selection_range`], which treats both endpoint
+/// cells as inclusive so either drag direction selects exactly the cells
+/// the pointer crossed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InputSel {
+    pub anchor: (usize, usize),
+    pub head: (usize, usize),
+}
+
 /// Snapshot of the chat pane layout from the last draw — the seam that
 /// mouse hit-testing and copy extraction read (grok-build's resolved
 /// selection model, scaled way down): pane rect, index of the first
@@ -915,6 +927,17 @@ pub struct App {
     pub input: Input,
     /// Display-cell width of the composer text well from the latest frame.
     pub(crate) composer_wrap_width: usize,
+    /// Screen rect of the composer input well from the latest frame — mouse
+    /// hit-testing (recorded by `ui::draw_input`).
+    pub(crate) input_area: ratatui::layout::Rect,
+    /// First text row shown inside the well (the viewport scroll from
+    /// `ui::draw_input`).
+    pub(crate) input_top: usize,
+    /// Ordered char-index range selected in the composer: drag-select and
+    /// copy highlight, `None` when no input selection is shown.
+    pub(crate) input_sel: Option<InputSel>,
+    /// A left-button drag inside the composer well is in progress.
+    input_selecting: bool,
     pub state: RunState,
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
@@ -1308,6 +1331,10 @@ impl App {
             agent_selection: None,
             input: Input::new(),
             composer_wrap_width: 80,
+            input_area: ratatui::layout::Rect::default(),
+            input_top: 0,
+            input_sel: None,
+            input_selecting: false,
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
@@ -2783,6 +2810,7 @@ impl App {
                 }
                 self.slash_completion_dismissed = false;
                 self.input.insert_str(&text.replace('\n', " "));
+                self.input_sel = None;
                 self.reconcile_attachments();
                 self.needs_redraw = true;
             }
@@ -2830,6 +2858,7 @@ impl App {
                     self.sel = None;
                     self.selecting = false;
                     self.last_click = None;
+                    self.input_selecting = false;
                     match action {
                         crate::slots::TuiAction::Command { name, args } => {
                             ctl.send(Cmd::InvokePluginCommand { name, args });
@@ -2843,15 +2872,44 @@ impl App {
                     self.sel = None;
                     self.selecting = false;
                     self.last_click = None;
+                    self.input_selecting = false;
                     self.toggle_tool(ci);
+                    return;
+                }
+                // Click inside the composer well: place the caret at the
+                // clicked char and arm an input drag-selection. Like any
+                // click outside the chat pane, the chat highlight is
+                // dismissed first. The elicitation form owns its own field
+                // and child-view chrome replaces the composer, so the
+                // hidden caret stays put in both cases.
+                if self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.input_hit(mouse.column, mouse.row)
+                {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    let cell = self.input_cell_at(mouse.column, mouse.row);
+                    self.input.cursor =
+                        self.input.char_index_at(self.input_avail(), cell.0, cell.1);
+                    self.input.reset_vertical_goal();
+                    self.input_sel = Some(InputSel {
+                        anchor: cell,
+                        head: cell,
+                    });
+                    self.input_selecting = true;
                     return;
                 }
                 let Some(p) = self.chat_hit(mouse.column, mouse.row) else {
                     // Click outside the chat pane dismisses the highlight.
                     self.sel = None;
                     self.selecting = false;
+                    self.input_sel = None;
+                    self.input_selecting = false;
                     return;
                 };
+                self.input_sel = None;
+                self.input_selecting = false;
                 let double = self.last_click.take().is_some_and(|(at, x, y)| {
                     at.elapsed() < DOUBLE_CLICK_WINDOW
                         && x.abs_diff(mouse.column) <= 1
@@ -2880,9 +2938,22 @@ impl App {
                 }
                 self.needs_redraw = true;
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.input_selecting => {
+                // The head snaps to the well edges: drags above select to
+                // the top visible row, below it to the bottom row.
+                let head = self.input_cell_at(mouse.column, mouse.row);
+                if let Some(sel) = &mut self.input_sel {
+                    sel.head = head;
+                }
+                self.needs_redraw = true;
+            }
             MouseEventKind::Up(MouseButton::Left) if self.selecting => {
                 self.selecting = false;
                 self.finish_selection();
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.input_selecting => {
+                self.input_selecting = false;
+                self.finish_input_selection();
             }
             MouseEventKind::Moved => {
                 // grok-style hover: track which inline chip the pointer is
@@ -3084,6 +3155,83 @@ impl App {
         } else {
             self.show_tip("copy failed — hold shift and drag for the terminal's native selection");
         }
+    }
+
+    /// True when the screen cell lies inside the composer input well.
+    fn input_hit(&self, col: u16, row: u16) -> bool {
+        let a = self.input_area;
+        a.width > 0
+            && a.height > 0
+            && col >= a.x
+            && col < a.x.saturating_add(a.width)
+            && row >= a.y
+            && row < a.y.saturating_add(a.height)
+    }
+
+    /// Display-cell width of the composer text area, matching
+    /// `ui::draw_input` (`area.width - prompt width`).
+    fn input_avail(&self) -> usize {
+        let a = self.input_area;
+        let pw = "❯ "
+            .chars()
+            .map(|c| c.width().unwrap_or(0).max(1))
+            .sum::<usize>();
+        a.width.saturating_sub(pw as u16).max(1) as usize
+    }
+
+    /// Map a screen cell to a text-area cell `(row, col)` in the same
+    /// coordinates as `Input::char_index_at` (prompt offset and viewport
+    /// scroll applied), clamped into the visible well.
+    fn input_cell_at(&self, col: u16, row: u16) -> (usize, usize) {
+        let a = self.input_area;
+        let pw = "❯ "
+            .chars()
+            .map(|c| c.width().unwrap_or(0).max(1))
+            .sum::<usize>();
+        let rel_row = (row.saturating_sub(a.y) as usize)
+            .min(a.height.saturating_sub(1) as usize)
+            .saturating_add(self.input_top);
+        let rel_col = (col.saturating_sub(a.x.saturating_add(pw as u16)) as usize)
+            .min(self.input_avail().saturating_sub(1));
+        (rel_row, rel_col)
+    }
+
+    /// Ordered char boundaries covered by the composer selection — both
+    /// endpoint cells inclusive, so a drag in either direction covers
+    /// exactly the cells the pointer crossed. `None` without a selection.
+    pub(crate) fn input_selection_range(&self) -> Option<(usize, usize)> {
+        let sel = self.input_sel?;
+        let (s, e) = if sel.anchor <= sel.head {
+            (sel.anchor, sel.head)
+        } else {
+            (sel.head, sel.anchor)
+        };
+        let avail = self.input_avail();
+        let start = self.input.char_index_at(avail, s.0, s.1);
+        let end = self.input.char_index_end_at(avail, e.0, e.1);
+        (start < end).then_some((start, end))
+    }
+
+    /// Copy the dragged composer selection; the highlight persists until
+    /// the next click or Esc, mirroring the chat pane. A plain click
+    /// (caret) just clears the highlight.
+    fn finish_input_selection(&mut self) {
+        self.needs_redraw = true;
+        let Some(sel) = self.input_sel else { return };
+        if sel.anchor == sel.head {
+            self.input_sel = None;
+            return;
+        }
+        let Some((a, b)) = self.input_selection_range() else {
+            self.input_sel = None;
+            return;
+        };
+        let text = self.input.chars_between(a, b);
+        if text.trim().is_empty() {
+            self.input_sel = None;
+            return;
+        }
+        self.copy_text(&text);
     }
 
     /// Extract the selected text from the layout snapshot: cell-range slices
@@ -3581,6 +3729,8 @@ impl App {
                 | Action::KillToStart
         ) {
             self.slash_completion_dismissed = false;
+            // Text edits invalidate the drag-selection highlight.
+            self.input_sel = None;
         }
         match action {
             Action::Insert(ch) => {
@@ -3591,6 +3741,7 @@ impl App {
                 self.input.insert('\n');
             }
             Action::Enter => {
+                self.input_sel = None;
                 let menu = if self.slash_completion_open() {
                     self.slash_matches()
                 } else {
@@ -3612,6 +3763,7 @@ impl App {
             }
             Action::TabComplete => {
                 self.slash_completion_dismissed = false;
+                self.input_sel = None;
                 let menu = self.slash_matches();
                 if !menu.is_empty() {
                     let entry = &menu[self.slash_sel.min(menu.len() - 1)];
@@ -4684,7 +4836,9 @@ impl App {
         }
         // A lingering copy highlight is dismissed first (idle only — while
         // running, esc keeps its interrupt meaning and clears it in passing).
-        if self.sel.take().is_some() && matches!(self.state, RunState::Idle) {
+        let had_chat_sel = self.sel.take().is_some();
+        let had_input_sel = self.input_sel.take().is_some();
+        if (had_chat_sel || had_input_sel) && matches!(self.state, RunState::Idle) {
             self.needs_redraw = true;
             return;
         }
@@ -4699,6 +4853,7 @@ impl App {
             } else {
                 self.queue_edit = None;
                 self.input.clear();
+                self.input_sel = None;
                 self.slash_completion_dismissed = false;
                 self.reconcile_attachments();
                 self.show_tip("queued prompt edit cancelled");
@@ -4742,6 +4897,7 @@ impl App {
             self.ctrl_c_armed = None;
             self.input.history.push(self.input.buf.clone());
             self.input.clear();
+            self.input_sel = None;
             self.reconcile_attachments();
             self.show_tip("draft cleared — ↑ recalls it");
             return;
@@ -4767,6 +4923,7 @@ impl App {
     }
 
     fn history_prev(&mut self) {
+        self.input_sel = None;
         if !self.input.is_empty() && self.input.hist_pos.is_none() {
             return; // grok: history opens from an empty prompt
         }
@@ -4786,6 +4943,7 @@ impl App {
     }
 
     fn history_prev_from_draft(&mut self) {
+        self.input_sel = None;
         if self.input.history.is_empty() {
             return;
         }
@@ -4802,6 +4960,7 @@ impl App {
     }
 
     fn history_next(&mut self) {
+        self.input_sel = None;
         let Some(pos) = self.input.hist_pos else {
             return;
         };
@@ -5881,6 +6040,7 @@ impl App {
                 return;
             }
         };
+        self.input_sel = None;
         if !caption.is_empty() {
             self.input.set(caption);
             self.input.insert(' ');
@@ -6088,6 +6248,7 @@ impl App {
     /// Submit a prompt programmatically (used by DSH_TUI_AUTOPROMPT).
     pub fn auto_prompt(&mut self, text: &str, ctl: &Controller) {
         self.show_banner = false;
+        self.input_sel = None;
         self.input.set(text.to_string());
         self.submit(ctl);
     }

@@ -165,6 +165,99 @@ impl Input {
         rows
     }
 
+    /// Map a click at display `(row, col)` inside a text area of `width`
+    /// display cells to the caret boundary, using the same soft-wrap layout
+    /// as the renderer (`visual_layout`). A click lands on the boundary
+    /// *before* the char occupying the clicked cell (typing then inserts at
+    /// the clicked position); wide chars split at their midpoint — the left
+    /// half selects the boundary before the char, the right half the
+    /// boundary after it. Blank cells snap to their row's start/end
+    /// boundary; rows beyond the text snap to the end of the buffer.
+    pub fn char_index_at(&self, width: usize, row: usize, col: usize) -> usize {
+        let width = width.max(1);
+        let (chars, carets, rows) = self.visual_layout(width);
+        if row >= rows {
+            return self.len_chars();
+        }
+        let (first, last) = Self::row_boundaries(&carets, row);
+        let Some(first) = first else {
+            return self.len_chars();
+        };
+        // The char occupying the clicked cell, if any.
+        for i in first..=last {
+            if i >= chars.len() {
+                break;
+            }
+            let start = carets[i].1;
+            let w = UnicodeWidthChar::width(chars[i]).unwrap_or(0).max(1);
+            if col >= start && col < start + w {
+                if w > 1 && col >= start + w / 2 {
+                    return i + 1; // right half of a wide char → after it
+                }
+                return i; // narrow char (or left half) → before it
+            }
+        }
+        // Blank cells: the row's leading edge or its trailing blank.
+        if col < carets[first].1 {
+            first
+        } else {
+            last
+        }
+    }
+
+    /// The boundary *after* the char occupying display cell `(row, col)` —
+    /// the inclusive end of a selection covering that cell, so a drag in
+    /// either direction covers exactly the dragged cells. Blank cells snap
+    /// to their row's end; rows beyond the text snap to the buffer end.
+    pub fn char_index_end_at(&self, width: usize, row: usize, col: usize) -> usize {
+        let width = width.max(1);
+        let (chars, carets, rows) = self.visual_layout(width);
+        if row >= rows {
+            return self.len_chars();
+        }
+        let (first, last) = Self::row_boundaries(&carets, row);
+        let Some(first) = first else {
+            return self.len_chars();
+        };
+        for i in first..=last {
+            if i >= chars.len() {
+                break;
+            }
+            let start = carets[i].1;
+            let w = UnicodeWidthChar::width(chars[i]).unwrap_or(0).max(1);
+            if col >= start && col < start + w {
+                return i + 1;
+            }
+        }
+        if col < carets[first].1 {
+            first
+        } else {
+            last
+        }
+    }
+
+    /// First and last caret boundary indices on a layout row.
+    fn row_boundaries(carets: &[(usize, usize)], row: usize) -> (Option<usize>, usize) {
+        let mut first = None;
+        let mut last = 0usize;
+        for (i, &(r, _)) in carets.iter().enumerate() {
+            if r == row {
+                if first.is_none() {
+                    first = Some(i);
+                }
+                last = i;
+            }
+        }
+        (first, last)
+    }
+
+    /// The text between two char boundaries (unordered), for copying a
+    /// drag selection. Out-of-range indices clamp to the buffer.
+    pub fn chars_between(&self, a: usize, b: usize) -> String {
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        self.buf.chars().skip(a).take(b.saturating_sub(a)).collect()
+    }
+
     /// Move by one visual row while preserving the original display column.
     /// Hard newlines and soft wraps share the same caret map as the renderer.
     pub fn move_vertical(&mut self, width: usize, direction: i8) {

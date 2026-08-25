@@ -2252,6 +2252,10 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width < 4 || area.height == 0 {
         return;
     }
+    // Mouse hit-testing for clicks/drags in the well (empty draft: the
+    // whole well maps to boundary 0).
+    app.input_area = area;
+    app.input_top = 0;
     let prompt = "❯ ";
     let pw = prompt.width();
     // The prompt doubles as the working indicator that used to be the brand
@@ -2347,6 +2351,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     if cursor.0 < start {
         start = cursor.0;
     }
+    app.input_top = start;
 
     let mut chip_rects: Vec<(Rect, usize)> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
@@ -2416,11 +2421,46 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
     f.render_widget(Paragraph::new(lines), area);
     app.att_chips = chip_rects;
+    draw_input_selection(f, app, area, &rows, start, h, pw);
 
     let cy = area.y + (cursor.0 - start).min(h - 1) as u16;
     let cx = area.x + pw as u16 + cursor.1 as u16;
     if composer_owns_cursor {
         f.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), cy));
+    }
+}
+
+/// Paint the composer drag-selection as reversed cells — the same
+/// treatment as the chat pane highlight. Char indices inside the ordered
+/// selection range are highlighted; wide chars cover all of their cells.
+fn draw_input_selection(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    rows: &[Vec<(usize, char)>],
+    start: usize,
+    h: usize,
+    pw: usize,
+) {
+    let Some((a, b)) = app.input_selection_range() else {
+        return;
+    };
+    let buf = f.buffer_mut();
+    for (r, row) in rows.iter().enumerate().skip(start).take(h) {
+        let y = area.y + (r - start) as u16;
+        let mut col = 0usize;
+        for &(i, ch) in row {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+            if i >= a && i < b {
+                for k in 0..cw {
+                    let x = area.x + pw as u16 + (col + k) as u16;
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                    }
+                }
+            }
+            col += cw;
+        }
     }
 }
 
