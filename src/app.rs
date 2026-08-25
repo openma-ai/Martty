@@ -516,7 +516,6 @@ pub enum PickerKind {
     Permission,
     Session,
     Auth,
-    StaticPlugin,
     CordisPlugin,
     CordisApproval,
     AgentHistory,
@@ -691,6 +690,36 @@ pub struct Picker {
     pub title: String,
     pub sel: usize,
     pub items: Vec<PickerItem>,
+}
+
+/// The `/plugins` static inventory as a two-level tree (provider → plugin),
+/// rendered by `ui::draw_plugin_tree` with the tui-tree-widget crate.
+/// Items are rebuilt from `static_plugins` on every draw; the TreeState keeps
+/// the selection and the opened provider branches stable across frames.
+pub struct PluginTree {
+    pub title: String,
+    pub state: tui_tree_widget::TreeState<String>,
+}
+
+/// The provider bucket for one loader entry: the npm scope when the module
+/// name carries one, otherwise a stable `core` bucket. This is the first
+/// level of the `/plugins` tree.
+pub fn plugin_provider(module: &str) -> String {
+    module
+        .split_once('/')
+        .map(|(scope, _)| scope)
+        .unwrap_or("core")
+        .to_string()
+}
+
+/// The plugin name shown under its provider: the module name without the
+/// npm scope (`@deepseek-ai/dsh-agent` → `dsh-agent`).
+pub fn plugin_short_name(module: &str) -> String {
+    module
+        .split_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(module)
+        .to_string()
 }
 
 pub struct SubagentView {
@@ -989,6 +1018,13 @@ pub struct App {
     /// Read-only modal rendered from a semantic TuiNode tree. Client Plugins
     /// and builtin chrome such as `/keys` share this surface.
     pub view_overlay: Option<ViewOverlay>,
+    /// Provider-grouped static plugin inventory (`/plugins`): a tui-tree-widget
+    /// popup rebuilt from `static_plugins` every draw, selection/open state
+    /// kept by the widget's own TreeState.
+    pub plugin_tree: Option<PluginTree>,
+    /// Rows the open plugin tree actually shows (`h - border`), recorded by
+    /// `ui::draw_plugin_tree` — the page size for PageUp/PageDown.
+    pub plugin_tree_page_rows: usize,
     /// Images staged in the composer as inline `[image N]` chips living in
     /// the draft text; editing a token away un-stages its image.
     pub pending_images: crate::attachments::Staged,
@@ -1009,7 +1045,7 @@ pub struct App {
     /// as their owning Plugin Fiber.
     plugin_commands: Vec<PluginCommand>,
     /// Last Host Loader inventory (`/plugins`).
-    static_plugins: Vec<crate::bus::StaticPluginItem>,
+    pub(crate) static_plugins: Vec<crate::bus::StaticPluginItem>,
     /// Last backend-owned dynamic plugin inventory (`/cordis-plugins`).
     cordis_plugins: Vec<crate::bus::CordisPluginItem>,
     /// Model-requested dynamic activations awaiting a decision.
@@ -1361,6 +1397,8 @@ impl App {
             slider_overlay: None,
             select_overlay: None,
             view_overlay: None,
+            plugin_tree: None,
+            plugin_tree_page_rows: 0,
             pending_images: crate::attachments::Staged::default(),
             att_chips: Vec::new(),
             slot_actions: Vec::new(),
@@ -1659,36 +1697,31 @@ impl App {
         });
     }
 
-    fn open_static_plugin_picker(&mut self) {
-        let items = self
-            .static_plugins
-            .iter()
-            .map(|plugin| PickerItem {
-                id: plugin.entry_id.clone(),
-                label: plugin.module_name.clone(),
-                meta: format!(
-                    "static · {} · {}",
-                    if plugin.enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    },
-                    plugin.fiber_phase.as_deref().unwrap_or("inactive"),
-                ),
-                provider: None,
-            })
-            .collect();
-        self.picker = Some(Picker {
-            kind: PickerKind::StaticPlugin,
+    fn open_plugin_tree(&mut self) {
+        let mut state = tui_tree_widget::TreeState::default();
+        // Open every provider branch by default; the selection starts on the
+        // first provider row. Identifiers are paths: [provider] for a branch
+        // and [provider, entryId] for one plugin leaf.
+        let mut first_provider: Option<String> = None;
+        for plugin in &self.static_plugins {
+            let provider = crate::app::plugin_provider(&plugin.module_name);
+            state.open(vec![provider.clone()]);
+            if first_provider.is_none() {
+                first_provider = Some(provider);
+            }
+        }
+        if let Some(provider) = first_provider {
+            state.select(vec![provider]);
+        }
+        self.plugin_tree = Some(PluginTree {
             title: self
                 .locale
                 .tr(
-                    " Host plugins · static · read only · esc close ",
-                    " Host 插件 · 静态 · 只读 · esc 关闭 ",
+                    " Host plugins · static · read only · ↑↓ ←→ navigate · esc close ",
+                    " Host 插件 · 静态 · 只读 · ↑↓ ←→ 导航 · esc 关闭 ",
                 )
                 .into(),
-            sel: 0,
-            items,
+            state,
         });
     }
 
@@ -2466,7 +2499,7 @@ impl App {
                     }
                     CtlEvent::StaticPlugins { plugins } => {
                         self.static_plugins = plugins;
-                        self.open_static_plugin_picker();
+                        self.open_plugin_tree();
                     }
                     CtlEvent::CordisPlugins { plugins } => {
                         self.cordis_plugins = plugins;
@@ -2827,6 +2860,8 @@ impl App {
             MouseEventKind::ScrollUp => {
                 if self.elicitation_ask.is_some() {
                     self.elicitation_scroll_by(-3);
+                } else if let Some(tree) = &mut self.plugin_tree {
+                    tree.state.scroll_up(3);
                 } else if self.view_overlay.is_some() {
                     self.view_scroll_by(-3);
                 } else {
@@ -2836,6 +2871,8 @@ impl App {
             MouseEventKind::ScrollDown => {
                 if self.elicitation_ask.is_some() {
                     self.elicitation_scroll_by(3);
+                } else if let Some(tree) = &mut self.plugin_tree {
+                    tree.state.scroll_down(3);
                 } else if self.view_overlay.is_some() {
                     self.view_scroll_by(3);
                 } else {
@@ -3577,6 +3614,12 @@ impl App {
             return;
         }
 
+        // --- /plugins tree popup (provider → plugin inventory)
+        if self.plugin_tree.is_some() {
+            self.handle_plugin_tree_key(key);
+            return;
+        }
+
         if self.agent_selection.is_some() {
             if key.modifiers == KeyModifiers::NONE {
                 match key.code {
@@ -4038,7 +4081,6 @@ impl App {
                             .push_notice(NoticeLevel::Info, format!("reasoning effort → {effort}"));
                     }
                     PickerKind::Auth => self.start_auth(&item.id, ctl),
-                    PickerKind::StaticPlugin => {}
                     PickerKind::CordisPlugin => {
                         let action = self
                             .cordis_plugins
@@ -4081,6 +4123,51 @@ impl App {
                     }
                     PickerKind::AgentHistory => self.select_agent_transcript(&item.id),
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keyboard driving of the `/plugins` tree popup. The tree widget owns
+    /// selection and viewport; ←/→ and enter fold/unfold a provider branch.
+    fn handle_plugin_tree_key(&mut self, key: KeyEvent) {
+        if key.modifiers != KeyModifiers::NONE {
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            self.plugin_tree = None;
+            return;
+        }
+        let Some(tree) = &mut self.plugin_tree else {
+            return;
+        };
+        let page = self.plugin_tree_page_rows.max(1);
+        match key.code {
+            KeyCode::Up => {
+                tree.state.key_up();
+            }
+            KeyCode::Down => {
+                tree.state.key_down();
+            }
+            KeyCode::Left => {
+                tree.state.key_left();
+            }
+            KeyCode::Right | KeyCode::Enter => {
+                tree.state.toggle_selected();
+            }
+            KeyCode::PageUp => {
+                tree.state
+                    .select_relative(|i| i.map_or(0, |i| i.saturating_sub(page)));
+            }
+            KeyCode::PageDown => {
+                tree.state
+                    .select_relative(|i| i.map_or(0, |i| i.saturating_add(page)));
+            }
+            KeyCode::Home => {
+                tree.state.select_first();
+            }
+            KeyCode::End => {
+                tree.state.select_last();
             }
             _ => {}
         }
@@ -5388,7 +5475,7 @@ impl App {
 
 每轮会显示：流式思考与回答、工具调用与结果、注入上下文、Subagent 生命周期、
 token 用量（含缓存命中）以及轮次结束原因。";
-            self.transcript.push_markdown(text.to_string());
+            self.open_text_overlay("builtin.help", self.locale.tr("help", "帮助").to_string(), text.to_string());
             return;
         }
         let text = "\
@@ -5419,7 +5506,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 
 Per turn: streamed reasoning, answer, tool calls with results, injected
 context, subagent lifecycles, token usage (incl. cache hits), end reason.";
-        self.transcript.push_markdown(text.to_string());
+        self.open_text_overlay("builtin.help", self.locale.tr("help", "帮助").to_string(), text.to_string());
     }
 
     fn push_keys(&mut self) {
@@ -5537,7 +5624,28 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 u.output as f64 / (llm_millis as f64 / 1000.0)
             ));
         }
-        self.transcript.push_markdown(text);
+        self.open_text_overlay(
+            "builtin.session",
+            self.locale.tr("session", "会话").to_string(),
+            text,
+        );
+    }
+
+    /// Open one builtin info dialog (popup) from a markdown body. `/keys`,
+    /// `/help` and `/session` share this surface, so the facts never land in
+    /// the scrollback as transcript cells.
+    fn open_text_overlay(&mut self, id: &str, title: String, text: String) {
+        self.view_overlay = Some(ViewOverlay {
+            id: id.into(),
+            title,
+            nodes: vec![crate::slots::TuiNode::Markdown {
+                id: id.into(),
+                text,
+                streaming: false,
+            }],
+            scroll: 0,
+            notify_plugin: false,
+        });
     }
 
     /// Compact status fallback: the run state plus painter-owned ACP facts.

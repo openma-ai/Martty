@@ -253,10 +253,43 @@ fn static_plugin_inventory_is_read_only_and_matches_web_status_fields() {
         &ctl,
     );
 
-    let picker = app.picker.as_ref().expect("static plugin picker opens");
-    assert!(matches!(picker.kind, PickerKind::StaticPlugin));
-    assert_eq!(picker.items[0].label, "include");
-    assert_eq!(picker.items[0].meta, "static · enabled · active");
+    let tree = app.plugin_tree.as_ref().expect("plugin tree opens");
+    assert!(
+        tree.title.contains("静态") || tree.title.contains("static"),
+        "{}",
+        tree.title
+    );
+
+    // The inventory renders as a provider → plugin tree: the unscoped row
+    // lands under `core`, scoped rows under their npm scope, and the leaf
+    // keeps the enabled/phase meta of the old flat picker.
+    let (mut grouped, ctl2, _rx2) = test_app();
+    grouped.handle(
+        AppEvent::Ctl(CtlEvent::StaticPlugins {
+            plugins: vec![
+                StaticPluginItem {
+                    entry_id: "root/include".into(),
+                    module_name: "include".into(),
+                    enabled: true,
+                    fiber_phase: Some("active".into()),
+                },
+                StaticPluginItem {
+                    entry_id: "root/tool-bash".into(),
+                    module_name: "@deepseek-ai/dsh-tool-bash".into(),
+                    enabled: false,
+                    fiber_phase: None,
+                },
+            ],
+        }),
+        &ctl2,
+    );
+    let frame = crate::ui::dump_frame(&mut grouped, 100, 20);
+    assert!(frame.contains("core"), "provider bucket:\n{frame}");
+    assert!(frame.contains("@deepseek-ai"), "scoped provider:\n{frame}");
+    assert!(frame.contains("include"), "plugin leaf:\n{frame}");
+    assert!(frame.contains("dsh-tool-bash"), "scoped leaf:\n{frame}");
+    assert!(frame.contains("enabled"), "leaf meta:\n{frame}");
+    assert!(frame.contains("disabled"), "leaf meta:\n{frame}");
 }
 
 #[test]
