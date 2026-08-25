@@ -1,34 +1,48 @@
 /** Built-in Client Plugin: standard ACP usage and timing in the composer dock. */
 
 export const name = 'stats-view'
-export const inject = ['acpSessionStats', 'tuiSlots']
+export const inject = ['acpSessionStats', 'acpSessionStatus', 'tuiSlots']
 
 export function apply(ctx) {
   let current = ctx.acpSessionStats.current()
+  let status = ctx.acpSessionStatus.current()
   let panel
   const stopSlot = ctx.tuiSlots.inject('conversation.composer.dock', () => {
     panel = ctx.tuiSlots.register(
       { name: 'conversation.composer.dock', id: 'stats' },
-      nodesOf(current),
+      nodesOf(current, status),
     )
     return () => panel.dispose()
   })
   const stopStats = ctx.acpSessionStats.subscribe((snapshot) => {
     current = snapshot
-    panel?.update(nodesOf(current))
+    panel?.update(nodesOf(current, status))
+  })
+  const stopStatus = ctx.acpSessionStatus.subscribe((snapshot) => {
+    status = snapshot
+    panel?.update(nodesOf(current, status))
   })
   return () => {
     stopStats?.()
+    stopStatus?.()
     stopSlot?.()
   }
 }
 
-function nodesOf(snapshot) {
+function nodesOf(snapshot, status) {
   const usage = snapshot?.usage ?? {}
   const stats = snapshot?.stats ?? {}
+  const model = status?.model
   const nodes = []
   if ((usage.input ?? 0) > 0 || (usage.output ?? 0) > 0) {
-    nodes.push(node('tokens', `Input ${formatTokens(usage.input)} tok · Output ${formatTokens(usage.output)} tok`))
+    nodes.push(node('tokens', `↑${formatTokens(usage.input)} · ↓${formatTokens(usage.output)}`))
+    const used = (usage.input ?? 0) + (usage.output ?? 0)
+      + (usage.cached ?? 0) + (usage.reasoning ?? 0)
+    const size = contextWindowOf(model)
+    if (used > 0 && size > 0) {
+      const pct = Math.min(100, used / size * 100).toFixed(1)
+      nodes.push(node('context', `${pct}%/${contextSizeLabel(size)}`))
+    }
   }
   if ((stats.turns ?? 0) > 0 || (stats.steps ?? 0) > 0) {
     nodes.push(node(
@@ -67,6 +81,31 @@ function node(id, title) {
 }
 
 function plural(value, singular) { return value === 1 ? singular : `${singular}s` }
+
+/**
+ * Context window of the current model (tokens). The ACP surface does not
+ * carry the window size, so the known DeepSeek family sizes stand in;
+ * unknown models fall back to a common 128K.
+ */
+function contextWindowOf(model) {
+  switch (model) {
+    case 'deepseek-v4-flash':
+    case 'deepseek-v4-pro':
+      return 1_000_000
+    default:
+      return 128_000
+  }
+}
+
+/** `1000000` → `1.0M`, `128000` → `128K` — keeps the one-decimal look of
+ * the percentage side (e.g. `17.5%/1.0M`). */
+function contextSizeLabel(size) {
+  if (size >= 1_000_000) {
+    const scaled = size / 1_000_000
+    return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1)}M`
+  }
+  return formatTokens(size)
+}
 
 function formatTokens(value = 0) {
   if (value < 1000) return String(value)
