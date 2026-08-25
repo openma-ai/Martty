@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- The composer input now supports the mouse: left-click places the caret at
+  the clicked character (blank space past the text snaps to the end), and
+  left-drag selects a text span that is copied to the clipboard on release,
+  with the highlight persisting until the next click or Esc. CJK/emoji
+  double-width characters are handled cell-accurately: the caret splits a
+  wide char at its midpoint and a drag covers it whole. Mouse actions never
+  trigger submit, history recall or slash-completion selection.
+
 ## [0.2.24] - 2026-08-24
 
 ### Fixed

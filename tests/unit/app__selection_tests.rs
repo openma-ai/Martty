@@ -61,6 +61,46 @@ fn test_app() -> App {
     )
 }
 
+fn test_app_and_ctl() -> (App, Controller) {
+    let cfg = RuntimeConfig {
+        bin: "dsh-runtime".into(),
+        cordis: "cordis".into(),
+        workspace: "/tmp".into(),
+        session_root: fresh_root(),
+        provider: "deepseek".into(),
+        model: "deepseek-chat".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
+    let app = App::new(
+        crate::theme::Theme::dark(),
+        cfg,
+        "dsh-test".into(),
+        true,
+        false,
+        tx,
+    );
+    (app, ctl)
+}
+
+/// A 40x3 input well whose text starts at screen x = area.x + 2 (the
+/// `❯ ` prompt); text rows map 1:1 to well rows.
+fn input_well() -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(1, 20, 40, 3)
+}
+
+fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 #[test]
 fn slice_by_cells_handles_wide_chars() {
     assert_eq!(slice_by_cells("hello world", 6, 11), "world");
@@ -183,4 +223,137 @@ fn tool_click_in_a_child_view_targets_the_child_transcript() {
 
     assert!(app.subagents[0].transcript.cells[0].expanded);
     assert!(app.transcript.cells.is_empty());
+}
+
+#[test]
+fn input_click_places_the_caret_at_the_clicked_char() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("hello 世界".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+    // Text starts at screen x = 1 + 2 = 3. Cells: h0 e1 l2 l3 o4 ␣5 世6-7 界8-9.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    assert_eq!(app.input.cursor, 0, "click on 'h' → before it");
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 7, 20), &ctl);
+    assert_eq!(app.input.cursor, 4, "click on 'o' → before it");
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 20), &ctl);
+    assert_eq!(app.input.cursor, 7, "right half of 世 → after it");
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 13, 20), &ctl);
+    assert_eq!(app.input.cursor, 8, "blank past the end → end");
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 21), &ctl);
+    assert_eq!(app.input.cursor, 8, "row below the text → end");
+}
+
+#[test]
+fn input_click_accounts_for_the_viewport_scroll() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("abcd\nefgh\nij".into());
+    app.input_area = input_well();
+    app.input_top = 1; // the well's first row shows "efgh"
+
+    // Visible row 0 (screen y 20) is text row 1: 'e' at screen x 3.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    assert_eq!(app.input.cursor, 5, "'e' → the boundary before it");
+    // Visible row 1 (screen y 21) is text row 2: 'i' at screen x 3.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 21), &ctl);
+    assert_eq!(app.input.cursor, 10, "'i' → the boundary before it");
+    // Blank after "ij" on the last row → end of buffer.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 8, 21), &ctl);
+    assert_eq!(app.input.cursor, 12, "last text row → end of buffer");
+}
+
+#[test]
+fn input_click_dismisses_a_chat_selection_without_touching_history() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.chat_view = view(&["chat line"]);
+    app.chat_view.area = ratatui::layout::Rect::new(1, 0, 60, 10);
+    app.sel = Some(sel((0, 0), (0, 8)));
+    app.selecting = true;
+    app.input.set("draft".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 4, 20), &ctl);
+
+    assert!(app.sel.is_none(), "chat highlight dismissed");
+    assert!(!app.selecting);
+    assert_eq!(app.input.cursor, 1, "click on 'r' → before it");
+    assert!(app.input.hist_pos.is_none(), "no history recall on click");
+}
+
+#[test]
+fn input_drag_selects_the_crossed_cells_and_keeps_the_highlight() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("hello world".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    // Down on 'l' (cell 2, screen x 5), drag across to 'd' (cell 10,
+    // screen x 13): cells 2..=10 → "llo world".
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 20), &ctl);
+    assert_eq!(app.input.cursor, 2, "click on 'l' → before it");
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 13, 20), &ctl);
+    assert_eq!(app.input_selection_range(), Some((2, 11)), "cells 2..=10");
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 13, 20), &ctl);
+    assert!(app.input_sel.is_some(), "highlight persists after the copy");
+    assert!(!app.input_selecting);
+
+    // The same cells covered by a leftward drag.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 13, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 20), &ctl);
+    assert_eq!(
+        app.input_selection_range(),
+        Some((2, 11)),
+        "leftward drag agrees"
+    );
+
+    // A plain click (down + up on the same cell) leaves no highlight.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5, 20), &ctl);
+    assert!(app.input_sel.is_none(), "caret click leaves no selection");
+}
+
+#[test]
+fn input_drag_covers_wide_chars_whole_and_drags_above_the_well_snap_to_start() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("a中b".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    // Down on 'a' (cell 0), drag onto 'b' (cell 3): covers 中 whole.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 6, 20), &ctl);
+    assert_eq!(app.input_selection_range(), Some((0, 3)), "a中b");
+
+    // Drag above the well clamps to the top visible row → the buffer start.
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 6, 19), &ctl);
+    assert_eq!(
+        app.input_selection_range(),
+        Some((0, 3)),
+        "clamped to the top row"
+    );
+}
+
+#[test]
+fn chat_click_clears_the_composer_highlight() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.chat_view = view(&["chat line"]);
+    app.chat_view.area = ratatui::layout::Rect::new(1, 0, 60, 10);
+    app.input.set("draft".into());
+    app.input_area = input_well();
+    app.input_sel = Some(InputSel {
+        anchor: (0, 1),
+        head: (0, 3),
+    });
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 1), &ctl);
+
+    assert!(
+        app.input_sel.is_none(),
+        "chat click clears the composer highlight"
+    );
+    assert_eq!(
+        app.input.cursor, 5,
+        "composer caret untouched by chat clicks"
+    );
 }
