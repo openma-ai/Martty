@@ -81,17 +81,38 @@ impl Input {
         self.cursor_at_wrap_end = false;
     }
 
-    pub fn kill_to_end(&mut self) {
-        let at = self.byte_at(self.cursor);
-        self.buf.truncate(at);
+    /// Kill from the cursor to the end of the current rendered row.
+    pub fn kill_to_end(&mut self, width: usize) {
+        let start = self.cursor;
+        let cursor_at_wrap_end = self.cursor_at_wrap_end;
+        self.move_to_visual_line_end(width);
+        let end = self.cursor;
+        if start == end {
+            self.cursor_at_wrap_end = cursor_at_wrap_end;
+            return;
+        }
+        let start_byte = self.byte_at(start);
+        let end_byte = self.byte_at(end);
+        self.buf.replace_range(start_byte..end_byte, "");
+        self.cursor = start;
         self.preferred_visual_col = None;
         self.cursor_at_wrap_end = false;
     }
 
-    pub fn kill_to_start(&mut self) {
-        let at = self.byte_at(self.cursor);
-        self.buf.replace_range(..at, "");
-        self.cursor = 0;
+    /// Kill from the start of the current rendered row to the cursor.
+    pub fn kill_to_start(&mut self, width: usize) {
+        let end = self.cursor;
+        let cursor_at_wrap_end = self.cursor_at_wrap_end;
+        self.move_to_visual_line_start(width);
+        let start = self.cursor;
+        if start == end {
+            self.cursor_at_wrap_end = cursor_at_wrap_end;
+            return;
+        }
+        let start_byte = self.byte_at(start);
+        let end_byte = self.byte_at(end);
+        self.buf.replace_range(start_byte..end_byte, "");
+        self.cursor = start;
         self.preferred_visual_col = None;
         self.cursor_at_wrap_end = false;
     }

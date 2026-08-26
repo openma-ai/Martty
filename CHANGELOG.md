@@ -32,6 +32,9 @@ All notable changes to this project are documented here. The project follows
   double-width characters are handled cell-accurately: the caret splits a
   wide char at its midpoint and a drag covers it whole. Mouse actions never
   trigger submit, history recall or slash-completion selection.
+- `Ctrl+U`, `Ctrl+K`, and the corresponding macOS line-kill shortcut now
+  delete only to the current rendered line boundary instead of truncating the
+  entire multiline composer draft.
 
 ## [0.2.24] - 2026-08-24
 

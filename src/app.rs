@@ -3897,8 +3897,8 @@ impl App {
                 }
             }
             Action::DeleteWordBack => self.input.delete_word_back(),
-            Action::KillToEnd => self.input.kill_to_end(),
-            Action::KillToStart => self.input.kill_to_start(),
+            Action::KillToEnd => self.input.kill_to_end(self.composer_wrap_width),
+            Action::KillToStart => self.input.kill_to_start(self.composer_wrap_width),
         }
     }
 

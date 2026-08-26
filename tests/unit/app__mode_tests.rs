@@ -998,6 +998,38 @@ fn cmd_right_moves_to_the_current_wrapped_line_end_not_the_draft_end() {
 }
 
 #[test]
+fn ctrl_u_kills_only_to_the_current_wrapped_line_start() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("abcdefghij".into());
+    app.input.cursor = 6;
+    app.composer_wrap_width = 4;
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+
+    assert_eq!(app.input.buf, "abcdghij");
+    assert_eq!(app.input.cursor, 4, "the first visual row is preserved");
+}
+
+#[test]
+fn ctrl_k_kills_only_to_the_current_wrapped_line_end() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("abcdefghij".into());
+    app.input.cursor = 6;
+    app.composer_wrap_width = 4;
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+
+    assert_eq!(app.input.buf, "abcdefij");
+    assert_eq!(app.input.cursor, 6, "the final visual row is preserved");
+}
+
+#[test]
 fn live_mode_picker_uses_advertised_composition_not_stock() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;

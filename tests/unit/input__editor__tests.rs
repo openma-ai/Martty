@@ -24,13 +24,13 @@ fn word_motions_hop_whitespace_delimited_words() {
 fn kill_commands_split_at_cursor() {
     let mut i = editor("hello world");
     i.cursor = 6;
-    i.kill_to_start();
+    i.kill_to_start(80);
     assert_eq!(i.buf, "world");
     assert_eq!(i.cursor, 0);
 
     let mut i = editor("hello world");
     i.cursor = 5;
-    i.kill_to_end();
+    i.kill_to_end(80);
     assert_eq!(i.buf, "hello");
 }
 
