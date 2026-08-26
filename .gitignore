@@ -1,5 +1,6 @@
 /target
 /dist
+/npm-martty
 /.venv
 /npm/vendor
 /npm/node_modules

@@ -323,6 +323,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_attachment_preview(f, app, composer, area);
     }
     draw_model_picker(f, app, area);
+    draw_plugin_tree(f, app, area);
     draw_plugin_slider(f, app, area);
     draw_plugin_select(f, app, area);
     draw_view_overlay(f, app, area);
@@ -742,8 +743,16 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
         .saturating_sub(4)
         .min((screen.width.saturating_mul(2) / 3).max(84))
         .max(24);
-    let inner_width = width.saturating_sub(2) as usize;
-    let lines = crate::slots::render_nodes(&view.nodes, &theme, inner_width);
+    // Popup bodies sit one indent level off the border (issue #49): wrap one
+    // level narrower, then prefix every rendered row with the indent so
+    // continuation lines stay aligned.
+    const POPUP_INDENT: u16 = 2;
+    let inner_width = width.saturating_sub(2 + POPUP_INDENT) as usize;
+    let mut lines = crate::slots::render_nodes(&view.nodes, &theme, inner_width);
+    let indent = " ".repeat(POPUP_INDENT as usize);
+    for line in &mut lines {
+        line.spans.insert(0, Span::raw(indent.clone()));
+    }
     let height = (lines.len() as u16 + 2)
         .min(screen.height.saturating_sub(4))
         .max(4);
@@ -773,6 +782,115 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
         ))
         .style(Style::default().bg(theme.panel).fg(theme.fg));
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(block), area);
+}
+
+/// `/plugins` inventory popup: a two-level provider → plugin tree rendered
+/// with tui-tree-widget (the maintained ratatui port of the widget named in
+/// issue #49). The widget owns the viewport and the selection; rows are
+/// rebuilt from `app.static_plugins` every frame so a palette switch
+/// recolors them immediately.
+fn draw_plugin_tree(f: &mut Frame, app: &mut App, screen: Rect) {
+    use std::collections::{BTreeMap, HashSet};
+    use tui_tree_widget::{Tree, TreeItem};
+
+    let Some(tree) = &mut app.plugin_tree else {
+        return;
+    };
+    let theme = app.theme;
+
+    // Group by provider, keeping loader order inside each provider. Leaf
+    // identifiers are entry ids (unique per loader), provider identifiers
+    // are scopes, so the widget's paths [provider] / [provider, entryId]
+    // stay stable across frames.
+    let mut groups: BTreeMap<String, Vec<&crate::bus::StaticPluginItem>> = BTreeMap::new();
+    for plugin in &app.static_plugins {
+        groups
+            .entry(crate::app::plugin_provider(&plugin.module_name))
+            .or_default()
+            .push(plugin);
+    }
+    let mut items = Vec::with_capacity(groups.len());
+    let mut widest = 0usize;
+    let mut leaf_rows = 0usize;
+    for (provider, plugins) in &groups {
+        let mut children = Vec::with_capacity(plugins.len());
+        let mut seen: HashSet<&str> = HashSet::with_capacity(plugins.len());
+        for plugin in plugins {
+            if !seen.insert(&plugin.entry_id) {
+                continue;
+            }
+            let short = crate::app::plugin_short_name(&plugin.module_name);
+            let meta = format!(
+                " · {} · {}",
+                if plugin.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                plugin.fiber_phase.as_deref().unwrap_or("inactive"),
+            );
+            widest = widest.max(short.width() + meta.width());
+            leaf_rows += 1;
+            children.push(TreeItem::new_leaf(
+                plugin.entry_id.clone(),
+                Line::from(vec![
+                    Span::styled(short, Style::default().fg(theme.fg_secondary)),
+                    Span::styled(meta, Style::default().fg(theme.caption)),
+                ]),
+            ));
+        }
+        let label = format!("{provider} · {}", children.len());
+        widest = widest.max(label.width());
+        items.push(
+            TreeItem::new(
+                provider.clone(),
+                Line::styled(label, Style::default().fg(theme.brand)),
+                children,
+            )
+            .expect("provider identifiers are deduped by BTreeMap"),
+        );
+    }
+
+    // Popup geometry mirrors the picker: width follows the widest row (with
+    // room for the highlight symbol + node indent), height caps at the
+    // screen and the tree widget scrolls the overflow.
+    let total_rows = leaf_rows + groups.len();
+    let h = (total_rows as u16 + 2)
+        .min(screen.height.saturating_sub(2))
+        .max(4);
+    let cap = screen.width.saturating_sub(4).max(24);
+    let overflow = total_rows as u16 + 2 > h;
+    let w = if overflow {
+        ((widest as u16 + 8).max(58) + 1).min(cap)
+    } else {
+        (widest as u16 + 8).max(58).min(cap)
+    };
+    let x = screen.x + (screen.width - w) / 2;
+    let y = screen.y + (screen.height - h) / 3;
+    let area = Rect::new(x, y, w, h);
+    app.plugin_tree_page_rows = h.saturating_sub(2) as usize;
+
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.brand))
+        .title(Span::styled(
+            tree.title.clone(),
+            Style::default().fg(theme.caption),
+        ))
+        .style(Style::default().bg(theme.panel));
+    let widget = Tree::new(&items)
+        .expect("plugin tree identifiers are deduped")
+        .block(block)
+        .highlight_symbol("▸ ")
+        .highlight_style(
+            Style::default()
+                .fg(theme.brand)
+                .bg(theme.chip_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    f.render_stateful_widget(widget, area, &mut tree.state);
 }
 
 /// Reserve a root-level right rail only while a plugin has content. Narrow
@@ -2648,7 +2766,6 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         crate::app::PickerKind::Effort
         | crate::app::PickerKind::Session
         | crate::app::PickerKind::Auth
-        | crate::app::PickerKind::StaticPlugin
         | crate::app::PickerKind::CordisPlugin
         | crate::app::PickerKind::CordisApproval
         | crate::app::PickerKind::AgentHistory => false,

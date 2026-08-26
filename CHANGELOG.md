@@ -7,6 +7,24 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- `/plugins` now renders the static Host plugin inventory as a two-level
+  tree grouped by provider (npm scope) → plugin name, using the
+  tui-tree-widget crate: every provider branch opens expanded by default,
+  ↑/↓ move the selection, ←/→ or enter fold/unfold a branch, pgup/pgdn,
+  home/end and the mouse wheel scroll, esc closes. Leaves keep the
+  enabled/fiber-phase meta of the old flat picker (issue #49).
+
+### Changed
+
+- `/help` and `/session` now open the same popup dialog as `/keys` instead
+  of pushing markdown into the scrollback; the transcript stays untouched
+  (issue #49).
+- Popup dialog bodies (keys/plan-view/status and friends) are indented one
+  level from the border, and markdown wraps one level narrower so
+  continuation lines stay aligned (issue #49).
+
+### Fixed
+
 - The composer input now supports the mouse: left-click places the caret at
   the clicked character (blank space past the text snaps to the end), and
   left-drag selects a text span that is copied to the clipboard on release,

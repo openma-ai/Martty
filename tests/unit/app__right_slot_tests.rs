@@ -522,19 +522,21 @@ fn session_slash_shows_effort_when_set() {
 
     app.run_slash("session", "", &ctl);
 
-    let last = app.transcript.cells.last().expect("session cell");
-    let crate::transcript::CellKind::MarkdownNotice { text } = &last.kind else {
-        panic!("/session should be a markdown notice, got {:?}", last.kind);
+    let view = app.view_overlay.as_ref().expect("/session opens a popup");
+    assert_eq!(view.id, "builtin.session");
+    let crate::slots::TuiNode::Markdown { text, .. } = &view.nodes[0] else {
+        panic!("/session popup should carry markdown, got {:?}", view.nodes);
     };
     assert!(text.contains("## session"), "{text}");
     assert!(text.contains("- effort · max"), "{text}");
+    assert!(app.transcript.cells.is_empty(), "no transcript cell for /session");
 
     // Unset effort stays hidden.
     let (mut plain, ctl2, _rx2) = test_app();
     plain.run_slash("session", "", &ctl2);
-    let last = plain.transcript.cells.last().expect("session cell");
-    let crate::transcript::CellKind::MarkdownNotice { text } = &last.kind else {
-        panic!("/session should be a markdown notice, got {:?}", last.kind);
+    let view = plain.view_overlay.as_ref().expect("/session opens a popup");
+    let crate::slots::TuiNode::Markdown { text, .. } = &view.nodes[0] else {
+        panic!("/session popup should carry markdown, got {:?}", view.nodes);
     };
     assert!(!text.contains("- effort ·"), "{text}");
 }
