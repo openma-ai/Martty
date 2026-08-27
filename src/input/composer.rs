@@ -473,10 +473,6 @@ impl ComposerEditor {
         self.select_move(CursorMove::End);
     }
 
-    pub fn cancel_selection(&mut self) {
-        self.textarea_mut().cancel_selection();
-    }
-
     /// The selected text, `None` without an active selection.
     pub fn selection_text(&self) -> Option<String> {
         let (s, e) = self.textarea.selection_range()?;

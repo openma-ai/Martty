@@ -321,6 +321,6 @@ fn selection_spans_multiple_lines() {
     e.select_down();
     e.select_down();
     assert_eq!(e.selection_text().as_deref(), Some("ab\ncd\nef"));
-    e.cancel_selection();
+    e.textarea_mut().cancel_selection();
     assert_eq!(e.selection_text(), None);
 }
