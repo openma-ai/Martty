@@ -410,3 +410,15 @@ fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
         "queue editor shortcut missing:\n{zh}"
     );
 }
+
+#[test]
+fn keys_markdown_lists_ctrl_j_and_the_composer_section() {
+    let en = crate::input::keymap::keys_markdown(false, false);
+    assert!(en.contains("ctrl+j"), "en keys must list ctrl+j");
+    assert!(en.contains("shift+enter / ctrl+j"), "newline row shows both chords");
+    assert!(en.contains("composer textarea"), "dedicated textarea section");
+    assert!(en.contains("ctrl+shift+k"), "kill-line row is present");
+    let zh = crate::input::keymap::keys_markdown(true, false);
+    assert!(zh.contains("ctrl+j"), "zh keys must list ctrl+j");
+    assert!(zh.contains("输入框 · textarea"), "zh section title");
+}
