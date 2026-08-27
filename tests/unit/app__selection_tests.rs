@@ -357,3 +357,59 @@ fn chat_click_clears_the_composer_highlight() {
         "composer caret untouched by chat clicks"
     );
 }
+
+#[test]
+fn ctrl_x_cuts_a_mouse_drag_selection() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("hello world".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    // Mouse drag from 'h' (cell 0) across to 'd' (cell 10).
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 13, 20), &ctl);
+    assert_eq!(app.input_selection_range(), Some((0, 11)), "drag covers all");
+
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        &ctl,
+    );
+
+    assert_eq!(app.input.buf(), "", "ctrl+x cuts the dragged text");
+    assert!(app.input_sel.is_none(), "the drag highlight clears");
+    // The cut text is yanked: paste restores it.
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hello world", "ctrl+y pastes the cut text");
+}
+
+#[test]
+fn ctrl_shift_c_copies_a_mouse_drag_selection_and_keeps_the_highlight() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("hello world".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 8, 20), &ctl);
+    assert_eq!(app.input_selection_range(), Some((0, 6)), "drag covers hello");
+
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
+        ),
+        &ctl,
+    );
+
+    assert_eq!(app.input.buf(), "hello world", "copy leaves the draft");
+    assert!(app.input_sel.is_some(), "copy keeps the highlight");
+}

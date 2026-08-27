@@ -3901,17 +3901,31 @@ impl App {
             Action::SelectLineStart => self.input.select_line_start(),
             Action::SelectLineEnd => self.input.select_line_end(),
             Action::CopySelection => {
+                // Keyboard selection first, then the mouse-drag selection.
                 if let Some(text) = self.input.selection_text() {
                     if !text.trim().is_empty() {
                         self.input.copy_selection_to_yank();
                         self.copy_text(&text);
                     }
+                } else if let Some((a, b)) = self.input_selection_range() {
+                    let text = self.input.chars_between(a, b);
+                    if !text.trim().is_empty() {
+                        self.copy_text(&text);
+                    }
                 }
             }
             Action::CutSelection => {
+                // Keyboard selection first, then the mouse-drag selection.
                 if let Some(text) = self.input.selection_text() {
                     if !text.trim().is_empty() {
                         self.input.cut_selection_to_yank();
+                        self.copy_text(&text);
+                    }
+                } else if let Some((a, b)) = self.input_selection_range() {
+                    let text = self.input.chars_between(a, b);
+                    if !text.trim().is_empty() {
+                        self.input.delete_char_range(a, b);
+                        self.input_sel = None;
                         self.copy_text(&text);
                     }
                 }
