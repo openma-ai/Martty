@@ -3998,3 +3998,16 @@ fn ctrl_z_undoes_and_ctrl_y_redoes_draft_edits() {
     );
     assert_eq!(app.input.buf(), "hellox", "ctrl+shift+z also redoes");
 }
+
+#[test]
+fn ctrl_z_undoes_plain_typing() {
+    let (mut app, ctl, _rx) = test_app();
+    for ch in ['h', 'e', 'l', 'l', 'o'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &ctl);
+    }
+    assert_eq!(app.input.buf(), "hello");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
+    let buf = app.input.buf();
+    assert_eq!(buf, "hell", "typing then ctrl+z undoes one char");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
+}

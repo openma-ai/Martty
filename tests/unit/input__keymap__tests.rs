@@ -178,10 +178,11 @@ fn dual_use_keys_scroll_only_on_empty_draft() {
 }
 
 #[test]
-fn ctrl_k_opens_keys_only_on_an_empty_draft() {
+fn ctrl_k_kills_to_line_end_even_on_an_empty_draft() {
     assert_eq!(
         classify(&key(KeyCode::Char('k'), CTRL), empty()),
-        Some(Action::ShowKeys)
+        Some(Action::KillToEnd),
+        "ctrl+k is free for the text editor on every draft state"
     );
     assert_eq!(
         classify(&key(KeyCode::Char('k'), CTRL), typing()),
@@ -239,7 +240,6 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::AttachClipboard,
         Action::ModelPicker,
         Action::CycleAgent,
-        Action::ShowKeys,
         Action::CyclePermission,
         Action::TabComplete,
         Action::HistoryPrev,

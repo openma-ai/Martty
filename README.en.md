@@ -336,7 +336,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | `/clip [text]` · `ctrl+v` | Stage the clipboard image (repeatable; up to 8 ride one prompt); macOS/Linux |
 | Image chips | Live inline in the draft as `[image n]` tokens (no icon); backspace cuts the whole chip, hover (or park the cursor on) one for a preview popup — kitty thumbnail + dimensions/size/type |
 | `ctrl+o` · `ctrl+t` | Expand output · toggle the theme |
-| `ctrl+k` (empty prompt) · `/keys` | Open the complete keyboard-shortcut modal |
+| `/keys` | Open the complete keyboard-shortcut modal |
 | `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
 | Draft editing | `←/→` move by char · `↑/↓` move by screen line · `home/end` visual line start/end · `shift+enter` newline · `ctrl+d` delete forward |
 | Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+w` word back · `ctrl+z` undo · `ctrl+shift+z` / `ctrl+y` redo (macOS `⌘z` / `⌘⇧z`) |

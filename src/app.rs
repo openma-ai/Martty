@@ -3836,7 +3836,6 @@ impl App {
             Action::AttachClipboard => self.clip_image("", ctl),
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
-            Action::ShowKeys => self.push_keys(),
             Action::CyclePermission => self.cycle_permission(ctl),
             Action::HistoryPrev => self.history_prev(),
             Action::HistoryNext => self.history_next(),

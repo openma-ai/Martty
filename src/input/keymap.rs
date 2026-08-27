@@ -25,8 +25,6 @@ pub enum Action {
     AttachClipboard,
     ModelPicker,
     CycleAgent,
-    /// Show the shortcut list (`/keys`).
-    ShowKeys,
     CyclePermission,
     TabComplete,
     HistoryPrev,
@@ -98,9 +96,6 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // ^a = start of line — also what macOS terminals commonly send for
         // ⌘← when their natural-editing mode consumes the Command modifier.
         KeyCode::Char('a') if ctrl => LineStart,
-        // ^k is dual-use: discover the shortcut list from an empty prompt,
-        // retain readline's kill-to-end behavior while editing.
-        KeyCode::Char('k') if ctrl && ctx.input_empty => ShowKeys,
         KeyCode::BackTab => CyclePermission,
         // kitty-protocol terminals may report shift+tab instead of BackTab.
         KeyCode::Tab if shift => CyclePermission,
@@ -552,10 +547,13 @@ pub const KEY_ROWS: &[KeyRow] = &[
         group: KeyGroup::Edit,
         chords_mac: &["ctrl+k"],
         chords_other: &["ctrl+k"],
-        ctx: CtxNote::Typing,
+        ctx: CtxNote::Always,
         desc_en: "kill to line end",
         desc_zh: "删除到行尾",
-        probes: &[p(KeyCode::Char('k'), CTRL, false)],
+        probes: &[
+            p(KeyCode::Char('k'), CTRL, false),
+            p(KeyCode::Char('k'), CTRL, true),
+        ],
     },
     KeyRow {
         action: DeleteWordBack,
@@ -681,16 +679,6 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_en: "clear scrollback",
         desc_zh: "清屏",
         probes: &[p(KeyCode::Char('l'), CTRL, false)],
-    },
-    KeyRow {
-        action: ShowKeys,
-        group: KeyGroup::App,
-        chords_mac: &["ctrl+k"],
-        chords_other: &["ctrl+k"],
-        ctx: CtxNote::EmptyPrompt,
-        desc_en: "this shortcut list (/keys)",
-        desc_zh: "本快捷键列表（/keys）",
-        probes: &[p(KeyCode::Char('k'), CTRL, true)],
     },
     KeyRow {
         action: TabComplete,
