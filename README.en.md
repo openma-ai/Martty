@@ -49,6 +49,8 @@ and iterate on its own terminal capabilities.
 
 ## Quick start
 
+> When installing via `npm install`, [Node.js](https://nodejs.org/) must be installed on your machine, and [pnpm](https://pnpm.io/) may be required.
+
 ### Recommended: dsh TUI surface plugin
 
 Requires Node.js 18+. Install the official
@@ -307,6 +309,9 @@ painter capabilities such as themes, slots, commands, and overlays use the
 `_dsh/cordis/tui/*` child domain. These are underscore-prefixed ACP Extension
 Requests/Notifications and never enter prompts or conversation history.
 
+Interaction details, the complete keymap, and developer integration notes
+live in the [composer input docs](docs/composer-input.md).
+
 ## Essential interactions
 
 | Key / command | Behavior |
@@ -329,7 +334,7 @@ Requests/Notifications and never enter prompts or conversation history.
 | `ctrl+o` · `ctrl+t` | Expand output · toggle the theme |
 | `ctrl+k` (empty prompt) · `/keys` | Open the complete keyboard-shortcut modal |
 | `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
-| Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+w` word back |
+| Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+w` word back · `ctrl+z` undo · `ctrl+shift+z` / `ctrl+y` redo (macOS `⌘z` / `⌘⇧z`) |
 | macOS | `⌘←/→` line ends · `⌥←/→` word hops · `⌘⌫` kill to start · `⌥⌫` word back (physical key state read natively — works in every terminal) |
 | Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
 | Click tool · wheel | Click a tool to expand/collapse it; wheel always scrolls the conversation |

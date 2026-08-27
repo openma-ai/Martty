@@ -1,6 +1,9 @@
-//! The composer line editor: buffer + cursor (char-indexed), prompt
-//! history, and the word/kill motions the keymap dispatches. No app or
-//! terminal knowledge — pure string surgery, unit-tested.
+//! The single-line form editor (elicitation fields): buffer + cursor
+//! (char-indexed). The composer migrated to `ratatui-textarea` (see
+//! [`super::composer`]); the remaining methods here are only what the
+//! elicitation forms need, and this module is slated for removal once
+//! those migrate too.
+#![allow(dead_code)]
 
 use unicode_width::UnicodeWidthChar;
 

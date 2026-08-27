@@ -1582,10 +1582,10 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
             ],
             (false, true) => vec![("^k", app.locale.tr("keys", "快捷键"))],
             // Idle with a draft: enter's meaning follows the prefix.
-            (false, false) if app.input.buf.starts_with('/') => {
+            (false, false) if app.input.lines()[0].starts_with('/') => {
                 vec![("⏎", app.locale.tr("command", "命令"))]
             }
-            (false, false) if app.input.buf.starts_with('!') => vec![("⏎", "shell")],
+            (false, false) if app.input.lines()[0].starts_with('!') => vec![("⏎", "shell")],
             (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
         }
     };
@@ -2364,6 +2364,12 @@ fn draw_attachment_preview(f: &mut Frame, app: &mut App, composer: Rect, screen:
 /// cursor follows the wrap; `/` and `!` prefixes recolor the whole line.
 /// Inline `[image n]` tokens render as chips (no icon — the token itself is
 /// the chip) and their screen rects land in `app.att_chips` for hover.
+///
+/// The draft itself is a `ratatui-textarea` widget rendered in the columns
+/// right of the prompt; the wrap layout mirror (`ComposerEditor::layout`)
+/// drives chip restyling, the drag-selection highlight, and the terminal
+/// cursor, and `ComposerEditor::update_scroll_top` keeps the mirrored
+/// scroll offset in lockstep with the widget's own viewport.
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let composer_owns_cursor = app.elicitation_ask.is_none();
@@ -2373,18 +2379,14 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     // Mouse hit-testing for clicks/drags in the well (empty draft: the
     // whole well maps to boundary 0).
     app.input_area = area;
-    app.input_top = 0;
     let prompt = "❯ ";
     let pw = prompt.width();
     // The prompt doubles as the working indicator that used to be the brand
     // glow bar: amber while working, brand blue when idle (issue #27).
     let working = !matches!(app.state, RunState::Idle);
-    let prompt_span = Span::styled(
-        prompt.to_string(),
-        Style::default()
-            .fg(if working { theme.warn } else { theme.brand })
-            .add_modifier(Modifier::BOLD),
-    );
+    let prompt_style = Style::default()
+        .fg(if working { theme.warn } else { theme.brand })
+        .add_modifier(Modifier::BOLD);
 
     if app.input.is_empty() {
         let placeholder = match app.state {
@@ -2402,7 +2404,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                prompt_span,
+                Span::styled(prompt.to_string(), prompt_style),
                 Span::styled(
                     placeholder.to_string(),
                     Style::default()
@@ -2418,168 +2420,130 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let style = if app.input.buf.starts_with('!') {
+    let buf = app.input.buf();
+    let style = if buf.starts_with('!') {
         Style::default().fg(theme.warn_soft())
-    } else if app.input.buf.starts_with('/') {
+    } else if buf.starts_with('/') {
         Style::default().fg(theme.brand_soft)
     } else {
         Style::default().fg(theme.fg)
     };
-    // Inline chips: which char indices belong to which [image n] token.
+    let avail = (area.width as usize).saturating_sub(pw).max(1);
+
+    // Prompt column: "❯ " on the first row, blank continuation rows keep
+    // the wrapped draft aligned with the first line.
+    {
+        let b = f.buffer_mut();
+        b.set_string(area.x, area.y, prompt, prompt_style);
+        for i in 1..area.height {
+            b.set_string(area.x, area.y + i, " ".repeat(pw), Style::default());
+        }
+    }
+
+    // The widget renders into the columns right of the prompt; its wrap
+    // width is exactly `avail`.
+    let text_area = Rect::new(area.x + pw as u16, area.y, area.width - pw as u16, area.height);
+    {
+        let ta = app.input.textarea_mut();
+        ta.set_style(style);
+        f.render_widget(&*ta, text_area);
+    }
+
+    // Chip restyle + drag-selection highlight share the layout mirror:
+    // both are buffer patches on top of the widget's own rendering. The
+    // layout borrows `app.input`, so the char spans are computed first.
     let spans = app.token_spans();
-    let chip_of = |i: usize| -> Option<usize> {
-        spans
-            .iter()
-            .find(|(s, e, _)| i >= *s && i < *e)
-            .map(|&(_, _, idx)| idx)
-    };
+    let sel_range = app.input_selection_range();
     let chip_style = Style::default()
         .fg(theme.bubble_fg)
         .bg(theme.bubble_bg)
         .add_modifier(Modifier::BOLD);
-
-    // Manual wrap: hard-break on `\n`, soft-wrap on display width, and track
-    // the cursor's (row, col) across both. Rows keep char indices so chips
-    // can be restyled and hit-tested after wrapping.
-    let avail = (area.width as usize).saturating_sub(pw).max(1);
-    let mut rows: Vec<Vec<(usize, char)>> = vec![Vec::new()];
-    let mut col = 0usize;
-    for (i, ch) in app.input.buf.chars().enumerate() {
-        if ch == '\n' {
-            rows.push(Vec::new());
-            col = 0;
-            continue;
-        }
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
-        if col + cw > avail {
-            rows.push(Vec::new());
-            col = 0;
-        }
-        rows.last_mut().expect("input row").push((i, ch));
-        col += cw;
-    }
-    let cursor = app.input.visual_cursor(avail);
-    while rows.len() <= cursor.0 {
-        rows.push(Vec::new());
-    }
-
-    // Keep the cursor row inside the well; otherwise show the tail.
+    let top = app.input_top;
     let h = area.height as usize;
-    let mut start = rows.len().saturating_sub(h);
-    if cursor.0 < start {
-        start = cursor.0;
-    }
-    app.input_top = start;
-
     let mut chip_rects: Vec<(Rect, usize)> = Vec::new();
-    let mut lines: Vec<Line> = Vec::new();
-    for (r, row) in rows.iter().enumerate().skip(start).take(h) {
-        let lead = if r == 0 {
-            prompt_span.clone()
-        } else {
-            Span::raw(" ".repeat(pw))
-        };
-        let mut segs: Vec<Span> = vec![lead];
-        let y = area.y + (r - start) as u16;
-        let mut seg = String::new();
-        let mut seg_chip: Option<usize> = None;
-        let mut seg_col = 0usize; // display col where the current segment starts
-        let mut colw = 0usize;
-        let flush = |segs: &mut Vec<Span>,
-                     chip_rects: &mut Vec<(Rect, usize)>,
-                     seg: &mut String,
-                     seg_chip: Option<usize>,
-                     seg_col: usize,
-                     colw: usize| {
-            if seg.is_empty() {
-                return;
-            }
-            match seg_chip {
-                Some(idx) => {
-                    segs.push(Span::styled(std::mem::take(seg), chip_style));
-                    chip_rects.push((
-                        Rect::new(
-                            area.x + (pw + seg_col) as u16,
-                            y,
-                            (colw - seg_col) as u16,
-                            1,
-                        ),
-                        idx,
-                    ));
+    {
+        let layout = app.input.layout(avail);
+        let buf = f.buffer_mut();
+        for &(cs, ce, idx) in &spans {
+            // Contiguous grapheme runs per screen row.
+            let mut runs: Vec<(usize, usize, usize)> = Vec::new(); // (row, col0, col1)
+            let mut run: Option<(usize, usize, usize)> = None;
+            for (row, r) in layout.rows.iter().enumerate() {
+                for g in &r.graphemes {
+                    if g.start_char < ce && g.end_char > cs {
+                        match &mut run {
+                            Some((r0, c0, c1)) if *r0 == row => *c1 = g.start_col + g.width,
+                            _ => {
+                                if let Some((r0, c0, c1)) = run.take() {
+                                    runs.push((r0, c0, c1));
+                                }
+                                run = Some((row, g.start_col, g.start_col + g.width));
+                            }
+                        }
+                    } else if run.is_some() {
+                        runs.push(run.take().expect("run"));
+                    }
                 }
-                None => segs.push(Span::styled(std::mem::take(seg), style)),
+                if let Some((r0, c0, c1)) = run.take() {
+                    runs.push((r0, c0, c1));
+                }
             }
-        };
-        for &(i, ch) in row {
-            let chip = chip_of(i);
-            if chip != seg_chip {
-                flush(
-                    &mut segs,
-                    &mut chip_rects,
-                    &mut seg,
-                    seg_chip,
-                    seg_col,
-                    colw,
-                );
-                seg_chip = chip;
-                seg_col = colw;
+            for (row, c0, c1) in runs {
+                if row < top || row >= top + h {
+                    continue;
+                }
+                let y = area.y + (row - top) as u16;
+                for c in c0..c1 {
+                    if let Some(cell) = buf.cell_mut((text_area.x + c as u16, y)) {
+                        cell.set_style(chip_style);
+                    }
+                }
+                chip_rects.push((
+                    Rect::new(
+                        text_area.x + c0 as u16,
+                        y,
+                        (c1 - c0) as u16,
+                        1,
+                    ),
+                    idx,
+                ));
             }
-            seg.push(ch);
-            colw += UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
         }
-        flush(
-            &mut segs,
-            &mut chip_rects,
-            &mut seg,
-            seg_chip,
-            seg_col,
-            colw,
-        );
-        lines.push(Line::from(segs));
-    }
-    f.render_widget(Paragraph::new(lines), area);
-    app.att_chips = chip_rects;
-    draw_input_selection(f, app, area, &rows, start, h, pw);
-
-    let cy = area.y + (cursor.0 - start).min(h - 1) as u16;
-    let cx = area.x + pw as u16 + cursor.1 as u16;
-    if composer_owns_cursor {
-        f.set_cursor_position((cx.min(area.x + area.width.saturating_sub(1)), cy));
-    }
-}
-
-/// Paint the composer drag-selection as reversed cells — the same
-/// treatment as the chat pane highlight. Char indices inside the ordered
-/// selection range are highlighted; wide chars cover all of their cells.
-fn draw_input_selection(
-    f: &mut Frame,
-    app: &App,
-    area: Rect,
-    rows: &[Vec<(usize, char)>],
-    start: usize,
-    h: usize,
-    pw: usize,
-) {
-    let Some((a, b)) = app.input_selection_range() else {
-        return;
-    };
-    let buf = f.buffer_mut();
-    for (r, row) in rows.iter().enumerate().skip(start).take(h) {
-        let y = area.y + (r - start) as u16;
-        let mut col = 0usize;
-        for &(i, ch) in row {
-            let cw = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
-            if i >= a && i < b {
-                for k in 0..cw {
-                    let x = area.x + pw as u16 + (col + k) as u16;
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+        // Drag selection: reversed cells over the covered graphemes — the
+        // same treatment as the chat pane highlight.
+        if let Some((a, b)) = sel_range {
+            for (row, r) in layout.rows.iter().enumerate() {
+                if row < top || row >= top + h {
+                    continue;
+                }
+                let y = area.y + (row - top) as u16;
+                for g in &r.graphemes {
+                    if g.start_char < b && g.end_char > a {
+                        for c in g.start_col..g.start_col + g.width {
+                            if let Some(cell) = buf.cell_mut((text_area.x + c as u16, y)) {
+                                cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                            }
+                        }
                     }
                 }
             }
-            col += cw;
         }
     }
+    app.att_chips = chip_rects;
+
+    // Terminal cursor on the widget's screen position, clamped into the
+    // well. `update_scroll_top` after it: the mirrored scroll offset used
+    // above is the one the widget just rendered with.
+    if composer_owns_cursor {
+        let (crow, ccol) = app.input.screen_cursor();
+        let cy = area.y + (crow.saturating_sub(top)).min(h.saturating_sub(1)) as u16;
+        let cx = text_area.x + ccol as u16;
+        f.set_cursor_position((cx.min(text_area.right().saturating_sub(1)), cy));
+    }
+    app.input.update_scroll_top(area.height);
+    // `input_top` is the app-side mirror mouse hit-testing reads between
+    // frames; keep it in lockstep with the editor's own scroll mirror.
+    app.input_top = app.input.scroll_top;
 }
 
 /// Rows of menu items shown at once; the window follows the selection

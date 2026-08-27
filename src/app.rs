@@ -431,7 +431,7 @@ pub enum RunState {
     Running,
 }
 
-pub use crate::input::Input;
+pub use crate::input::composer::ComposerEditor;
 
 /// One endpoint of a mouse selection in chat-layout coordinates: `line`
 /// indexes the full wrapped layout (`ChatView::lines`), `col` is a display
@@ -953,7 +953,7 @@ pub struct App {
     next_subagent_starts_batch: bool,
     pub active_subagent: Option<String>,
     pub(crate) agent_selection: Option<String>,
-    pub input: Input,
+    pub input: ComposerEditor,
     /// Display-cell width of the composer text well from the latest frame.
     pub(crate) composer_wrap_width: usize,
     /// Screen rect of the composer input well from the latest frame — mouse
@@ -1134,11 +1134,6 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::SubagentFinished { .. }
         | UiEvent::Palette { .. } => None,
     }
-}
-
-/// Byte offset of char index `i` in `s` (end-of-string when past it).
-fn byte_of(s: &str, i: usize) -> usize {
-    s.char_indices().nth(i).map(|(b, _)| b).unwrap_or(s.len())
 }
 
 /// Draft pieces after stripping `[image n]` chips, still in reading order.
@@ -1365,7 +1360,7 @@ impl App {
             next_subagent_starts_batch: true,
             active_subagent: None,
             agent_selection: None,
-            input: Input::new(),
+            input: ComposerEditor::new(),
             composer_wrap_width: 80,
             input_area: ratatui::layout::Rect::default(),
             input_top: 0,
@@ -1868,13 +1863,14 @@ impl App {
     }
 
     pub fn slash_matches(&self) -> Vec<SlashEntry> {
-        if !self.input.buf.starts_with('/') {
+        let first = &self.input.lines()[0];
+        if !first.starts_with('/') {
             return Vec::new();
         }
-        if let Some((name, arg)) = self.input.buf[1..].split_once(' ') {
+        if let Some((name, arg)) = first[1..].split_once(' ') {
             return self.slash_argument_matches(name, arg);
         }
-        let prefix = &self.input.buf[1..];
+        let prefix = &first[1..];
         let mut out: Vec<SlashEntry> = SLASH_COMMANDS
             .iter()
             .filter(|c| c.name.starts_with(prefix))
@@ -2927,9 +2923,8 @@ impl App {
                     self.selecting = false;
                     self.last_click = None;
                     let cell = self.input_cell_at(mouse.column, mouse.row);
-                    self.input.cursor =
-                        self.input.char_index_at(self.input_avail(), cell.0, cell.1);
-                    self.input.reset_vertical_goal();
+                    let offset = self.input.screen_to_char(self.input_avail(), cell.0, cell.1);
+                    self.input.set_cursor_char(offset);
                     self.input_sel = Some(InputSel {
                         anchor: cell,
                         head: cell,
@@ -3008,7 +3003,7 @@ impl App {
     /// Char-index spans of live `[image n]` tokens in the draft, sorted by
     /// position: `(start, end_exclusive, attachment idx)`.
     pub fn token_spans(&self) -> Vec<(usize, usize, usize)> {
-        let buf = &self.input.buf;
+        let buf = self.input.buf();
         let mut spans = Vec::new();
         for (idx, att) in self.pending_images.iter().enumerate() {
             if let Some(byte) = buf.find(&att.token) {
@@ -3039,11 +3034,7 @@ impl App {
         else {
             return false;
         };
-        let b0 = byte_of(&self.input.buf, start);
-        let b1 = byte_of(&self.input.buf, end);
-        self.input.buf.replace_range(b0..b1, "");
-        self.input.cursor = start;
-        self.input.reset_vertical_goal();
+        self.input.delete_char_range(start, end);
         if let Some(att) = self.pending_images.remove(idx) {
             self.show_tip(format!("removed {}", att.name));
         }
@@ -3052,7 +3043,7 @@ impl App {
 
     /// Drop attachments whose token no longer survives in the draft text.
     fn reconcile_attachments(&mut self) {
-        if self.pending_images.reconcile(&self.input.buf) > 0 {
+        if self.pending_images.reconcile(&self.input.buf()) > 0 {
             self.hover_att = None;
             self.needs_redraw = true;
         }
@@ -3064,7 +3055,7 @@ impl App {
         if let Some(idx) = self.hover_att {
             return Some(idx);
         }
-        let c = self.input.cursor;
+        let c = self.input.cursor_char();
         self.token_spans()
             .iter()
             .find(|(s, e, _)| c >= *s && c <= *e)
@@ -3236,7 +3227,7 @@ impl App {
     /// Ordered char boundaries covered by the composer selection — both
     /// endpoint cells inclusive, so a drag in either direction covers
     /// exactly the cells the pointer crossed. `None` without a selection.
-    pub(crate) fn input_selection_range(&self) -> Option<(usize, usize)> {
+    pub(crate) fn input_selection_range(&mut self) -> Option<(usize, usize)> {
         let sel = self.input_sel?;
         let (s, e) = if sel.anchor <= sel.head {
             (sel.anchor, sel.head)
@@ -3244,8 +3235,8 @@ impl App {
             (sel.head, sel.anchor)
         };
         let avail = self.input_avail();
-        let start = self.input.char_index_at(avail, s.0, s.1);
-        let end = self.input.char_index_end_at(avail, e.0, e.1);
+        let start = self.input.screen_to_char(avail, s.0, s.1);
+        let end = self.input.screen_to_char_end(avail, e.0, e.1);
         (start < end).then_some((start, end))
     }
 
@@ -3770,6 +3761,8 @@ impl App {
                 | Action::DeleteWordBack
                 | Action::KillToEnd
                 | Action::KillToStart
+                | Action::Undo
+                | Action::Redo
         ) {
             self.slash_completion_dismissed = false;
             // Text edits invalidate the drag-selection highlight.
@@ -3777,11 +3770,11 @@ impl App {
         }
         match action {
             Action::Insert(ch) => {
-                self.input.insert(ch);
+                self.input.insert_char(ch);
                 self.slash_sel = 0;
             }
             Action::Newline => {
-                self.input.insert('\n');
+                self.input.insert_newline();
             }
             Action::Enter => {
                 self.input_sel = None;
@@ -3859,46 +3852,35 @@ impl App {
                 self.scroll_up = 0;
                 self.chat_view.manual_top = None;
             }
-            Action::CursorLeft => {
-                self.input.cursor = self.input.cursor.saturating_sub(1);
-                self.input.reset_vertical_goal();
-            }
-            Action::CursorRight => {
-                self.input.cursor = (self.input.cursor + 1).min(self.input.len_chars());
-                self.input.reset_vertical_goal();
-            }
-            Action::CursorUp => self.input.move_vertical(self.composer_wrap_width, -1),
-            Action::CursorDown => self.input.move_vertical(self.composer_wrap_width, 1),
-            Action::WordLeft => {
-                self.input.cursor = self.input.prev_word();
-                self.input.reset_vertical_goal();
-            }
-            Action::WordRight => {
-                self.input.cursor = self.input.next_word();
-                self.input.reset_vertical_goal();
-            }
-            Action::LineStart => {
-                self.input
-                    .move_to_visual_line_start(self.composer_wrap_width);
-            }
-            Action::LineEnd => {
-                self.input.move_to_visual_line_end(self.composer_wrap_width);
-            }
+            Action::CursorLeft => self.input.move_left(),
+            Action::CursorRight => self.input.move_right(),
+            Action::CursorUp => self.input.move_up(),
+            Action::CursorDown => self.input.move_down(),
+            Action::WordLeft => self.input.word_left(),
+            Action::WordRight => self.input.word_right(),
+            Action::LineStart => self.input.line_start(self.composer_wrap_width),
+            Action::LineEnd => self.input.line_end(self.composer_wrap_width),
             Action::Backspace => {
                 // Deleting into an inline chip cuts the whole [image n]
                 // token (and un-stages that image) instead of one bracket.
-                if !self.delete_token_at(self.input.cursor, true) {
+                if !self.delete_token_at(self.input.cursor_char(), true) {
                     self.input.backspace();
                 }
             }
             Action::DeleteForward => {
-                if !self.delete_token_at(self.input.cursor, false) {
+                if !self.delete_token_at(self.input.cursor_char(), false) {
                     self.input.delete_forward();
                 }
             }
             Action::DeleteWordBack => self.input.delete_word_back(),
             Action::KillToEnd => self.input.kill_to_end(self.composer_wrap_width),
             Action::KillToStart => self.input.kill_to_start(self.composer_wrap_width),
+            Action::Undo => {
+                self.input.undo();
+            }
+            Action::Redo => {
+                self.input.redo();
+            }
         }
     }
 
@@ -4019,7 +4001,7 @@ impl App {
                 crate::input::classify(
                     &key,
                     crate::input::KeyCtx {
-                        input_empty: self.input.buf.is_empty(),
+                        input_empty: self.input.is_empty(),
                     },
                 ),
                 Some(Action::ToggleTheme)
@@ -4966,7 +4948,7 @@ impl App {
                 // Esc clears the draft — inline [image n] chips live in it,
                 // so staged images go with it (reconcile below).
                 if !self.input.is_empty() {
-                    self.input.history.push(self.input.buf.clone());
+                    self.input.history.push(self.input.buf());
                     self.input.clear();
                     self.reconcile_attachments();
                     self.show_tip("draft cleared — ↑ recalls it");
@@ -4982,7 +4964,7 @@ impl App {
             // Clearing the draft never counts as the first press of the
             // double-Ctrl+C quit chord.
             self.ctrl_c_armed = None;
-            self.input.history.push(self.input.buf.clone());
+            self.input.history.push(self.input.buf());
             self.input.clear();
             self.input_sel = None;
             self.reconcile_attachments();
@@ -5019,7 +5001,7 @@ impl App {
         }
         let pos = match self.input.hist_pos {
             None => {
-                self.input.stash = self.input.buf.clone();
+                self.input.stash = self.input.buf();
                 self.input.history.len() - 1
             }
             Some(0) => 0,
@@ -5035,7 +5017,7 @@ impl App {
             return;
         }
         if self.input.hist_pos.is_none() {
-            self.input.stash = self.input.buf.clone();
+            self.input.stash = self.input.buf();
         }
         let pos = match self.input.hist_pos {
             None => self.input.history.len() - 1,
@@ -5066,7 +5048,7 @@ impl App {
             self.input.set(completion.clone());
         }
         if entry.plugin {
-            let line = self.input.buf.clone();
+            let line = self.input.buf();
             let rest = line
                 .strip_prefix('/')
                 .and_then(|s| s.strip_prefix(entry.name.as_str()))
@@ -5087,7 +5069,7 @@ impl App {
             // in the composer; enter on the completed line ships it as an
             // ordinary prompt and the host injects the skill body.
             let full = format!("/{}", entry.name);
-            let line = self.input.buf.trim().to_string();
+            let line = self.input.buf().trim().to_string();
             if line == full || line.starts_with(&format!("{full} ")) {
                 self.submit(ctl);
             } else {
@@ -5096,7 +5078,7 @@ impl App {
             }
             return;
         }
-        let line = self.input.buf.clone();
+        let line = self.input.buf();
         let rest = line
             .strip_prefix('/')
             .and_then(|s| s.strip_prefix(entry.name.as_str()))
@@ -5773,7 +5755,7 @@ fn fmt_duration(ms: u64) -> String {
 
 impl App {
     fn submit(&mut self, ctl: &Controller) {
-        let text = self.input.buf.trim().to_string();
+        let text = self.input.buf().trim().to_string();
         // Client namespaces don't take images — keep the chips editable
         // instead of silently dropping them.
         if !self.pending_images.is_empty() && (text.starts_with('/') || text.starts_with('!')) {
@@ -5824,7 +5806,7 @@ impl App {
         // Inline [image n] chips ride along with the prompt text (or send
         // alone): chip order = block order (图文交替).
         if !self.pending_images.is_empty() {
-            self.input.history.push(self.input.buf.clone());
+            self.input.history.push(self.input.buf());
             let staged = self.take_staged_blocks();
             self.input.clear();
             self.send_staged(staged, ctl);
@@ -6029,7 +6011,7 @@ impl App {
             self.delete_queue_edit(ctl);
             return;
         }
-        let raw = self.input.buf.trim().to_string();
+        let raw = self.input.buf().trim().to_string();
         if raw.is_empty() && self.pending_images.is_empty() {
             self.show_tip("queued prompt cannot be empty · ctrl+d deletes it");
             return;
@@ -6151,16 +6133,16 @@ impl App {
         self.input_sel = None;
         if !caption.is_empty() {
             self.input.set(caption);
-            self.input.insert(' ');
-        } else if self.input.cursor > 0
+            self.input.insert_char(' ');
+        } else if self.input.cursor_char() > 0
             && !self
                 .input
-                .buf
+                .buf()
                 .chars()
-                .nth(self.input.cursor - 1)
+                .nth(self.input.cursor_char() - 1)
                 .is_none_or(char::is_whitespace)
         {
-            self.input.insert(' ');
+            self.input.insert_char(' ');
         }
         self.input.insert_str(&token);
         self.show_tip("image staged — ⌫ deletes its chip · hover it to preview");
@@ -6170,7 +6152,7 @@ impl App {
     /// Drain the tray and split the draft on chip spans, in reading order.
     fn take_staged_blocks(&mut self) -> Vec<StagedBlock> {
         self.reconcile_attachments();
-        let buf = self.input.buf.clone();
+        let buf = self.input.buf();
         split_draft_into_staged_blocks(&buf, self.pending_images.drain())
     }
 
@@ -6272,7 +6254,7 @@ impl App {
     /// Send-now is ACP steering: issue another prompt immediately while the
     /// current turn remains active. Esc is the only cancellation path.
     fn send_now(&mut self, ctl: &Controller) {
-        let raw = self.input.buf.trim().to_string();
+        let raw = self.input.buf().trim().to_string();
         if !self.pending_images.is_empty() && (raw.starts_with('/') || raw.starts_with('!')) {
             self.show_tip(
                 "send or delete the [image] chips first — /commands and !shell don't take images",
@@ -6291,7 +6273,7 @@ impl App {
             return;
         }
         let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
-        self.input.history.push(self.input.buf.clone());
+        self.input.history.push(self.input.buf());
         self.input.clear();
         self.show_banner = false;
         let has_images = staged.iter().any(|b| matches!(b, StagedBlock::Image(_)));

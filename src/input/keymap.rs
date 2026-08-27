@@ -50,6 +50,10 @@ pub enum Action {
     DeleteWordBack,
     KillToEnd,
     KillToStart,
+    /// Undo the last draft edit (the textarea keeps a 50-step history).
+    Undo,
+    /// Redo the last undone draft edit.
+    Redo,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -151,6 +155,16 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Backspace if alt || ctrl => DeleteWordBack,
         KeyCode::Backspace => Backspace,
         KeyCode::Delete => DeleteForward,
+
+        // --- undo / redo ---------------------------------------------------
+        // ctrl+z everywhere, ⌘z on macOS (natural-editing terminals send
+        // ^z for ⌘z, which the ctrl arm catches); redo on ctrl+shift+z,
+        // ctrl+y (readline) and ⌘⇧z.
+        KeyCode::Char('z') if sup && shift => Redo,
+        KeyCode::Char('z') if sup => Undo,
+        KeyCode::Char('z') if ctrl && shift => Redo,
+        KeyCode::Char('z') if ctrl => Undo,
+        KeyCode::Char('y') if ctrl => Redo,
 
         // --- text ----------------------------------------------------------
         // Unbound ⌃/⌥/⌘ chords are ignored instead of inserting their base
@@ -263,6 +277,8 @@ const SHIFT: KeyModifiers = KeyModifiers::SHIFT;
 const SUPER: KeyModifiers = KeyModifiers::SUPER;
 /// `CONTROL | SHIFT` — bitflags has no const `BitOr`, so spell the bits.
 const CTRL_SHIFT: KeyModifiers = KeyModifiers::from_bits_retain(0b0000_0011);
+/// `SUPER | SHIFT` (bit 3 | bit 0).
+const SUPER_SHIFT: KeyModifiers = KeyModifiers::from_bits_retain(0b0000_1001);
 
 const fn p(code: KeyCode, m: KeyModifiers, empty: bool) -> (KeyCode, KeyModifiers, bool) {
     (code, m, empty)
@@ -553,6 +569,33 @@ pub const KEY_ROWS: &[KeyRow] = &[
             p(KeyCode::Char('w'), CTRL, false),
             p(KeyCode::Backspace, ALT, false),
             p(KeyCode::Backspace, CTRL, false),
+        ],
+    },
+    KeyRow {
+        action: Undo,
+        group: KeyGroup::Edit,
+        chords_mac: &["⌘z"],
+        chords_other: &["ctrl+z"],
+        ctx: CtxNote::Typing,
+        desc_en: "undo the last draft edit",
+        desc_zh: "撤销上一步草稿编辑",
+        probes: &[
+            p(KeyCode::Char('z'), CTRL, false),
+            p(KeyCode::Char('z'), SUPER, false),
+        ],
+    },
+    KeyRow {
+        action: Redo,
+        group: KeyGroup::Edit,
+        chords_mac: &["⌘⇧z"],
+        chords_other: &["ctrl+shift+z", "ctrl+y"],
+        ctx: CtxNote::Typing,
+        desc_en: "redo the last undone edit",
+        desc_zh: "重做上一步撤销",
+        probes: &[
+            p(KeyCode::Char('z'), CTRL_SHIFT, false),
+            p(KeyCode::Char('y'), CTRL, false),
+            p(KeyCode::Char('z'), SUPER_SHIFT, false),
         ],
     },
     KeyRow {
