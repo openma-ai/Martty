@@ -37,6 +37,7 @@ Composer（底部输入区）自 v0.2.27 起基于 [`ratatui-textarea`](https://
 | `delete` | 删除光标后一个字符（输入时 `ctrl+d` 同；空草稿时 `ctrl+d` 下翻半页） |
 | `ctrl+w` | 删除光标前一个词（`ctrl+⌫`、macOS `⌥⌫` 同） |
 | `ctrl+k` | 删除到当前屏幕行尾 |
+| `ctrl+shift+k` | 删除整行（含换行，下一行上移） |
 | `ctrl+u` | 删除到当前屏幕行首（空草稿时上翻半页；macOS `⌘⌫` 同） |
 | `ctrl+c` | 清空草稿；无草稿时连按 2 次退出程序 |
 

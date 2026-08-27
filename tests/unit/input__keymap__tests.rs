@@ -266,6 +266,7 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::Undo,
         Action::Redo,
         Action::YankPaste,
+        Action::KillLine,
         Action::SelectLeft,
         Action::SelectRight,
         Action::SelectUp,
@@ -386,7 +387,7 @@ fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
     for group in [
         KeyGroup::Send,
         KeyGroup::Navigate,
-        KeyGroup::Edit,
+        KeyGroup::Composer,
         KeyGroup::App,
         KeyGroup::Mouse,
     ] {

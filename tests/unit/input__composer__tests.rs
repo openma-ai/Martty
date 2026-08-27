@@ -324,3 +324,36 @@ fn selection_spans_multiple_lines() {
     e.textarea_mut().cancel_selection();
     assert_eq!(e.selection_text(), None);
 }
+
+#[test]
+fn kill_line_removes_the_logical_line_and_merges() {
+    let mut e = ComposerEditor::new();
+    e.insert_str("one\ntwo\nthree");
+    e.set_cursor_char(5); // middle of "two"
+    e.kill_line();
+    assert_eq!(e.buf(), "one\nthree", "middle line + its newline go away");
+    assert_eq!(e.cursor_char(), 4, "cursor at the merged line start");
+
+    e.kill_line();
+    assert_eq!(e.buf(), "one\n", "last content line dies");
+    e.kill_line();
+    assert_eq!(e.buf(), "one\n", "the trailing empty line is a no-op");
+
+    e.set_cursor_char(0);
+    e.kill_line();
+    assert_eq!(e.buf(), "", "first line + newline go away");
+    e.kill_line();
+    assert_eq!(e.buf(), "", "empty draft: no-op");
+}
+
+#[test]
+fn kill_line_on_the_last_line_keeps_its_newline_friends() {
+    let mut e = ComposerEditor::new();
+    e.insert_str("a\nb\n");
+    e.set_cursor_char(e.buf().chars().count()); // end of the empty last line
+    e.kill_line();
+    assert_eq!(e.buf(), "a\nb\n", "empty last line is a no-op");
+    e.set_cursor_char(2);
+    e.kill_line();
+    assert_eq!(e.buf(), "a\n", "last content line dies, newline stays");
+}

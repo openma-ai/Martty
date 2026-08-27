@@ -54,6 +54,8 @@ pub enum Action {
     Redo,
     /// Paste the yank buffer (last kill) at the cursor.
     YankPaste,
+    /// Delete the whole current line (ctrl+shift+k).
+    KillLine,
     /// Start/extend a text selection toward the left (shift+←).
     SelectLeft,
     SelectRight,
@@ -135,6 +137,9 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('d') if ctrl && !ctx.input_empty => DeleteForward,
         KeyCode::Char('u') if ctrl => ScrollHalfUp,
         KeyCode::Char('d') if ctrl => ScrollHalfDown,
+        // ctrl+shift+k kills the whole line; plain ctrl+k keeps the
+        // readline kill-to-line-end behavior.
+        KeyCode::Char('k') if ctrl && shift => KillLine,
         KeyCode::Char('k') if ctrl => KillToEnd,
         KeyCode::Char('w') if ctrl => DeleteWordBack,
         // ^e = end of line — also what ghostty/iterm send for ⌘→.
@@ -246,7 +251,9 @@ impl CtxNote {
 pub enum KeyGroup {
     Send,
     Navigate,
-    Edit,
+    /// The composer textarea's own editing keys (motions, kill, undo,
+    /// selection, yank) — one dedicated section in `/keys`.
+    Composer,
     App,
     Mouse,
 }
@@ -258,8 +265,8 @@ impl KeyGroup {
             (KeyGroup::Send, true) => "发送 · 中断",
             (KeyGroup::Navigate, false) => "scroll · navigate",
             (KeyGroup::Navigate, true) => "滚动 · 导航",
-            (KeyGroup::Edit, false) => "edit · readline",
-            (KeyGroup::Edit, true) => "编辑 · readline",
+            (KeyGroup::Composer, false) => "composer textarea",
+            (KeyGroup::Composer, true) => "输入框 · textarea",
             (KeyGroup::App, false) => "app shortcuts",
             (KeyGroup::App, true) => "应用快捷键",
             (KeyGroup::Mouse, false) => "mouse",
@@ -482,10 +489,10 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_zh: "下一页",
         probes: &[p(KeyCode::PageDown, NONE, false)],
     },
-    // --- edit · readline --------------------------------------------------
+    // --- composer textarea -------------------------------------------------
     KeyRow {
         action: LineStart,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["home", "⌘←", "ctrl+a"],
         chords_other: &["home", "ctrl+a"],
         ctx: CtxNote::Typing,
@@ -499,7 +506,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: LineEnd,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["end", "⌘→", "ctrl+e"],
         chords_other: &["end", "ctrl+e"],
         ctx: CtxNote::Typing,
@@ -513,7 +520,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorLeft,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+b"],
         chords_other: &["ctrl+b"],
         ctx: CtxNote::Typing,
@@ -523,7 +530,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorRight,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+f"],
         chords_other: &["ctrl+f"],
         ctx: CtxNote::Typing,
@@ -533,7 +540,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectLeft,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["shift+←"],
         chords_other: &["shift+←"],
         ctx: CtxNote::Typing,
@@ -543,7 +550,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectRight,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["shift+→"],
         chords_other: &["shift+→"],
         ctx: CtxNote::Typing,
@@ -553,7 +560,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectUp,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["shift+↑"],
         chords_other: &["shift+↑"],
         ctx: CtxNote::Typing,
@@ -563,7 +570,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectDown,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["shift+↓"],
         chords_other: &["shift+↓"],
         ctx: CtxNote::Typing,
@@ -573,7 +580,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectWordLeft,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌥⇧←"],
         chords_other: &["ctrl+shift+←"],
         ctx: CtxNote::Typing,
@@ -586,7 +593,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectWordRight,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌥⇧→"],
         chords_other: &["ctrl+shift+→"],
         ctx: CtxNote::Typing,
@@ -599,7 +606,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectLineStart,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["shift+home", "⌘⇧←"],
         chords_other: &["shift+home"],
         ctx: CtxNote::Typing,
@@ -612,7 +619,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: SelectLineEnd,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["shift+end", "⌘⇧→", "ctrl+shift+e"],
         chords_other: &["shift+end", "ctrl+shift+e"],
         ctx: CtxNote::Typing,
@@ -626,7 +633,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CopySelection,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+shift+c"],
         chords_other: &["ctrl+shift+c"],
         ctx: CtxNote::Typing,
@@ -636,7 +643,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CutSelection,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+x"],
         chords_other: &["ctrl+x"],
         ctx: CtxNote::Typing,
@@ -646,7 +653,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorUp,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["↑"],
         chords_other: &["↑"],
         ctx: CtxNote::Typing,
@@ -656,7 +663,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorDown,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["↓"],
         chords_other: &["↓"],
         ctx: CtxNote::Typing,
@@ -666,7 +673,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: WordLeft,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌥←", "esc-b"],
         chords_other: &["ctrl+←"],
         ctx: CtxNote::Typing,
@@ -680,7 +687,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: WordRight,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌥→", "esc-f"],
         chords_other: &["ctrl+→"],
         ctx: CtxNote::Typing,
@@ -694,7 +701,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: KillToStart,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+u", "⌘⌫"],
         chords_other: &["ctrl+u"],
         ctx: CtxNote::Typing,
@@ -707,7 +714,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: KillToEnd,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+k"],
         chords_other: &["ctrl+k"],
         ctx: CtxNote::Always,
@@ -719,8 +726,18 @@ pub const KEY_ROWS: &[KeyRow] = &[
         ],
     },
     KeyRow {
+        action: KillLine,
+        group: KeyGroup::Composer,
+        chords_mac: &["ctrl+shift+k"],
+        chords_other: &["ctrl+shift+k"],
+        ctx: CtxNote::Typing,
+        desc_en: "kill the whole line",
+        desc_zh: "删除整行",
+        probes: &[p(KeyCode::Char('k'), CTRL_SHIFT, false)],
+    },
+    KeyRow {
         action: DeleteWordBack,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+w", "⌥⌫"],
         chords_other: &["ctrl+w", "ctrl+⌫"],
         ctx: CtxNote::Typing,
@@ -734,7 +751,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: Undo,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌘z"],
         chords_other: &["ctrl+z"],
         ctx: CtxNote::Typing,
@@ -747,7 +764,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: Redo,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌘⇧z"],
         chords_other: &["ctrl+shift+z"],
         ctx: CtxNote::Typing,
@@ -760,7 +777,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: YankPaste,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+y"],
         chords_other: &["ctrl+y"],
         ctx: CtxNote::Typing,
@@ -770,7 +787,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: DeleteForward,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["delete", "ctrl+d"],
         chords_other: &["delete", "ctrl+d"],
         ctx: CtxNote::Typing,
@@ -783,7 +800,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: Backspace,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌫"],
         chords_other: &["⌫"],
         ctx: CtxNote::Typing,

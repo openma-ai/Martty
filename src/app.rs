@@ -3761,6 +3761,7 @@ impl App {
                 | Action::DeleteWordBack
                 | Action::KillToEnd
                 | Action::KillToStart
+                | Action::KillLine
                 | Action::Undo
                 | Action::Redo
                 | Action::YankPaste
@@ -3883,6 +3884,7 @@ impl App {
             Action::DeleteWordBack => self.input.delete_word_back(),
             Action::KillToEnd => self.input.kill_to_end(self.composer_wrap_width),
             Action::KillToStart => self.input.kill_to_start(self.composer_wrap_width),
+            Action::KillLine => self.input.kill_line(),
             Action::Undo => {
                 self.input.undo();
             }
@@ -5505,7 +5507,7 @@ impl App {
 - !cmd · 在会话级本地 shell 中运行命令，不经过 Agent；初始目录为 workspace，cd/环境变量跨命令保留
 - /<skill> · Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
 - ctrl+o · 展开思考和工具输出 · ctrl+l · 清屏
-- 编辑 · readline 组合键 + ⌘/⌥ 方向键 · 完整映射见 /keys
+- 输入框编辑：readline 组合键 + ⌘/⌥ 方向键 + 键盘选区 · 完整映射见 /keys
 - 点击工具 · 展开/折叠 · 滚轮滚动对话
 - pgup/pgdn · 翻页 · end 回到最新消息
 - 鼠标拖动 · 选择并复制文本 · 双击复制单词

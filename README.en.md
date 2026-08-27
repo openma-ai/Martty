@@ -339,7 +339,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | `/keys` | Open the complete keyboard-shortcut modal |
 | `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
 | Draft editing | `←/→` move by char · `↑/↓` move by screen line · `home/end` visual line start/end · `shift+enter` newline · `ctrl+d` delete forward |
-| Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+w` word back · `ctrl+z` undo · `ctrl+shift+z` redo (macOS `⌘z` / `⌘⇧z`) · `ctrl+y` paste the last kill |
+| Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+shift+k` kill the line · `ctrl+w` word back · `ctrl+z` undo · `ctrl+shift+z` redo (macOS `⌘z` / `⌘⇧z`) · `ctrl+y` paste the last kill |
 | macOS | `⌘←/→` line ends · `⌥←/→` word hops · `⌘⌫` kill to start · `⌥⌫` word back (physical key state read natively — works in every terminal) |
 | Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
 | Click tool · wheel | Click a tool to expand/collapse it; wheel always scrolls the conversation |

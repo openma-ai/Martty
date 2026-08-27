@@ -327,6 +327,31 @@ impl ComposerEditor {
         self.hist_pos = None;
     }
 
+    /// Delete the whole logical line under the cursor (including its
+    /// trailing newline, so the next line moves up). The cursor lands at
+    /// the line start. A no-op on an empty last line.
+    pub fn kill_line(&mut self) {
+        let DataCursor(row, _) = self.textarea.cursor();
+        let lines = self.lines();
+        if row >= lines.len() {
+            return;
+        }
+        let start = lines
+            .iter()
+            .take(row)
+            .map(|l| l.chars().count() + 1)
+            .sum::<usize>();
+        let line_chars = lines[row].chars().count();
+        let end = if row + 1 < lines.len() {
+            start + line_chars + 1 // include the newline separator
+        } else {
+            start + line_chars
+        };
+        if end > start {
+            self.delete_char_range(start, end);
+        }
+    }
+
     /// Undo the last draft edit (the widget keeps a 50-step history).
     /// Returns whether the buffer changed.
     pub fn undo(&mut self) -> bool {
