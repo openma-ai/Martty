@@ -336,6 +336,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | `ctrl+o` · `ctrl+t` | Expand output · toggle the theme |
 | `ctrl+k` (empty prompt) · `/keys` | Open the complete keyboard-shortcut modal |
 | `pgup/pgdn` · `ctrl+u/d` (empty prompt) | Scroll; `end` follows the live tail |
+| Draft editing | `←/→` move by char · `↑/↓` move by screen line · `home/end` visual line start/end · `shift+enter` newline · `ctrl+d` delete forward |
 | Readline editing | `home/ctrl+e` line ends · while typing, `ctrl+k/u` kill to end/start · `ctrl+w` word back · `ctrl+z` undo · `ctrl+shift+z` / `ctrl+y` redo (macOS `⌘z` / `⌘⇧z`) |
 | macOS | `⌘←/→` line ends · `⌥←/→` word hops · `⌘⌫` kill to start · `⌥⌫` word back (physical key state read natively — works in every terminal) |
 | Linux/Windows | `ctrl+←/→` word hops · `ctrl+⌫` word back |
@@ -344,6 +345,8 @@ Agent-oriented, fully verifiable installation steps live in the
 | `!cmd` | Run a command in the client's session-local shell, outside the agent; the shell starts in the workspace and keeps `cd`, environment variables, and other state for later `!` commands until the TUI exits |
 
 Use `/help` for commands and `/keys` for the complete shortcut list.
+The full editing reference — keys, mouse click/drag behavior, and developer
+integration notes — lives in the [composer input docs](docs/composer-input.md).
 
 The welcome surface is a composable UI Preset. Built-in `default` (Martty) and
 `deepseek` each mount a centered `welcome.hero` (`logo + hint`) and a separate

@@ -80,8 +80,12 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `/model` · `/agent` | 选择模型和 Agent Preset |
 | `/permission` · `shift+tab` | 选择或轮换权限模式 |
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
+| 草稿编辑 | `←/→` 移动 · `↑/↓` 按屏幕行移动 · `home/end` 行首/尾 · `shift+enter` 换行 · `ctrl+w` 删词 · `ctrl+k/u` 删到行尾/首 · `ctrl+z` 撤销 · `ctrl+shift+z` / `ctrl+y` 重做 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
 | `/help` · `/keys` | 查看命令与快捷键 |
+
+完整的编辑快捷键、鼠标操作（点击定位、拖选复制）与开发者集成说明，见
+[Composer 输入控件文档](docs/composer-input.md)。
 
 ## 插件系统
 
