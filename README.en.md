@@ -311,6 +311,8 @@ Requests/Notifications and never enter prompts or conversation history.
 
 Interaction details, the complete keymap, and developer integration notes
 live in the [composer input docs](docs/composer-input.md).
+Agent-oriented, fully verifiable installation steps live in the
+[agent install guide](docs/agent-install.md).
 
 ## Essential interactions
 

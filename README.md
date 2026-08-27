@@ -224,6 +224,7 @@ stdin/stdout；用户 TTY 使用 fd 3/4，两条通道互不混用。
 |---|---|
 | [运行架构](docs/architecture.md) | Host、Client、ACP 与 painter 的边界 |
 | [Composer 输入控件](docs/composer-input.md) | 文本输入使用说明：快捷键、鼠标、撤销/重做与开发者集成 |
+| [Agent 安装说明](docs/agent-install.md) | 面向 AI agent / 自动化：可验证的安装步骤与排查 |
 | [Plugin API](docs/plugins.md) | Service、Slot、Overlay、生命周期与 Package RPC |
 | [运行时 Mermaid](docs/diagrams/runtime-architecture.mmd) | DSH-first 双进程数据流 |
 | [Plugin Mermaid](docs/diagrams/plugin-system.mmd) | Host half、Client half 与 Plugin 视图 |
