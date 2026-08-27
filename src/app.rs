@@ -3763,6 +3763,7 @@ impl App {
                 | Action::KillToStart
                 | Action::Undo
                 | Action::Redo
+                | Action::YankPaste
         ) {
             self.slash_completion_dismissed = false;
             // Text edits invalidate the drag-selection highlight.
@@ -3879,6 +3880,9 @@ impl App {
             }
             Action::Redo => {
                 self.input.redo();
+            }
+            Action::YankPaste => {
+                self.input.paste_yank();
             }
         }
     }

@@ -52,6 +52,8 @@ pub enum Action {
     Undo,
     /// Redo the last undone draft edit.
     Redo,
+    /// Paste the yank buffer (last kill) at the cursor.
+    YankPaste,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -151,15 +153,15 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Backspace => Backspace,
         KeyCode::Delete => DeleteForward,
 
-        // --- undo / redo ---------------------------------------------------
+        // --- undo / redo / yank --------------------------------------------
         // ctrl+z everywhere, ⌘z on macOS (natural-editing terminals send
-        // ^z for ⌘z, which the ctrl arm catches); redo on ctrl+shift+z,
-        // ctrl+y (readline) and ⌘⇧z.
+        // ^z for ⌘z, which the ctrl arm catches); redo on ctrl+shift+z and
+        // ⌘⇧z. ctrl+y pastes the yank buffer (last kill), readline-style.
         KeyCode::Char('z') if sup && shift => Redo,
         KeyCode::Char('z') if sup => Undo,
         KeyCode::Char('z') if ctrl && shift => Redo,
         KeyCode::Char('z') if ctrl => Undo,
-        KeyCode::Char('y') if ctrl => Redo,
+        KeyCode::Char('y') if ctrl => YankPaste,
 
         // --- text ----------------------------------------------------------
         // Unbound ⌃/⌥/⌘ chords are ignored instead of inserting their base
@@ -586,15 +588,24 @@ pub const KEY_ROWS: &[KeyRow] = &[
         action: Redo,
         group: KeyGroup::Edit,
         chords_mac: &["⌘⇧z"],
-        chords_other: &["ctrl+shift+z", "ctrl+y"],
+        chords_other: &["ctrl+shift+z"],
         ctx: CtxNote::Typing,
         desc_en: "redo the last undone edit",
         desc_zh: "重做上一步撤销",
         probes: &[
             p(KeyCode::Char('z'), CTRL_SHIFT, false),
-            p(KeyCode::Char('y'), CTRL, false),
             p(KeyCode::Char('z'), SUPER_SHIFT, false),
         ],
+    },
+    KeyRow {
+        action: YankPaste,
+        group: KeyGroup::Edit,
+        chords_mac: &["ctrl+y"],
+        chords_other: &["ctrl+y"],
+        ctx: CtxNote::Typing,
+        desc_en: "paste the last killed text",
+        desc_zh: "粘贴最近一次删除的文本",
+        probes: &[p(KeyCode::Char('y'), CTRL, false)],
     },
     KeyRow {
         action: DeleteForward,

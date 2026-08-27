@@ -3974,7 +3974,7 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
 }
 
 #[test]
-fn ctrl_z_undoes_and_ctrl_y_redoes_draft_edits() {
+fn ctrl_z_undoes_and_ctrl_shift_z_redoes_draft_edits() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("hello".into());
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
@@ -3983,12 +3983,6 @@ fn ctrl_z_undoes_and_ctrl_y_redoes_draft_edits() {
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
     assert_eq!(app.input.buf(), "hello", "ctrl+z undoes the insert");
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
-    assert_eq!(app.input.buf(), "hellox", "ctrl+y redoes it");
-
-    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
-    assert_eq!(app.input.buf(), "hello", "undo again");
-
     app.handle_key(
         KeyEvent::new(
             KeyCode::Char('z'),
@@ -3996,7 +3990,7 @@ fn ctrl_z_undoes_and_ctrl_y_redoes_draft_edits() {
         ),
         &ctl,
     );
-    assert_eq!(app.input.buf(), "hellox", "ctrl+shift+z also redoes");
+    assert_eq!(app.input.buf(), "hellox", "ctrl+shift+z redoes");
 }
 
 #[test]
@@ -4010,4 +4004,18 @@ fn ctrl_z_undoes_plain_typing() {
     let buf = app.input.buf();
     assert_eq!(buf, "hell", "typing then ctrl+z undoes one char");
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
+}
+
+#[test]
+fn ctrl_y_pastes_the_last_kill() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(5);
+    // ctrl+k kills " world" into the yank buffer.
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello");
+    app.input.set_cursor_char(0);
+    // ctrl+y pastes it back at the cursor.
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), " worldhello");
 }

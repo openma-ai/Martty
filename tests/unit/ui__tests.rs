@@ -320,7 +320,7 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 
     assert_eq!(flat_line(status_title(&app)), "");
     let pending = flat_spans(status_right(&app));
-    assert!(pending.contains("^k keys"), "{pending}");
+    assert!(pending.contains("/keys keys"), "{pending}");
     assert!(!pending.contains("deepseek-chat"), "{pending}");
     assert!(!pending.contains("high"), "{pending}");
 

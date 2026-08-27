@@ -340,6 +340,16 @@ impl ComposerEditor {
         done
     }
 
+    /// Paste the widget's yank buffer (the last kill/delete_str) at the
+    /// cursor. Returns whether anything was pasted.
+    pub fn paste_yank(&mut self) -> bool {
+        let done = self.textarea_mut().paste();
+        if done {
+            self.hist_pos = None;
+        }
+        done
+    }
+
     pub fn clear(&mut self) {
         self.textarea_mut().clear();
         self.hist_pos = None;
