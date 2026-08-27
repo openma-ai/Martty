@@ -50,6 +50,8 @@ and iterate on its own terminal capabilities.
 ## Quick start
 
 > When installing via `npm install`, [Node.js](https://nodejs.org/) must be installed on your machine, and [pnpm](https://pnpm.io/) may be required.
+>
+> Agent-oriented installation steps: [agent install guide](docs/agent-install.md).
 
 ### Recommended: dsh TUI surface plugin
 

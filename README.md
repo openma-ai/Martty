@@ -23,6 +23,8 @@
 ## 快速开始
 
 > 通过 `npm install` 安装时，本机需已安装 [Node.js](https://nodejs.org/)，且可能需要 [pnpm](https://pnpm.io/)。
+>
+> AI agent / 自动化安装步骤见 [Agent 安装说明](docs/agent-install.md)。
 
 全局安装后直接启动：
 
