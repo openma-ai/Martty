@@ -4080,3 +4080,21 @@ fn ctrl_x_cuts_the_selection_and_ctrl_enter_steers() {
     }
     assert!(app.pending_steer_cells.values().next().is_some());
 }
+
+#[test]
+fn keyboard_selection_cut_survives_a_real_render_pass() {
+    use ratatui::backend::TestBackend;
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(6);
+    let backend = TestBackend::new(60, 15);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).expect("draw");
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello rld", "keyboard selection cut works after a real render");
+}
