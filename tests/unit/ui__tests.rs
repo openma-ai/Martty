@@ -320,7 +320,7 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 
     assert_eq!(flat_line(status_title(&app)), "");
     let pending = flat_spans(status_right(&app));
-    assert!(pending.contains("^k keys"), "{pending}");
+    assert!(pending.contains("/keys keys"), "{pending}");
     assert!(!pending.contains("deepseek-chat"), "{pending}");
     assert!(!pending.contains("high"), "{pending}");
 
@@ -429,8 +429,10 @@ fn meta_row_hints_follow_the_state_machine() {
         spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     };
     let mut app = test_app();
-    // idle · empty → discovery hint
-    assert!(flat(context_hints(&app)).contains("^k keys"));
+    // idle · empty → /keys discovery hint (ctrl+k belongs to the editor)
+    let s = flat(context_hints(&app));
+    assert!(s.contains("/keys keys"), "{s}");
+    assert!(!s.contains("^k"), "{s}");
     // idle · draft → enter sends
     app.input.set("hello".into());
     let s = flat(context_hints(&app));
@@ -452,7 +454,7 @@ fn meta_row_hints_follow_the_state_machine() {
     app.input.set("follow-up".into());
     let s = flat(context_hints(&app));
     assert!(
-        s.contains("⏎ queue") && s.contains("^x steer") && s.contains("esc interrupt"),
+        s.contains("⏎ queue") && s.contains("ctrl+⏎ steer") && s.contains("esc interrupt"),
         "{s}"
     );
 }
@@ -1097,8 +1099,8 @@ fn elicitation_wait_uses_the_state_line_without_claiming_the_agent_is_working() 
 fn long_input_wraps_in_the_well() {
     let mut app = test_app();
     app.show_banner = false;
-    app.input.buf = "a".repeat(50);
-    app.input.cursor = 50;
+    app.input.set("a".repeat(50));
+    app.input.set_cursor_char(50);
     // 40x12 → composer height 4 → a 2-row input well, 36 text cols wide.
     let frame = dump_frame(&mut app, 40, 12);
     let wrapped = frame.lines().filter(|l| l.contains("aaaa")).count();
@@ -1109,8 +1111,8 @@ fn long_input_wraps_in_the_well() {
 fn multiline_input_breaks_on_newlines() {
     let mut app = test_app();
     app.show_banner = false;
-    app.input.buf = "hello\nworld".into();
-    app.input.cursor = "hello\nworld".chars().count();
+    app.input.set("hello\nworld".into());
+    app.input.set_cursor_char("hello\nworld".chars().count());
     let frame = dump_frame(&mut app, 40, 12);
     let hello = frame
         .lines()
@@ -2499,4 +2501,71 @@ fn compact_running_progress_pulses_without_a_spinner_prefix() {
         bright.last().expect("progress").style.fg,
         Some(app.theme.brand)
     );
+}
+
+#[test]
+fn composer_textarea_renders_chips_selection_and_multiline_drafts() {
+    // Chip restyle lands on the buffer cells with the theme's bubble colors.
+    let mut app = test_app();
+    app.show_banner = false;
+    app.pending_images
+        .add(
+            "x.png".into(),
+            "/tmp/x.png".into(),
+            "image/png".into(),
+            vec![137, 80, 78, 71, 13, 10, 26, 10],
+        )
+        .expect("stage");
+    app.input.set("x [image 1] y".into());
+    let backend = ratatui::backend::TestBackend::new(50, 15);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer().clone();
+    let mut chip_cells = 0usize;
+    for row in 0..15u16 {
+        for col in 0..50u16 {
+            if buf[(col, row)].symbol() == "[" {
+                let style = buf[(col, row)].style();
+                assert_eq!(style.fg, Some(app.theme.bubble_fg));
+                assert_eq!(style.bg, Some(app.theme.bubble_bg));
+                chip_cells += 1;
+            }
+        }
+    }
+    assert!(chip_cells >= 1, "chip styled cells found");
+
+    // Drag selection paints reversed cells over the dragged range.
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.set("hello world".into());
+    app.input_area = Rect::new(1, 10, 48, 3);
+    app.input_top = 0;
+    app.input_sel = Some(crate::app::InputSel {
+        anchor: (0, 1),
+        head: (0, 4),
+    });
+    let backend = ratatui::backend::TestBackend::new(50, 15);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer().clone();
+    let reversed = (0..15u16)
+        .flat_map(|row| (0..50u16).map(move |col| (col, row)))
+        .filter(|&(col, row)| buf[(col, row)].style().add_modifier.contains(Modifier::REVERSED))
+        .count();
+    assert!(reversed >= 4, "selection covers the dragged cells: {reversed}");
+
+    // Hard newlines stack draft lines in the well.
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.set("line one\nline two".into());
+    let frame = dump_frame(&mut app, 50, 15);
+    let first = frame
+        .lines()
+        .position(|l| l.contains("line one"))
+        .expect("first line");
+    let second = frame
+        .lines()
+        .position(|l| l.contains("line two"))
+        .expect("second line");
+    assert!(second > first, "hard newline stacks lines");
 }

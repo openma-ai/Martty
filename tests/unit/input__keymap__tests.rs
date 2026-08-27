@@ -178,10 +178,11 @@ fn dual_use_keys_scroll_only_on_empty_draft() {
 }
 
 #[test]
-fn ctrl_k_opens_keys_only_on_an_empty_draft() {
+fn ctrl_k_kills_to_line_end_even_on_an_empty_draft() {
     assert_eq!(
         classify(&key(KeyCode::Char('k'), CTRL), empty()),
-        Some(Action::ShowKeys)
+        Some(Action::KillToEnd),
+        "ctrl+k is free for the text editor on every draft state"
     );
     assert_eq!(
         classify(&key(KeyCode::Char('k'), CTRL), typing()),
@@ -239,7 +240,6 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::AttachClipboard,
         Action::ModelPicker,
         Action::CycleAgent,
-        Action::ShowKeys,
         Action::CyclePermission,
         Action::TabComplete,
         Action::HistoryPrev,
@@ -263,6 +263,20 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::DeleteWordBack,
         Action::KillToEnd,
         Action::KillToStart,
+        Action::Undo,
+        Action::Redo,
+        Action::YankPaste,
+        Action::KillLine,
+        Action::SelectLeft,
+        Action::SelectRight,
+        Action::SelectUp,
+        Action::SelectDown,
+        Action::SelectWordLeft,
+        Action::SelectWordRight,
+        Action::SelectLineStart,
+        Action::SelectLineEnd,
+        Action::CopySelection,
+        Action::CutSelection,
     ];
     let documented: Vec<Action> = KEY_ROWS.iter().map(|row| row.action).collect();
     assert_eq!(
@@ -373,7 +387,7 @@ fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
     for group in [
         KeyGroup::Send,
         KeyGroup::Navigate,
-        KeyGroup::Edit,
+        KeyGroup::Composer,
         KeyGroup::App,
         KeyGroup::Mouse,
     ] {
@@ -395,4 +409,16 @@ fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
         zh.contains("选择一条排队消息编辑"),
         "queue editor shortcut missing:\n{zh}"
     );
+}
+
+#[test]
+fn keys_markdown_lists_ctrl_j_and_the_composer_section() {
+    let en = crate::input::keymap::keys_markdown(false, false);
+    assert!(en.contains("ctrl+j"), "en keys must list ctrl+j");
+    assert!(en.contains("shift+enter / ctrl+j"), "newline row shows both chords");
+    assert!(en.contains("composer textarea"), "dedicated textarea section");
+    assert!(en.contains("ctrl+shift+k"), "kill-line row is present");
+    let zh = crate::input::keymap::keys_markdown(true, false);
+    assert!(zh.contains("ctrl+j"), "zh keys must list ctrl+j");
+    assert!(zh.contains("输入框 · textarea"), "zh section title");
 }

@@ -6,19 +6,22 @@
 //!   dropped: bare `Left` + a physically held ⌘ becomes `SUPER+Left`.
 //! * [`keymap`] — one pure `KeyEvent → Action` table, unit-testable,
 //!   with the OS conventions (⌘/⌥ on macOS, ctrl+arrows elsewhere).
-//! * [`editor`] — the composer line editor (buffer, cursor, history,
-//!   word motions, kill commands).
+//! * [`editor`] — the single-line form editor (elicitation fields):
+//!   buffer, cursor, history, word motions, kill commands.
+//! * [`composer`] — the main composer editor on `ratatui-textarea`:
+//!   buffer + cursor + undo in the widget, prompt history and the
+//!   screen↔buffer layout mirror beside it.
 //!
 //! `app` only dispatches [`keymap::Action`]s; nothing in here touches
 //! `App`, the transcript, or the controller.
 
+pub mod composer;
 pub mod editor;
 pub mod keymap;
 #[cfg(target_os = "macos")]
 mod macos_mod;
 pub mod normalize;
 
-pub use editor::Input;
 pub use keymap::{classify, Action, KeyCtx};
 pub use normalize::rescue_key;
 

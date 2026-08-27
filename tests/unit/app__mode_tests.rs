@@ -954,7 +954,7 @@ fn ctrl_shift_a_cycles_the_agent_directly_without_touching_the_draft() {
         &ctl,
     );
 
-    assert_eq!(app.input.buf, "keep this draft");
+    assert_eq!(app.input.buf(), "keep this draft");
     assert!(app.picker.is_none(), "the shortcut must not open a form");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -972,36 +972,31 @@ fn ctrl_shift_a_cycles_the_agent_directly_without_touching_the_draft() {
 fn cmd_left_moves_to_the_current_wrapped_line_start_not_the_draft_start() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("abcdefghij".into());
-    app.input.cursor = 6;
+    app.input.set_cursor_char(6);
     app.composer_wrap_width = 4;
 
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER), &ctl);
 
-    assert_eq!(app.input.cursor, 4, "second visual row starts before 'e'");
+    assert_eq!(app.input.cursor_char(), 4, "second visual row starts before 'e'");
 }
 
 #[test]
 fn cmd_right_moves_to_the_current_wrapped_line_end_not_the_draft_end() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("abcdefghij".into());
-    app.input.cursor = 6;
+    app.input.set_cursor_char(6);
     app.composer_wrap_width = 4;
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SUPER), &ctl);
 
-    assert_eq!(app.input.cursor, 8, "second visual row ends after 'h'");
-    assert_eq!(
-        app.input.visual_cursor(4),
-        (1, 4),
-        "the wrap boundary keeps its upstream line-end affinity"
-    );
+    assert_eq!(app.input.cursor_char(), 8, "second visual row ends after 'h'");
 }
 
 #[test]
 fn ctrl_u_kills_only_to_the_current_wrapped_line_start() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("abcdefghij".into());
-    app.input.cursor = 6;
+    app.input.set_cursor_char(6);
     app.composer_wrap_width = 4;
 
     app.handle_key(
@@ -1009,15 +1004,15 @@ fn ctrl_u_kills_only_to_the_current_wrapped_line_start() {
         &ctl,
     );
 
-    assert_eq!(app.input.buf, "abcdghij");
-    assert_eq!(app.input.cursor, 4, "the first visual row is preserved");
+    assert_eq!(app.input.buf(), "abcdghij");
+    assert_eq!(app.input.cursor_char(), 4, "the first visual row is preserved");
 }
 
 #[test]
 fn ctrl_k_kills_only_to_the_current_wrapped_line_end() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("abcdefghij".into());
-    app.input.cursor = 6;
+    app.input.set_cursor_char(6);
     app.composer_wrap_width = 4;
 
     app.handle_key(
@@ -1025,8 +1020,8 @@ fn ctrl_k_kills_only_to_the_current_wrapped_line_end() {
         &ctl,
     );
 
-    assert_eq!(app.input.buf, "abcdefij");
-    assert_eq!(app.input.cursor, 6, "the final visual row is preserved");
+    assert_eq!(app.input.buf(), "abcdefij");
+    assert_eq!(app.input.cursor_char(), 6, "the final visual row is preserved");
 }
 
 #[test]
@@ -1431,7 +1426,7 @@ fn staged_images_live_as_inline_tokens_and_esc_clears_them() {
         2,
         "images stage instead of sending"
     );
-    assert!(app.input.buf.contains("[image 1]") && app.input.buf.contains("[image 2]"));
+    assert!(app.input.buf().contains("[image 1]") && app.input.buf().contains("[image 2]"));
     app.handle_esc(&ctl);
     assert!(app.input.is_empty(), "esc clears the draft");
     assert!(app.pending_images.is_empty(), "chips go with the draft");
@@ -1466,8 +1461,8 @@ fn backspace_on_a_chip_cuts_the_whole_token() {
         "backspace pops the chip under the cursor"
     );
     assert_eq!(app.pending_images.get(0).unwrap().name, "a.png");
-    assert!(app.input.buf.contains("[image 1]"));
-    assert!(!app.input.buf.contains("[image 2]"));
+    assert!(app.input.buf().contains("[image 1]"));
+    assert!(!app.input.buf().contains("[image 2]"));
 }
 
 #[test]
@@ -1495,8 +1490,8 @@ fn editing_a_token_away_unstages_its_image() {
 #[test]
 fn esc_clears_draft_when_idle() {
     let (mut app, ctl, _rx) = test_app();
-    app.input.buf = "hello".into();
-    app.input.cursor = 5;
+    app.input.set("hello".into());
+    app.input.set_cursor_char(5);
     app.handle_esc(&ctl);
     assert!(app.input.is_empty(), "single esc clears the draft");
 }
@@ -1801,7 +1796,7 @@ fn ordinary_and_mixed_paste_payloads_are_not_treated_as_keys() {
         &ctl,
     );
 
-    assert_eq!(app.input.buf, "hello world literal \u{1b}[99;5u");
+    assert_eq!(app.input.buf(), "hello world literal \u{1b}[99;5u");
     assert!(!app.quit);
 }
 
@@ -2120,7 +2115,7 @@ fn alt_up_preselects_the_latest_client_queued_prompt() {
     assert!(app.input.is_empty());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
-    assert_eq!(app.input.buf, "second followup");
+    assert_eq!(app.input.buf(), "second followup");
     assert_eq!(app.queued, 2, "editing keeps the original queue slot");
     assert!(matches!(
         commands.try_recv(),
@@ -2145,7 +2140,7 @@ fn alt_up_then_arrows_can_edit_any_client_queued_prompt() {
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
 
-    assert_eq!(app.input.buf, "second followup");
+    assert_eq!(app.input.buf(), "second followup");
     assert_eq!(app.queued, 3, "selection keeps every FIFO slot in place");
     assert!(matches!(
         commands.try_recv(),
@@ -2233,7 +2228,7 @@ fn ctrl_d_then_enter_deletes_the_edited_queue_item() {
         &ctl,
     );
     assert_eq!(app.queued, 2, "Ctrl+D only asks for confirmation");
-    assert_eq!(app.input.buf, "delete this");
+    assert_eq!(app.input.buf(), "delete this");
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
     assert_eq!(app.queued, 1);
@@ -2436,7 +2431,7 @@ fn escape_steps_back_from_delete_confirmation_then_cancels_queue_edit() {
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
-    assert_eq!(app.input.buf, "unsaved edit");
+    assert_eq!(app.input.buf(), "unsaved edit");
     assert_eq!(app.queued, 1);
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
@@ -2450,7 +2445,7 @@ fn escape_steps_back_from_delete_confirmation_then_cancels_queue_edit() {
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
     assert_eq!(
-        app.input.buf, "original queued text",
+        app.input.buf(), "original queued text",
         "cancelling restores the unmodified queue item"
     );
 }
@@ -2468,7 +2463,7 @@ fn dismissed_completion_inside_queue_edit_does_not_open_history() {
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
     assert_eq!(
-        app.input.buf, "/model",
+        app.input.buf(), "/model",
         "queue editing owns cursor motion after its completion closes"
     );
 }
@@ -2605,8 +2600,8 @@ fn queued_image_prompt_stays_client_side_and_restores_its_chip_for_editing() {
     ));
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &ctl);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
-    assert!(app.input.buf.contains("inspect"));
-    assert!(app.input.buf.contains("[image 1]"));
+    assert!(app.input.buf().contains("inspect"));
+    assert!(app.input.buf().contains("[image 1]"));
     assert_eq!(app.pending_images.len(), 1);
 }
 
@@ -2963,7 +2958,7 @@ fn tab_completes_a_slash_argument_without_running_it() {
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &ctl);
-    assert_eq!(app.input.buf, "/plan on");
+    assert_eq!(app.input.buf(), "/plan on");
     assert!(matches!(
         commands.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
@@ -2978,16 +2973,16 @@ fn escape_dismisses_slash_completion_then_arrows_browse_history() {
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
     assert_eq!(
-        app.input.buf, "/mo",
+        app.input.buf(), "/mo",
         "closing recommendations must preserve the current slash draft"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
-    assert_eq!(app.input.buf, "previous prompt");
+    assert_eq!(app.input.buf(), "previous prompt");
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
     assert_eq!(
-        app.input.buf, "/mo",
+        app.input.buf(), "/mo",
         "leaving history restores the dismissed slash draft"
     );
 }
@@ -3324,7 +3319,7 @@ fn exact_agent_slash_command_tab_completes() {
 
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &ctl);
 
-    assert_eq!(app.input.buf, "/agent ");
+    assert_eq!(app.input.buf(), "/agent ");
 }
 
 #[test]
@@ -3514,7 +3509,7 @@ fn accepting_a_skill_completes_then_sends() {
     let entry = app.slash_matches()[0].clone();
     app.accept_slash(&entry, &ctl);
     assert_eq!(
-        app.input.buf, "/commit-helper ",
+        app.input.buf(), "/commit-helper ",
         "first accept completes the name"
     );
     assert!(matches!(app.state, RunState::Idle));
@@ -3670,7 +3665,7 @@ fn open_auth_preserves_draft_and_pending_fifo() {
     );
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
     app.handle(AppEvent::Ctl(CtlEvent::OpenAuth), &ctl);
-    assert_eq!(app.input.buf, "keep this draft");
+    assert_eq!(app.input.buf(), "keep this draft");
     assert!(matches!(app.state, RunState::Idle));
     assert_eq!(app.queued, 1);
     assert_eq!(app.prompt_queue.len(), 1);
@@ -3723,7 +3718,7 @@ fn demo_open_auth_does_not_start_acp_sign_in() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("draft".into());
     app.handle(AppEvent::Ctl(CtlEvent::OpenAuth), &ctl);
-    assert_eq!(app.input.buf, "draft");
+    assert_eq!(app.input.buf(), "draft");
     assert!(app.picker.is_none());
     assert!(app.take_terminal_auth().is_none());
 }
@@ -3925,7 +3920,7 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
     };
 
     let (mut app, ctl, _rx) = test_app();
-    let draft = app.input.buf.clone();
+    let draft = app.input.buf();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::ElicitationAsk {
@@ -3966,7 +3961,7 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
 
     assert!(app.elicitation_ask.is_none());
     assert_eq!(
-        app.input.buf, draft,
+        app.input.buf(), draft,
         "form input never overwrites the composer"
     );
     assert_eq!(
@@ -3976,4 +3971,130 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
             ElicitationValue::String("remote".into()),
         )]))
     );
+}
+
+#[test]
+fn ctrl_z_undoes_and_ctrl_shift_z_redoes_draft_edits() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("hello".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hellox");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello", "ctrl+z undoes the insert");
+
+    app.handle_key(
+        KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hellox", "ctrl+shift+z redoes");
+}
+
+#[test]
+fn ctrl_z_undoes_plain_typing() {
+    let (mut app, ctl, _rx) = test_app();
+    for ch in ['h', 'e', 'l', 'l', 'o'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &ctl);
+    }
+    assert_eq!(app.input.buf(), "hello");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
+    let buf = app.input.buf();
+    assert_eq!(buf, "hell", "typing then ctrl+z undoes one char");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), &ctl);
+}
+
+#[test]
+fn ctrl_y_pastes_the_last_kill() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(5);
+    // ctrl+k kills " world" into the yank buffer.
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello");
+    app.input.set_cursor_char(0);
+    // ctrl+y pastes it back at the cursor.
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), " worldhello");
+}
+
+#[test]
+fn shift_arrows_select_and_ctrl_shift_c_copies() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(6);
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    assert_eq!(
+        app.input.selection_text().as_deref(),
+        Some("wo"),
+        "shift+→ extends the selection"
+    );
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        &ctl,
+    );
+    // the widget's copy() clears the selection; the yank buffer survives
+    // (the system-clipboard path may be a no-op in tests).
+    assert!(app.input.selection_text().is_none(), "copy clears the selection");
+    app.input.set_cursor_char(0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "wohello world", "ctrl+y pastes the yank copy");
+}
+
+#[test]
+fn ctrl_x_cuts_the_selection_and_ctrl_enter_steers() {
+    let (mut app, ctl, rx) = test_app();
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(6);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    assert_eq!(app.input.selection_text().as_deref(), Some("wo"));
+
+    // ctrl+x cuts the selection.
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello rld", "cut deletes the selection");
+    assert_eq!(app.input.selection_text(), None, "cut removes the selection");
+    // The cut text landed in the yank buffer: move the caret and paste.
+    app.input.set_cursor_char(0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "wohello rld", "ctrl+y pastes the cut text");
+
+    // ctrl+enter steers the active turn (send-now).
+    app.input.set("steer me".into());
+    app.state = RunState::Running;
+    app.prompt_pending = false;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL), &ctl);
+    assert!(app.input.is_empty(), "steer clears the draft");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while app.pending_steer_cells.is_empty() {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("steer lands");
+        let ev = rx.recv_timeout(remaining).expect("steer event");
+        app.handle(ev, &ctl);
+    }
+    assert!(app.pending_steer_cells.values().next().is_some());
+}
+
+#[test]
+fn keyboard_selection_cut_survives_a_real_render_pass() {
+    use ratatui::backend::TestBackend;
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(6);
+    let backend = TestBackend::new(60, 15);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).expect("draw");
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello rld", "keyboard selection cut works after a real render");
 }

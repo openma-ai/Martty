@@ -68,7 +68,7 @@ impl Locale {
         const EN: [&str; 8] = [
             "esc interrupts a running turn — your draft survives",
             "type ! to run a command in the session's persistent local shell",
-            "enter queues a follow-up; ctrl+x steers the active turn now",
+            "enter queues a follow-up; ctrl+enter steers the active turn now",
             "click a tool to expand it · wheel always scrolls the conversation",
             "the footer under the composer shows token usage + cache hit rate",
             "answers render markdown: headings, code, links, and images",
@@ -78,7 +78,7 @@ impl Locale {
         const ZH: [&str; 8] = [
             "esc 可中断当前轮次，草稿会保留",
             "输入 ! 可直接运行本地命令，不经过 Agent",
-            "enter 会排队后续消息；ctrl+x 立即 steer 当前轮次",
+            "enter 会排队后续消息；ctrl+enter 立即 steer 当前轮次",
             "点击工具可展开 · 滚轮始终滚动对话",
             "输入框下方显示 token 用量和缓存命中率",
             "回答支持 Markdown：标题、代码、链接和图片",

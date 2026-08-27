@@ -25,8 +25,6 @@ pub enum Action {
     AttachClipboard,
     ModelPicker,
     CycleAgent,
-    /// Show the shortcut list (`/keys`).
-    ShowKeys,
     CyclePermission,
     TabComplete,
     HistoryPrev,
@@ -50,6 +48,27 @@ pub enum Action {
     DeleteWordBack,
     KillToEnd,
     KillToStart,
+    /// Undo the last draft edit (the textarea keeps a 50-step history).
+    Undo,
+    /// Redo the last undone draft edit.
+    Redo,
+    /// Paste the yank buffer (last kill) at the cursor.
+    YankPaste,
+    /// Delete the whole current line (ctrl+shift+k).
+    KillLine,
+    /// Start/extend a text selection toward the left (shift+←).
+    SelectLeft,
+    SelectRight,
+    SelectUp,
+    SelectDown,
+    SelectWordLeft,
+    SelectWordRight,
+    SelectLineStart,
+    SelectLineEnd,
+    /// Copy the keyboard selection to the system clipboard (+ yank).
+    CopySelection,
+    /// Cut the keyboard selection (clipboard + yank + delete).
+    CutSelection,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -71,19 +90,31 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
     let sup = m.intersects(KeyModifiers::SUPER | KeyModifiers::META);
 
     let action = match key.code {
+        // ctrl+enter / ⌘⏎ steer the active turn (send-now); legacy
+        // terminals collapse ctrl+enter to plain enter, which degrades to
+        // a normal send/queue. shift+enter stays a draft newline.
+        KeyCode::Enter if sup => SendNow,
+        KeyCode::Enter if ctrl => SendNow,
+        // ctrl+j is the readline newline byte (issue #55) — reliable in
+        // every terminal, unlike ctrl+enter.
+        KeyCode::Char('j') if ctrl => Newline,
         KeyCode::Enter if shift => Newline,
         KeyCode::Enter => Enter,
         KeyCode::Esc => Esc,
 
         // --- app chords -------------------------------------------------
+        // ctrl+shift+c copies the keyboard selection (plain ctrl+c clears
+        // the draft / quits; the editor's own yank copy rides along).
+        // ctrl+x cuts it — steer moved to ctrl+enter.
+        KeyCode::Char('c') if ctrl && shift => CopySelection,
         KeyCode::Char('c') if ctrl => CtrlC,
+        KeyCode::Char('x') if ctrl => CutSelection,
         KeyCode::Char('q') if ctrl => Quit,
         KeyCode::Char('l') if ctrl => ClearScrollback,
         KeyCode::Char('t') if ctrl => ToggleTheme,
         // ^o (not ^e): ghostty/iterm send ^e for ⌘→, and "explode the
         // transcript" on ⌘→ was evil.
         KeyCode::Char('o') if ctrl => ToggleExpandAll,
-        KeyCode::Char('x') if ctrl => SendNow,
         KeyCode::Up if alt => EditQueuedPrompt,
         KeyCode::Char('v') if ctrl => AttachClipboard,
         // ctrl+p (not ctrl+m): terminals send ctrl+m as the Enter byte.
@@ -94,9 +125,6 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // ^a = start of line — also what macOS terminals commonly send for
         // ⌘← when their natural-editing mode consumes the Command modifier.
         KeyCode::Char('a') if ctrl => LineStart,
-        // ^k is dual-use: discover the shortcut list from an empty prompt,
-        // retain readline's kill-to-end behavior while editing.
-        KeyCode::Char('k') if ctrl && ctx.input_empty => ShowKeys,
         KeyCode::BackTab => CyclePermission,
         // kitty-protocol terminals may report shift+tab instead of BackTab.
         KeyCode::Tab if shift => CyclePermission,
@@ -109,9 +137,13 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('d') if ctrl && !ctx.input_empty => DeleteForward,
         KeyCode::Char('u') if ctrl => ScrollHalfUp,
         KeyCode::Char('d') if ctrl => ScrollHalfDown,
+        // ctrl+shift+k kills the whole line; plain ctrl+k keeps the
+        // readline kill-to-line-end behavior.
+        KeyCode::Char('k') if ctrl && shift => KillLine,
         KeyCode::Char('k') if ctrl => KillToEnd,
         KeyCode::Char('w') if ctrl => DeleteWordBack,
         // ^e = end of line — also what ghostty/iterm send for ⌘→.
+        KeyCode::Char('e') if ctrl && shift => SelectLineEnd,
         KeyCode::Char('e') if ctrl => LineEnd,
         KeyCode::Char('b') if ctrl => CursorLeft,
         KeyCode::Char('f') if ctrl => CursorRight,
@@ -124,6 +156,18 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::PageDown => PageDown,
 
         // --- navigation (order: ⌘ → word-hop modifiers → plain) -----------
+        // Shift + move extends the text selection (the editor cancels it
+        // on plain moves, edits and clicks).
+        KeyCode::Left if sup && shift => SelectLineStart,
+        KeyCode::Right if sup && shift => SelectLineEnd,
+        KeyCode::Left if shift && (alt || ctrl) => SelectWordLeft,
+        KeyCode::Right if shift && (alt || ctrl) => SelectWordRight,
+        KeyCode::Up if shift && !sup && !alt && !ctrl && !ctx.input_empty => SelectUp,
+        KeyCode::Down if shift && !sup && !alt && !ctrl && !ctx.input_empty => SelectDown,
+        KeyCode::Home if shift => SelectLineStart,
+        KeyCode::End if shift => SelectLineEnd,
+        KeyCode::Left if shift && !sup && !alt && !ctrl => SelectLeft,
+        KeyCode::Right if shift && !sup && !alt && !ctrl => SelectRight,
         KeyCode::Home if ctx.input_empty => JumpTop,
         KeyCode::End if ctx.input_empty => JumpTail,
         KeyCode::Home => LineStart,
@@ -151,6 +195,16 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Backspace if alt || ctrl => DeleteWordBack,
         KeyCode::Backspace => Backspace,
         KeyCode::Delete => DeleteForward,
+
+        // --- undo / redo / yank --------------------------------------------
+        // ctrl+z everywhere, ⌘z on macOS (natural-editing terminals send
+        // ^z for ⌘z, which the ctrl arm catches); redo on ctrl+shift+z and
+        // ⌘⇧z. ctrl+y pastes the yank buffer (last kill), readline-style.
+        KeyCode::Char('z') if sup && shift => Redo,
+        KeyCode::Char('z') if sup => Undo,
+        KeyCode::Char('z') if ctrl && shift => Redo,
+        KeyCode::Char('z') if ctrl => Undo,
+        KeyCode::Char('y') if ctrl => YankPaste,
 
         // --- text ----------------------------------------------------------
         // Unbound ⌃/⌥/⌘ chords are ignored instead of inserting their base
@@ -197,7 +251,9 @@ impl CtxNote {
 pub enum KeyGroup {
     Send,
     Navigate,
-    Edit,
+    /// The composer textarea's own editing keys (motions, kill, undo,
+    /// selection, yank) — one dedicated section in `/keys`.
+    Composer,
     App,
     Mouse,
 }
@@ -209,8 +265,8 @@ impl KeyGroup {
             (KeyGroup::Send, true) => "发送 · 中断",
             (KeyGroup::Navigate, false) => "scroll · navigate",
             (KeyGroup::Navigate, true) => "滚动 · 导航",
-            (KeyGroup::Edit, false) => "edit · readline",
-            (KeyGroup::Edit, true) => "编辑 · readline",
+            (KeyGroup::Composer, false) => "composer textarea",
+            (KeyGroup::Composer, true) => "输入框 · textarea",
             (KeyGroup::App, false) => "app shortcuts",
             (KeyGroup::App, true) => "应用快捷键",
             (KeyGroup::Mouse, false) => "mouse",
@@ -263,6 +319,12 @@ const SHIFT: KeyModifiers = KeyModifiers::SHIFT;
 const SUPER: KeyModifiers = KeyModifiers::SUPER;
 /// `CONTROL | SHIFT` — bitflags has no const `BitOr`, so spell the bits.
 const CTRL_SHIFT: KeyModifiers = KeyModifiers::from_bits_retain(0b0000_0011);
+/// `SUPER | SHIFT` (bit 3 | bit 0).
+const SUPER_SHIFT: KeyModifiers = KeyModifiers::from_bits_retain(0b0000_1001);
+/// `SHIFT | ALT` (bit 0 | bit 2).
+const SHIFT_ALT: KeyModifiers = KeyModifiers::from_bits_retain(0b0000_0101);
+/// `SHIFT | CTRL` (bit 0 | bit 1).
+const SHIFT_CTRL: KeyModifiers = KeyModifiers::from_bits_retain(0b0000_0011);
 
 const fn p(code: KeyCode, m: KeyModifiers, empty: bool) -> (KeyCode, KeyModifiers, bool) {
     (code, m, empty)
@@ -283,22 +345,28 @@ pub const KEY_ROWS: &[KeyRow] = &[
     KeyRow {
         action: Newline,
         group: KeyGroup::Send,
-        chords_mac: &["shift+enter"],
-        chords_other: &["shift+enter"],
+        chords_mac: &["shift+enter", "ctrl+j"],
+        chords_other: &["shift+enter", "ctrl+j"],
         ctx: CtxNote::Always,
         desc_en: "newline in the draft",
         desc_zh: "草稿内换行",
-        probes: &[p(KeyCode::Enter, SHIFT, false)],
+        probes: &[
+            p(KeyCode::Enter, SHIFT, false),
+            p(KeyCode::Char('j'), CTRL, false),
+        ],
     },
     KeyRow {
         action: SendNow,
         group: KeyGroup::Send,
-        chords_mac: &["ctrl+x"],
-        chords_other: &["ctrl+x"],
+        chords_mac: &["ctrl+enter", "⌘⏎"],
+        chords_other: &["ctrl+enter"],
         ctx: CtxNote::Always,
         desc_en: "send now — steers the active turn",
         desc_zh: "立即发送（steer 当前轮次）",
-        probes: &[p(KeyCode::Char('x'), CTRL, false)],
+        probes: &[
+            p(KeyCode::Enter, CTRL, false),
+            p(KeyCode::Enter, SUPER, false),
+        ],
     },
     KeyRow {
         action: EditQueuedPrompt,
@@ -421,10 +489,10 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_zh: "下一页",
         probes: &[p(KeyCode::PageDown, NONE, false)],
     },
-    // --- edit · readline --------------------------------------------------
+    // --- composer textarea -------------------------------------------------
     KeyRow {
         action: LineStart,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["home", "⌘←", "ctrl+a"],
         chords_other: &["home", "ctrl+a"],
         ctx: CtxNote::Typing,
@@ -438,7 +506,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: LineEnd,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["end", "⌘→", "ctrl+e"],
         chords_other: &["end", "ctrl+e"],
         ctx: CtxNote::Typing,
@@ -452,7 +520,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorLeft,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+b"],
         chords_other: &["ctrl+b"],
         ctx: CtxNote::Typing,
@@ -462,7 +530,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorRight,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+f"],
         chords_other: &["ctrl+f"],
         ctx: CtxNote::Typing,
@@ -471,8 +539,121 @@ pub const KEY_ROWS: &[KeyRow] = &[
         probes: &[p(KeyCode::Char('f'), CTRL, false)],
     },
     KeyRow {
+        action: SelectLeft,
+        group: KeyGroup::Composer,
+        chords_mac: &["shift+←"],
+        chords_other: &["shift+←"],
+        ctx: CtxNote::Typing,
+        desc_en: "select left",
+        desc_zh: "向左选择",
+        probes: &[p(KeyCode::Left, SHIFT, false)],
+    },
+    KeyRow {
+        action: SelectRight,
+        group: KeyGroup::Composer,
+        chords_mac: &["shift+→"],
+        chords_other: &["shift+→"],
+        ctx: CtxNote::Typing,
+        desc_en: "select right",
+        desc_zh: "向右选择",
+        probes: &[p(KeyCode::Right, SHIFT, false)],
+    },
+    KeyRow {
+        action: SelectUp,
+        group: KeyGroup::Composer,
+        chords_mac: &["shift+↑"],
+        chords_other: &["shift+↑"],
+        ctx: CtxNote::Typing,
+        desc_en: "select up a screen line",
+        desc_zh: "向上选择一行",
+        probes: &[p(KeyCode::Up, SHIFT, false)],
+    },
+    KeyRow {
+        action: SelectDown,
+        group: KeyGroup::Composer,
+        chords_mac: &["shift+↓"],
+        chords_other: &["shift+↓"],
+        ctx: CtxNote::Typing,
+        desc_en: "select down a screen line",
+        desc_zh: "向下选择一行",
+        probes: &[p(KeyCode::Down, SHIFT, false)],
+    },
+    KeyRow {
+        action: SelectWordLeft,
+        group: KeyGroup::Composer,
+        chords_mac: &["⌥⇧←"],
+        chords_other: &["ctrl+shift+←"],
+        ctx: CtxNote::Typing,
+        desc_en: "select word backward",
+        desc_zh: "向前选一个词",
+        probes: &[
+            p(KeyCode::Left, SHIFT_ALT, false),
+            p(KeyCode::Left, SHIFT_CTRL, false),
+        ],
+    },
+    KeyRow {
+        action: SelectWordRight,
+        group: KeyGroup::Composer,
+        chords_mac: &["⌥⇧→"],
+        chords_other: &["ctrl+shift+→"],
+        ctx: CtxNote::Typing,
+        desc_en: "select word forward",
+        desc_zh: "向后选一个词",
+        probes: &[
+            p(KeyCode::Right, SHIFT_ALT, false),
+            p(KeyCode::Right, SHIFT_CTRL, false),
+        ],
+    },
+    KeyRow {
+        action: SelectLineStart,
+        group: KeyGroup::Composer,
+        chords_mac: &["shift+home", "⌘⇧←"],
+        chords_other: &["shift+home"],
+        ctx: CtxNote::Typing,
+        desc_en: "select to line start",
+        desc_zh: "选择到行首",
+        probes: &[
+            p(KeyCode::Home, SHIFT, false),
+            p(KeyCode::Left, SUPER_SHIFT, false),
+        ],
+    },
+    KeyRow {
+        action: SelectLineEnd,
+        group: KeyGroup::Composer,
+        chords_mac: &["shift+end", "⌘⇧→", "ctrl+shift+e"],
+        chords_other: &["shift+end", "ctrl+shift+e"],
+        ctx: CtxNote::Typing,
+        desc_en: "select to line end",
+        desc_zh: "选择到行尾",
+        probes: &[
+            p(KeyCode::End, SHIFT, false),
+            p(KeyCode::Right, SUPER_SHIFT, false),
+            p(KeyCode::Char('e'), CTRL_SHIFT, false),
+        ],
+    },
+    KeyRow {
+        action: CopySelection,
+        group: KeyGroup::Composer,
+        chords_mac: &["ctrl+shift+c"],
+        chords_other: &["ctrl+shift+c"],
+        ctx: CtxNote::Typing,
+        desc_en: "copy the selection",
+        desc_zh: "复制选中文本",
+        probes: &[p(KeyCode::Char('c'), CTRL_SHIFT, false)],
+    },
+    KeyRow {
+        action: CutSelection,
+        group: KeyGroup::Composer,
+        chords_mac: &["ctrl+x"],
+        chords_other: &["ctrl+x"],
+        ctx: CtxNote::Typing,
+        desc_en: "cut the selection",
+        desc_zh: "剪切选中文本",
+        probes: &[p(KeyCode::Char('x'), CTRL, false)],
+    },
+    KeyRow {
         action: CursorUp,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["↑"],
         chords_other: &["↑"],
         ctx: CtxNote::Typing,
@@ -482,7 +663,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: CursorDown,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["↓"],
         chords_other: &["↓"],
         ctx: CtxNote::Typing,
@@ -492,7 +673,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: WordLeft,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌥←", "esc-b"],
         chords_other: &["ctrl+←"],
         ctx: CtxNote::Typing,
@@ -506,7 +687,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: WordRight,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌥→", "esc-f"],
         chords_other: &["ctrl+→"],
         ctx: CtxNote::Typing,
@@ -520,7 +701,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: KillToStart,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+u", "⌘⌫"],
         chords_other: &["ctrl+u"],
         ctx: CtxNote::Typing,
@@ -533,17 +714,30 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: KillToEnd,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+k"],
         chords_other: &["ctrl+k"],
-        ctx: CtxNote::Typing,
+        ctx: CtxNote::Always,
         desc_en: "kill to line end",
         desc_zh: "删除到行尾",
-        probes: &[p(KeyCode::Char('k'), CTRL, false)],
+        probes: &[
+            p(KeyCode::Char('k'), CTRL, false),
+            p(KeyCode::Char('k'), CTRL, true),
+        ],
+    },
+    KeyRow {
+        action: KillLine,
+        group: KeyGroup::Composer,
+        chords_mac: &["ctrl+shift+k"],
+        chords_other: &["ctrl+shift+k"],
+        ctx: CtxNote::Typing,
+        desc_en: "kill the whole line",
+        desc_zh: "删除整行",
+        probes: &[p(KeyCode::Char('k'), CTRL_SHIFT, false)],
     },
     KeyRow {
         action: DeleteWordBack,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["ctrl+w", "⌥⌫"],
         chords_other: &["ctrl+w", "ctrl+⌫"],
         ctx: CtxNote::Typing,
@@ -556,8 +750,44 @@ pub const KEY_ROWS: &[KeyRow] = &[
         ],
     },
     KeyRow {
+        action: Undo,
+        group: KeyGroup::Composer,
+        chords_mac: &["⌘z"],
+        chords_other: &["ctrl+z"],
+        ctx: CtxNote::Typing,
+        desc_en: "undo the last draft edit",
+        desc_zh: "撤销上一步草稿编辑",
+        probes: &[
+            p(KeyCode::Char('z'), CTRL, false),
+            p(KeyCode::Char('z'), SUPER, false),
+        ],
+    },
+    KeyRow {
+        action: Redo,
+        group: KeyGroup::Composer,
+        chords_mac: &["⌘⇧z"],
+        chords_other: &["ctrl+shift+z"],
+        ctx: CtxNote::Typing,
+        desc_en: "redo the last undone edit",
+        desc_zh: "重做上一步撤销",
+        probes: &[
+            p(KeyCode::Char('z'), CTRL_SHIFT, false),
+            p(KeyCode::Char('z'), SUPER_SHIFT, false),
+        ],
+    },
+    KeyRow {
+        action: YankPaste,
+        group: KeyGroup::Composer,
+        chords_mac: &["ctrl+y"],
+        chords_other: &["ctrl+y"],
+        ctx: CtxNote::Typing,
+        desc_en: "paste the last killed text",
+        desc_zh: "粘贴最近一次删除的文本",
+        probes: &[p(KeyCode::Char('y'), CTRL, false)],
+    },
+    KeyRow {
         action: DeleteForward,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["delete", "ctrl+d"],
         chords_other: &["delete", "ctrl+d"],
         ctx: CtxNote::Typing,
@@ -570,7 +800,7 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     KeyRow {
         action: Backspace,
-        group: KeyGroup::Edit,
+        group: KeyGroup::Composer,
         chords_mac: &["⌫"],
         chords_other: &["⌫"],
         ctx: CtxNote::Typing,
@@ -638,16 +868,6 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_en: "clear scrollback",
         desc_zh: "清屏",
         probes: &[p(KeyCode::Char('l'), CTRL, false)],
-    },
-    KeyRow {
-        action: ShowKeys,
-        group: KeyGroup::App,
-        chords_mac: &["ctrl+k"],
-        chords_other: &["ctrl+k"],
-        ctx: CtxNote::EmptyPrompt,
-        desc_en: "this shortcut list (/keys)",
-        desc_zh: "本快捷键列表（/keys）",
-        probes: &[p(KeyCode::Char('k'), CTRL, true)],
     },
     KeyRow {
         action: TabComplete,

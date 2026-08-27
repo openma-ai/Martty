@@ -119,7 +119,7 @@ fn keys_slash_opens_a_local_modal_without_polluting_the_timeline() {
 }
 
 #[test]
-fn ctrl_k_opens_the_same_keys_modal_from_an_empty_prompt() {
+fn ctrl_k_no_longer_opens_the_keys_modal_on_an_empty_prompt() {
     let root = tmp_root("keys-shortcut");
     let (mut app, _demo_ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
     let (ctl, _commands) = crate::controller::tests::test_controller();
@@ -130,8 +130,14 @@ fn ctrl_k_opens_the_same_keys_modal_from_an_empty_prompt() {
         &ctl,
     );
 
-    assert!(app.view_overlay.is_some(), "ctrl+k modal should open");
+    assert!(
+        app.view_overlay.is_none(),
+        "ctrl+k belongs to the text editor now — /keys opens the modal"
+    );
     assert_eq!(app.transcript.cells.len(), cells_before);
+
+    app.run_slash("keys", "", &ctl);
+    assert!(app.view_overlay.is_some(), "/keys opens the modal");
     let _ = std::fs::remove_dir_all(&root);
 }
 

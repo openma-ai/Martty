@@ -233,15 +233,15 @@ fn input_click_places_the_caret_at_the_clicked_char() {
     app.input_top = 0;
     // Text starts at screen x = 1 + 2 = 3. Cells: h0 e1 l2 l3 o4 ␣5 世6-7 界8-9.
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
-    assert_eq!(app.input.cursor, 0, "click on 'h' → before it");
+    assert_eq!(app.input.cursor_char(), 0, "click on 'h' → before it");
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 7, 20), &ctl);
-    assert_eq!(app.input.cursor, 4, "click on 'o' → before it");
+    assert_eq!(app.input.cursor_char(), 4, "click on 'o' → before it");
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 20), &ctl);
-    assert_eq!(app.input.cursor, 7, "right half of 世 → after it");
+    assert_eq!(app.input.cursor_char(), 7, "right half of 世 → after it");
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 13, 20), &ctl);
-    assert_eq!(app.input.cursor, 8, "blank past the end → end");
+    assert_eq!(app.input.cursor_char(), 8, "blank past the end → end");
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 21), &ctl);
-    assert_eq!(app.input.cursor, 8, "row below the text → end");
+    assert_eq!(app.input.cursor_char(), 8, "row below the text → end");
 }
 
 #[test]
@@ -253,13 +253,13 @@ fn input_click_accounts_for_the_viewport_scroll() {
 
     // Visible row 0 (screen y 20) is text row 1: 'e' at screen x 3.
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
-    assert_eq!(app.input.cursor, 5, "'e' → the boundary before it");
+    assert_eq!(app.input.cursor_char(), 5, "'e' → the boundary before it");
     // Visible row 1 (screen y 21) is text row 2: 'i' at screen x 3.
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 21), &ctl);
-    assert_eq!(app.input.cursor, 10, "'i' → the boundary before it");
+    assert_eq!(app.input.cursor_char(), 10, "'i' → the boundary before it");
     // Blank after "ij" on the last row → end of buffer.
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 8, 21), &ctl);
-    assert_eq!(app.input.cursor, 12, "last text row → end of buffer");
+    assert_eq!(app.input.cursor_char(), 12, "last text row → end of buffer");
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn input_click_dismisses_a_chat_selection_without_touching_history() {
 
     assert!(app.sel.is_none(), "chat highlight dismissed");
     assert!(!app.selecting);
-    assert_eq!(app.input.cursor, 1, "click on 'r' → before it");
+    assert_eq!(app.input.cursor_char(), 1, "click on 'r' → before it");
     assert!(app.input.hist_pos.is_none(), "no history recall on click");
 }
 
@@ -291,7 +291,7 @@ fn input_drag_selects_the_crossed_cells_and_keeps_the_highlight() {
     // Down on 'l' (cell 2, screen x 5), drag across to 'd' (cell 10,
     // screen x 13): cells 2..=10 → "llo world".
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 20), &ctl);
-    assert_eq!(app.input.cursor, 2, "click on 'l' → before it");
+    assert_eq!(app.input.cursor_char(), 2, "click on 'l' → before it");
     app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 13, 20), &ctl);
     assert_eq!(app.input_selection_range(), Some((2, 11)), "cells 2..=10");
     app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 13, 20), &ctl);
@@ -353,7 +353,63 @@ fn chat_click_clears_the_composer_highlight() {
         "chat click clears the composer highlight"
     );
     assert_eq!(
-        app.input.cursor, 5,
+        app.input.cursor_char(), 5,
         "composer caret untouched by chat clicks"
     );
+}
+
+#[test]
+fn ctrl_x_cuts_a_mouse_drag_selection() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("hello world".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    // Mouse drag from 'h' (cell 0) across to 'd' (cell 10).
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 13, 20), &ctl);
+    assert_eq!(app.input_selection_range(), Some((0, 11)), "drag covers all");
+
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        &ctl,
+    );
+
+    assert_eq!(app.input.buf(), "", "ctrl+x cuts the dragged text");
+    assert!(app.input_sel.is_none(), "the drag highlight clears");
+    // The cut text is yanked: paste restores it.
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hello world", "ctrl+y pastes the cut text");
+}
+
+#[test]
+fn ctrl_shift_c_copies_a_mouse_drag_selection_and_keeps_the_highlight() {
+    let (mut app, ctl) = test_app_and_ctl();
+    app.input.set("hello world".into());
+    app.input_area = input_well();
+    app.input_top = 0;
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 3, 20), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 8, 20), &ctl);
+    assert_eq!(app.input_selection_range(), Some((0, 6)), "drag covers hello");
+
+    app.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
+        ),
+        &ctl,
+    );
+
+    assert_eq!(app.input.buf(), "hello world", "copy leaves the draft");
+    assert!(app.input_sel.is_some(), "copy keeps the highlight");
 }

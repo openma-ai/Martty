@@ -22,6 +22,10 @@
 
 ## 快速开始
 
+> 通过 `npm install` 安装时，本机需已安装 [Node.js](https://nodejs.org/)，且可能需要 [pnpm](https://pnpm.io/)。
+>
+> AI agent / 自动化安装步骤见 [Agent 安装说明](docs/agent-install.md)。
+
 全局安装后直接启动：
 
 ```sh
@@ -70,7 +74,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | 按键 / 命令 | 行为 |
 |---|---|
 | `enter` | 发送消息；composer 为空且 Queue 非空时立即发送队首 |
-| `ctrl+x` | 立即 steer 当前 agent |
+| `ctrl+enter` | 立即 steer 当前 agent（macOS 也可用 `⌘⏎`） |
 | `alt+↑` | 选择任意 Queue 条目；`↑/↓` 移动，`enter` 编辑，`ctrl+d` 删除 |
 | `↓` · `←/→` · `enter` | 空输入时展开 Agent 导航、移动并打开；`esc` 折叠 |
 | `esc` | 中断当前回合并保留草稿 |
@@ -80,6 +84,27 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
 | `/help` · `/keys` | 查看命令与快捷键 |
+
+### 文本编辑（composer 输入框）
+
+| 按键 | 行为 |
+|---|---|
+| `←` / `→` | 移动光标（`ctrl+b` / `ctrl+f`） |
+| `↑` / `↓` | 按屏幕行移动（多行草稿） |
+| `home` / `end` | 行首 / 行尾（`ctrl+a` / `ctrl+e`；macOS `⌘←/→`） |
+| `alt+←` / `alt+→` | 按词移动（Linux/Win `ctrl+←/→`） |
+| `⌫` / `delete` | 删除前 / 后一个字符 |
+| `ctrl+w` | 删除光标前一个词 |
+| `ctrl+k` / `ctrl+u` | 删到行尾 / 行首（macOS `⌘⌫` 删到行首） |
+| `ctrl+shift+k` | 删除整行 |
+| `ctrl+z` / `ctrl+shift+z` | 撤销 / 重做（macOS `⌘z` / `⌘⇧z`） |
+| `ctrl+y` | 粘贴最近删除的文本（yank） |
+| `shift+←/→/↑/↓` · `shift+home/end` | 扩展选区 |
+| `ctrl+shift+c` / `ctrl+x` | 复制 / 剪切选区（键盘与鼠标拖选均适用） |
+| `shift+enter` / `ctrl+j` | 草稿内换行 |
+
+完整的编辑快捷键、鼠标操作（点击定位、拖选复制）与开发者集成说明，见
+[Composer 输入控件文档](docs/composer-input.md)。
 
 ## 插件系统
 
@@ -221,6 +246,8 @@ stdin/stdout；用户 TTY 使用 fd 3/4，两条通道互不混用。
 | 文档 | 内容 |
 |---|---|
 | [运行架构](docs/architecture.md) | Host、Client、ACP 与 painter 的边界 |
+| [Composer 输入控件](docs/composer-input.md) | 文本输入使用说明：快捷键、鼠标、撤销/重做与开发者集成 |
+| [Agent 安装说明](docs/agent-install.md) | 面向 AI agent / 自动化：可验证的安装步骤与排查 |
 | [Plugin API](docs/plugins.md) | Service、Slot、Overlay、生命周期与 Package RPC |
 | [运行时 Mermaid](docs/diagrams/runtime-architecture.mmd) | DSH-first 双进程数据流 |
 | [Plugin Mermaid](docs/diagrams/plugin-system.mmd) | Host half、Client half 与 Plugin 视图 |
