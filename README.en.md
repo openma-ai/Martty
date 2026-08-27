@@ -346,6 +346,24 @@ Agent-oriented, fully verifiable installation steps live in the
 | Mouse drag | Copy on release; double-click a word; `shift+drag` uses native selection |
 | `!cmd` | Run a command in the client's session-local shell, outside the agent; the shell starts in the workspace and keeps `cd`, environment variables, and other state for later `!` commands until the TUI exits |
 
+### Composer text editing
+
+| Key | Behavior |
+|---|---|
+| `←` / `→` | Move by char (`ctrl+b` / `ctrl+f`) |
+| `↑` / `↓` | Move by screen line (multiline drafts) |
+| `home` / `end` | Line start / end (`ctrl+a` / `ctrl+e`; macOS `⌘←/→`) |
+| `alt+←` / `alt+→` | Move by word (Linux/Win `ctrl+←/→`) |
+| `⌫` / `delete` | Delete before / after the cursor |
+| `ctrl+w` | Delete the word before the cursor |
+| `ctrl+k` / `ctrl+u` | Kill to line end / start (macOS `⌘⌫` kills to start) |
+| `ctrl+shift+k` | Kill the whole line |
+| `ctrl+z` / `ctrl+shift+z` | Undo / redo (macOS `⌘z` / `⌘⇧z`) |
+| `ctrl+y` | Paste the last killed text (yank) |
+| `shift+←/→/↑/↓` · `shift+home/end` | Extend the selection |
+| `ctrl+shift+c` / `ctrl+x` | Copy / cut the selection (keyboard and mouse drags) |
+| `shift+enter` / `ctrl+j` | Newline in the draft |
+
 Use `/help` for commands and `/keys` for the complete shortcut list.
 The full editing reference — keys, mouse click/drag behavior, and developer
 integration notes — lives in the [composer input docs](docs/composer-input.md).

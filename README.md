@@ -82,9 +82,26 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `/model` · `/agent` | 选择模型和 Agent Preset |
 | `/permission` · `shift+tab` | 选择或轮换权限模式 |
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
-| 草稿编辑 | `←/→` 移动 · `↑/↓` 按屏幕行移动 · `home/end` 行首/尾 · `shift+enter` 换行 · `ctrl+w` 删词 · `ctrl+k/u` 删到行尾/首 · `ctrl+shift+k` 删整行 · `ctrl+y` 粘贴 · `ctrl+z` 撤销 · `ctrl+shift+z` 重做 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
 | `/help` · `/keys` | 查看命令与快捷键 |
+
+### 文本编辑（composer 输入框）
+
+| 按键 | 行为 |
+|---|---|
+| `←` / `→` | 移动光标（`ctrl+b` / `ctrl+f`） |
+| `↑` / `↓` | 按屏幕行移动（多行草稿） |
+| `home` / `end` | 行首 / 行尾（`ctrl+a` / `ctrl+e`；macOS `⌘←/→`） |
+| `alt+←` / `alt+→` | 按词移动（Linux/Win `ctrl+←/→`） |
+| `⌫` / `delete` | 删除前 / 后一个字符 |
+| `ctrl+w` | 删除光标前一个词 |
+| `ctrl+k` / `ctrl+u` | 删到行尾 / 行首（macOS `⌘⌫` 删到行首） |
+| `ctrl+shift+k` | 删除整行 |
+| `ctrl+z` / `ctrl+shift+z` | 撤销 / 重做（macOS `⌘z` / `⌘⇧z`） |
+| `ctrl+y` | 粘贴最近删除的文本（yank） |
+| `shift+←/→/↑/↓` · `shift+home/end` | 扩展选区 |
+| `ctrl+shift+c` / `ctrl+x` | 复制 / 剪切选区（键盘与鼠标拖选均适用） |
+| `shift+enter` / `ctrl+j` | 草稿内换行 |
 
 完整的编辑快捷键、鼠标操作（点击定位、拖选复制）与开发者集成说明，见
 [Composer 输入控件文档](docs/composer-input.md)。
