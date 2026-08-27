@@ -1526,7 +1526,7 @@ fn status_title(app: &App) -> Line<'static> {
 
 /// Contextual shortcut hints — a tiny state machine over (run state ×
 /// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty falls back to the `^k keys` discovery hint.
+/// immediately. Idle+empty falls back to the `/keys` discovery hint.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
     let key = Style::default()
@@ -1575,12 +1575,13 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
                 ("^x", "steer"),
                 ("esc", app.locale.tr("interrupt", "中断")),
             ],
-            // Idle, empty: point at the FIFO editor or full shortcut list.
+            // Idle, empty: point at the FIFO editor or the shortcut list
+            // (ctrl+k belongs to the text editor; /keys opens the modal).
             (false, true) if app.queued > 0 => vec![
                 (edit_queue_key, app.locale.tr("edit queue", "编辑队列")),
-                ("^k", app.locale.tr("keys", "快捷键")),
+                ("/keys", app.locale.tr("keys", "快捷键")),
             ],
-            (false, true) => vec![("^k", app.locale.tr("keys", "快捷键"))],
+            (false, true) => vec![("/keys", app.locale.tr("keys", "快捷键"))],
             // Idle with a draft: enter's meaning follows the prefix.
             (false, false) if app.input.lines()[0].starts_with('/') => {
                 vec![("⏎", app.locale.tr("command", "命令"))]

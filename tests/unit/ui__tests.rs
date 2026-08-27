@@ -429,8 +429,10 @@ fn meta_row_hints_follow_the_state_machine() {
         spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     };
     let mut app = test_app();
-    // idle · empty → discovery hint
-    assert!(flat(context_hints(&app)).contains("^k keys"));
+    // idle · empty → /keys discovery hint (ctrl+k belongs to the editor)
+    let s = flat(context_hints(&app));
+    assert!(s.contains("/keys keys"), "{s}");
+    assert!(!s.contains("^k"), "{s}");
     // idle · draft → enter sends
     app.input.set("hello".into());
     let s = flat(context_hints(&app));
