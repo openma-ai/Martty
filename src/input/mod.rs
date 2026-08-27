@@ -18,11 +18,13 @@
 pub mod composer;
 pub mod editor;
 pub mod keymap;
+pub mod vim;
 #[cfg(target_os = "macos")]
 mod macos_mod;
 pub mod normalize;
 
 pub use keymap::{classify, Action, KeyCtx};
+pub use vim::{VimMode, VimState};
 pub use normalize::rescue_key;
 
 /// Physically-held modifier keys at one instant. All-false where the OS

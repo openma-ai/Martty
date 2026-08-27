@@ -953,6 +953,16 @@ pub fn keys_markdown(zh: bool, mac: bool) -> String {
             if zh { row.desc_zh } else { row.desc_en }
         ));
     }
+    out.push('\n');
+    out.push_str(if zh {
+        "### vim 模式（`/vim` 开启 · 默认关闭）\n\n\
+         - normal：`h/j/k/l` 移动 · `w/b/e` 词跳 · `0/$` 行首尾 · `x/X` 删除 · `dd` 删行 · `u` 撤销 · `p` 粘贴 · `gg/G` 文档首尾 · `i/a/A` 插入 · `o/O` 新行 · `esc` 返回 normal\n\
+         - Ctrl/⌘ · 组合键始终保留（steer、undo 等）。\n"
+    } else {
+        "### vim mode (`/vim` toggles · off by default)\n\n\
+         - normal: `h/j/k/l` move · `w/b/e` word · `0/$` line head/tail · `x/X` delete · `dd` kill line · `u` undo · `p` paste · `gg/G` document head/tail · `i/a/A` insert · `o/O` new line · `esc` back\n\
+         - Ctrl/⌘ · chords stay with the app (steer, undo, …).\n"
+    });
     out
 }
 

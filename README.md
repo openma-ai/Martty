@@ -84,6 +84,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
 | `/help` · `/keys` | 查看命令与快捷键 |
+| `/vim` | 切换 vim 模态编辑（默认关闭；normal 模式 h/j/k/l 移动、dd 删行、i 插入） |
 
 ### 文本编辑（composer 输入框）
 

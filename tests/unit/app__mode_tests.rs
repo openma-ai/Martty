@@ -4098,3 +4098,44 @@ fn keyboard_selection_cut_survives_a_real_render_pass() {
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL), &ctl);
     assert_eq!(app.input.buf(), "hello rld", "keyboard selection cut works after a real render");
 }
+
+#[test]
+fn vim_mode_blocks_plain_typing_and_esc_returns_to_normal() {
+    let (mut app, ctl, _rx) = test_app();
+    app.run_slash("vim", "on", &ctl);
+    assert!(app.vim.is_active(), "/vim on activates");
+    assert_eq!(app.vim.mode, crate::input::VimMode::Insert, "lands in insert");
+
+    // Insert mode: typing works, esc goes to normal without clearing.
+    app.input.set("hello".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hellox");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.vim.mode, crate::input::VimMode::Normal);
+    assert_eq!(app.input.buf(), "hellox", "esc in insert must not clear the draft");
+
+    // Normal mode: plain letters are commands (never typed).
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hellox", "normal mode never types");
+    app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.cursor_char(), 0, "0 jumps to line head");
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "ellox", "x deletes a char");
+
+    // dd kills the cursor's line, i re-enters insert.
+    app.input.set("one\ntwo".into());
+    app.input.set_cursor_char(0); // first line
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "two", "dd kills the line");
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.vim.mode, crate::input::VimMode::Insert);
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "xtwo", "insert types again");
+
+    // /vim off restores readline.
+    app.run_slash("vim", "off", &ctl);
+    assert!(!app.vim.is_active());
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "xqtwo", "plain typing is back at the caret");
+}
