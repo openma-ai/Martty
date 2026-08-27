@@ -93,6 +93,9 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // a normal send/queue. shift+enter stays a draft newline.
         KeyCode::Enter if sup => SendNow,
         KeyCode::Enter if ctrl => SendNow,
+        // ctrl+j is the readline newline byte (issue #55) — reliable in
+        // every terminal, unlike ctrl+enter.
+        KeyCode::Char('j') if ctrl => Newline,
         KeyCode::Enter if shift => Newline,
         KeyCode::Enter => Enter,
         KeyCode::Esc => Esc,
@@ -335,12 +338,15 @@ pub const KEY_ROWS: &[KeyRow] = &[
     KeyRow {
         action: Newline,
         group: KeyGroup::Send,
-        chords_mac: &["shift+enter"],
-        chords_other: &["shift+enter"],
+        chords_mac: &["shift+enter", "ctrl+j"],
+        chords_other: &["shift+enter", "ctrl+j"],
         ctx: CtxNote::Always,
         desc_en: "newline in the draft",
         desc_zh: "草稿内换行",
-        probes: &[p(KeyCode::Enter, SHIFT, false)],
+        probes: &[
+            p(KeyCode::Enter, SHIFT, false),
+            p(KeyCode::Char('j'), CTRL, false),
+        ],
     },
     KeyRow {
         action: SendNow,

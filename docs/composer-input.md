@@ -14,7 +14,7 @@ Composer（底部输入区）自 v0.2.27 起基于 [`ratatui-textarea`](https://
 |---|---|
 | 普通字符 | 插入到光标处（中文、emoji、组合字符按字素处理） |
 | `enter` | 发送草稿；草稿为空且有排队消息时，发送队首 |
-| `shift+enter` | 草稿内换行（多行草稿） |
+| `shift+enter` / `ctrl+j` | 草稿内换行（多行草稿，readline 风格） |
 | `ctrl+enter` | 立即发送（steer 当前轮次；macOS 也可用 `⌘⏎`）——老终端可能退化为普通 `enter` |
 | `tab` | 补全 `/` 命令 / 切换选择 |
 | `esc` | 空闲时清空草稿（`↑` 可召回）；运行中中断当前轮次 |
