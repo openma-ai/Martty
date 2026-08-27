@@ -331,6 +331,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | `/model` · `/agent` | Pick an agent-advertised model or agent preset; `ctrl+shift+a` cycles agents directly without a picker |
 | `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
 | `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
+| `/vim` | Toggle vim modal editing (off by default; normal mode h/j/k/l move, dd kill line, i insert) |
 | `/effort` · `/plan` | Set reasoning effort or pass plan mode to the host |
 | `/image <path> [text]` | Send a local image (png/jpeg/webp/gif); ACP Image blocks when the agent advertises `promptCapabilities.image`, otherwise `resource_link` |
 | `/clip [text]` · `ctrl+v` | Stage the clipboard image (repeatable; up to 8 ride one prompt); macOS/Linux |

@@ -145,6 +145,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "keyboard shortcuts",
     },
     SlashCommand {
+        name: "vim",
+        usage: "/vim [on|off]",
+        desc: "toggle vim modal editing (default off)",
+    },
+    SlashCommand {
         name: "new",
         usage: "/new [id]",
         desc: "start a fresh session",
@@ -954,6 +959,8 @@ pub struct App {
     pub active_subagent: Option<String>,
     pub(crate) agent_selection: Option<String>,
     pub input: ComposerEditor,
+    /// Optional vim modal editing (`/vim`); off by default.
+    pub vim: crate::input::VimState,
     /// Display-cell width of the composer text well from the latest frame.
     pub(crate) composer_wrap_width: usize,
     /// Screen rect of the composer input well from the latest frame — mouse
@@ -1361,6 +1368,7 @@ impl App {
             active_subagent: None,
             agent_selection: None,
             input: ComposerEditor::new(),
+            vim: crate::input::VimState::default(),
             composer_wrap_width: 80,
             input_area: ratatui::layout::Rect::default(),
             input_top: 0,
@@ -3556,6 +3564,19 @@ impl App {
             self.show_tip(format!("key: {:?} + {:?}", key.modifiers, key.code));
         }
 
+        // Vim mode intercepts plain keys while it is active; overlays and
+        // forms keep their own key handling.
+        if self.vim.is_active()
+            && self.elicitation_ask.is_none()
+            && self.queue_edit.is_none()
+            && !self.slash_completion_open()
+        {
+            if self.vim.handle_key(&key, &mut self.input) {
+                self.reconcile_attachments();
+                return;
+            }
+        }
+
         if key.modifiers == KeyModifiers::ALT && !self.pending_cordis_approvals.is_empty() {
             let decision = match key.code {
                 KeyCode::Char('1') => Some("allow-version"),
@@ -5175,6 +5196,18 @@ impl App {
                 self.show_tip(msg);
             }
             "theme" => self.apply_theme_arg(arg, ctl),
+            "vim" => {
+                let on = match arg {
+                    "on" | "1" => true,
+                    "off" | "0" => false,
+                    _ => !self.vim.is_active(),
+                };
+                self.vim.set(on);
+                self.show_tip(self.locale.tr(
+                    "vim mode — i insert · esc normal · /vim off",
+                    "vim 模式 — i 插入 · esc 返回 normal · /vim off 关闭",
+                ));
+            }
             "ui" => {
                 if arg.is_empty() {
                     self.open_ui_plugin_picker();

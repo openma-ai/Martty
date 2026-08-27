@@ -1615,6 +1615,17 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
 fn status_right(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    // Vim mode indicator: -- INSERT -- / -- NORMAL --.
+    if app.vim.is_active() {
+        let (label, color) = match app.vim.mode {
+            crate::input::VimMode::Insert => ("-- INSERT --", theme.caption),
+            _ => ("-- NORMAL --", theme.brand),
+        };
+        spans.push(Span::styled(
+            format!("{label} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
     if app.scroll_up > 0 {
         spans.push(Span::styled(
             format!("▲{} · ", app.scroll_up),

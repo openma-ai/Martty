@@ -447,6 +447,35 @@ impl ComposerEditor {
         self.move_cursor(CursorMove::WordForward);
     }
 
+    /// Logical-line motions and jumps (vim normal mode).
+    pub fn line_head(&mut self) {
+        self.textarea_mut().cancel_selection();
+        self.move_cursor(CursorMove::Head);
+    }
+
+    pub fn line_tail(&mut self) {
+        self.textarea_mut().cancel_selection();
+        self.move_cursor(CursorMove::End);
+    }
+
+    /// Jump to the first line's head (vim `gg`), not the column-preserving
+    /// `Top` motion.
+    pub fn jump_top(&mut self) {
+        self.textarea_mut().cancel_selection();
+        self.move_cursor(CursorMove::Jump(0, 0));
+    }
+
+    /// Jump to the last line's head (vim `G`).
+    pub fn jump_bottom(&mut self) {
+        self.textarea_mut().cancel_selection();
+        self.move_cursor(CursorMove::Jump(u16::MAX, 0));
+    }
+
+    pub fn word_end(&mut self) {
+        self.textarea_mut().cancel_selection();
+        self.move_cursor(CursorMove::WordEnd);
+    }
+
     pub fn set_cursor_char(&mut self, offset: usize) {
         let (row, col) = self.char_to_rowcol(offset);
         self.textarea_mut().cancel_selection();
