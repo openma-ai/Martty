@@ -3920,6 +3920,8 @@ impl App {
                     if !text.trim().is_empty() {
                         self.input.cut_selection_to_yank();
                         self.copy_text(&text);
+                    } else {
+                        self.show_tip("nothing to cut — select with shift+arrows");
                     }
                 } else if let Some((a, b)) = self.input_selection_range() {
                     let text = self.input.chars_between(a, b);
@@ -3927,7 +3929,11 @@ impl App {
                         self.input.delete_char_range(a, b);
                         self.input_sel = None;
                         self.copy_text(&text);
+                    } else {
+                        self.show_tip("nothing to cut — select with shift+arrows");
                     }
+                } else {
+                    self.show_tip("nothing to cut — select with shift+arrows");
                 }
             }
         }
