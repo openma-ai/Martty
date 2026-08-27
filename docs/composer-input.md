@@ -15,6 +15,7 @@ Composer（底部输入区）自 v0.2.27 起基于 [`ratatui-textarea`](https://
 | 普通字符 | 插入到光标处（中文、emoji、组合字符按字素处理） |
 | `enter` | 发送草稿；草稿为空且有排队消息时，发送队首 |
 | `shift+enter` | 草稿内换行（多行草稿） |
+| `ctrl+enter` | 立即发送（steer 当前轮次；macOS 也可用 `⌘⏎`）——老终端可能退化为普通 `enter` |
 | `tab` | 补全 `/` 命令 / 切换选择 |
 | `esc` | 空闲时清空草稿（`↑` 可召回）；运行中中断当前轮次 |
 
@@ -52,6 +53,23 @@ Composer（底部输入区）自 v0.2.27 起基于 [`ratatui-textarea`](https://
 - 撤销/重做后，光标回到对应编辑位置
 - 与 `↑`/`↓` 的**输入历史**（历史提交记录）互不干扰
 - 整文替换（如从输入历史回填、恢复排队消息编辑）会清空撤销历史
+
+### 4.1 键盘选区（shift 扩展选择）
+
+| 按键 | 行为 |
+|---|---|
+| `shift+←` / `shift+→` | 向左 / 向右扩展选择（字符级） |
+| `shift+↑` / `shift+↓` | 按屏幕行扩展（软换行感知） |
+| `shift+home` / `shift+end` | 扩展到行首 / 行尾 |
+| `shift+ctrl+←` / `shift+ctrl+→`（macOS `⌥⇧←/→`） | 按词扩展 |
+| `⌘⇧←` / `⌘⇧→` · `ctrl+shift+e` | 扩展到行首 / 行尾（macOS / readline） |
+| `ctrl+shift+c` | 复制选区到系统剪贴板（同时存入 yank） |
+| `ctrl+x` | 剪切选区（系统剪贴板 + yank + 删除） |
+| `ctrl+y` | 粘贴 yank |
+
+- 选区高亮为反色，与鼠标拖选一致
+- 普通移动、编辑、点击光标会取消选区（shift 移动则扩展）
+- 插入字符时如有选区，会先删除选区（替换语义）
 
 ### 5. 输入历史
 
@@ -171,7 +189,7 @@ textarea_mut() -> &mut TextArea // 直接操作 widget（会失效化布局镜�
 - **word 边界含标点**（`fn foo(a)` 拆成 5 个词），比旧实现（仅空白）更 readline 化。
 - **光标在软换行边界时**：显示在下一行首（widget 模型），但 `line_start/end`、kill 系列按上游行语义
   （与旧实现一致）。
-- **不要调用 `textarea.input(key)`**：默认键位会吞掉 app 的 `ctrl+x`/`ctrl+l` 等；
+- **不要调用 `textarea.input(key)`**：默认键位（如 `ctrl+c` 复制、`ctrl+x` 剪切）与 app 快捷键语义不同；
   全部走 `classify → dispatch` 显式调用。
 - 未启用的库能力：搜索高亮（`search` feature）、行号、placeholder（自绘）。
 

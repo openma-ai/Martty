@@ -4019,3 +4019,64 @@ fn ctrl_y_pastes_the_last_kill() {
     app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
     assert_eq!(app.input.buf(), " worldhello");
 }
+
+#[test]
+fn shift_arrows_select_and_ctrl_shift_c_copies() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(6);
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    assert_eq!(
+        app.input.selection_text().as_deref(),
+        Some("wo"),
+        "shift+→ extends the selection"
+    );
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        &ctl,
+    );
+    // the widget's copy() clears the selection; the yank buffer survives
+    // (the system-clipboard path may be a no-op in tests).
+    assert!(app.input.selection_text().is_none(), "copy clears the selection");
+    app.input.set_cursor_char(0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "wohello world", "ctrl+y pastes the yank copy");
+}
+
+#[test]
+fn ctrl_x_cuts_the_selection_and_ctrl_enter_steers() {
+    let (mut app, ctl, rx) = test_app();
+    app.input.set("hello world".into());
+    app.input.set_cursor_char(6);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT), &ctl);
+    assert_eq!(app.input.selection_text().as_deref(), Some("wo"));
+
+    // ctrl+x cuts the selection.
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "hello rld", "cut deletes the selection");
+    assert_eq!(app.input.selection_text(), None, "cut removes the selection");
+    // The cut text landed in the yank buffer: move the caret and paste.
+    app.input.set_cursor_char(0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), &ctl);
+    assert_eq!(app.input.buf(), "wohello rld", "ctrl+y pastes the cut text");
+
+    // ctrl+enter steers the active turn (send-now).
+    app.input.set("steer me".into());
+    app.state = RunState::Running;
+    app.prompt_pending = false;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL), &ctl);
+    assert!(app.input.is_empty(), "steer clears the draft");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while app.pending_steer_cells.is_empty() {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("steer lands");
+        let ev = rx.recv_timeout(remaining).expect("steer event");
+        app.handle(ev, &ctl);
+    }
+    assert!(app.pending_steer_cells.values().next().is_some());
+}

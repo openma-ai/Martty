@@ -283,3 +283,44 @@ fn set_resets_the_undo_history() {
     assert!(!e.undo(), "set replaces the widget, wiping its history");
     assert_eq!(e.buf(), "two");
 }
+
+#[test]
+fn shift_select_extends_and_plain_moves_cancel() {
+    let mut e = ComposerEditor::new();
+    e.insert_str("hello world");
+    e.set_cursor_char(6);
+    e.select_right(); // "w"
+    e.select_right(); // "wo"
+    assert_eq!(e.selection_text().as_deref(), Some("wo"));
+    e.select_word_right(); // extend to end of word
+    assert_eq!(e.selection_text().as_deref(), Some("world"));
+    // plain move cancels the selection
+    e.move_right();
+    assert_eq!(e.selection_text(), None);
+    // editing while selecting replaces nothing but cancels? insert keeps selection semantics:
+    e.set_cursor_char(2);
+    e.select_left();
+    e.select_left();
+    assert_eq!(e.selection_text().as_deref(), Some("he"));
+    e.backspace();
+    assert_eq!(
+        e.buf(),
+        "hello world",
+        "backspace cancels the selection, then deletes before the cursor (at the selection head)"
+    );
+    assert_eq!(e.selection_text(), None);
+}
+
+#[test]
+fn selection_spans_multiple_lines() {
+    let mut e = ComposerEditor::new();
+    e.insert_str("ab\ncd\nef");
+    e.set_cursor_char(0);
+    e.select_right();
+    e.select_right();
+    e.select_down();
+    e.select_down();
+    assert_eq!(e.selection_text().as_deref(), Some("ab\ncd\nef"));
+    e.cancel_selection();
+    assert_eq!(e.selection_text(), None);
+}

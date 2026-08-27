@@ -321,7 +321,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | Key / command | Behavior |
 |---|---|
 | `enter` | Send; with an empty composer and a non-empty Queue, send its head immediately |
-| `ctrl+x` | Steer the active turn immediately without cancelling it |
+| `ctrl+enter` | Steer the active turn immediately without cancelling it (macOS `⌘⏎`) |
 | `alt+↑` | Select any Queue item; `↑/↓` moves, Enter edits, and `ctrl+d` deletes |
 | `↓` · `←/→` · Enter | From an empty prompt, expand Agent navigation, move, and open; Escape collapses it |
 | `esc` | Interrupt the current turn (draft survives); clears the draft when idle |

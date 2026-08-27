@@ -266,6 +266,16 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::Undo,
         Action::Redo,
         Action::YankPaste,
+        Action::SelectLeft,
+        Action::SelectRight,
+        Action::SelectUp,
+        Action::SelectDown,
+        Action::SelectWordLeft,
+        Action::SelectWordRight,
+        Action::SelectLineStart,
+        Action::SelectLineEnd,
+        Action::CopySelection,
+        Action::CutSelection,
     ];
     let documented: Vec<Action> = KEY_ROWS.iter().map(|row| row.action).collect();
     assert_eq!(

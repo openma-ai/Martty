@@ -3764,6 +3764,14 @@ impl App {
                 | Action::Undo
                 | Action::Redo
                 | Action::YankPaste
+                | Action::SelectLeft
+                | Action::SelectRight
+                | Action::SelectUp
+                | Action::SelectDown
+                | Action::SelectWordLeft
+                | Action::SelectWordRight
+                | Action::SelectLineStart
+                | Action::SelectLineEnd
         ) {
             self.slash_completion_dismissed = false;
             // Text edits invalidate the drag-selection highlight.
@@ -3883,6 +3891,30 @@ impl App {
             }
             Action::YankPaste => {
                 self.input.paste_yank();
+            }
+            Action::SelectLeft => self.input.select_left(),
+            Action::SelectRight => self.input.select_right(),
+            Action::SelectUp => self.input.select_up(),
+            Action::SelectDown => self.input.select_down(),
+            Action::SelectWordLeft => self.input.select_word_left(),
+            Action::SelectWordRight => self.input.select_word_right(),
+            Action::SelectLineStart => self.input.select_line_start(),
+            Action::SelectLineEnd => self.input.select_line_end(),
+            Action::CopySelection => {
+                if let Some(text) = self.input.selection_text() {
+                    if !text.trim().is_empty() {
+                        self.input.copy_selection_to_yank();
+                        self.copy_text(&text);
+                    }
+                }
+            }
+            Action::CutSelection => {
+                if let Some(text) = self.input.selection_text() {
+                    if !text.trim().is_empty() {
+                        self.input.cut_selection_to_yank();
+                        self.copy_text(&text);
+                    }
+                }
             }
         }
     }
@@ -5436,7 +5468,7 @@ impl App {
 
 - enter · 发送；空 composer 且 Queue 非空时立即发送队首
 - alt+↑ · 选择任意排队消息；↑/↓ 选择，enter 编辑/保存，ctrl+d 删除，esc 退出
-- ctrl+x · 立即 steer 当前轮次
+- ctrl+enter · 立即 steer 当前轮次
 - esc · 优先退出 / 推荐；队列编辑时取消；否则中断（保留草稿），空闲时清草稿
 - ctrl+c · 有草稿先清除；无草稿时连按 2 次退出（不中断）
 - shift+tab · 轮换权限预设 · /permission 打开选择器
@@ -5468,7 +5500,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 
 - enter · send · with an empty composer, sends the Queue head now
 - alt+↑ · choose any queued prompt · ↑/↓ select, enter edits/saves, ctrl+d deletes, esc closes
-- ctrl+x · steer the active turn immediately
+- ctrl+enter · steer the active turn immediately
 - esc · first closes / suggestions; cancels queue edits; otherwise interrupts (draft survives) or clears an idle draft
 - ctrl+c · clear a draft; 2× quits with no draft (never interrupts)
 - shift+tab · cycle permission (workspace-write ⇄ full access) · /permission opens the preset picker

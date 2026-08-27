@@ -1569,10 +1569,11 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
                 ("esc", app.locale.tr("interrupt", "中断")),
             ],
             (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
-            // Working with a draft: enter queues; ^x steers without cancellation.
+            // Working with a draft: enter queues; ctrl+enter steers without
+            // cancellation.
             (true, false) => vec![
                 ("⏎", app.locale.tr("queue", "排队")),
-                ("^x", "steer"),
+                ("ctrl+⏎", "steer"),
                 ("esc", app.locale.tr("interrupt", "中断")),
             ],
             // Idle, empty: point at the FIFO editor or the shortcut list
@@ -2398,8 +2399,8 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             _ => app
                 .locale
                 .tr(
-                    "queue a follow-up — ctrl+x steers now",
-                    "输入后续消息 — ctrl+x 立即 steer",
+                    "queue a follow-up — ctrl+enter steers now",
+                    "输入后续消息 — ctrl+enter 立即 steer",
                 )
                 .to_string(),
         };

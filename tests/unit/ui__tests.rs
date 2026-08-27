@@ -454,7 +454,7 @@ fn meta_row_hints_follow_the_state_machine() {
     app.input.set("follow-up".into());
     let s = flat(context_hints(&app));
     assert!(
-        s.contains("⏎ queue") && s.contains("^x steer") && s.contains("esc interrupt"),
+        s.contains("⏎ queue") && s.contains("ctrl+⏎ steer") && s.contains("esc interrupt"),
         "{s}"
     );
 }

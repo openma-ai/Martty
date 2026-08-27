@@ -73,7 +73,7 @@ OPTIONS:
   -V, --version             print version
   -h, --help                this help
 
-KEYS (grok-build homage): enter send/queue · ctrl+x send-now ·
+KEYS (grok-build homage): enter send/queue · ctrl+enter send-now ·
 esc interrupt / clear draft · ctrl+c clear/quit · ↑ history · ! shell ·
 / commands · ctrl+p model · ctrl+o expand · ctrl+t theme
 MOUSE: wheel scrolls the conversation · click a tool expands/collapses it ·

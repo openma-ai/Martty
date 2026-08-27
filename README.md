@@ -74,7 +74,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | 按键 / 命令 | 行为 |
 |---|---|
 | `enter` | 发送消息；composer 为空且 Queue 非空时立即发送队首 |
-| `ctrl+x` | 立即 steer 当前 agent |
+| `ctrl+enter` | 立即 steer 当前 agent（macOS 也可用 `⌘⏎`） |
 | `alt+↑` | 选择任意 Queue 条目；`↑/↓` 移动，`enter` 编辑，`ctrl+d` 删除 |
 | `↓` · `←/→` · `enter` | 空输入时展开 Agent 导航、移动并打开；`esc` 折叠 |
 | `esc` | 中断当前回合并保留草稿 |

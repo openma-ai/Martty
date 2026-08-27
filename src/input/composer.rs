@@ -213,8 +213,12 @@ impl ComposerEditor {
         let mut textarea = TextArea::default();
         textarea.set_wrap_mode(ratatui_textarea::WrapMode::Glyph);
         // The composer draws its own selection highlight and cursor line;
-        // disable the widget's underline so it cannot fight the theme.
+        // disable the widget's underline so it cannot fight the theme. The
+        // keyboard selection uses reversed cells, like the mouse drag.
         textarea.set_cursor_line_style(ratatui::style::Style::default());
+        textarea.set_selection_style(
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
+        );
         ComposerEditor {
             textarea,
             history: Vec::new(),
@@ -298,11 +302,13 @@ impl ComposerEditor {
     }
 
     pub fn backspace(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.textarea_mut().delete_char();
         self.hist_pos = None;
     }
 
     pub fn delete_forward(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.textarea_mut().delete_next_char();
         self.hist_pos = None;
     }
@@ -367,6 +373,9 @@ impl ComposerEditor {
         self.textarea = TextArea::new(lines);
         self.textarea.set_wrap_mode(ratatui_textarea::WrapMode::Glyph);
         self.textarea.set_cursor_line_style(ratatui::style::Style::default());
+        self.textarea.set_selection_style(
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
+        );
         self.move_cursor(CursorMove::Bottom);
         self.move_cursor(CursorMove::End);
         self.layout = None;
@@ -379,35 +388,122 @@ impl ComposerEditor {
         self.textarea_mut().move_cursor(m);
     }
 
+    /// Plain moves cancel an active keyboard selection (the widget would
+    /// otherwise extend it).
     pub fn move_left(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::Back);
     }
 
     pub fn move_right(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::Forward);
     }
 
     /// Up/down move by *screen* row (soft wraps included) and keep the
     /// display column — the widget's own cursor model.
     pub fn move_up(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::Up);
     }
 
     pub fn move_down(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::Down);
     }
 
     pub fn word_left(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::WordBack);
     }
 
     pub fn word_right(&mut self) {
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::WordForward);
     }
 
     pub fn set_cursor_char(&mut self, offset: usize) {
         let (row, col) = self.char_to_rowcol(offset);
+        self.textarea_mut().cancel_selection();
         self.move_cursor(CursorMove::Jump(row as u16, col as u16));
+    }
+
+    // --- text selection (shift+move) --------------------------------------
+
+    /// Anchor at the cursor and move — the first press starts the
+    /// selection, later ones extend it. Plain moves, edits and clicks
+    /// cancel it (see the move/edit wrappers below).
+    fn select_move(&mut self, m: CursorMove) {
+        let ta = self.textarea_mut();
+        if !ta.is_selecting() {
+            ta.start_selection();
+        }
+        ta.move_cursor(m);
+    }
+
+    pub fn select_left(&mut self) {
+        self.select_move(CursorMove::Back);
+    }
+
+    pub fn select_right(&mut self) {
+        self.select_move(CursorMove::Forward);
+    }
+
+    pub fn select_up(&mut self) {
+        self.select_move(CursorMove::Up);
+    }
+
+    pub fn select_down(&mut self) {
+        self.select_move(CursorMove::Down);
+    }
+
+    pub fn select_word_left(&mut self) {
+        self.select_move(CursorMove::WordBack);
+    }
+
+    pub fn select_word_right(&mut self) {
+        self.select_move(CursorMove::WordForward);
+    }
+
+    pub fn select_line_start(&mut self) {
+        self.select_move(CursorMove::Head);
+    }
+
+    pub fn select_line_end(&mut self) {
+        self.select_move(CursorMove::End);
+    }
+
+    pub fn cancel_selection(&mut self) {
+        self.textarea_mut().cancel_selection();
+    }
+
+    /// The selected text, `None` without an active selection.
+    pub fn selection_text(&self) -> Option<String> {
+        let (s, e) = self.textarea.selection_range()?;
+        let lines = self.textarea.lines();
+        if s.0 == e.0 {
+            return Some(lines[s.0].chars().skip(s.1).take(e.1 - s.1).collect());
+        }
+        let mut out = String::new();
+        out.push_str(&lines[s.0].chars().skip(s.1).collect::<String>());
+        for line in &lines[s.0 + 1..e.0] {
+            out.push('\n');
+            out.push_str(line);
+        }
+        out.push('\n');
+        out.push_str(&lines[e.0].chars().take(e.1).collect::<String>());
+        Some(out)
+    }
+
+    /// Copy the selection into the widget's yank buffer.
+    pub fn copy_selection_to_yank(&mut self) {
+        self.textarea_mut().copy();
+    }
+
+    /// Cut the selection (delete it and keep it in the yank buffer).
+    pub fn cut_selection_to_yank(&mut self) {
+        self.textarea_mut().cut();
+        self.hist_pos = None;
     }
 
     // --- visual-line (soft-wrap) motions ---------------------------------
