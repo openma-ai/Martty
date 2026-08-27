@@ -40,14 +40,16 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
     let mut prev_table_row = false;
-    for line in &parsed.lines {
+    for line in parsed.lines {
         // Flatten the line-level base style (blockquote, code block, …) into
         // each span so wrapping can move spans freely without losing it.
+        // Consumed by value: tui-markdown owns the spans, so the text moves
+        // out instead of being cloned per span per frame.
         let segs: Vec<Seg> = line
             .spans
-            .iter()
+            .into_iter()
             .map(|s| Seg {
-                text: s.content.to_string(),
+                text: s.content.into_owned(),
                 style: line.style.patch(s.style),
             })
             .collect();
@@ -316,7 +318,7 @@ fn table_row_separator(row: &Line, theme: &Theme) -> Line<'static> {
 
 /// Split off the leading blockquote (`>` runs) or list (`- ` / `- [x] ` /
 /// `1. `) marker so wrapped continuations can hang under the body text.
-fn split_prefix(segs: Vec<Seg>) -> (Vec<Seg>, Vec<Seg>) {
+fn split_prefix(mut segs: Vec<Seg>) -> (Vec<Seg>, Vec<Seg>) {
     // Blockquotes: tui-markdown prefixes every quote line with one `>` span
     // per nesting level plus a separating space.
     let mut n = 0;
@@ -332,7 +334,8 @@ fn split_prefix(segs: Vec<Seg>) -> (Vec<Seg>, Vec<Seg>) {
         }
     }
     if saw_gt {
-        return (segs[..n].to_vec(), segs[n..].to_vec());
+        let body = segs.split_off(n);
+        return (segs, body);
     }
 
     // Lists: the marker lives at the start of the first span, possibly after
@@ -545,27 +548,22 @@ fn wrap_pre(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
 /// tui-markdown renders every link as `label (destination)`; for autolinks
 /// and bare-URL links the label *is* the destination, doubling the URL. Drop
 /// the redundant ` (url)` tail when label and destination are identical.
-fn collapse_autolinks(segs: Vec<Seg>) -> Vec<Seg> {
+fn collapse_autolinks(mut segs: Vec<Seg>) -> Vec<Seg> {
     let is_link = |s: &Seg| s.style.add_modifier.contains(Modifier::UNDERLINED);
-    let mut out: Vec<Seg> = Vec::with_capacity(segs.len());
     let mut i = 0;
-    while i < segs.len() {
-        if i + 3 < segs.len()
-            && segs[i + 1].text == " ("
+    while i + 3 < segs.len() {
+        let redundant = segs[i + 1].text == " ("
             && segs[i + 3].text == ")"
             && segs[i].text == segs[i + 2].text
             && !segs[i].text.is_empty()
             && is_link(&segs[i])
-            && is_link(&segs[i + 2])
-        {
-            out.push(segs[i].clone());
-            i += 4;
-            continue;
+            && is_link(&segs[i + 2]);
+        if redundant {
+            segs.drain(i + 1..i + 4);
         }
-        out.push(segs[i].clone());
         i += 1;
     }
-    out
+    segs
 }
 
 /// Truncate a line to `width` columns, appending an ellipsis when content was

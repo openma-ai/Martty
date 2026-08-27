@@ -1461,7 +1461,7 @@ impl App {
             .unwrap_or(&self.transcript)
     }
 
-    fn displayed_transcript_mut(&mut self) -> &mut Transcript {
+    pub fn displayed_transcript_mut(&mut self) -> &mut Transcript {
         if let Some(index) = self
             .active_subagent
             .as_deref()

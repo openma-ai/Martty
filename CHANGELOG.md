@@ -16,6 +16,12 @@ All notable changes to this project are documented here. The project follows
 
 ### Changed
 
+- Transcript rendering now caches each cell's body lines and re-renders only
+  the cells that actually changed (streaming deltas, tool results, width,
+  theme or expansion drift). Spinner ticks and unchanged frames no longer
+  re-parse the whole scrollback: measured ~12.6x faster idle frames and
+  ~4.3x faster streaming frames on a seven-message markdown transcript,
+  with the gap growing as the conversation grows.
 - `/help` and `/session` now open the same popup dialog as `/keys` instead
   of pushing markdown into the scrollback; the transcript stays untouched
   (issue #49).

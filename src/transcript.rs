@@ -99,6 +99,28 @@ pub struct Cell {
     pub kind: CellKind,
     pub expanded: bool,
     pub hidden: bool,
+    /// Content version, bumped by every mutation (streaming deltas, tool
+    /// results, …) so the body render cache can detect staleness.
+    version: u64,
+    /// Cached body render for the wrap/markdown-heavy kinds. Headers stay
+    /// outside the cache: they depend on the per-frame spinner and are cheap.
+    render: Option<CellRender>,
+}
+
+/// Cached body lines of one cell plus the layout inputs they were built for.
+/// Body lines never depend on the spinner, so a spinning UI reuses them.
+struct CellRender {
+    version: u64,
+    width: u16,
+    theme: Theme,
+    expanded: bool,
+    thumbs: bool,
+    /// Lines below the cell header, in paint order, fully styled.
+    body: Vec<Line<'static>>,
+    /// Kind-specific count needed by the per-frame header: Tool cells carry
+    /// the wrapped result line count (the `▸` chrome), Reasoning cells the
+    /// wrapped body line count (`· N lines`). 0 when unused.
+    meta: usize,
 }
 
 impl Cell {
@@ -107,7 +129,203 @@ impl Cell {
             kind,
             expanded: false,
             hidden: false,
+            version: 0,
+            render: None,
         }
+    }
+
+    fn bump(&mut self) {
+        self.version = self.version.wrapping_add(1);
+    }
+
+    /// Return the cached body render, rebuilding it when the cell content
+    /// version or any layout input (width/theme/expanded/thumbs) drifted.
+    /// `expanded` is the *effective* value including the transcript-wide
+    /// `expand_all`; it decides Tool/Shell/Reasoning body layout.
+    fn ensure_render(&mut self, theme: &Theme, width: u16, expanded: bool, thumbs: bool) -> &CellRender {
+        let stale = match &self.render {
+            Some(r) => {
+                r.version != self.version
+                    || r.width != width
+                    || r.theme != *theme
+                    || r.expanded != expanded
+                    || r.thumbs != thumbs
+            }
+            None => true,
+        };
+        if stale {
+            let (body, meta) = build_body(&self.kind, theme, width as usize, expanded, thumbs);
+            self.render = Some(CellRender {
+                version: self.version,
+                width,
+                theme: *theme,
+                expanded,
+                thumbs,
+                body,
+                meta,
+            });
+        }
+        self.render.as_ref().expect("body render built")
+    }
+}
+
+/// Build the cacheable body lines for one cell: everything painted below the
+/// per-frame header. Returns the lines and the kind-specific header count.
+/// Only the expensive kinds route through here; User/Image/Injected/Plan/
+/// Notice cells render fresh (their work is bounded and small).
+fn build_body(
+    kind: &CellKind,
+    theme: &Theme,
+    width: usize,
+    expanded: bool,
+    _thumbs: bool,
+) -> (Vec<Line<'static>>, usize) {
+    match kind {
+        CellKind::Reasoning { text, .. } => {
+            let body = text.trim();
+            if body.is_empty() {
+                return (Vec::new(), 0);
+            }
+            let body_style = Style::default()
+                .fg(theme.fg_tertiary)
+                .add_modifier(Modifier::ITALIC);
+            let lines: Vec<Line> = wrap(body, width.saturating_sub(2))
+                .into_iter()
+                .map(|l| {
+                    Line::from(vec![Span::raw("  "), Span::styled(l, body_style)])
+                })
+                .collect();
+            let meta = lines.len();
+            (lines, meta)
+        }
+        CellKind::Assistant { text, .. } => {
+            if text.trim().is_empty() {
+                return (Vec::new(), 0);
+            }
+            (crate::markdown::render(text, theme, width), 0)
+        }
+        CellKind::Tool {
+            request, result, ok, error, ..
+        } => {
+            let body = result.trim_end();
+            let all: Vec<String> = if body.is_empty() {
+                Vec::new()
+            } else {
+                body.lines()
+                    .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
+                    .collect()
+            };
+            let total = all.len();
+            let mut lines: Vec<Line> = Vec::new();
+            let request = if ok.is_none() { request.trim() } else { "" };
+            if !request.is_empty() {
+                let label = "request  ";
+                let request_width = width.saturating_sub(2 + label.width());
+                for (index, line) in
+                    wrap(request, request_width.max(1)).into_iter().take(TOOL_VIEWPORT).enumerate()
+                {
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ".to_string(), Style::default().fg(theme.border)),
+                        Span::styled(
+                            if index == 0 { label } else { "         " }.to_string(),
+                            Style::default().fg(theme.caption),
+                        ),
+                        Span::styled(line, Style::default().fg(theme.fg_tertiary)),
+                    ]));
+                }
+            }
+            if let Some(err) = error {
+                for l in wrap(err, width.saturating_sub(2)) {
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ".to_string(), Style::default().fg(theme.err)),
+                        Span::styled(l, Style::default().fg(theme.err)),
+                    ]));
+                }
+            }
+            if !body.is_empty() {
+                let bar_color = match ok {
+                    Some(false) => theme.err,
+                    _ => theme.border,
+                };
+                if expanded || total <= TOOL_VIEWPORT {
+                    for l in all {
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
+                            Span::styled(l, Style::default().fg(theme.fg_tertiary)),
+                        ]));
+                    }
+                } else {
+                    let offset = total - TOOL_VIEWPORT;
+                    for l in all.into_iter().skip(offset) {
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
+                            Span::styled(l, Style::default().fg(theme.fg_tertiary)),
+                        ]));
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
+                        Span::styled(
+                            format!("last {}/{} lines · click to expand", TOOL_VIEWPORT, total),
+                            Style::default().fg(theme.caption),
+                        ),
+                    ]));
+                }
+            }
+            (lines, total)
+        }
+        CellKind::Shell { output, .. } => {
+            let mut lines: Vec<Line> = Vec::new();
+            if let Some((code, text)) = output {
+                let body_w = width.saturating_sub(2);
+                let card_row = |txt: &str, fg: ratatui::style::Color| -> Line<'static> {
+                    let pad = body_w.saturating_sub(unicode_width::UnicodeWidthStr::width(txt));
+                    Line::from(vec![
+                        Span::styled(
+                            "▎ ".to_string(),
+                            Style::default().fg(theme.hint).bg(theme.code_bg),
+                        ),
+                        Span::styled(
+                            format!("{txt}{}", " ".repeat(pad)),
+                            Style::default().fg(fg).bg(theme.code_bg),
+                        ),
+                    ])
+                };
+                let all: Vec<String> = text
+                    .trim_end()
+                    .lines()
+                    .flat_map(|raw| wrap(raw, body_w))
+                    .collect();
+                let total = all.len();
+                let shown = if expanded || total <= COLLAPSED_SHELL_LINES {
+                    all
+                } else {
+                    all.into_iter().take(COLLAPSED_SHELL_LINES).collect()
+                };
+                let shown_len = shown.len();
+                for l in shown {
+                    lines.push(card_row(&l, theme.fg_secondary));
+                }
+                if total > shown_len {
+                    lines.push(card_row(
+                        &format!("… +{} lines (ctrl+o expands)", total - shown_len),
+                        theme.caption,
+                    ));
+                }
+                if let Some(c) = code {
+                    if *c != 0 {
+                        lines.push(card_row(&format!("exit {c}"), theme.err));
+                    }
+                }
+            }
+            (lines, 0)
+        }
+        CellKind::MarkdownNotice { text } => {
+            if text.trim().is_empty() {
+                return (Vec::new(), 0);
+            }
+            (crate::markdown::render(text, theme, width), 0)
+        }
+        _ => (Vec::new(), 0),
     }
 }
 
@@ -284,6 +502,7 @@ impl Transcript {
             if let CellKind::Shell { output: slot, .. } = &mut cell.kind {
                 *slot = Some((code, output));
             }
+            cell.bump();
         }
     }
 
@@ -300,7 +519,7 @@ impl Transcript {
     pub fn cancel_open_work(&mut self) {
         self.settle_open_tools("cancelled");
         for cell in &mut self.cells {
-            match &mut cell.kind {
+            let mutated = match &mut cell.kind {
                 CellKind::Reasoning {
                     done,
                     started,
@@ -309,14 +528,20 @@ impl Transcript {
                 } if !*done => {
                     *done = true;
                     *seconds = Some(started.elapsed().as_secs_f32());
+                    true
                 }
                 CellKind::Assistant { done, .. } if !*done => {
                     *done = true;
+                    true
                 }
                 CellKind::Shell { output, .. } if output.is_none() => {
                     *output = Some((None, "cancelled".into()));
+                    true
                 }
-                _ => {}
+                _ => false,
+            };
+            if mutated {
+                cell.bump();
             }
         }
         self.open_assistant.clear();
@@ -329,20 +554,20 @@ impl Transcript {
     /// `failed` event: the adapter's last reported status remains unchanged.
     fn settle_open_tools(&mut self, reason: &str) {
         for idx in self.tools.values().copied().collect::<Vec<_>>() {
-            if let Some(Cell {
-                kind: CellKind::Tool {
+            if let Some(cell) = self.cells.get_mut(idx) {
+                if let CellKind::Tool {
                     ok, result, error, ..
-                },
-                ..
-            }) = self.cells.get_mut(idx)
-            {
-                if ok.is_none() {
-                    *ok = Some(false);
-                    *error = Some(reason.into());
-                    if result.is_empty() {
-                        *result = reason.into();
+                } = &mut cell.kind
+                {
+                    if ok.is_none() {
+                        *ok = Some(false);
+                        *error = Some(reason.into());
+                        if result.is_empty() {
+                            *result = reason.into();
+                        }
                     }
                 }
+                cell.bump();
             }
         }
         self.tools.clear();
@@ -358,6 +583,7 @@ impl Transcript {
                         // Leave the empty husk; render skips empty finished cells.
                     }
                 }
+                cell.bump();
             }
         }
         if let Some(idx) = self.open_reasoning.remove(session) {
@@ -372,6 +598,7 @@ impl Transcript {
                     *done = true;
                     *seconds = Some(started.elapsed().as_secs_f32());
                 }
+                cell.bump();
             }
         }
     }
@@ -452,6 +679,7 @@ impl Transcript {
                             *done = true;
                             *seconds = Some(started.elapsed().as_secs_f32());
                         }
+                        cell.bump();
                     }
                 }
                 let idx = match self.open_assistant.get(&session) {
@@ -473,6 +701,7 @@ impl Transcript {
                     if let CellKind::Assistant { text: buf, .. } = &mut cell.kind {
                         buf.push_str(&text);
                     }
+                    cell.bump();
                 }
             }
             UiEvent::ReasoningDelta { session, text } => {
@@ -497,6 +726,7 @@ impl Transcript {
                     if let CellKind::Reasoning { text: buf, .. } = &mut cell.kind {
                         buf.push_str(&text);
                     }
+                    cell.bump();
                 }
             }
             UiEvent::ToolCallPreparing { session } => {
@@ -530,6 +760,7 @@ impl Transcript {
                                 *done = true;
                                 *m = model;
                             }
+                            cell.bump();
                         }
                     }
                     None => {
@@ -554,20 +785,19 @@ impl Transcript {
                 self.close_open(&session);
                 let title = tool_title(&name, &arguments);
                 if let Some(&idx) = self.tools.get(&call_id) {
-                    if let Some(Cell {
-                        kind:
-                            CellKind::Tool {
-                                name: current_name,
-                                title: current_title,
-                                request,
-                                ..
-                            },
-                        ..
-                    }) = self.cells.get_mut(idx)
-                    {
-                        *current_name = name;
-                        *current_title = title;
-                        *request = arguments;
+                    if let Some(cell) = self.cells.get_mut(idx) {
+                        if let CellKind::Tool {
+                            name: current_name,
+                            title: current_title,
+                            request,
+                            ..
+                        } = &mut cell.kind
+                        {
+                            *current_name = name;
+                            *current_title = title;
+                            *request = arguments;
+                        }
+                        cell.bump();
                     }
                     return;
                 }
@@ -613,6 +843,7 @@ impl Transcript {
                                 *ok = Some(!is_error);
                                 *e = error;
                             }
+                            cell.bump();
                         }
                     }
                     None => {
@@ -655,12 +886,11 @@ impl Transcript {
             }
             UiEvent::Plan { summary, .. } => {
                 if let Some(idx) = self.plan_cell {
-                    if let Some(Cell {
-                        kind: CellKind::Plan { summary: current },
-                        ..
-                    }) = self.cells.get_mut(idx)
-                    {
-                        *current = summary.clone();
+                    if let Some(cell) = self.cells.get_mut(idx) {
+                        if let CellKind::Plan { summary: current } = &mut cell.kind {
+                            *current = summary.clone();
+                        }
+                        cell.bump();
                     } else {
                         self.plan_cell = None;
                     }
@@ -727,7 +957,7 @@ impl Transcript {
 
     /// Render every cell to wrapped, styled lines for `width` columns.
     #[allow(dead_code)] // kept for tests; the UI uses `layout` for ownership
-    pub fn lines(&self, theme: &Theme, width: u16, spinner: char) -> Vec<Line<'static>> {
+    pub fn lines(&mut self, theme: &Theme, width: u16, spinner: char) -> Vec<Line<'static>> {
         self.layout(theme, width, spinner, false).lines
     }
 
@@ -736,21 +966,35 @@ impl Transcript {
     /// lines claim ownership). `thumbs` reserves blank
     /// lines for kitty-graphics image thumbnails and reports their placements.
     pub fn layout(
-        &self,
+        &mut self,
         theme: &Theme,
         width: u16,
         spinner: char,
         thumbs: bool,
     ) -> TranscriptLayout {
         let width = width.max(8) as usize;
+        let expand_all = self.expand_all;
         let mut out: Vec<Line> = Vec::new();
         let mut owners: Vec<Option<usize>> = Vec::new();
         let mut images: Vec<ImageShot> = Vec::new();
-        for (ci, cell) in self.cells.iter().enumerate() {
+        for (ci, cell) in self.cells.iter_mut().enumerate() {
             if cell.hidden {
                 continue;
             }
-            let expanded = cell.expanded || self.expand_all;
+            let expanded = cell.expanded || expand_all;
+            // Wrap/markdown-heavy kinds paint their body lines from the
+            // per-cell render cache (see `Cell::ensure_render`); headers stay
+            // live so the spinner keeps turning without re-wrapping bodies.
+            if matches!(
+                &cell.kind,
+                CellKind::Reasoning { .. }
+                    | CellKind::Assistant { .. }
+                    | CellKind::Tool { .. }
+                    | CellKind::Shell { .. }
+                    | CellKind::MarkdownNotice { .. }
+            ) {
+                cell.ensure_render(theme, width as u16, expanded, thumbs);
+            }
             match &cell.kind {
                 CellKind::User { text, queued } => {
                     emit(&mut out, &mut owners, Line::default(), None);
@@ -860,27 +1104,19 @@ impl Transcript {
                     }
                 }
                 CellKind::Reasoning {
-                    text,
                     done,
                     started,
                     seconds,
                     agent,
+                    ..
                 } => {
+                    let render = cell.render.as_ref().expect("body cache");
                     emit(&mut out, &mut owners, Line::default(), None);
                     let head_style = Style::default().fg(theme.caption);
-                    let body_style = Style::default()
-                        .fg(theme.fg_tertiary)
-                        .add_modifier(Modifier::ITALIC);
                     // A reasoning stream can open with an empty/whitespace
                     // delta. The heading is enough for that frame; an empty
                     // body must not make its height jump from one row to two.
-                    let body = text.trim();
-                    let lines = if body.is_empty() {
-                        Vec::new()
-                    } else {
-                        wrap(body, width.saturating_sub(2))
-                    };
-                    let n = lines.len();
+                    let n = render.meta;
                     if *done {
                         let dur = seconds.map(|s| format!(" · {s:.1}s")).unwrap_or_default();
                         let agent = agent_prefix(agent);
@@ -894,13 +1130,8 @@ impl Transcript {
                             None,
                         );
                         if expanded {
-                            for l in lines {
-                                emit(
-                                    &mut out,
-                                    &mut owners,
-                                    Line::from(vec![Span::raw("  "), Span::styled(l, body_style)]),
-                                    None,
-                                );
+                            for l in &render.body {
+                                emit(&mut out, &mut owners, l.clone(), None);
                             }
                         }
                     } else {
@@ -917,23 +1148,13 @@ impl Transcript {
                             )),
                             None,
                         );
-                        let tail: Vec<_> = if expanded {
-                            lines
+                        let skip = if expanded {
+                            0
                         } else {
-                            lines
-                                .into_iter()
-                                .rev()
-                                .take(COLLAPSED_REASONING_PREVIEW)
-                                .rev()
-                                .collect()
+                            render.body.len().saturating_sub(COLLAPSED_REASONING_PREVIEW)
                         };
-                        for l in tail {
-                            emit(
-                                &mut out,
-                                &mut owners,
-                                Line::from(vec![Span::raw("  "), Span::styled(l, body_style)]),
-                                None,
-                            );
+                        for l in &render.body[skip..] {
+                            emit(&mut out, &mut owners, l.clone(), None);
                         }
                     }
                 }
@@ -955,39 +1176,31 @@ impl Transcript {
                             None,
                         );
                     }
-                    let mut lines = crate::markdown::render(text, theme, width);
-                    if !done {
+                    let render = cell.render.as_ref().expect("body cache");
+                    for l in &render.body {
+                        emit(&mut out, &mut owners, l.clone(), None);
+                    }
+                    if !done && !render.body.is_empty() {
                         // streaming cursor
-                        if let Some(last) = lines.last_mut() {
+                        if let Some(last) = out.last_mut() {
                             last.spans.push(Span::styled(
                                 "▍".to_string(),
                                 Style::default().fg(theme.brand),
                             ));
                         }
                     }
-                    for l in lines {
-                        emit(&mut out, &mut owners, l, None);
-                    }
                 }
                 CellKind::Tool {
                     name,
                     title,
                     request,
-                    result,
                     ok,
-                    error,
                     agent,
+                    ..
                 } => {
+                    let render = cell.render.as_ref().expect("body cache");
                     emit(&mut out, &mut owners, Line::default(), None);
-                    let body = result.trim_end();
-                    let all: Vec<String> = if body.is_empty() {
-                        Vec::new()
-                    } else {
-                        body.lines()
-                            .flat_map(|raw| wrap(raw, width.saturating_sub(2)))
-                            .collect()
-                    };
-                    let total = all.len();
+                    let total = render.meta;
                     let has_more = total > TOOL_VIEWPORT;
                     let (glyph, gstyle) = match ok {
                         None => (spinner, Style::default().fg(theme.brand)),
@@ -1025,101 +1238,8 @@ impl Transcript {
                     }
                     emit(&mut out, &mut owners, Line::from(spans), Some(ci));
 
-                    if !request.is_empty() {
-                        let label = "request  ";
-                        let request_width = width.saturating_sub(2 + label.width());
-                        let request_lines = wrap(request, request_width.max(1));
-                        for (index, line) in
-                            request_lines.into_iter().take(TOOL_VIEWPORT).enumerate()
-                        {
-                            emit(
-                                &mut out,
-                                &mut owners,
-                                Line::from(vec![
-                                    Span::styled(
-                                        "│ ".to_string(),
-                                        Style::default().fg(theme.border),
-                                    ),
-                                    Span::styled(
-                                        if index == 0 { label } else { "         " }.to_string(),
-                                        Style::default().fg(theme.caption),
-                                    ),
-                                    Span::styled(line, Style::default().fg(theme.fg_tertiary)),
-                                ]),
-                                Some(ci),
-                            );
-                        }
-                    }
-
-                    if let Some(err) = error {
-                        for l in wrap(err, width.saturating_sub(2)) {
-                            emit(
-                                &mut out,
-                                &mut owners,
-                                Line::from(vec![
-                                    Span::styled("│ ".to_string(), Style::default().fg(theme.err)),
-                                    Span::styled(l, Style::default().fg(theme.err)),
-                                ]),
-                                Some(ci),
-                            );
-                        }
-                    }
-
-                    if !body.is_empty() {
-                        let bar_color = match ok {
-                            Some(false) => theme.err,
-                            _ => theme.border,
-                        };
-                        if expanded || total <= TOOL_VIEWPORT {
-                            for l in all {
-                                emit(
-                                    &mut out,
-                                    &mut owners,
-                                    Line::from(vec![
-                                        Span::styled(
-                                            "│ ".to_string(),
-                                            Style::default().fg(bar_color),
-                                        ),
-                                        Span::styled(l, Style::default().fg(theme.fg_tertiary)),
-                                    ]),
-                                    Some(ci),
-                                );
-                            }
-                        } else {
-                            let offset = total - TOOL_VIEWPORT;
-                            for l in &all[offset..offset + TOOL_VIEWPORT] {
-                                emit(
-                                    &mut out,
-                                    &mut owners,
-                                    Line::from(vec![
-                                        Span::styled(
-                                            "│ ".to_string(),
-                                            Style::default().fg(bar_color),
-                                        ),
-                                        Span::styled(
-                                            l.clone(),
-                                            Style::default().fg(theme.fg_tertiary),
-                                        ),
-                                    ]),
-                                    Some(ci),
-                                );
-                            }
-                            emit(
-                                &mut out,
-                                &mut owners,
-                                Line::from(vec![
-                                    Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
-                                    Span::styled(
-                                        format!(
-                                            "last {}/{} lines · click to expand",
-                                            TOOL_VIEWPORT, total
-                                        ),
-                                        Style::default().fg(theme.caption),
-                                    ),
-                                ]),
-                                Some(ci),
-                            );
-                        }
+                    for l in &render.body {
+                        emit(&mut out, &mut owners, l.clone(), Some(ci));
                     }
                 }
                 CellKind::Shell { command, output } => {
@@ -1150,63 +1270,9 @@ impl Transcript {
                         ]),
                         None,
                     );
-                    if let Some((code, text)) = output {
-                        let body_w = width.saturating_sub(2);
-                        let card_row = |txt: &str, fg: ratatui::style::Color| -> Line<'static> {
-                            let pad =
-                                body_w.saturating_sub(unicode_width::UnicodeWidthStr::width(txt));
-                            Line::from(vec![
-                                Span::styled(
-                                    "▎ ".to_string(),
-                                    Style::default().fg(theme.hint).bg(theme.code_bg),
-                                ),
-                                Span::styled(
-                                    format!("{txt}{}", " ".repeat(pad)),
-                                    Style::default().fg(fg).bg(theme.code_bg),
-                                ),
-                            ])
-                        };
-                        let all: Vec<String> = text
-                            .trim_end()
-                            .lines()
-                            .flat_map(|raw| wrap(raw, body_w))
-                            .collect();
-                        let total = all.len();
-                        let shown = if expanded || total <= COLLAPSED_SHELL_LINES {
-                            all
-                        } else {
-                            all.into_iter().take(COLLAPSED_SHELL_LINES).collect()
-                        };
-                        let shown_len = shown.len();
-                        for l in shown {
-                            emit(
-                                &mut out,
-                                &mut owners,
-                                card_row(&l, theme.fg_secondary),
-                                None,
-                            );
-                        }
-                        if total > shown_len {
-                            emit(
-                                &mut out,
-                                &mut owners,
-                                card_row(
-                                    &format!("… +{} lines (ctrl+o expands)", total - shown_len),
-                                    theme.caption,
-                                ),
-                                None,
-                            );
-                        }
-                        if let Some(c) = code {
-                            if *c != 0 {
-                                emit(
-                                    &mut out,
-                                    &mut owners,
-                                    card_row(&format!("exit {c}"), theme.err),
-                                    None,
-                                );
-                            }
-                        }
+                    let render = cell.render.as_ref().expect("body cache");
+                    for l in &render.body {
+                        emit(&mut out, &mut owners, l.clone(), None);
                     }
                 }
                 CellKind::Injected { source, preview } => {
@@ -1269,8 +1335,9 @@ impl Transcript {
                         continue;
                     }
                     emit(&mut out, &mut owners, Line::default(), None);
-                    for l in crate::markdown::render(text, theme, width) {
-                        emit(&mut out, &mut owners, l, None);
+                    let render = cell.render.as_ref().expect("body cache");
+                    for l in &render.body {
+                        emit(&mut out, &mut owners, l.clone(), None);
                     }
                 }
             }
