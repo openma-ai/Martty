@@ -59,7 +59,7 @@ fn streaming_assistant_keeps_its_cursor_without_a_fallback_loading_icon() {
         text: "starting subagents".into(),
     });
 
-    let rendered = |spinner| {
+    let mut rendered = |spinner| {
         tr.lines(&Theme::dark(), 80, spinner)
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))

@@ -1931,9 +1931,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         Vec::new()
     };
     let thumbs = crate::pet::kitty_supported();
+    let spinner = app.spinner();
     let layout = app
-        .displayed_transcript()
-        .layout(&theme, inner.width, app.spinner(), thumbs);
+        .displayed_transcript_mut()
+        .layout(&theme, inner.width, spinner, thumbs);
     if app.show_banner && lines.len() < inner.height as usize {
         let remaining = inner.height as usize - lines.len();
         let top = remaining / 2;
