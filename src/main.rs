@@ -32,7 +32,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use crossterm::cursor::{Hide, Show};
+use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -441,7 +441,11 @@ fn main() -> Result<()> {
                 // (enter_tui), so no frame-time Hide/Show is needed — the old
                 // per-frame Hide kept the cursor off for the entire diff
                 // write, which read as flicker in the input well whenever a
-                // scroll redraw rewrote the transcript pane.
+                // scroll redraw rewrote the transcript pane. The hidden
+                // hardware cursor is still *repositioned* onto the caret cell
+                // after every draw: terminals anchor IME candidate popups at
+                // the cursor, and the frame diff would otherwise leave it
+                // wherever the last cell write happened.
                 std::io::stdout().sync_update(|out| -> Result<()> {
                     terminal.draw(|f| ui::draw(f, &mut app))?;
                     app.needs_redraw = false;
@@ -464,6 +468,13 @@ fn main() -> Result<()> {
                         })
                         .collect();
                     let _ = thumbnails.sync(out, &shots);
+                    // Park the (hidden) hardware cursor on the caret cell so
+                    // IME composition/candidate popups anchor at the caret.
+                    // Last on purpose: the kitty writers above move the
+                    // cursor around while placing images.
+                    if let Some((col, row)) = app.caret_cell {
+                        let _ = execute!(out, MoveTo(col, row));
+                    }
                     Ok(())
                 })??;
             }

@@ -141,6 +141,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
     app.slot_actions.clear();
     app.pet_want = None;
+    app.caret_cell = None;
     f.render_widget(
         Block::default().style(
             Style::default()
@@ -2477,6 +2478,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         );
         if composer_owns_cursor {
             paint_caret(f, area.x + pw as u16, area.y);
+            app.caret_cell = Some((area.x + pw as u16, area.y));
         }
         return;
     }
@@ -2605,6 +2607,21 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     // `input_top` is the app-side mirror mouse hit-testing reads between
     // frames; keep it in lockstep with the editor's own scroll mirror.
     app.input_top = app.input.scroll_top;
+    // Track the painted caret cell so `main` can park the hidden hardware
+    // cursor on it after the frame (IME popups anchor there; the frame diff
+    // leaves the cursor wherever its last cell write happened). The widget's
+    // own screen cursor is authoritative — it is the cell the reversed
+    // caret style landed on.
+    if composer_owns_cursor {
+        let (row, col) = app.input.screen_cursor();
+        let top = app.input.scroll_top;
+        if row >= top && row - top < area.height as usize {
+            app.caret_cell = Some((
+                text_area.x.saturating_add(col as u16),
+                text_area.y.saturating_add((row - top) as u16),
+            ));
+        }
+    }
 }
 
 /// Rows of menu items shown at once; the window follows the selection
@@ -3154,14 +3171,15 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
     );
     f.render_widget(Paragraph::new(bottom), bottom_area);
     if let Some((row, col)) = field_cursor.filter(|(row, _)| *row < bottom_h) {
-        paint_caret(
-            f,
+        let caret = (
             bottom_area
                 .x
                 .saturating_add(col as u16)
                 .min(bottom_area.right().saturating_sub(1)),
             bottom_area.y.saturating_add(row as u16),
         );
+        paint_caret(f, caret.0, caret.1);
+        app.caret_cell = Some(caret);
     }
 }
 
