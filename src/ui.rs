@@ -738,6 +738,20 @@ fn wrap_line(s: &str, cells: usize) -> Vec<String> {
     out
 }
 
+/// Mark every cell in `area` [`CellDiffOption::AlwaysUpdate`] so the frame
+/// diff rewrites them unconditionally (issue #38). Scrolling CJK content can
+/// leave orphan halves of wide chars on the real screen while both ratatui
+/// buffers agree the cell is unchanged, so the diff skips it and the leftover
+/// half-glyph stays as a black block. Forcing a full rewrite of the scroll
+/// surfaces costs a few KB of output per drawn frame and clears the stale
+/// cells regardless of terminal-specific wide-char erase behavior.
+fn force_full_rewrite(f: &mut Frame, area: Rect) {
+    let buf = f.buffer_mut();
+    for pos in area.positions() {
+        buf[pos].set_diff_option(ratatui::buffer::CellDiffOption::AlwaysUpdate);
+    }
+}
+
 fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     let theme = app.theme;
     let Some(view) = app.view_overlay.as_mut() else {
@@ -789,6 +803,7 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
         ))
         .style(Style::default().bg(theme.panel).fg(theme.fg));
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(block), area);
+    force_full_rewrite(f, area);
 }
 
 /// `/plugins` inventory popup: a two-level provider → plugin tree rendered
@@ -2027,6 +2042,9 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(Paragraph::new(visible), inner);
     draw_selection_overlay(f, app, inner, start);
+    // Last: the selection overlay above also writes these cells, so the
+    // full-rewrite marker must run after it (issue #38).
+    force_full_rewrite(f, inner);
 }
 
 /// Paint the in-app mouse selection as reversed cells — the live highlight
@@ -3375,3 +3393,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/unit/ui__rpc_probe.rs"]
 mod rpc_probe;
+
+#[cfg(test)]
+#[path = "../tests/unit/ui_diff_option__tests.rs"]
+mod diff_option_tests;
