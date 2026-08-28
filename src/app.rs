@@ -969,6 +969,13 @@ pub struct App {
     /// First text row shown inside the well (the viewport scroll from
     /// `ui::draw_input`).
     pub(crate) input_top: usize,
+    /// Absolute screen cell of the soft caret from the latest frame (the
+    /// reversed block `ui::draw` paints in the composer well or the
+    /// elicitation field). `main` repositions the *hidden* hardware cursor
+    /// onto this cell after every draw, so IME candidate popups anchor at
+    /// the caret instead of wherever the frame diff left the cursor;
+    /// `None` when no caret was painted this frame.
+    pub caret_cell: Option<(u16, u16)>,
     /// Ordered char-index range selected in the composer: drag-select and
     /// copy highlight, `None` when no input selection is shown.
     pub(crate) input_sel: Option<InputSel>,
@@ -1376,6 +1383,7 @@ impl App {
             composer_wrap_width: 80,
             input_area: ratatui::layout::Rect::default(),
             input_top: 0,
+            caret_cell: None,
             input_sel: None,
             input_selecting: false,
             state: RunState::Idle,

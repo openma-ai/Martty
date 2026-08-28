@@ -589,7 +589,7 @@ impl ComposerEditor {
     /// relative to the *start of the text* (row 0), not the viewport.
     /// Requires the widget to have been rendered (or edited) at least
     /// once so its screen map matches the current area.
-    fn screen_cursor(&self) -> (usize, usize) {
+    pub fn screen_cursor(&self) -> (usize, usize) {
         let sc = self.textarea.screen_cursor();
         (sc.row, sc.col)
     }
