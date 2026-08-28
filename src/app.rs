@@ -2859,7 +2859,13 @@ impl App {
                     return;
                 }
                 self.slash_completion_dismissed = false;
-                self.input.insert_str(&text.replace('\n', " "));
+                // The composer is multi-line (soft wrap, ctrl+j), so pasted
+                // text keeps its line structure instead of being flattened
+                // to spaces (issue #54). `TextArea::insert_str` understands
+                // both `\n` and `\r\n`; normalize stray CR-only line
+                // endings some terminals (iTerm2 et al.) send.
+                let text = text.replace("\r\n", "\n").replace('\r', "\n");
+                self.input.insert_str(&text);
                 self.input_sel = None;
                 self.reconcile_attachments();
                 self.needs_redraw = true;

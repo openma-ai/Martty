@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Pasting multi-line text into the composer keeps its line structure
+  instead of flattening every newline into a space; CRLF and CR-only
+  line endings (iTerm2 et al.) are normalized to plain rows too
+  (issue #54).
 - IME candidate/composition popups (e.g. the first Chinese character typed
   into an empty composer) now anchor at the input caret again: the hidden
   hardware cursor is repositioned onto the painted caret cell after every

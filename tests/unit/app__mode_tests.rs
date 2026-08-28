@@ -1796,8 +1796,24 @@ fn ordinary_and_mixed_paste_payloads_are_not_treated_as_keys() {
         &ctl,
     );
 
-    assert_eq!(app.input.buf(), "hello world literal \u{1b}[99;5u");
+    // Pasted text keeps its line structure (issue #54); the CSI-u bytes
+    // are payload, never keys.
+    assert_eq!(app.input.buf(), "hello\nworld literal \u{1b}[99;5u");
     assert!(!app.quit);
+}
+
+#[test]
+fn paste_keeps_newlines_and_normalizes_cr_line_endings() {
+    let (mut app, ctl, _rx) = test_app();
+
+    app.handle(
+        AppEvent::Term(Event::Paste("a\r\nb\rc\nd".to_string())),
+        &ctl,
+    );
+
+    // CRLF and CR-only line endings (iTerm2 et al.) become plain LF rows.
+    assert_eq!(app.input.buf(), "a\nb\nc\nd");
+    assert_eq!(app.input.lines(), ["a", "b", "c", "d"]);
 }
 
 #[test]
