@@ -1162,6 +1162,66 @@ fn composer_caret_sits_on_wide_graphemes() {
     assert_eq!(caret_cells(&mut app, 80, 20), vec![(5, 16)]);
 }
 
+/// The hardware-cursor park target (`app.caret_cell`) must always equal the
+/// cell the frame painted the soft caret on: `main` parks the hidden
+/// hardware cursor there after every draw so IME candidate popups anchor at
+/// the caret (issue #66).
+#[test]
+fn caret_cell_tracks_the_painted_caret_in_the_composer() {
+    let mut app = test_app();
+    app.show_banner = false;
+    // Empty well: caret right of the ❯ prompt.
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(3, 16)]);
+    assert_eq!(app.caret_cell, Some((3, 16)));
+    // Draft end and mid-draft.
+    app.input.set("hello".into());
+    app.input.set_cursor_char(5);
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(8, 16)]);
+    assert_eq!(app.caret_cell, Some((8, 16)));
+    app.input.set_cursor_char(2);
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(5, 16)]);
+    assert_eq!(app.caret_cell, Some((5, 16)));
+}
+
+#[test]
+fn caret_cell_follows_wrapped_rows_and_hides_with_the_caret() {
+    let mut app = test_app();
+    app.show_banner = false;
+    // The well is 76 cells wide at 80x20; 77 chars wrap to a second row.
+    app.input.set("a".repeat(77));
+    app.input.set_cursor_char(77);
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(4, 17)]);
+    assert_eq!(app.caret_cell, Some((4, 17)));
+    // While elicitation owns input the composer paints no caret and no
+    // park target — the field's own caret takes over: the frame's only
+    // reversed cell is the field caret and the park target rides it, never
+    // the composer well row (y=16 at 80x20).
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.set("draft".into());
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form: crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
+            message: "m".into(),
+            fields: vec![crate::elicitation::ElicitationField {
+                name: "f".into(),
+                custom_name: None,
+                title: "t".into(),
+                description: None,
+                required: true,
+                kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
+            }],
+        }),
+        scroll: 0,
+        reply: None,
+    });
+    let cells = caret_cells(&mut app, 80, 20);
+    assert_eq!(app.caret_cell, cells.first().copied(), "park rides the field caret");
+    assert!(
+        cells.iter().all(|(_, y)| *y != 16),
+        "composer well shows no caret while elicitation owns input"
+    );
+}
+
 #[test]
 fn multiline_input_breaks_on_newlines() {
     let mut app = test_app();
@@ -2245,6 +2305,11 @@ fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
             .modifier
             .contains(ratatui::style::Modifier::REVERSED),
         "elicitation field paints its own caret cell"
+    );
+    assert_eq!(
+        app.caret_cell,
+        Some((caret_x, answer_row)),
+        "hardware cursor parks on the elicitation field caret"
     );
     // The composer draft keeps no caret while the overlay owns input.
     let composer_row = (0..30)

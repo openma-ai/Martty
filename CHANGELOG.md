@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- IME candidate/composition popups (e.g. the first Chinese character typed
+  into an empty composer) now anchor at the input caret again: the hidden
+  hardware cursor is repositioned onto the painted caret cell after every
+  frame instead of being left wherever the last diff write happened
+  (issue #66).
 - Scrolling the `/keys` popup or the chat transcript no longer leaves
   irregular black blocks on screen: orphan halves of wide (CJK) characters
   survived because the frame diff considered those cells unchanged; both
