@@ -193,3 +193,40 @@ fn other_choice_collects_inline_text_and_returns_both_schema_properties() {
         ])))
     );
 }
+
+#[test]
+fn space_on_an_optionless_multi_select_is_a_noop_not_a_panic() {
+    // ACP allows a multi-select property with an empty enum; Space toggles
+    // selected[cursor], which must not index a zero-length vector.
+    let mut form = ElicitationFormState::new(ElicitationForm {
+        message: "Pick things".into(),
+        fields: vec![ElicitationField {
+            name: "choices".into(),
+            custom_name: None,
+            title: "Choices".into(),
+            description: None,
+            required: false,
+            kind: ElicitationFieldKind::Multi {
+                options: vec![],
+                default: vec![],
+                min: 0,
+                max: None,
+            },
+        }],
+    });
+
+    assert_eq!(form.fields[0].selected.len(), 0);
+    assert_eq!(
+        form.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+        None,
+        "space with zero options must not panic"
+    );
+    let reply = form.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        reply,
+        Some(ElicitationReply::Accepted(BTreeMap::from([(
+            "choices".into(),
+            ElicitationValue::StringArray(vec![])
+        )])))
+    );
+}

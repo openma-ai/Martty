@@ -108,10 +108,17 @@ impl TerminalBroker {
             return TerminalExitStatus::new();
         };
         loop {
+            // Register interest *before* re-checking the status:
+            // notify_waiters() stores no permit, so a notification fired
+            // between the check and the await would otherwise be lost and
+            // wait() would sleep forever with the exit status already set.
+            let notified = rec.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Some(status) = rec.exit.lock().unwrap_or_else(|e| e.into_inner()).clone() {
                 return status;
             }
-            rec.notify.notified().await;
+            notified.await;
         }
     }
 

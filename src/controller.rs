@@ -183,15 +183,21 @@ fn controller_loop(
                         &mut attached_initialized,
                         &session_id,
                         &blocks,
+                        None,
                     );
                 } else {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    // A fresh image prompt never reached the agent: Error —
+                    // not TuiOpFailed — so the app leaves the pending
+                    // Starting state and drains its queue.
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
                         "image attachments are unavailable on the legacy demo transport".into(),
                     )));
                 }
             }
             Cmd::SteerImages {
-                session_id, blocks, ..
+                session_id,
+                blocks,
+                message_id,
             } => {
                 if demo {
                     let text = blocks
@@ -213,11 +219,18 @@ fn controller_loop(
                         &mut attached_initialized,
                         &session_id,
                         &blocks,
+                        Some(message_id),
                     );
                 } else {
+                    // A steer rides the active turn: warn, then release the
+                    // app's steer bookkeeping so it does not leak.
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
                         "image attachments are unavailable on the legacy demo transport".into(),
                     )));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                        message_id,
+                        deferred: false,
+                    }));
                 }
             }
             Cmd::Interrupt { session_id } => {
@@ -623,6 +636,7 @@ fn handle_prompt_images_attached(
     initialized: &mut bool,
     session_id: &str,
     parts: &[crate::bus::PromptBlock],
+    steer_message_id: Option<u64>,
 ) {
     let Some(rt) = ensure_attached_ready(cfg, bus, runtime, initialized) else {
         return;
@@ -641,24 +655,39 @@ fn handle_prompt_images_attached(
                     "mediaType": img.media_type,
                     "name": img.name,
                 });
-                match rt.request("tui/attach-image", Some(attach), Duration::from_secs(120)) {
+                let failure = match rt.request("tui/attach-image", Some(attach), Duration::from_secs(120))
+                {
                     Ok(result) => match result.get("attachment").cloned() {
-                        Some(a) => blocks.push(json!({ "type": "image", "attachment": a })),
-                        None => {
-                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                "tui/attach-image returned no attachment for {}",
-                                img.name
-                            ))));
-                            return;
+                        Some(a) => {
+                            blocks.push(json!({ "type": "image", "attachment": a }));
+                            None
                         }
-                    },
-                    Err(err) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                            "tui/attach-image failed for {}: {err:#}",
+                        None => Some(format!(
+                            "tui/attach-image returned no attachment for {}",
                             img.name
-                        ))));
-                        return;
+                        )),
+                    },
+                    Err(err) => Some(format!("tui/attach-image failed for {}: {err:#}", img.name)),
+                };
+                if let Some(desc) = failure {
+                    match steer_message_id {
+                        // A steer rides the active turn: warn and release
+                        // the app's steer bookkeeping.
+                        Some(message_id) => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(desc)));
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                message_id,
+                                deferred: false,
+                            }));
+                        }
+                        // A fresh image prompt never launched: Error resets
+                        // the app's pending Starting state and drains its
+                        // queue.
+                        None => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(desc)));
+                        }
                     }
+                    return;
                 }
             }
         }

@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Esc no longer freezes the TUI when the agent runtime closes its stdout but
+  keeps running: the frame reader no longer holds the child lock across a
+  blocking wait, so the hard interrupt can always SIGKILL it.
+- A failed agent spawn (e.g. a missing `--agent` binary) no longer crashes
+  the client process with an uncaught exception; the transport sees EOF and
+  pending requests fail instead of hanging, and a later apply retries the
+  spawn instead of reusing the dead child.
+- Pressing space on an agent elicitation multi-select field with zero
+  options no longer panics the TUI.
+- Backspace/Delete with an active composer selection (shift+arrows, vim
+  `x`/`X`) now delete the whole selection instead of a single character.
+- `terminal/wait_for_exit` no longer hangs forever when the exit
+  notification fires between the status check and the await (lost wakeup).
+- Esc pressed with no in-flight turn no longer poisons the next prompt
+  (whose result would be swallowed and misreported as interrupted).
+- `--dump-frame` no longer swallows the following CLI flag when its
+  optional `[WxH]` argument is omitted.
+- Scrolling in the same event burst as jump-to-top no longer teleports the
+  viewport from the top of the scrollback to just above the tail.
+- Sending an image prompt on a transport without image support now reports
+  an error and returns to idle instead of wedging in the Starting state
+  with a queue that never drains.
+- User message bubbles no longer overflow the chat pane by two cells, which
+  clipped the last visible character of every wrapped CJK line.
+
 ### Added
 
 - `/plugins` now renders the static Host plugin inventory as a two-level

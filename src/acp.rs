@@ -1655,8 +1655,15 @@ where
                             }
                         }
                         Cmd::Interrupt { .. } => {
-                            abort_turn(&cx, &session_id, &bus);
-                            turn_aborted = true;
+                            // Only a live turn can be aborted. Setting the
+                            // flag with no inflight prompt would poison the
+                            // *next* prompt's finish (its result would be
+                            // swallowed and the turn misreported as
+                            // interrupted).
+                            if inflight.is_some() {
+                                abort_turn(&cx, &session_id, &bus);
+                                turn_aborted = true;
+                            }
                         }
                         Cmd::SelectModel { model, effort, .. } => {
                             let Some(sid) = session_id.clone() else {

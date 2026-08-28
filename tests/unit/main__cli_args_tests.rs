@@ -95,3 +95,26 @@ fn demo_skin_script_candidates_prefer_source_then_vendor_layout() {
         .any(|p| p.components().any(|c| c.as_os_str() == "vendor")
             || p.to_string_lossy().contains("..")));
 }
+
+#[test]
+fn dump_frame_defaults_and_explicit_dims() {
+    let args = parse_args_from(["--dump-frame".into()]).unwrap();
+    assert_eq!(args.dump_frame, Some((100, 34)));
+    let args = parse_args_from(["--dump-frame".into(), "80x24".into()]).unwrap();
+    assert_eq!(args.dump_frame, Some((80, 24)));
+}
+
+#[test]
+fn dump_frame_does_not_swallow_the_next_flag() {
+    // `--dump-frame --theme light`: --theme is a flag, not dimensions.
+    let args = parse_args_from([
+        "--dump-frame".into(),
+        "--theme".into(),
+        "light".into(),
+        "--demo".into(),
+    ])
+    .unwrap();
+    assert_eq!(args.dump_frame, Some((100, 34)));
+    assert_eq!(args.theme, "light");
+    assert!(args.demo);
+}

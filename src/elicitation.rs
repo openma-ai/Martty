@@ -442,7 +442,11 @@ impl ElicitationFormState {
                 let state = &mut self.fields[self.index];
                 match state.field.kind {
                     ElicitationFieldKind::Multi { .. } => {
-                        state.selected[state.cursor] = !state.selected[state.cursor];
+                        // An agent may legally send a multi-select with zero
+                        // options; there is nothing to toggle then.
+                        if let Some(selected) = state.selected.get_mut(state.cursor) {
+                            *selected = !*selected;
+                        }
                     }
                     ElicitationFieldKind::Boolean { .. } => {
                         state.selected.fill(false);
