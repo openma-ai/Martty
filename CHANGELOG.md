@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Scrolling the `/keys` popup or the chat transcript no longer leaves
+  irregular black blocks on screen: orphan halves of wide (CJK) characters
+  survived because the frame diff considered those cells unchanged; both
+  scroll surfaces are now marked `CellDiffOption::AlwaysUpdate` so every
+  drawn frame rewrites them (issue #38).
 - Esc no longer freezes the TUI when the agent runtime closes its stdout but
   keeps running: the frame reader no longer holds the child lock across a
   blocking wait, so the hard interrupt can always SIGKILL it.
