@@ -16,6 +16,11 @@ All notable changes to this project are documented here. The project follows
   hardware cursor is repositioned onto the painted caret cell after every
   frame instead of being left wherever the last diff write happened
   (issue #66).
+- Table frames no longer show gaps in the vertical borders when a palette
+  aliases `border` onto a body gray (Ayu: border == fg_secondary): the
+  two-tone body pass no longer repaints box-drawing characters, so the
+  hand-drawn `├─┼─┤` junction rows between table rows match the frame
+  (issue #68).
 - Scrolling the `/keys` popup or the chat transcript no longer leaves
   irregular black blocks on screen: orphan halves of wide (CJK) characters
   survived because the frame diff considered those cells unchanged; both
