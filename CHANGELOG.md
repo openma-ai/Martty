@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Pasting multi-line text into the composer keeps its line structure
+  instead of flattening every newline into a space; CRLF and CR-only
+  line endings (iTerm2 et al.) are normalized to plain rows too
+  (issue #54).
 - Scrolling the `/keys` popup or the chat transcript no longer leaves
   irregular black blocks on screen: orphan halves of wide (CJK) characters
   survived because the frame diff considered those cells unchanged; both
