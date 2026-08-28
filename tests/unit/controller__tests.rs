@@ -97,3 +97,95 @@ pub(crate) fn test_interruptible_controller() -> (Controller, Receiver<Cmd>) {
         cmd_rx,
     )
 }
+
+fn image_block() -> crate::bus::PromptBlock {
+    crate::bus::PromptBlock::Image(crate::bus::ImagePart {
+        data: "AA==".into(),
+        media_type: "image/png".into(),
+        name: "x.png".into(),
+        path: "clipboard".into(),
+    })
+}
+
+fn loop_cfg() -> RuntimeConfig {
+    RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: std::env::temp_dir()
+            .join(format!("dsh-tui-ctl-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    }
+}
+
+fn collect_events(rx: &Receiver<AppEvent>, n: usize) -> Vec<AppEvent> {
+    let mut out = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while out.len() < n && std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(ev) => out.push(ev),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    out
+}
+
+#[test]
+fn legacy_image_prompt_fails_with_error_so_the_app_leaves_starting() {
+    // Regression: TuiOpFailed only pushes a notice — a fresh image prompt
+    // that never launches must be an Error so the app clears prompt_pending
+    // and drains its queue instead of wedging in Starting.
+    let (bus, rx) = mpsc::channel::<AppEvent>();
+    let ctl = Controller::start(loop_cfg(), false, None, bus);
+    ctl.send(Cmd::PromptImages {
+        session_id: "s1".into(),
+        blocks: vec![image_block()],
+    });
+    let events = collect_events(&rx, 1);
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            AppEvent::Ctl(CtlEvent::Error(e)) if e.contains("unavailable")
+        )),
+        "expected CtlEvent::Error among {} event(s)",
+        events.len()
+    );
+}
+
+#[test]
+fn legacy_image_steer_warns_and_settles_the_steer_bookkeeping() {
+    let (bus, rx) = mpsc::channel::<AppEvent>();
+    let ctl = Controller::start(loop_cfg(), false, None, bus);
+    ctl.send(Cmd::SteerImages {
+        session_id: "s1".into(),
+        message_id: 7,
+        blocks: vec![image_block()],
+    });
+    let events = collect_events(&rx, 2);
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            AppEvent::Ctl(CtlEvent::TuiOpFailed(e)) if e.contains("unavailable")
+        )),
+        "expected TuiOpFailed among {} event(s)",
+        events.len()
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            AppEvent::Ctl(CtlEvent::SteerSettled {
+                message_id: 7,
+                deferred: false
+            })
+        )),
+        "expected SteerSettled among {} event(s)",
+        events.len()
+    );
+}

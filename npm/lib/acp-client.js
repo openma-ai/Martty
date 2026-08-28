@@ -80,12 +80,31 @@ export function apply(ctx, config = {}) {
     provide(ctx, liveAgent)
     return
   }
+  // Replacing the agent: the previous child must not outlive its spec.
+  if (liveAgent !== null && liveAgent.child.exitCode === null) {
+    try {
+      liveAgent.child.kill('SIGTERM')
+    } catch {
+      // already gone
+    }
+  }
+  liveAgent = null
   const child = spawn(agent.command, agent.args ?? [], {
     stdio: ['pipe', 'pipe', 'inherit'],
     env: { ...process.env, ...(agent.env ?? {}) },
   })
   child.stdin.on('error', () => {})
   child.stdout.on('error', () => {})
+  child.on('error', (err) => {
+    // A failed spawn (ENOENT, EACCES) emits 'error' on the child; without a
+    // listener it is an uncaught exception. Surface EOF to the transport
+    // instead so pending requests fail instead of hanging, and drop the
+    // cached handle so the next apply() retries the spawn.
+    console.error(`acp-client: failed to spawn agent ${agent.command}: ${err.message}`)
+    if (liveAgent?.child === child) liveAgent = null
+    child.stdin.destroy()
+    child.stdout.destroy()
+  })
   const service = {
     kind: 'spawn',
     command: agent.command,

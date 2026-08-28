@@ -150,12 +150,24 @@ impl RuntimeProcess {
                         message: "harness runtime closed".into(),
                     }));
                 }
-                let code = child_slot
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .and_then(|c| c.wait().ok())
-                    .and_then(|s| s.code());
+                // Poll with try_wait instead of a blocking wait: the lock
+                // must stay acquirable so kill() can SIGKILL a runtime that
+                // closed stdout but keeps running.
+                let code = loop {
+                    {
+                        let mut guard = child_slot.lock().unwrap();
+                        match guard.as_mut() {
+                            // kill() already reaped the child.
+                            None => break None,
+                            Some(child) => match child.try_wait() {
+                                Ok(Some(status)) => break status.code(),
+                                Ok(None) => {}
+                                Err(_) => break None,
+                            },
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                };
                 let _ = bus.send(AppEvent::RuntimeExited(code));
             })
             .expect("spawn frame reader");
@@ -310,3 +322,7 @@ fn route_message(
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/proto__tests.rs"]
+mod tests;

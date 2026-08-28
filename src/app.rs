@@ -3386,7 +3386,18 @@ impl App {
     }
 
     pub fn scroll_by(&mut self, delta: i64) {
-        let cur = self.scroll_up as i64;
+        // usize::MAX is the JumpTop sentinel — resolve it against the last
+        // rendered frame before arithmetic (MAX as i64 wraps to -1, so a
+        // wheel flick in the same event burst as JumpTop would teleport the
+        // viewport from the top of scrollback to just above the tail).
+        let cur = if self.scroll_up == usize::MAX {
+            self.chat_view
+                .lines
+                .len()
+                .saturating_sub(self.chat_view.area.height as usize) as i64
+        } else {
+            self.scroll_up as i64
+        };
         // The renderer clamps the relative gesture to the actual content.
         self.scroll_up = (cur + delta).max(0) as usize;
         // Apply this gesture relative to the frame the user actually saw.
@@ -6571,3 +6582,7 @@ mod palette_tests;
 #[cfg(test)]
 #[path = "../tests/unit/app__right_slot_tests.rs"]
 mod right_slot_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__scroll_tests.rs"]
+mod scroll_tests;

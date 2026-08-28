@@ -999,7 +999,10 @@ impl Transcript {
                 CellKind::User { text, queued } => {
                     emit(&mut out, &mut owners, Line::default(), None);
                     // Web UI fidelity: the user bubble uses --dsw-specific-bubble.
-                    for (i, l) in wrap(text, width.saturating_sub(2)).into_iter().enumerate() {
+                    // Budget = width - 4: the "❯ "/"  " prefix takes 2 cells
+                    // and the " {l} " padding takes 2 more, so a wider wrap
+                    // budget would clip the last text cells of full lines.
+                    for (i, l) in wrap(text, width.saturating_sub(4)).into_iter().enumerate() {
                         let mut spans = vec![
                             Span::styled(
                                 if i == 0 { "❯ " } else { "  " }.to_string(),

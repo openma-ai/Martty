@@ -216,6 +216,24 @@ fn wrap_handles_cjk() {
 }
 
 #[test]
+fn user_bubble_stays_within_the_pane_width() {
+    // The bubble line is "❯ " (2 cells) + " {l} " (text + 2 cells); the wrap
+    // budget must pay for all 4 chrome cells or packed CJK lines clip.
+    let mut tr = t("s");
+    tr.push_user("深度求索深度求索深度求索深度求索深度求索".into(), false);
+    let theme = Theme::dark();
+    for width in [20u16, 40, 80] {
+        for (i, line) in tr.lines(&theme, width, '⠋').iter().enumerate() {
+            assert!(
+                line_width(line) <= width as usize,
+                "line {i} at pane width {width} paints {} cells: {line:?}",
+                line_width(line),
+            );
+        }
+    }
+}
+
+#[test]
 fn wrap_expands_tabs_and_never_exceeds_width() {
     use unicode_width::UnicodeWidthStr;
     let cases = [

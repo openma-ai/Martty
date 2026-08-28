@@ -128,7 +128,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
         check_runtime: false,
         dump_frame: None,
     };
-    let mut it = args.into_iter();
+    let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
         let mut take = |name: &str| -> Result<String> {
             it.next().with_context(|| format!("{name} needs a value"))
@@ -154,12 +154,20 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--attach-tcp" => args_out.attach_tcp = Some(take("--attach-tcp")?),
             "--check-runtime" => args_out.check_runtime = true,
             "--dump-frame" => {
-                let dims = it.next().unwrap_or_else(|| "100x34".into());
-                let (w, h) = dims
-                    .split_once('x')
-                    .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
-                    .unwrap_or((100, 34));
-                args_out.dump_frame = Some((w, h));
+                // [WxH] is optional: only consume the next token when it
+                // actually parses as dimensions — it may be another flag.
+                let parse_dims = |s: &str| -> Option<(u16, u16)> {
+                    let (w, h) = s.split_once('x')?;
+                    Some((w.parse().ok()?, h.parse().ok()?))
+                };
+                let dims = match it.peek().and_then(|s| parse_dims(s)) {
+                    Some(dims) => {
+                        it.next();
+                        dims
+                    }
+                    None => (100, 34),
+                };
+                args_out.dump_frame = Some(dims);
             }
             "-V" | "--version" => {
                 println!("martty {}", env!("CARGO_PKG_VERSION"));

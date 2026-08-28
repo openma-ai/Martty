@@ -305,8 +305,8 @@ fn shift_select_extends_and_plain_moves_cancel() {
     e.backspace();
     assert_eq!(
         e.buf(),
-        "hello world",
-        "backspace cancels the selection, then deletes before the cursor (at the selection head)"
+        "llo world",
+        "backspace with an active selection deletes the selection"
     );
     assert_eq!(e.selection_text(), None);
 }
@@ -356,4 +356,18 @@ fn kill_line_on_the_last_line_keeps_its_newline_friends() {
     e.set_cursor_char(2);
     e.kill_line();
     assert_eq!(e.buf(), "a\n", "last content line dies, newline stays");
+}
+
+#[test]
+fn delete_forward_with_a_selection_deletes_the_selection() {
+    let mut e = ComposerEditor::new();
+    e.insert_str("hello world");
+    e.set_cursor_char(0);
+    e.select_right();
+    e.select_right();
+    e.select_right();
+    assert_eq!(e.selection_text().as_deref(), Some("hel"));
+    e.delete_forward();
+    assert_eq!(e.buf(), "lo world", "delete removes the active selection");
+    assert_eq!(e.selection_text(), None);
 }

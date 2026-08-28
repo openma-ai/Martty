@@ -301,14 +301,15 @@ impl ComposerEditor {
         self.hist_pos = None;
     }
 
+    // delete_char/delete_next_char delete an active selection first (the
+    // widget's native behavior); cancelling it here would reduce the edit to
+    // a single char.
     pub fn backspace(&mut self) {
-        self.textarea_mut().cancel_selection();
         self.textarea_mut().delete_char();
         self.hist_pos = None;
     }
 
     pub fn delete_forward(&mut self) {
-        self.textarea_mut().cancel_selection();
         self.textarea_mut().delete_next_char();
         self.hist_pos = None;
     }
