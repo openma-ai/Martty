@@ -284,6 +284,48 @@ fn table_renders_as_box_with_header_and_rows() {
         .any(|s| { s.content.contains("**b**") && s.style.bg == Some(theme.panel) })));
 }
 
+/// Palettes that alias `border` onto a body gray (Ayu: border ==
+/// fg_secondary == #686868) must not get their table frames repainted by
+/// the two-tone pass: every box-drawing span keeps the border color, so the
+/// hand-drawn `├─┼─┤` junction rows between body rows match the frame (the
+/// vertical borders keep no gaps; issue #68). Cell text still two-tones.
+#[test]
+fn table_borders_keep_border_color_when_a_palette_aliases_it() {
+    let mut theme = Theme::dark();
+    theme.border = theme.fg_secondary;
+    let md = "| A |\n|---|\n| 1 |\n| 2 |";
+    let lines = render(md, &theme, 40);
+    for l in &lines {
+        for s in &l.spans {
+            let box_drawing = s
+                .content
+                .chars()
+                .all(|c| matches!(c, '│' | '─' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┼'));
+            if box_drawing {
+                assert_eq!(
+                    s.style.fg,
+                    Some(theme.border),
+                    "box-drawing span keeps the border color: {:?}",
+                    s.content
+                );
+            }
+        }
+    }
+    // The junction rows meet the columns and match the frame color.
+    let junction = lines
+        .iter()
+        .find(|l| plain(std::slice::from_ref(l)).starts_with('├'))
+        .expect("junction row");
+    assert_eq!(junction.spans[0].style.fg, Some(theme.border));
+    // Cell text is still two-toned: Latin digits render bright.
+    let digit = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content == "1")
+        .expect("digit span");
+    assert_eq!(digit.style.fg, Some(theme.fg));
+}
+
 #[test]
 fn table_body_rows_are_separated_by_frame_lines() {
     let theme = Theme::dark();

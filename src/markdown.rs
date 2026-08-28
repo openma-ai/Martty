@@ -428,7 +428,13 @@ fn task_list_glyphs(prefix: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
 fn two_tone(segs: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
     let mut out = Vec::new();
     for seg in segs {
-        if is_body_style(seg.style, theme) {
+        // Box-drawing characters are structural borders, never body text:
+        // keep their own style. Palettes that alias `border` to a body gray
+        // (Ayu: border == fg_secondary == #686868) would otherwise pass them
+        // through the body check and repaint the table frame bright while
+        // the hand-drawn junction rows stay border-colored, leaving gaps in
+        // the vertical borders (issue #68).
+        if is_body_style(seg.style, theme) && !is_box_drawing(&seg.text) {
             for (run, is_cjk) in split_script(&seg.text) {
                 let fg = if is_cjk {
                     seg.style.fg.unwrap_or(theme.fg_secondary)
@@ -445,6 +451,20 @@ fn two_tone(segs: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
         }
     }
     out
+}
+
+/// True when the whole run is box-drawing characters (table/code frames).
+fn is_box_drawing(s: &str) -> bool {
+    s.chars().all(|c| {
+        matches!(
+            c,
+            '─' | '━' | '│' | '┃' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬'
+                | '┴' | '┼' | '╭' | '╮' | '╰' | '╯' | '═' | '║' | '╔' | '╗'
+                | '╚' | '╝' | '╠' | '╣' | '╦' | '╩' | '╬' | '╒' | '╓' | '╕'
+                | '╖' | '╘' | '╙' | '╛' | '╜' | '╞' | '╟' | '╡' | '╢' | '╤'
+                | '╥' | '╧' | '╨' | '╪' | '╫'
+        )
+    })
 }
 
 /// "Plain body" styles: no background, body-gray or tertiary foreground, and
