@@ -57,7 +57,7 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
 /// Height of the composer stats dock row: 1 when it fits and the stats slot is
 /// mounted, even before it has data; else 0. Shared by the frame layout and
 /// the kitty pixel sync so the pet anchors to the box bottom in both places.
-pub fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u16 {
+fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u16 {
     if !child_view
         && main_height >= 20 + navigation_dock_height(app, main_height)
         && app
@@ -73,7 +73,7 @@ pub fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u1
 /// One compact session-navigation row inside the composer, immediately above
 /// its meta row. A Client Plugin snapshot wins; the native Agent rail is only
 /// the no-Client-tree fallback.
-pub fn navigation_dock_height(app: &App, main_height: u16) -> u16 {
+fn navigation_dock_height(app: &App, main_height: u16) -> u16 {
     if main_height >= 8
         && (slot_has_nodes(app, "conversation.navigation.dock") || !app.subagents.is_empty())
     {
@@ -122,7 +122,7 @@ fn input_dock_body_height(app: &App, main_width: u16, main_height: u16, child_vi
 /// of the rounded border), matching the sprite's 192:208 aspect in 1:2
 /// cells. None hides it (`/liang` off, or the terminal is too cramped to
 /// give up columns).
-pub fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
+fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
     if !app.pet_visible || area.width < 60 || area.height < 10 {
         return None;
     }
@@ -140,6 +140,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme;
     app.slot_actions.clear();
+    app.pet_want = None;
     f.render_widget(
         Block::default().style(
             Style::default()
@@ -263,7 +264,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     // The pet floats inside the box's bottom-right; composer text keeps
     // clear of it. Anchor to the box's bottom — when the stats dock sits
-    // below the box, the pet rides up with it instead of overlapping.
+    // below the box, the pet rides up with it instead of overlapping. The
+    // anchor is recorded for main()'s kitty reconciler (single source of
+    // truth for the pet's place — no duplicated dock math there).
     let pet = if child_view {
         None
     } else {
@@ -275,6 +278,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         );
         pet_rect(pet_area, app)
     };
+    if app.pet_pixels {
+        let working = !matches!(app.state, RunState::Idle);
+        app.pet_want = pet.map(|rect| (rect, working));
+    }
     let pet_pad = if pet.is_some() { PET_PAD } else { 0 };
     if child_view {
         draw_child_navigation(f, app, composer);
@@ -2374,6 +2381,28 @@ fn draw_attachment_preview(f: &mut Frame, app: &mut App, composer: Rect, screen:
     }
 }
 
+/// The caret rendered as buffer cells instead of the terminal's hardware
+/// cursor: a steady reversed block that moves atomically with the frame
+/// diff. The hardware cursor had to be hidden for the whole diff write and
+/// re-shown at frame end, so any scroll-heavy redraw (streaming auto-follow,
+/// user scrolling) held it off long enough to blink the input caret; as
+/// buffer cells it can never flicker or teleport, and the terminal cursor
+/// stays hidden for the whole session. Wide graphemes cover both cells.
+fn paint_caret(f: &mut Frame, x: u16, y: u16) {
+    let buf = f.buffer_mut();
+    let style = Style::default().add_modifier(Modifier::REVERSED);
+    let Some(cell) = buf.cell_mut((x, y)) else {
+        return;
+    };
+    let wide = UnicodeWidthStr::width(cell.symbol()) > 1;
+    cell.set_style(style);
+    if wide {
+        if let Some(cell) = buf.cell_mut((x + 1, y)) {
+            cell.set_style(style);
+        }
+    }
+}
+
 /// The input well. Long prompts wrap across the (now taller) well, and the
 /// cursor follows the wrap; `/` and `!` prefixes recolor the whole line.
 /// Inline `[image n]` tokens render as chips (no icon — the token itself is
@@ -2381,8 +2410,8 @@ fn draw_attachment_preview(f: &mut Frame, app: &mut App, composer: Rect, screen:
 ///
 /// The draft itself is a `ratatui-textarea` widget rendered in the columns
 /// right of the prompt; the wrap layout mirror (`ComposerEditor::layout`)
-/// drives chip restyling, the drag-selection highlight, and the terminal
-/// cursor, and `ComposerEditor::update_scroll_top` keeps the mirrored
+/// drives chip restyling, the drag-selection highlight, and the caret cell,
+/// and `ComposerEditor::update_scroll_top` keeps the mirrored
 /// scroll offset in lockstep with the widget's own viewport.
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
@@ -2429,7 +2458,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
             area,
         );
         if composer_owns_cursor {
-            f.set_cursor_position((area.x + pw as u16, area.y));
+            paint_caret(f, area.x + pw as u16, area.y);
         }
         return;
     }
@@ -2455,11 +2484,20 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // The widget renders into the columns right of the prompt; its wrap
-    // width is exactly `avail`.
+    // width is exactly `avail`. The caret is the widget's own reversed
+    // cursor cell: it rides the frame diff like any other cell, so scroll
+    // redraws can never blink it (the old hardware cursor was hidden for
+    // the whole diff write). While an overlay owns input, the composer
+    // shows no caret at all.
     let text_area = Rect::new(area.x + pw as u16, area.y, area.width - pw as u16, area.height);
     {
         let ta = app.input.textarea_mut();
         ta.set_style(style);
+        ta.set_cursor_style(if composer_owns_cursor {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        });
         f.render_widget(&*ta, text_area);
     }
 
@@ -2545,15 +2583,6 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
     app.att_chips = chip_rects;
 
-    // Terminal cursor on the widget's screen position, clamped into the
-    // well. `update_scroll_top` after it: the mirrored scroll offset used
-    // above is the one the widget just rendered with.
-    if composer_owns_cursor {
-        let (crow, ccol) = app.input.screen_cursor();
-        let cy = area.y + (crow.saturating_sub(top)).min(h.saturating_sub(1)) as u16;
-        let cx = text_area.x + ccol as u16;
-        f.set_cursor_position((cx.min(text_area.right().saturating_sub(1)), cy));
-    }
     app.input.update_scroll_top(area.height);
     // `input_top` is the app-side mirror mouse hit-testing reads between
     // frames; keep it in lockstep with the editor's own scroll mirror.
@@ -2989,10 +3018,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
                             .width();
                     bottom.push(Line::from(vec![
                         Span::styled("      ❯ ", Style::default().fg(theme.brand)),
-                        Span::styled(
-                            format!("{}▏", state.input.buf),
-                            Style::default().fg(theme.fg),
-                        ),
+                        Span::styled(state.input.buf.clone(), Style::default().fg(theme.fg)),
                     ]));
                     field_cursor = Some((cursor_row, cursor_col));
                 }
@@ -3030,10 +3056,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
                     .width();
             bottom.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(theme.brand)),
-                Span::styled(
-                    format!("{}▏", state.input.buf),
-                    Style::default().fg(theme.fg),
-                ),
+                Span::styled(state.input.buf.clone(), Style::default().fg(theme.fg)),
             ]));
             field_cursor = Some((cursor_row, cursor_col));
         }
@@ -3113,13 +3136,14 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
     );
     f.render_widget(Paragraph::new(bottom), bottom_area);
     if let Some((row, col)) = field_cursor.filter(|(row, _)| *row < bottom_h) {
-        f.set_cursor_position((
+        paint_caret(
+            f,
             bottom_area
                 .x
                 .saturating_add(col as u16)
                 .min(bottom_area.right().saturating_sub(1)),
             bottom_area.y.saturating_add(row as u16),
-        ));
+        );
     }
 }
 

@@ -7,45 +7,149 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # primary dev profile). Must match the `dsh --profile <name>` you run.
 PROFILE="${1:-${DSH_TUI_PROFILE:-martty}}"
 
-# 1. Build the Rust binary and stage native artifacts into npm/
-./scripts/build-npm.sh
+# 1. Build the release binary first so the installed copy always reflects
+#    the current source (cargo build --release --locked; lto is slow).
+BIN="target/release/martty"
+echo "building $BIN (cargo build --release --locked, lto is slow)…" >&2
+cargo build --release --locked
 
-# 2. Produce the tarball under the name users install:
-#    `dsh plugin --profile martty add martty@latest` pulls the aliased
-#    `martty` package from npm, so the dev install must be the same shape:
-#    dist/martty-*.tgz. Mirrors CI (package-npm.yml):
-#    package-alias.mjs npm npm-martty martty && npm pack ./npm-martty
-rm -rf npm-martty
-node scripts/package-alias.mjs npm npm-martty martty
-npm pack ./npm-martty --pack-destination dist
+# 2. Resolve exactly the binary `dsh --profile $PROFILE` runs — no hardcoded
+#    package names or home dirs:
+#      * the profile dir is $DSH_HOME/profiles/<name> (dsh defaults DSH_HOME
+#        to ~/.dsh)
+#      * the TUI package is the bundle in the profile's package.json
+#        `dsh.profile.bundles` whose `bin` maps martty/dsh-tui to a script
+#      * bin/martty.js spawns that package's vendor/<platform>-<arch>/martty,
+#        unless MARTTY_BIN/DSH_TUI_BIN points at an existing file (it wins)
+RESOLVED_FILE="$(mktemp)"
+trap 'rm -f "$RESOLVED_FILE"' EXIT
+DSH_TUI_INSTALL_PROFILE="$PROFILE" node --input-type=module > "$RESOLVED_FILE" <<'EOF'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
-# 3. Pick the highest-version tarball in dist/. Version sort (sort -V),
-#    not mtime: a later-built older version must never regress the install.
-shopt -s nullglob
-tgz=(dist/martty-*.tgz)
-if (( ${#tgz[@]} == 0 )); then
-  echo "no tarball in dist/ — did the alias+pack step succeed?" >&2
+const profile = process.env.DSH_TUI_INSTALL_PROFILE
+const profileDir = path.join(
+  process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
+  'profiles',
+  profile,
+)
+const out = { profileDir, candidates: [] }
+
+// Legacy fallback names for profiles that install the TUI without declaring
+// it in dsh.profile.bundles.
+const LEGACY = ['martty', '@openma/deepseek-harness-tui']
+
+let bundles = null
+try {
+  bundles = JSON.parse(
+    fs.readFileSync(path.join(profileDir, 'package.json'), 'utf8'),
+  ).dsh?.profile?.bundles ?? null
+} catch {
+  // no profile manifest — fall through to the legacy names
+}
+
+const platformKey = `${process.platform}-${process.arch}`
+const exe = process.platform === 'win32' ? 'martty.exe' : 'martty'
+const names = [...new Set([...(bundles ?? []), ...LEGACY])]
+
+for (const name of names) {
+  const pkgDir = path.join(profileDir, 'node_modules', name)
+  let pkg
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
+  } catch {
+    continue // bundle not installed
+  }
+  const bin = pkg.bin
+  const binScript = typeof bin === 'string' ? bin : bin?.['martty'] ?? bin?.['dsh-tui']
+  if (typeof binScript !== 'string' || !binScript.length) continue
+  out.candidates.push({
+    name,
+    pkgDir,
+    binScript: path.join(pkgDir, binScript),
+    dest: path.join(pkgDir, 'vendor', platformKey, exe),
+  })
+}
+
+if (out.candidates.length === 0) {
+  out.error =
+    `no TUI package (bin martty/dsh-tui) under ${path.join(profileDir, 'node_modules')}; ` +
+    `install once first: dsh plugin --profile ${profile} add martty@latest`
+} else if (out.candidates.length === 1) {
+  out.pick = out.candidates[0]
+} else {
+  // Several bundles ship a martty bin (e.g. current + legacy alias): prefer
+  // the one that already staged a vendor binary for this platform.
+  const staged = out.candidates.filter((c) => fs.existsSync(c.dest))
+  out.pick = staged.length === 1 ? staged[0] : out.candidates[0]
+}
+
+// bin/martty.js precedence: MARTTY_BIN/DSH_TUI_BIN override the packaged copy
+// only when set to an existing file.
+const envBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
+if (typeof envBin === 'string' && envBin.length > 0) {
+  out.envBin = envBin
+  out.envOverrideActive = fs.existsSync(envBin)
+}
+
+process.stdout.write(JSON.stringify(out, null, 2))
+EOF
+
+field() { node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))$1" "$RESOLVED_FILE"; }
+
+ERROR="$(field '.error || ""')"
+if [[ -n "$ERROR" ]]; then
+  echo "$ERROR" >&2
   exit 1
 fi
-LATEST="$(printf '%s\n' "${tgz[@]}" | sort -V | tail -n 1)"
-echo "using tarball: $LATEST"
 
-# 4. Install the freshly built plugin into the target profile.
-#    pnpm re-installs the tarball when its content changes (integrity check);
-#    clearing node_modules + lockfile below is a belt-and-braces force step.
-#    Deliberately NOT wiping the whole profile dir, so the user's
-#    cordis.patch.yml layer and any other installed plugins survive.
-PROFILE_DIR="$HOME/.dsh/profiles/$PROFILE"
-# Note: a missing profile dir is fine — `dsh plugin add` below creates it
-# (with the @deepseek-ai/dsh-base bundle), matching the user flow
-# `dsh plugin --profile martty add martty@latest` on a fresh machine.
-# Drop the legacy-named TUI bundle (@openma/deepseek-harness-tui) if a
-# previous install left it in the profile: `dsh plugin add` would otherwise
-# append `martty` alongside it and mount the TUI twice.
-if grep -q '@openma/deepseek-harness-tui' "$PROFILE_DIR/package.json"; then
-  dsh plugin --profile "$PROFILE" remove '@openma/deepseek-harness-tui'
+DEST="$(field '.pick.dest')"
+PKG_DIR="$(field '.pick.pkgDir')"
+BUNDLE="$(field '.pick.name')"
+if [[ "$(field '.envOverrideActive || false')" == "true" ]]; then
+  echo "dsh --profile $PROFILE does not use the packaged binary: MARTTY_BIN/DSH_TUI_BIN is set to" >&2
+  echo "  $(field '.envBin')" >&2
+  echo "unset MARTTY_BIN DSH_TUI_BIN (or point them at $BIN) and rerun." >&2
+  exit 1
 fi
-rm -rf "$PROFILE_DIR/node_modules" "$PROFILE_DIR/pnpm-lock.yaml"
-dsh plugin --profile "$PROFILE" add "$PWD/$LATEST"
 
-echo "installed $LATEST into profile $PROFILE — restart the TUI or run /refresh to pick it up"
+# 3. Replace the binary. Copy to a temp file and rename: cp onto a running
+#    TUI fails with ETXTBSY, while rename(2) just swaps the directory entry.
+#    -p keeps the source's build mtime on the installed file.
+mkdir -p "$(dirname "$DEST")"
+if stat -c '%w' / >/dev/null 2>&1; then
+  stat_created() { stat -c '%w' "$1"; }
+  stat_modified() { stat -c '%y' "$1"; }
+else
+  stat_created() { stat -f '%SB' "$1"; }
+  stat_modified() { stat -f '%Sm' "$1"; }
+fi
+# sha256 availability differs between GNU coreutils (sha256sum) and BSD/macOS (shasum).
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | awk '{print $1}'; }
+else
+  sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+fi
+if [[ -e "$DEST" ]]; then
+  OLD_CREATED="$(stat_created "$DEST")"
+  OLD_MODIFIED="$(stat_modified "$DEST")"
+  OLD_SHA256="$(sha256 "$DEST")"
+else
+  OLD_CREATED="(absent)"
+  OLD_MODIFIED="(absent)"
+  OLD_SHA256="(absent)"
+fi
+TMP="$DEST.tmp.$$"
+cp -p "$BIN" "$TMP"
+chmod 755 "$TMP"
+mv -f "$TMP" "$DEST"
+NEW_CREATED="$(stat_created "$DEST")"
+NEW_MODIFIED="$(stat_modified "$DEST")"
+NEW_SHA256="$(sha256 "$DEST")"
+
+echo "installed $BIN -> $DEST"
+echo "profile: $PROFILE ($(field '.profileDir')) · bundle: $BUNDLE"
+echo "old martty: sha256 $OLD_SHA256 · created $OLD_CREATED · modified $OLD_MODIFIED"
+echo "new martty: sha256 $NEW_SHA256 · created $NEW_CREATED · modified $NEW_MODIFIED"
+echo "restart the TUI or run /refresh to pick it up"

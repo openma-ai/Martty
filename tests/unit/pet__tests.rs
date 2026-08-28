@@ -50,14 +50,15 @@ fn sync_shows_switches_state_and_hides() {
     let mut pet = Pet::new(true);
     let cell = Rect::new(90, 30, 7, 4);
 
-    // Idle: one-shot transmit-and-display under the idle id.
+    // Idle: transmit the idle PNG once, then place it.
     let mut out = Vec::new();
     pet.sync(&mut out, Some((cell, false))).unwrap();
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("\x1b[31;91H"), "cursor jumps to the cell");
+    assert!(s.contains("a=t,f=100,i=4207"), "idle transmitted: {s:.60}");
     assert!(
-        s.contains("a=T,f=100,i=4207,c=7,r=4,C=1,z=0,q=2,m=1;"),
-        "idle sprite: {s:.90}"
+        s.contains("a=p,i=4207,p=1,c=7,r=4,"),
+        "idle placed: {s:.80}"
     );
 
     // Same state again: no bytes at all.
@@ -65,21 +66,39 @@ fn sync_shows_switches_state_and_hides() {
     pet.sync(&mut out, Some((cell, false))).unwrap();
     assert!(out.is_empty(), "idempotent when unchanged");
 
-    // A turn starts: idle sprite deleted, working sprite displayed.
+    // The composer grows with a long draft: re-place only, no retransmit.
+    let moved = Rect::new(90, 29, 7, 4);
     let mut out = Vec::new();
-    pet.sync(&mut out, Some((cell, true))).unwrap();
+    pet.sync(&mut out, Some((moved, false))).unwrap();
     let s = String::from_utf8(out).unwrap();
-    assert!(s.contains("a=d,d=I,i=4207"), "idle deleted: {s:.90}");
-    assert!(s.contains("a=T,f=100,i=4208,"), "working shown: {s:.90}");
+    assert!(!s.contains("a=t"), "a move must not retransmit: {s}");
+    assert!(s.contains("a=p,i=4207,p=2,"), "new placement: {s}");
+    assert!(s.contains("a=d,d=p,i=4207,p=1"), "old placement dropped: {s}");
 
-    // Hide (`/liang` off): delete only.
+    // A turn starts: the working sprite is transmitted once and placed; the
+    // idle image keeps its data — only its placement is dropped.
+    let mut out = Vec::new();
+    pet.sync(&mut out, Some((moved, true))).unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("a=t,f=100,i=4208"), "working transmitted: {s:.60}");
+    assert!(s.contains("a=p,i=4208,p=1,"), "working placed: {s:.80}");
+    assert!(s.contains("a=d,d=p,i=4207,p=2"), "idle placement dropped: {s}");
+    assert!(!s.contains("a=d,d=I"), "image data is kept: {s}");
+
+    // Hide (`/liang` off): both sprites deleted, transmission state reset.
     let mut out = Vec::new();
     pet.sync(&mut out, None).unwrap();
     let s = String::from_utf8(out).unwrap();
     assert!(
-        s.contains("a=d,d=I,i=4208") && !s.contains("a=T"),
+        s.contains("a=d,d=I,i=4207") && s.contains("a=d,d=I,i=4208") && !s.contains("a=t"),
         "hidden: {s}"
     );
+
+    // Re-show after a hide: the sprite is transmitted again.
+    let mut out = Vec::new();
+    pet.sync(&mut out, Some((cell, false))).unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("a=t,f=100,i=4207"), "retransmit after hide: {s:.60}");
 }
 
 #[test]
@@ -89,6 +108,51 @@ fn disabled_pet_stays_silent() {
     pet.sync(&mut out, Some((Rect::new(0, 0, 7, 4), true)))
         .unwrap();
     assert!(out.is_empty());
+}
+
+#[test]
+fn thumbnails_scroll_by_replacement_without_retransmit() {
+    let shot = |rect: Rect| ThumbShot {
+        id: 7,
+        rect,
+        data: LIANG_IDLE_PNG,
+    };
+    let mut thumbs = Thumbnails::new();
+
+    // First sight: transmit the PNG once, then place it as placement 1.
+    let mut out = Vec::new();
+    thumbs
+        .sync(&mut out, &[shot(Rect::new(0, 0, 8, 3))])
+        .unwrap();
+    assert_eq!(image_dims(&transmitted_png(out.clone())), Some((192, 208)));
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("a=t,f=100,i=7,"), "transmit once: {s:.60}");
+    assert!(s.contains("a=p,i=7,p=1,c=8,r=3,"), "initial place: {s:.80}");
+
+    // Same viewport: no bytes at all.
+    let mut out = Vec::new();
+    thumbs
+        .sync(&mut out, &[shot(Rect::new(0, 0, 8, 3))])
+        .unwrap();
+    assert!(out.is_empty(), "idempotent when unchanged");
+
+    // Viewport scrolls: the already-transmitted image is re-placed (a few
+    // bytes) — never deleted and re-sent — and the old placement is dropped
+    // after the new one exists, so the thumbnail never blinks out.
+    let mut out = Vec::new();
+    thumbs
+        .sync(&mut out, &[shot(Rect::new(0, 1, 8, 3))])
+        .unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(!s.contains("a=t"), "a move must not retransmit: {s}");
+    assert!(s.contains("a=p,i=7,p=2,c=8,r=3,"), "new placement: {s}");
+    assert!(s.contains("a=d,d=p,i=7,p=1"), "old placement dropped: {s}");
+
+    // Scrolled away entirely: the image and its placements are deleted.
+    let mut out = Vec::new();
+    thumbs.sync(&mut out, &[]).unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("a=d,d=I,i=7"), "scrolled away: {s}");
 }
 
 #[test]

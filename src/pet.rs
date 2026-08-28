@@ -50,59 +50,75 @@ pub fn kitty_supported() -> bool {
     })
 }
 
-/// What's on screen: the sprite's cell box and whether he's working.
-type Shown = (Rect, bool);
+/// The two sprite states: (kitty image id, PNG), indexed by `working`.
+const SPRITES: [(u32, &[u8]); 2] = [(ID_IDLE, LIANG_IDLE_PNG), (ID_WORKING, LIANG_WORKING_PNG)];
 
-/// Reconciles the desired sprite with what the terminal displays.
+/// What the terminal currently displays for one placement: the cell box and
+/// the kitty placement id showing it. The PNG itself is transmitted once
+/// under its image id — moves and state toggles only re-place it.
+#[derive(Clone, Copy)]
+struct Placed {
+    rect: Rect,
+    placement: u32,
+}
+
+/// Reconciles the desired sprite with what the terminal displays. Each
+/// sprite PNG is transmitted once; moving (the composer growing with a long
+/// draft) and idle↔working toggles only re-place it, a few bytes each.
 pub struct Pet {
     enabled: bool,
-    shown: Option<Shown>,
+    transmitted: [bool; SPRITES.len()],
+    shown: Option<(usize, Placed)>,
 }
 
 impl Pet {
     pub fn new(enabled: bool) -> Self {
         Pet {
             enabled,
+            transmitted: [false; SPRITES.len()],
             shown: None,
         }
     }
 
     /// Make the terminal match `want` (cell box + working flag, or None to
     /// hide). Idempotent and zero-cost when nothing changed.
-    pub fn sync(&mut self, out: &mut impl Write, want: Option<Shown>) -> io::Result<()> {
-        if !self.enabled || self.shown == want {
+    pub fn sync(&mut self, out: &mut impl Write, want: Option<(Rect, bool)>) -> io::Result<()> {
+        if !self.enabled {
             return Ok(());
         }
-        if let Some((_, was_working)) = self.shown.take() {
-            let id = if was_working { ID_WORKING } else { ID_IDLE };
-            write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        let desired = want.map(|(rect, working)| (usize::from(working), rect));
+        if self.shown.as_ref().map(|(image, placed)| (*image, placed.rect)) == desired {
+            return Ok(());
         }
-        if let Some((cell, working)) = want {
-            let (id, png) = if working {
-                (ID_WORKING, LIANG_WORKING_PNG)
-            } else {
-                (ID_IDLE, LIANG_IDLE_PNG)
-            };
-            // DECSC · jump to the cell · transmit-and-display · DECRC.
-            write!(out, "\x1b7\x1b[{};{}H", cell.y + 1, cell.x + 1)?;
-            let data = base64(png);
-            let chunks: Vec<&[u8]> = data.as_bytes().chunks(CHUNK).collect();
-            for (i, chunk) in chunks.iter().enumerate() {
-                let more = u8::from(i + 1 != chunks.len());
-                if i == 0 {
-                    write!(
-                        out,
-                        "\x1b_Ga=T,f=100,i={id},c={},r={},C=1,z=0,q=2,m={more};",
-                        cell.width, cell.height
-                    )?;
-                } else {
-                    write!(out, "\x1b_Gm={more};")?;
-                }
-                out.write_all(chunk)?;
-                write!(out, "\x1b\\")?;
+        if let Some((image, rect)) = desired {
+            if !self.transmitted[image] {
+                let (id, png) = SPRITES[image];
+                transmit_kitty(out, id, png)?;
+                self.transmitted[image] = true;
             }
-            write!(out, "\x1b8")?;
-            self.shown = Some((cell, working));
+            // Place the (possibly just transmitted) sprite at the new cell
+            // before dropping the old placement, so the pet never blinks
+            // out between frames.
+            let next = match self.shown {
+                Some((old_image, placed)) if old_image == image => {
+                    placed.placement.wrapping_add(1).max(1)
+                }
+                _ => 1,
+            };
+            place_kitty(out, SPRITES[image].0, next, rect, 0)?;
+            if let Some((old_image, old)) =
+                self.shown.replace((image, Placed { rect, placement: next }))
+            {
+                delete_placement_kitty(out, SPRITES[old_image].0, old.placement)?;
+            }
+        } else if self.shown.take().is_some() {
+            // Hide: drop both sprites' data and placements (deleting an id
+            // that was never transmitted is a harmless no-op) and forget
+            // the transmission state, so a re-show retransmits.
+            for (id, _) in SPRITES {
+                delete_kitty(out, id)?;
+            }
+            self.transmitted = [false; SPRITES.len()];
         }
         out.flush()
     }
@@ -127,10 +143,14 @@ pub struct ThumbShot<'a> {
 }
 
 /// Keeps kitty-graphics thumbnail placements in sync with the visible chat
-/// viewport: emit when new/moved, delete when scrolled away.
+/// viewport: emit when new, re-place when scrolled, delete when scrolled
+/// away. Placement moves are a few bytes (`a=p` re-uses the transmitted
+/// image); a full retransmit only ever happens on first sight. Scrolling the
+/// transcript used to delete and re-send the entire PNG on every step, which
+/// stalled the frame write and blinked the composer caret.
 #[derive(Default)]
 pub struct Thumbnails {
-    shown: std::collections::HashMap<u32, Rect>,
+    shown: std::collections::HashMap<u32, Placed>,
 }
 
 impl Thumbnails {
@@ -143,12 +163,39 @@ impl Thumbnails {
         let mut ids = HashSet::new();
         for shot in visible {
             ids.insert(shot.id);
-            if self.shown.get(&shot.id) != Some(&shot.rect) {
-                if self.shown.remove(&shot.id).is_some() {
-                    delete_kitty(out, shot.id)?;
+            match self.shown.get(&shot.id).copied() {
+                Some(shown) if shown.rect == shot.rect => {}
+                Some(shown) => {
+                    // Moved (viewport scrolled): place the already
+                    // transmitted image at the new cell, then drop the old
+                    // placement — place first, so the thumbnail never
+                    // blinks out between frames.
+                    let next = shown.placement.wrapping_add(1).max(1);
+                    place_kitty(out, shot.id, next, shot.rect, 0)?;
+                    delete_placement_kitty(out, shot.id, shown.placement)?;
+                    self.shown.insert(
+                        shot.id,
+                        Placed {
+                            rect: shot.rect,
+                            placement: next,
+                        },
+                    );
                 }
-                emit_kitty(out, shot.id, shot.data, shot.rect, 0)?;
-                self.shown.insert(shot.id, shot.rect);
+                None => {
+                    // First sight: transmit the PNG under the image id and
+                    // create placement 1. Transmit (a=t) and placement
+                    // (a=p) stay separate so every placement is one we
+                    // track and can delete by id.
+                    transmit_kitty(out, shot.id, shot.data)?;
+                    place_kitty(out, shot.id, 1, shot.rect, 0)?;
+                    self.shown.insert(
+                        shot.id,
+                        Placed {
+                            rect: shot.rect,
+                            placement: 1,
+                        },
+                    );
+                }
             }
         }
         let gone: Vec<u32> = self
@@ -165,31 +212,45 @@ impl Thumbnails {
     }
 }
 
-fn emit_kitty(
-    out: &mut impl Write,
-    id: u32,
-    data: &[u8],
-    cell: Rect,
-    z_index: i32,
-) -> io::Result<()> {
-    write!(out, "\x1b7\x1b[{};{}H", cell.y + 1, cell.x + 1)?;
+/// Upload the PNG under `id` without displaying it.
+fn transmit_kitty(out: &mut impl Write, id: u32, data: &[u8]) -> io::Result<()> {
     let b64 = base64(data);
     let chunks: Vec<&[u8]> = b64.as_bytes().chunks(CHUNK).collect();
     for (i, chunk) in chunks.iter().enumerate() {
         let more = u8::from(i + 1 != chunks.len());
         if i == 0 {
-            write!(
-                out,
-                "\x1b_Ga=T,f=100,i={id},c={},r={},C=1,z={z_index},q=2,m={more};",
-                cell.width, cell.height,
-            )?;
+            write!(out, "\x1b_Ga=t,f=100,i={id},q=2,m={more};")?;
         } else {
             write!(out, "\x1b_Gm={more};")?;
         }
         out.write_all(chunk)?;
         write!(out, "\x1b\\")?;
     }
-    write!(out, "\x1b8")
+    Ok(())
+}
+
+/// Create one placement of an already-transmitted image at `cell`.
+fn place_kitty(
+    out: &mut impl Write,
+    id: u32,
+    placement: u32,
+    cell: Rect,
+    z: i32,
+) -> io::Result<()> {
+    // DECSC · jump to the cell · place · DECRC.
+    write!(
+        out,
+        "\x1b7\x1b[{};{}H\x1b_Ga=p,i={id},p={placement},c={},r={},C=1,z={z},q=2\x1b\\\x1b8",
+        cell.y + 1,
+        cell.x + 1,
+        cell.width,
+        cell.height
+    )
+}
+
+/// Drop one placement (the image data stays transmitted and re-placeable).
+fn delete_placement_kitty(out: &mut impl Write, id: u32, placement: u32) -> io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=p,i={id},p={placement},q=2\x1b\\")
 }
 
 const BACKDROP_ID: u32 = 4210;
@@ -240,7 +301,8 @@ impl Backdrop {
             };
             let placement = backdrop_rect(&background, dimensions, rect);
             let data = prepare_background(data, &background, rect)?;
-            emit_kitty(out, BACKDROP_ID, &data, placement, -1)?;
+            transmit_kitty(out, BACKDROP_ID, &data)?;
+            place_kitty(out, BACKDROP_ID, 1, placement, -1)?;
             self.shown = Some((background, rect));
         }
         out.flush()
