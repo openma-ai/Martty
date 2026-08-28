@@ -427,36 +427,23 @@ fn main() -> Result<()> {
         loop {
             if app.needs_redraw {
                 // One atomic frame. Synchronized updates (DECSET 2026) make
-                // supporting terminals apply the whole frame without tearing;
-                // the pre-draw Hide keeps the hardware cursor from teleporting
-                // across the buffer diff while it is applied (ratatui re-shows
-                // it at the input position at frame end). On terminals without
-                // 2026 both sequences are ignored and the Hide still prevents
-                // the visible cursor jumps.
+                // supporting terminals apply the whole frame without tearing.
+                // The caret itself is painted as buffer cells (ui::paint_caret)
+                // and the hardware cursor stays hidden for the whole session
+                // (enter_tui), so no frame-time Hide/Show is needed — the old
+                // per-frame Hide kept the cursor off for the entire diff
+                // write, which read as flicker in the input well whenever a
+                // scroll redraw rewrote the transcript pane.
                 std::io::stdout().sync_update(|out| -> Result<()> {
-                    execute!(out, Hide)?;
                     terminal.draw(|f| ui::draw(f, &mut app))?;
                     app.needs_redraw = false;
-                    // Reconcile the pixel pet (frame + state) with what was drawn.
+                    // Reconcile the kitty pixel layers against the freshly
+                    // drawn frame: backdrop, pet (anchor recorded by
+                    // ui::draw) and the visible image thumbnails.
                     let size = terminal.size()?;
                     let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
                     let _ = backdrop.sync(out, app.active_background(), area);
-                    let working = !matches!(app.state, RunState::Idle);
-                    // Same anchor math as ui::draw: the pet sits inside the
-                    // composer box, above navigation and stats docks when shown.
-                    let dock_h =
-                        ui::composer_dock_height(&app, area.height, app.active_subagent.is_some());
-                    let navigation_h = ui::navigation_dock_height(&app, area.height);
-                    let pet_area = ratatui::layout::Rect::new(
-                        0,
-                        0,
-                        size.width,
-                        size.height.saturating_sub(dock_h + navigation_h),
-                    );
-                    let want = ui::pet_rect(pet_area, &app).map(|r| (r, working));
-                    let _ = pet.sync(out, want);
-                    // Sync image thumbnails (chat + composer attachment strip)
-                    // against the freshly drawn viewport.
+                    let _ = pet.sync(out, app.pet_want);
                     let shots: Vec<pet::ThumbShot> = app
                         .chat_view
                         .images
@@ -536,9 +523,12 @@ fn main() -> Result<()> {
 fn enter_tui() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
+    // Hide once up front: the caret is drawn as buffer cells, and the first
+    // frame's diff must not paint with a visible hardware cursor.
     execute!(
         stdout,
         EnterAlternateScreen,
+        Hide,
         EnableMouseCapture,
         EnableBracketedPaste
     )?;

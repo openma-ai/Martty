@@ -984,6 +984,10 @@ pub struct App {
     /// True when the terminal speaks the kitty graphics protocol: image
     /// thumbnails and the background layer emit real pixels (set by `main`).
     pub pet_pixels: bool,
+    /// The pet sprite the frame just drew around: cell box + working flag.
+    /// Filled by `ui::draw` (the layout math lives there — one source of
+    /// truth), reconciled against the terminal by `main` after the frame.
+    pub pet_want: Option<(ratatui::layout::Rect, bool)>,
     /// Current git branch of the workspace, shown after the project path in
     /// the composer cap when git is available and the terminal is wide
     /// enough. Seeded at startup, then re-checked on a throttled tick and
@@ -1379,6 +1383,7 @@ impl App {
             show_banner: true,
             pet_visible: false,
             pet_pixels: false,
+            pet_want: None,
             git_branch: None,
             git_check_at: Instant::now(),
             run_started: None,

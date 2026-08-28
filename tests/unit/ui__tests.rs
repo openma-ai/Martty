@@ -1107,6 +1107,61 @@ fn long_input_wraps_in_the_well() {
     assert!(wrapped >= 2, "input should wrap across well rows:\n{frame}");
 }
 
+/// The caret is a buffer cell (a steady reversed block), so it moves
+/// atomically with the frame diff and can never be blinked off by a
+/// scroll-heavy redraw. Returns the reversed cells of one drawn frame.
+fn caret_cells(app: &mut App, width: u16, height: u16) -> Vec<(u16, u16)> {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, app)).expect("draw frame");
+    let buf = terminal.backend().buffer();
+    let mut cells = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                cells.push((x, y));
+            }
+        }
+    }
+    cells
+}
+
+#[test]
+fn empty_composer_paints_the_caret_on_the_placeholder() {
+    let mut app = test_app();
+    app.show_banner = false;
+    let cells = caret_cells(&mut app, 80, 20);
+    assert_eq!(cells, vec![(3, 16)], "caret right of the ❯ prompt");
+}
+
+#[test]
+fn composer_caret_follows_the_cursor_end_and_mid_draft() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.set("hello".into());
+    app.input.set_cursor_char(5);
+    // One past the draft: a reversed blank cell, never a hardware cursor.
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(8, 16)]);
+    app.input.set_cursor_char(2);
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(5, 16)]);
+}
+
+#[test]
+fn composer_caret_sits_on_wide_graphemes() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.set("中".into());
+    app.input.set_cursor_char(0);
+    // The reversed style rides the grapheme's start cell — terminals paint
+    // the full two-column glyph with it, so the block caret covers 中.
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(3, 16)]);
+    // Cursor after the wide char: the caret is the blank cell past it.
+    app.input.set_cursor_char(1);
+    assert_eq!(caret_cells(&mut app, 80, 20), vec![(5, 16)]);
+}
+
 #[test]
 fn multiline_input_breaks_on_newlines() {
     let mut app = test_app();
@@ -1512,6 +1567,34 @@ fn pet_rides_above_the_stats_dock() {
     app.slot_snapshots.remove("conversation.composer.dock");
     let without_dock = Rect::new(main.x, main.y, main.width, main.height);
     assert_eq!(pet_rect(without_dock, &app), Some(Rect::new(92, 21, 7, 4)));
+}
+
+#[test]
+fn draw_records_the_pet_anchor_for_the_kitty_reconciler() {
+    let mut app = test_app();
+    app.show_banner = false;
+    app.pet_visible = true;
+    app.pet_pixels = true;
+    // One draw: the anchor is recorded with the idle flag; main() reconciles
+    // the kitty placement against exactly this value.
+    let _ = dump_frame(&mut app, 100, 34);
+    let (rect, working) = app.pet_want.expect("pet anchor recorded");
+    assert_eq!(
+        Some(rect),
+        pet_rect(Rect::new(0, 0, 100, 34), &app),
+        "anchor matches the pet geometry at this size"
+    );
+    assert!(!working, "idle app draws the idle sprite");
+
+    app.state = RunState::Running;
+    let _ = dump_frame(&mut app, 100, 34);
+    assert!(app.pet_want.expect("pet anchor").1, "working flag follows");
+
+    // Char-whale fallback (no kitty protocol): nothing recorded, the kitty
+    // reconciler stays silent.
+    app.pet_pixels = false;
+    let _ = dump_frame(&mut app, 100, 34);
+    assert_eq!(app.pet_want, None, "no kitty pixels, no anchor");
 }
 
 #[test]
@@ -2144,9 +2227,9 @@ fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
     let answer_row = (0..30)
         .find(|y| {
             (0..100)
-                .map(|x| buffer[(x, *y)].symbol())
+                .map(|x| buffer[(x as u16, *y)].symbol())
                 .collect::<String>()
-                .contains("overlay answer▏")
+                .contains("overlay answer")
         })
         .expect("elicitation text field");
     let answer_line = (0..100)
@@ -2154,12 +2237,36 @@ fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
         .collect::<String>();
     let answer_byte = answer_line.find("overlay answer").expect("answer text");
     let answer_start = answer_line[..answer_byte].width() as u16;
-    let cursor = terminal
-        .get_cursor_position()
-        .expect("terminal cursor position");
-
-    assert_eq!(cursor.y, answer_row);
-    assert_eq!(cursor.x, answer_start + "overlay answer".width() as u16);
+    // The caret is a buffer cell: a reversed block one past the field text
+    // (the cursor sits at the end of "overlay answer").
+    let caret_x = answer_start + "overlay answer".width() as u16;
+    assert!(
+        buffer[(caret_x, answer_row)]
+            .modifier
+            .contains(ratatui::style::Modifier::REVERSED),
+        "elicitation field paints its own caret cell"
+    );
+    // The composer draft keeps no caret while the overlay owns input.
+    let composer_row = (0..30)
+        .find(|y| {
+            (0..100)
+                .map(|x| buffer[(x as u16, *y)].symbol())
+                .collect::<String>()
+                .contains("composer draft")
+        })
+        .expect("composer draft visible behind the overlay");
+    let draft_line = (0..100)
+        .map(|x| buffer[(x, composer_row)].symbol())
+        .collect::<String>();
+    let draft_byte = draft_line.find("composer draft").expect("draft text");
+    let draft_start = draft_line[..draft_byte].width() as u16;
+    let draft_end = draft_start + "composer draft".width() as u16;
+    assert!(
+        !(0..100).any(|x| {
+            x >= draft_start && x <= draft_end && buffer[(x, composer_row)].modifier.contains(ratatui::style::Modifier::REVERSED)
+        }),
+        "composer shows no caret while elicitation owns input"
+    );
 }
 
 fn box_line(line: &str) -> &str {

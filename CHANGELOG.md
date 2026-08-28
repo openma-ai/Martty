@@ -41,6 +41,23 @@ All notable changes to this project are documented here. The project follows
 - `Ctrl+U`, `Ctrl+K`, and the corresponding macOS line-kill shortcut now
   delete only to the current rendered line boundary instead of truncating the
   entire multiline composer draft.
+- The composer caret no longer flickers while the transcript scrolls (agent
+  streaming auto-follow, or scrolling yourself). The caret is now painted as
+  a buffer cell — a steady reversed block that rides the frame diff — and
+  the terminal's hardware cursor stays hidden for the whole session, instead
+  of being hidden for the entire frame write (long during scroll redraws)
+  and re-shown at frame end. Elicitation form fields use the same cell
+  caret; the old hardware-cursor position and the redundant `▏` insert mark
+  are gone. Frames still apply as one synchronized update (DECSET 2026).
+- Image thumbnails and the pixel pet no longer re-send their whole PNG to
+  the terminal on every move: each kitty image is transmitted once under its
+  image id, and viewport scrolls (thumbnails) or composer-height changes and
+  idle↔working toggles (pet) re-place it with a small `a=p` placement
+  command, dropping the previous placement only after the new one exists so
+  nothing blinks out mid-scroll. The pet's ~43KB sprite retransmit on every
+  long-draft wrap boundary is gone. All kitty writers now share one set of
+  protocol primitives, and the pet's screen anchor is recorded by the frame
+  draw itself instead of being recomputed in main.
 
 ## [0.2.24] - 2026-08-24
 
