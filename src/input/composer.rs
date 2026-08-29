@@ -328,9 +328,12 @@ impl ComposerEditor {
         self.hist_pos = None;
     }
 
-    /// Delete the whole logical line under the cursor (including its
-    /// trailing newline, so the next line moves up). The cursor lands at
-    /// the line start. A no-op on an empty last line.
+    /// Delete the whole logical line under the cursor. A middle line dies
+    /// with its trailing newline, so the next line moves up and the
+    /// cursor lands at the merged line start. The last line dies with its
+    /// preceding newline (the line above becomes the last line) and the
+    /// cursor lifts onto it, so repeated presses keep deleting upward.
+    /// A single empty line is a no-op.
     pub fn kill_line(&mut self) {
         let DataCursor(row, _) = self.textarea.cursor();
         let lines = self.lines();
@@ -343,13 +346,25 @@ impl ComposerEditor {
             .map(|l| l.chars().count() + 1)
             .sum::<usize>();
         let line_chars = lines[row].chars().count();
-        let end = if row + 1 < lines.len() {
-            start + line_chars + 1 // include the newline separator
+        let last = row + 1 == lines.len();
+        let (delete_start, delete_len) = if last {
+            if row > 0 {
+                // The final line disappears together with its preceding
+                // newline; the line above takes its place.
+                (start - 1, line_chars + 1)
+            } else if line_chars > 0 {
+                (start, line_chars)
+            } else {
+                return; // a lone empty line has nothing to kill
+            }
         } else {
-            start + line_chars
+            (start, line_chars + 1) // include the newline separator
         };
-        if end > start {
-            self.delete_char_range(start, end);
+        if delete_len > 0 {
+            self.delete_char_range(delete_start, delete_start + delete_len);
+            if last && row > 0 {
+                self.move_cursor(CursorMove::Jump((row - 1) as u16, 0));
+            }
         }
     }
 
