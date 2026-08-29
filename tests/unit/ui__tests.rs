@@ -424,8 +424,8 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
         .collect::<Vec<_>>();
     assert_eq!(key_spans.len(), 2, "{en}");
     assert!(key_spans.iter().all(|span| {
-        span.style.fg == Some(app.theme.brand_soft)
-            && span.style.add_modifier.contains(Modifier::BOLD)
+        span.style.fg == Some(app.theme.fg_tertiary)
+            && !span.style.add_modifier.contains(Modifier::BOLD)
     }));
     let value_spans = en_line
         .spans
@@ -438,7 +438,9 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     assert!(value_spans
         .iter()
         .all(|span| span.style.fg == Some(app.theme.fg_tertiary)));
-    assert_ne!(key_spans[0].style.fg, value_spans[0].style.fg);
+    // Issue #77: the shortcut hints share the light tertiary tone of the
+    // mode labels and the composer stats dock readout (no brand accent).
+    assert_eq!(key_spans[0].style.fg, value_spans[0].style.fg);
 }
 
 #[test]
@@ -1425,7 +1427,7 @@ fn welcome_hero_slot_replaces_only_the_martty_lockup() {
         !frame.contains("https://martty.sh"),
         "Martty hero replaced:\n{frame}"
     );
-    assert!(frame.contains("dsh-tui"), "session facts remain:\n{frame}");
+    assert!(frame.contains("martty"), "session facts remain:\n{frame}");
     assert!(
         frame.contains("/help commands"),
         "help row remains:\n{frame}"
@@ -1514,7 +1516,7 @@ fn welcome_info_slot_replaces_only_the_native_information_region() {
         "custom info:\n{frame}"
     );
     assert!(
-        !frame.contains("dsh-tui"),
+        !frame.contains("martty "),
         "native version row replaced:\n{frame}"
     );
     assert!(

@@ -242,7 +242,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "quit",
         usage: "/quit",
-        desc: "exit dsh-tui",
+        desc: "exit martty",
     },
 ];
 
@@ -5235,7 +5235,7 @@ impl App {
                     ctl.send(Cmd::Interrupt {
                         session_id: self.session_id.clone(),
                     });
-                    self.state_note = "cancelling".into();
+                    self.state_note = self.locale.tr("cancelling", "正在取消").into();
                 } else {
                     self.show_tip("demo turn — it finishes on its own");
                 }
@@ -6161,7 +6161,7 @@ impl App {
             self.state_note = if self.demo {
                 String::new()
             } else {
-                "contacting runtime".into()
+                self.locale.tr("contacting runtime", "正在连接运行时").into()
             };
         }
         self.scroll_up = 0;
@@ -6175,7 +6175,10 @@ impl App {
 
     fn dispatch_next_queued(&mut self, ctl: &Controller) {
         if self.queue_selection.is_some() || self.queue_edit.is_some() {
-            self.state_note = "queue paused for selection/edit".into();
+            self.state_note = self
+                .locale
+                .tr("queue paused for selection/edit", "队列已暂停 · 请选择或编辑")
+                .into();
             self.show_tip("queue paused · finish or close the queue editor");
             return;
         }
@@ -6187,7 +6190,7 @@ impl App {
         self.prompt_pending = true;
         self.state = RunState::Starting;
         self.run_started = Some(Instant::now());
-        self.state_note = "sending queued followup".into();
+        self.state_note = self.locale.tr("sending queued followup", "正在发送排队消息").into();
         self.scroll_up = 0;
 
         match prompt.blocks.as_slice() {
@@ -6257,7 +6260,7 @@ impl App {
         self.prompt_pending = true;
         self.state = RunState::Starting;
         self.run_started = Some(Instant::now());
-        self.state_note = "sending queued followup".into();
+        self.state_note = self.locale.tr("sending queued followup", "正在发送排队消息").into();
         ctl.send(if let Some(text) = text {
             Cmd::Prompt {
                 session_id: self.session_id.clone(),
@@ -6562,9 +6565,10 @@ impl App {
             self.state = RunState::Starting;
             self.run_started = Some(Instant::now());
             self.state_note = if n <= 1 {
-                "sending image".into()
+                self.locale.tr("sending image", "正在发送图片").into()
             } else {
-                format!("sending {n} images")
+                self.locale
+                    .tr_fmt("sending {} images", "正在发送 {} 张图片", n)
             };
         }
         self.emit_staged_prompt(staged, None, ctl);
@@ -6608,9 +6612,10 @@ impl App {
                 self.state = RunState::Starting;
                 self.run_started = Some(Instant::now());
                 self.state_note = if n == 1 {
-                    "sending image".into()
+                    self.locale.tr("sending image", "正在发送图片").into()
                 } else {
-                    format!("sending {n} images")
+                    self.locale
+                        .tr_fmt("sending {} images", "正在发送 {} 张图片", n)
                 };
             }
             let steer_message_id = running.then(|| self.next_prompt_id());

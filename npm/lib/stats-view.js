@@ -36,12 +36,10 @@ function nodesOf(snapshot, status) {
   const nodes = []
   if ((usage.input ?? 0) > 0 || (usage.output ?? 0) > 0) {
     nodes.push(node('tokens', `↑${formatTokens(usage.input)} · ↓${formatTokens(usage.output)}`))
-    const used = (usage.input ?? 0) + (usage.output ?? 0)
-      + (usage.cached ?? 0) + (usage.reasoning ?? 0)
-    const size = contextWindowOf(model)
-    if (used > 0 && size > 0) {
-      const pct = Math.min(100, used / size * 100).toFixed(1)
-      nodes.push(node('context', `${pct}%/${contextSizeLabel(size)}`))
+    const gauge = contextGauge(snapshot, usage, model)
+    if (gauge.used > 0 && gauge.size > 0) {
+      const pct = Math.min(100, gauge.used / gauge.size * 100).toFixed(1)
+      nodes.push(node('context', `${pct}%/${contextSizeLabel(gauge.size)}`))
     }
   }
   if ((stats.turns ?? 0) > 0 || (stats.steps ?? 0) > 0) {
@@ -83,9 +81,24 @@ function node(id, title) {
 function plural(value, singular) { return value === 1 ? singular : `${singular}s` }
 
 /**
- * Context window of the current model (tokens). The ACP surface does not
- * carry the window size, so the known DeepSeek family sizes stand in;
- * unknown models fall back to a common 128K.
+ * Context-window gauge. The harness streams the authoritative readout
+ * (`usage_update`: `used` = final prompt size, `size` = real model
+ * window); that is what the dock percentage shows. Without it (plain
+ * ACP agents), fall back to the legacy heuristic — accumulated per-turn
+ * usage over a model-name-guessed window.
+ */
+function contextGauge(snapshot, usage, model) {
+  const context = snapshot?.context
+  if (context?.size > 0) return { used: context.used ?? 0, size: context.size }
+  const used = (usage.input ?? 0) + (usage.output ?? 0)
+    + (usage.cached ?? 0) + (usage.reasoning ?? 0)
+  return { used, size: contextWindowOf(model) }
+}
+
+/**
+ * Context window of the current model (tokens), guessed from the model
+ * name when the agent does not stream `usage_update`. Known DeepSeek
+ * family sizes stand in; unknown models fall back to a common 128K.
  */
 function contextWindowOf(model) {
   switch (model) {

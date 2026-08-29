@@ -1128,25 +1128,32 @@ fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect, embedded: bool) {
         } else {
             theme.caption
         };
+        let agents = app.locale.tr("Agents", "代理");
+        let expand = app.locale.tr("↓ expand", "↓ 展开");
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!(
-                        "{}Agents · {completed}/{}",
+                        "{}{agents} · {completed}/{}",
                         if embedded { "· " } else { " · " },
                         current.len(),
                     ),
                     Style::default().fg(title_color),
                 ),
-                Span::styled("  ↓ expand", Style::default().fg(theme.caption)),
+                Span::styled(format!("  {expand}"), Style::default().fg(theme.caption)),
             ]))
             .style(Style::default().bg(theme.panel)),
             content,
         );
         return;
     }
+    let agents_label = app.locale.tr("Agents", "代理");
     let mut spans = vec![Span::styled(
-        if embedded { "Agents  " } else { " Agents  " },
+        if embedded {
+            format!("{agents_label}  ")
+        } else {
+            format!(" {agents_label}  ")
+        },
         Style::default()
             .fg(if choosing { theme.brand } else { theme.caption })
             .add_modifier(if choosing {
@@ -1253,14 +1260,15 @@ fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect, embedded: bool) {
         let focused = app.agent_selection.as_deref() == Some(crate::app::AGENT_HISTORY_ID);
         spans.push(Span::styled(
             format!(
-                "  {}History ({history_count})",
+                "  {}{} ({history_count})",
                 if focused || (active && !choosing) {
                     "▸ "
                 } else if active {
                     "• "
                 } else {
                     ""
-                }
+                },
+                app.locale.tr("History", "历史"),
             ),
             Style::default()
                 .fg(if active || focused {
@@ -1281,7 +1289,10 @@ fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect, embedded: bool) {
         ));
     }
     spans.push(Span::styled(
-        "  ←/→ · enter · esc close",
+        format!(
+            "  {}",
+            app.locale.tr("←/→ · enter · esc close", "←/→ · enter · esc 关闭")
+        ),
         Style::default().fg(theme.brand_soft),
     ));
     f.render_widget(
@@ -1499,9 +1510,7 @@ fn status_title(app: &App) -> Line<'static> {
     }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    let key_style = Style::default()
-        .fg(theme.brand_soft)
-        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(theme.fg_tertiary);
     // Mode chips: folded from the durable event stream (same facts as the
     // Web UI chips). Stock defaults render until the host reports its own
     // facts, so the landing screen still advertises preset + permission.
@@ -1601,7 +1610,7 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
             // cancellation.
             (true, false) => vec![
                 ("⏎", app.locale.tr("queue", "排队")),
-                ("ctrl+⏎", "steer"),
+                ("ctrl+⏎", app.locale.tr("steer", "立即转向")),
                 ("esc", app.locale.tr("interrupt", "中断")),
             ],
             // Idle, empty: point at the FIFO editor; otherwise nothing.
@@ -1613,7 +1622,9 @@ fn context_hints(app: &App) -> Vec<Span<'static>> {
             (false, false) if app.input.lines()[0].starts_with('/') => {
                 vec![("⏎", app.locale.tr("command", "命令"))]
             }
-            (false, false) if app.input.lines()[0].starts_with('!') => vec![("⏎", "shell")],
+            (false, false) if app.input.lines()[0].starts_with('!') => {
+                vec![("⏎", app.locale.tr("shell", "运行命令"))]
+            }
             (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
         }
     };
@@ -2363,7 +2374,7 @@ fn draw_attachment_preview(f: &mut Frame, app: &mut App, composer: Rect, screen:
     )));
     let dims_txt = dims
         .map(|(iw, ih)| format!("{iw}×{ih} px"))
-        .unwrap_or_else(|| "unknown size".into());
+        .unwrap_or_else(|| app.locale.tr("unknown size", "未知尺寸").into());
     let kb = att.data.len() as f64 / 1024.0;
     let size_txt = if kb >= 1024.0 {
         format!("{:.1} MB", kb / 1024.0)
@@ -3297,7 +3308,7 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     };
     out.push(kv(
         app.locale.tr("version", "版本"),
-        format!("dsh-tui {}", env!("CARGO_PKG_VERSION")),
+        format!("martty {}", env!("CARGO_PKG_VERSION")),
     ));
     out.push(kv(
         app.locale.tr("model", "模型"),
