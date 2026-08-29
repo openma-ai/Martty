@@ -52,7 +52,7 @@ fn test_app() -> App {
     };
     let (tx, _rx) = std::sync::mpsc::channel();
     App::new(
-        crate::theme::Theme::dark(),
+        Some(crate::theme::Theme::dark()),
         cfg,
         "dsh-test".into(),
         true,
@@ -76,7 +76,7 @@ fn test_app_and_ctl() -> (App, Controller) {
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
     let app = App::new(
-        crate::theme::Theme::dark(),
+        Some(crate::theme::Theme::dark()),
         cfg,
         "dsh-test".into(),
         true,

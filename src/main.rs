@@ -66,7 +66,7 @@ OPTIONS:
       --api-key <key>       sets DEEPSEEK_API_KEY for a spawned agent
       --agent <cmd>         ACP agent command (default: dsh-acp or $DSH_TUI_AGENT)
       --agent-arg <arg>     extra argument for --agent (repeatable)
-      --theme <dark|light>  DeepSeek Web UI palette (default: dark)
+      --theme <dark|light>  DeepSeek Web UI palette (default: persisted, then dark)
       --demo                scripted turns, no runtime / API key needed
       --demo-skin           ember gallery palette via the plugin runner (implies --demo)
       --attach-fds          speak ACP over inherited fds 3/4 (Node mux / demo-skin)
@@ -95,7 +95,7 @@ struct Args {
     api_key: Option<String>,
     agent: Option<String>,
     agent_args: Vec<String>,
-    theme: String,
+    theme: Option<String>,
     demo: bool,
     demo_skin: bool,
     attach_fds: bool,
@@ -120,7 +120,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
         api_key: None,
         agent: None,
         agent_args: Vec::new(),
-        theme: "dark".into(),
+        theme: None,
         demo: false,
         demo_skin: false,
         attach_fds: false,
@@ -144,7 +144,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--api-key" => args_out.api_key = Some(take("--api-key")?),
             "--agent" => args_out.agent = Some(take("--agent")?),
             "--agent-arg" => args_out.agent_args.push(take("--agent-arg")?),
-            "--theme" => args_out.theme = take("--theme")?,
+            "--theme" => args_out.theme = Some(take("--theme")?),
             "--demo" => args_out.demo = true,
             "--demo-skin" => {
                 args_out.demo_skin = true;
@@ -363,7 +363,7 @@ fn main() -> Result<()> {
         };
         Controller::start_acp(cfg.clone(), endpoint, bus_tx.clone())
     };
-    let theme = ui::theme_for(&args.theme);
+    let theme = args.theme.as_deref().map(ui::theme_for);
     let mut app = App::new(
         theme,
         cfg,
@@ -536,6 +536,11 @@ fn main() -> Result<()> {
 
     controller.send(Cmd::Shutdown);
     restore_terminal();
+    // Out-of-band (stderr, never the ACP stdout channel): let the caller
+    // grab the live session id for `--session-id` resume.
+    if !app.demo {
+        eprintln!("session {}", app.session_id);
+    }
     run
 }
 
@@ -652,7 +657,7 @@ fn dump_frame(args: &Args, w: u16, h: u16) -> Result<()> {
     args_demo.demo = true;
     let cfg = build_config(&args_demo)?;
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
-    let theme = ui::theme_for(&args.theme);
+    let theme = args.theme.as_deref().map(ui::theme_for);
     let mut app = App::new(theme, cfg, "dsh-demo".into(), true, false, bus_tx.clone());
     app.git_branch = ui::head_branch(&app.cfg.workspace);
 

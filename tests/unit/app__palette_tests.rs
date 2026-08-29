@@ -30,7 +30,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
     };
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
-    let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+    let app = App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx);
     (app, ctl, rx)
 }
 
@@ -422,4 +422,55 @@ fn invalid_palette_keeps_previous_theme() {
     );
     assert_eq!(app.active_palette_id, "default");
     assert_eq!(app.theme.brand, DEEPSEEK_450);
+}
+
+#[test]
+fn theme_mode_persists_across_restarts_unless_cli_overrides() {
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: fresh_root(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+
+    // Explicit CLI light wins at startup; ctrl+t flips to dark and persists.
+    let mut app = App::new(
+        Some(Theme::light()),
+        cfg.clone(),
+        "s1".into(),
+        true,
+        false,
+        tx.clone(),
+    );
+    assert_eq!(app.theme.mode, crate::theme::Mode::Light);
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Char('t'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ))),
+        &ctl,
+    );
+    assert_eq!(app.theme.mode, crate::theme::Mode::Dark);
+    let path = crate::runtime::settings_path(&cfg.session_root);
+    let saved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).expect("settings.json written on toggle"),
+    )
+    .expect("settings.json is valid JSON");
+    assert_eq!(saved["themeMode"], "dark", "{saved}");
+
+    // Restart with no CLI flag → the persisted dark mode comes back.
+    let restarted = App::new(None, cfg.clone(), "s2".into(), true, false, tx.clone());
+    assert_eq!(restarted.theme.mode, crate::theme::Mode::Dark);
+    assert_eq!(restarted.theme.brand, Theme::dark().brand);
+
+    // A restart with an explicit --theme still overrides persistence.
+    let cli_light = App::new(Some(Theme::light()), cfg, "s3".into(), true, false, tx);
+    assert_eq!(cli_light.theme.mode, crate::theme::Mode::Light);
 }

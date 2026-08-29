@@ -335,27 +335,52 @@ fn kill_line_removes_the_logical_line_and_merges() {
     assert_eq!(e.cursor_char(), 4, "cursor at the merged line start");
 
     e.kill_line();
-    assert_eq!(e.buf(), "one\n", "last content line dies");
+    assert_eq!(e.buf(), "one", "the last line dies with its newline");
+    assert_eq!(e.cursor_char(), 0, "cursor lifts onto the previous line");
     e.kill_line();
-    assert_eq!(e.buf(), "one\n", "the trailing empty line is a no-op");
-
-    e.set_cursor_char(0);
-    e.kill_line();
-    assert_eq!(e.buf(), "", "first line + newline go away");
+    assert_eq!(e.buf(), "", "the final lone line empties out");
     e.kill_line();
     assert_eq!(e.buf(), "", "empty draft: no-op");
 }
 
 #[test]
-fn kill_line_on_the_last_line_keeps_its_newline_friends() {
+fn kill_line_on_the_trailing_empty_line_removes_it() {
     let mut e = ComposerEditor::new();
     e.insert_str("a\nb\n");
     e.set_cursor_char(e.buf().chars().count()); // end of the empty last line
     e.kill_line();
-    assert_eq!(e.buf(), "a\nb\n", "empty last line is a no-op");
-    e.set_cursor_char(2);
+    assert_eq!(e.buf(), "a\nb", "the empty last line dies with its newline");
+    assert_eq!(e.cursor_char(), 2, "cursor lifts onto the line above");
     e.kill_line();
-    assert_eq!(e.buf(), "a\n", "last content line dies, newline stays");
+    assert_eq!(e.buf(), "a", "the next last line dies too");
+    assert_eq!(e.cursor_char(), 0);
+    e.kill_line();
+    assert_eq!(e.buf(), "", "the lone line empties out");
+    e.kill_line();
+    assert_eq!(e.buf(), "", "empty draft: no-op");
+}
+
+#[test]
+fn kill_line_on_the_last_line_removes_it_and_lifts_the_cursor() {
+    let mut e = ComposerEditor::new();
+    e.insert_str("a\nb");
+    e.set_cursor_char(2); // on the last content line
+    e.kill_line();
+    assert_eq!(e.buf(), "a", "the last line disappears entirely");
+    assert_eq!(e.cursor_char(), 0, "cursor moves up onto the previous line");
+
+    // Repeated presses keep deleting upward.
+    e.kill_line();
+    assert_eq!(e.buf(), "", "the lone line empties out");
+    assert_eq!(e.cursor_char(), 0);
+
+    // Single-line draft: nothing above, cursor stays on the empty draft.
+    let mut e = ComposerEditor::new();
+    e.insert_str("hello");
+    e.set_cursor_char(3);
+    e.kill_line();
+    assert_eq!(e.buf(), "");
+    assert_eq!(e.cursor_char(), 0);
 }
 
 #[test]

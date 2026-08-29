@@ -115,6 +115,6 @@ fn dump_frame_does_not_swallow_the_next_flag() {
     ])
     .unwrap();
     assert_eq!(args.dump_frame, Some((100, 34)));
-    assert_eq!(args.theme, "light");
+    assert_eq!(args.theme.as_deref(), Some("light"));
     assert!(args.demo);
 }

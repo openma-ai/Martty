@@ -14,7 +14,7 @@ fn test_app(workspace: &std::path::Path) -> (App, Receiver<AppEvent>) {
         api_key: None,
     };
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
-    let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+    let app = App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx);
     (app, rx)
 }
 

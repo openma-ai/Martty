@@ -19,7 +19,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
     };
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
-    let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+    let app = App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx);
     (app, ctl, rx)
 }
 

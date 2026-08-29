@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `ctrl+shift+k` (and vim `dd`) on the last line of the draft now
+  removes the whole line — including its newline, so the line above
+  becomes the last one — and lifts the cursor onto it; repeated presses
+  keep deleting upward. Killing a middle line still merges the next
+  line up (issue #63).
 - Pasting multi-line text into the composer keeps its line structure
   instead of flattening every newline into a space; CRLF and CR-only
   line endings (iTerm2 et al.) are normalized to plain rows too
@@ -53,6 +58,21 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- The light/dark theme mode (`ctrl+t`, `/theme toggle`) now persists to
+  `settings.json` (`themeMode`) and is restored on the next launch; an
+  explicit `--theme <dark|light>` flag still overrides it for that run
+  (issue #63).
+- A gallery palette saved via `/theme <id>` (ayu, iceberg, …) is
+  re-activated on the next launch: the static gallery packs register with
+  no owner, so the boot restore pass now activates the saved pick after
+  they are all registered (dynamic packs were already restored by
+  `tui-local-plugins`) (issue #63).
+- Martty prints the live session id on stderr (`session <id>`) when the
+  TUI exits, so a later `--session-id <id>` can resume the same
+  conversation (issue #63).
+- The dock bar no longer advertises `/keys` in the shortcut hints — the
+  keymap lives in the tip banner and the `/keys` modal itself, and the
+  empty state now stays quiet (issue #63).
 - `/plugins` now renders the static Host plugin inventory as a two-level
   tree grouped by provider (npm scope) → plugin name, using the
   tui-tree-widget crate: every provider branch opens expanded by default,

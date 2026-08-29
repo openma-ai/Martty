@@ -109,6 +109,14 @@ impl Mode {
             Mode::Light => "light",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Mode> {
+        match s {
+            "dark" => Some(Mode::Dark),
+            "light" => Some(Mode::Light),
+            _ => None,
+        }
+    }
 }
 
 /// Closed token names for protocol 0 palettes (`tuiTheme.register` / Cordis theme update).
