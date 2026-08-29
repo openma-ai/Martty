@@ -4,7 +4,7 @@ use ratatui::layout::{Alignment, Constraint, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Scrollbar,
+    Block, BorderType, Borders, Cell, Clear, FrameExt, HighlightSpacing, Paragraph, Row, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Table, TableState,
 };
 use ratatui::Frame;
@@ -326,6 +326,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             composer
         };
         draw_slash_menu(f, app, menu_anchor, chat);
+        // The @file browser rides the same anchor; drawn after the slash
+        // menu (the two are mutually exclusive, but the browser owns the
+        // space above the composer either way).
+        draw_file_menu(f, app, menu_anchor, chat);
         // Hover/cursor preview for inline [image n] chips sits above the
         // composer (drawn last so it tops the menu-free chat area).
         draw_attachment_preview(f, app, composer, area);
@@ -2741,6 +2745,40 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
         ));
     }
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Rows of the `@file` browser shown at once; the explorer's own List
+/// scrolls the selection within this window.
+const FILE_MENU_ROWS: usize = 12;
+
+fn draw_file_menu(f: &mut Frame, app: &mut App, input: Rect, chat: Rect) {
+    let Some(menu) = &mut app.file_menu else {
+        return;
+    };
+    if menu.explorer().files().is_empty() {
+        return;
+    }
+    // Rebuild the explorer chrome from the app theme every frame: palette
+    // packs and locale can switch under us, and the title factories need
+    // the current cwd.
+    let theme = app.theme;
+    let locale = app.locale;
+    menu.apply_chrome(&theme, locale, &app.cfg.workspace);
+    let n = menu.explorer().files().len();
+    let vis = FILE_MENU_ROWS
+        .min(n)
+        .min(chat.height.saturating_sub(2) as usize);
+    if vis == 0 {
+        return;
+    }
+    // Wider than the slash menu — entries carry paths; the List truncates
+    // long names instead of hard-clipping.
+    let h = vis as u16 + 2;
+    let w = 72.min(input.width.saturating_sub(2));
+    let y = input.y.saturating_sub(h);
+    let area = Rect::new(input.x + 2, y, w, h);
+    f.render_widget(Clear, area);
+    f.render_widget_ref(menu.explorer().widget(), area);
 }
 
 /// Pad `s` to exactly `w` display cells, ellipsizing when longer — keeps

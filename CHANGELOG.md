@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- `@file` mentions in the composer (issue #62): typing `@` at a word
+  boundary opens a workspace file browser (ratatui-explorer) above the
+  input. The query's directory prefix descends as you type (`@src/m` opens
+  `src/` and jumps to the first `ma*` entry), `↑/↓` move, `Tab`/`→` drill
+  into a directory (rewriting the token to `@dir/`), `←` goes up, `Enter`
+  picks (`@path`, `@"path with spaces"` quoted automatically, directories
+  keep their trailing `/`), `Esc` dismisses the token until its text
+  changes. Emails and URL hosts never trigger; the `@"…"` form allows
+  spaces and keeps the quote open while drilling. The browser colors from
+  the active theme tokens (panel/border/fg/brand/chip_bg), so palette
+  packs and both UI presets apply.
+
 ### Fixed
 
 - `ctrl+shift+k` (and vim `dd`) on the last line of the draft now

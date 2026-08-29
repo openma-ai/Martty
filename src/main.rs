@@ -14,6 +14,7 @@ mod deepseek_logo;
 mod demo;
 mod elicitation;
 mod events;
+mod file_ref;
 mod input;
 mod locale;
 mod logo;
