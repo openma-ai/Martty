@@ -402,7 +402,7 @@ fn needs_auth_notice(snapshot: &AuthSnapshot) -> String {
         }
         if method.form {
             lines.push(
-                "  /auth <api-key>  submits through ACP authenticate (dsh-tui does not keep it)"
+                "  /auth <api-key>  submits through ACP authenticate (martty does not keep it)"
                     .into(),
             );
         } else if method.terminal_launch.is_some() {

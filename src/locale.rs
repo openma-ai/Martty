@@ -36,6 +36,14 @@ impl Locale {
         }
     }
 
+    /// Localized template with one `{}` placeholder (counts, sizes…).
+    pub fn tr_fmt(self, en: &'static str, zh: &'static str, arg: usize) -> String {
+        match self {
+            Self::En => en.replace("{}", &arg.to_string()),
+            Self::Zh => zh.replace("{}", &arg.to_string()),
+        }
+    }
+
     pub fn command_desc(self, name: &str, fallback: &'static str) -> &'static str {
         if self == Self::En {
             return fallback;
@@ -59,7 +67,7 @@ impl Locale {
             "auth" => "ACP 登录（Backchat authenticate）",
             "lang" => "切换界面语言",
             "liang" => "召唤小难梁 — 🤫 空闲 · ⌨︎ 工作中",
-            "quit" => "退出 dsh-tui",
+            "quit" => "退出 martty",
             _ => fallback,
         }
     }

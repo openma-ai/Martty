@@ -68,4 +68,24 @@ test('the stats Client Plugin contributes only through the composer dock', () =>
     },
   })
   assert.deepEqual(nodes, [])
+
+  // The harness `usage_update` gauge wins over the model-name heuristic:
+  // 17000/128000 = 13.3%, not the guessed 1.0M window of the model.
+  listener({
+    sessionId: 's-1',
+    usage: {
+      input: 5000, output: 300, cached: 4000, cacheRead: 4000, cacheWrite: 0, reasoning: 0,
+    },
+    context: { used: 17_000, size: 128_000 },
+    stats: {
+      turns: 2, steps: 4, llmMillis: 0, toolMillis: 0,
+      ttftTotalMillis: 0, ttftCount: 0,
+    },
+  })
+  assert.deepEqual(nodes.map((node) => node.title), [
+    '↑5K · ↓300',
+    '13.3%/128K',
+    '2 turns · 4 steps',
+    'Cache hit 44%',
+  ])
 })

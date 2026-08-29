@@ -22,6 +22,23 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Composer dock context gauge (issue #77): the percentage now uses the
+  harness's `usage_update` readout (`used` = final prompt size, `size` =
+  the real model window) instead of accumulating per-prompt usage over a
+  model-name guess, which over-counted every step's full context and
+  pegged at 100% early. Plain ACP agents without `usage_update` keep the
+  old heuristic.
+- Chinese locale gaps (issue #77): composer `ctrl+shift+a`/`shift+tab`
+  hint labels (`steer`, `shell`), the run-state notes (starting runtime,
+  cancelling, sending images/followups, queue paused) and the native
+  agent rail (Agents/History/expand/close hints) now render in Chinese;
+  the composer key hints also drop the brand accent and match the light
+  tertiary tone of the stats dock readout.
+- User-visible product strings say `martty` instead of the legacy
+  `dsh-tui` name (quit/keys descriptions, welcome version row, auth
+  hint); filesystem paths, settings file names, env vars and the
+  `dsh-tui` compatibility alias are unchanged (issue #77).
+
 - `/status` on runs without a Client tree (demo, standalone painter) now
   opens the same popup as `/keys`, `/help` and `/session` instead of pushing
   into the scrollback: directly after startup the transcript was hidden

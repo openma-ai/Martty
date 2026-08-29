@@ -25,6 +25,7 @@ function zero(sessionId) {
     usage: {
       input: 0, output: 0, cached: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0,
     },
+    context: { used: 0, size: 0 },
     stats: {
       turns: 0,
       steps: 0,
@@ -137,6 +138,19 @@ export function installAcpSessionStats(ctx, options = {}) {
     }
 
     const type = readString(update, 'sessionUpdate', 'session_update')
+    if (type === 'usage_update') {
+      // Harness-authoritative context gauge: `used` is the final prompt
+      // size (input + cache + output) of the last step and `size` the
+      // real model window from `request/context`. Client-side
+      // accumulation cannot derive either: per-prompt input sums every
+      // step's full context, and standard ACP does not carry the window.
+      const size = number(update.size)
+      if (size > 0) {
+        value.context = { used: number(update.used), size }
+        publish()
+      }
+      return
+    }
     const prompt = sessionId === undefined ? undefined : activePrompts.get(sessionId)
     if (prompt !== undefined && prompt.firstToken === undefined
       && (type === 'agent_message_chunk' || type === 'agent_thought_chunk')

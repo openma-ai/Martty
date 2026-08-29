@@ -60,6 +60,13 @@ test('standard ACP prompt traffic produces the durable stats footer facts', () =
       },
     },
   })
+  now = 1_700
+  stats.observeAgent({
+    jsonrpc: '2.0', method: 'session/update', params: {
+      sessionId: 's-1',
+      update: { sessionUpdate: 'usage_update', used: 12_300, size: 128_000 },
+    },
+  })
   now = 2_000
   stats.observeAgent({
     jsonrpc: '2.0', id: 2,
@@ -77,6 +84,7 @@ test('standard ACP prompt traffic produces the durable stats footer facts', () =
     usage: {
       input: 100, output: 20, cached: 55, cacheRead: 50, cacheWrite: 5, reasoning: 7,
     },
+    context: { used: 12_300, size: 128_000 },
     stats: {
       turns: 1,
       steps: 1,
@@ -112,5 +120,6 @@ test('session load restores only the latest prompt usage snapshot', () => {
   assert.deepEqual(stats.current().usage, {
     input: 7, output: 2, cached: 4, cacheRead: 3, cacheWrite: 1, reasoning: 0,
   })
+  assert.deepEqual(stats.current().context, { used: 0, size: 0 })
   assert.equal(stats.current().stats.turns, 0)
 })
