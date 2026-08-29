@@ -453,9 +453,14 @@ fn status_slash_fallback_shows_run_state_without_transcript_stats() {
 
     app.run_slash("status", "", &ctl);
 
-    let last = app.transcript.cells.last().expect("status cell");
-    let crate::transcript::CellKind::MarkdownNotice { text } = &last.kind else {
-        panic!("/status should be a markdown notice, got {:?}", last.kind);
+    // The fallback opens the same popup surface as `/keys`, `/help` and
+    // `/session` (issue #53): a transcript cell would be invisible behind the
+    // welcome banner on a fresh start (the chat pane only draws the banner
+    // while `show_banner` is set) and would pollute the scrollback.
+    let overlay = app.view_overlay.as_ref().expect("/status opens the overlay");
+    assert_eq!(overlay.id, "builtin.status");
+    let crate::slots::TuiNode::Markdown { text, .. } = &overlay.nodes[0] else {
+        panic!("/status overlay should be one markdown node, got {:?}", overlay.nodes);
     };
     assert!(text.contains("## status"), "{text}");
     assert!(text.contains("- state · "), "{text}");
@@ -474,6 +479,10 @@ fn status_slash_fallback_shows_run_state_without_transcript_stats() {
     assert!(!text.contains("- LLM ·"), "{text}");
     assert!(!text.contains("- TTFT avg ·"), "{text}");
     assert!(!text.contains("- rate ·"), "{text}");
+    assert!(
+        app.transcript.cells.is_empty(),
+        "the status facts never land in the scrollback"
+    );
 }
 
 #[test]
