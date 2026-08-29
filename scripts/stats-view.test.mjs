@@ -8,7 +8,7 @@ const statsView = await import(pathToFileURL(
 ).href).catch(() => ({}))
 
 test('the stats Client Plugin contributes only through the composer dock', () => {
-  assert.deepEqual(statsView.inject, ['acpSessionStats', 'acpSessionStatus', 'tuiSlots'])
+  assert.deepEqual(statsView.inject, ['acpSessionStats', 'tuiSlots'])
   assert.equal(typeof statsView.apply, 'function')
   if (typeof statsView.apply !== 'function') return
 
@@ -29,10 +29,6 @@ test('the stats Client Plugin contributes only through the composer dock', () =>
       }),
       subscribe(next) { listener = next; return () => { listener = undefined } },
     },
-    acpSessionStatus: {
-      current: () => ({ model: 'deepseek-v4-flash' }),
-      subscribe() { return () => {} },
-    },
     tuiSlots: {
       inject(name, callback) {
         assert.equal(name, 'conversation.composer.dock')
@@ -47,10 +43,11 @@ test('the stats Client Plugin contributes only through the composer dock', () =>
   }
 
   statsView.apply(ctx)
-  assert.equal(nodes.length, 6)
+  // No `usage_update` yet: the gauge is hidden rather than guessed from
+  // the model name (issue #77 — the old 128K guess pegged early 100%).
+  assert.equal(nodes.length, 5)
   assert.deepEqual(nodes.map((node) => node.title), [
     '↑1.8K · ↓412',
-    '0.3%/1.0M',
     '1 turn · 67 steps',
     'Cache hit 40%',
     'LLM 15s · Tool call 0s',

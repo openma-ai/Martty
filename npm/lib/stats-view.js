@@ -1,42 +1,35 @@
 /** Built-in Client Plugin: standard ACP usage and timing in the composer dock. */
 
 export const name = 'stats-view'
-export const inject = ['acpSessionStats', 'acpSessionStatus', 'tuiSlots']
+export const inject = ['acpSessionStats', 'tuiSlots']
 
 export function apply(ctx) {
   let current = ctx.acpSessionStats.current()
-  let status = ctx.acpSessionStatus.current()
   let panel
   const stopSlot = ctx.tuiSlots.inject('conversation.composer.dock', () => {
     panel = ctx.tuiSlots.register(
       { name: 'conversation.composer.dock', id: 'stats' },
-      nodesOf(current, status),
+      nodesOf(current),
     )
     return () => panel.dispose()
   })
   const stopStats = ctx.acpSessionStats.subscribe((snapshot) => {
     current = snapshot
-    panel?.update(nodesOf(current, status))
-  })
-  const stopStatus = ctx.acpSessionStatus.subscribe((snapshot) => {
-    status = snapshot
-    panel?.update(nodesOf(current, status))
+    panel?.update(nodesOf(current))
   })
   return () => {
     stopStats?.()
-    stopStatus?.()
     stopSlot?.()
   }
 }
 
-function nodesOf(snapshot, status) {
+function nodesOf(snapshot) {
   const usage = snapshot?.usage ?? {}
   const stats = snapshot?.stats ?? {}
-  const model = status?.model
   const nodes = []
   if ((usage.input ?? 0) > 0 || (usage.output ?? 0) > 0) {
     nodes.push(node('tokens', `↑${formatTokens(usage.input)} · ↓${formatTokens(usage.output)}`))
-    const gauge = contextGauge(snapshot, usage, model)
+    const gauge = contextGauge(snapshot)
     if (gauge.used > 0 && gauge.size > 0) {
       const pct = Math.min(100, gauge.used / gauge.size * 100).toFixed(1)
       nodes.push(node('context', `${pct}%/${contextSizeLabel(gauge.size)}`))
@@ -81,33 +74,19 @@ function node(id, title) {
 function plural(value, singular) { return value === 1 ? singular : `${singular}s` }
 
 /**
- * Context-window gauge. The harness streams the authoritative readout
- * (`usage_update`: `used` = final prompt size, `size` = real model
- * window); that is what the dock percentage shows. Without it (plain
- * ACP agents), fall back to the legacy heuristic — accumulated per-turn
- * usage over a model-name-guessed window.
+ * Context-window gauge. Only the harness `usage_update` readout is shown:
+ * `used` is the final prompt size and `size` the real model window from
+ * `request/context`. Nothing client-side can reproduce either — per-turn
+ * usage sums every step's full context (multi-step turns over-report),
+ * and a model-name guess does not know the window (the old 128K guess is
+ * what pegged the dock at 100% early in issue #77). Without an
+ * authoritative readout the gauge is hidden instead of showing a wrong
+ * percentage.
  */
-function contextGauge(snapshot, usage, model) {
+function contextGauge(snapshot) {
   const context = snapshot?.context
   if (context?.size > 0) return { used: context.used ?? 0, size: context.size }
-  const used = (usage.input ?? 0) + (usage.output ?? 0)
-    + (usage.cached ?? 0) + (usage.reasoning ?? 0)
-  return { used, size: contextWindowOf(model) }
-}
-
-/**
- * Context window of the current model (tokens), guessed from the model
- * name when the agent does not stream `usage_update`. Known DeepSeek
- * family sizes stand in; unknown models fall back to a common 128K.
- */
-function contextWindowOf(model) {
-  switch (model) {
-    case 'deepseek-v4-flash':
-    case 'deepseek-v4-pro':
-      return 1_000_000
-    default:
-      return 128_000
-  }
+  return { used: 0, size: 0 }
 }
 
 /** `1000000` → `1.0M`, `128000` → `128K` — keeps the one-decimal look of

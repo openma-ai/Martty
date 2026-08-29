@@ -26,8 +26,9 @@ All notable changes to this project are documented here. The project follows
   harness's `usage_update` readout (`used` = final prompt size, `size` =
   the real model window) instead of accumulating per-prompt usage over a
   model-name guess, which over-counted every step's full context and
-  pegged at 100% early. Plain ACP agents without `usage_update` keep the
-  old heuristic.
+  pegged at 100% early. Without an authoritative readout the gauge is
+  hidden rather than guessed, and `stats-view` no longer depends on
+  `acpSessionStatus`.
 - Chinese locale gaps (issue #77): composer `ctrl+shift+a`/`shift+tab`
   hint labels (`steer`, `shell`), the run-state notes (starting runtime,
   cancelling, sending images/followups, queue paused) and the native
