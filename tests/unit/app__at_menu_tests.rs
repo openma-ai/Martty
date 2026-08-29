@@ -304,6 +304,44 @@ fn quoted_spaced_path_round_trips() {
 }
 
 #[test]
+fn ctrl_h_toggles_hidden_files_in_the_browser() {
+    let ws = Workspace::new();
+    fs::write(ws.root.join(".env"), "").expect("write");
+    let (mut app, ctl, _rx) = test_app(&ws.root);
+    app.handle_key(char_key('@'), &ctl);
+    fn hidden_state(app: &App) -> bool {
+        app.file_menu
+            .as_ref()
+            .expect("menu open")
+            .explorer()
+            .show_hidden()
+    }
+    fn has_env(app: &App) -> bool {
+        app.file_menu
+            .as_ref()
+            .expect("menu open")
+            .explorer()
+            .files()
+            .iter()
+            .any(|f| f.name == ".env")
+    }
+    assert!(!hidden_state(&app));
+    assert!(!has_env(&app), ".env hidden by default");
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL), &ctl);
+    assert!(hidden_state(&app), "ctrl+h reveals hidden entries");
+    assert!(has_env(&app), ".env listed while hidden shown");
+    // The browser is still usable afterwards (toggle is modal, not a
+    // one-shot).
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL), &ctl);
+    assert!(!hidden_state(&app));
+    assert!(!has_env(&app), ".env hidden again");
+    app.handle_key(key(KeyCode::Down), &ctl); // src/
+    app.handle_key(key(KeyCode::Down), &ctl); // README.md
+    app.handle_key(key(KeyCode::Enter), &ctl);
+    assert_eq!(app.input.buf(), "@README.md");
+}
+
+#[test]
 fn send_now_closes_the_browser() {
     let ws = Workspace::new();
     let (mut app, ctl, _rx) = test_app(&ws.root);
