@@ -29,7 +29,7 @@ fn test_app() -> App {
         api_key: None,
     };
     let (tx, _rx) = mpsc::channel();
-    App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx)
+    App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx)
 }
 
 fn live_test_app() -> App {
@@ -45,7 +45,7 @@ fn live_test_app() -> App {
         api_key: None,
     };
     let (tx, _rx) = mpsc::channel();
-    App::new(Theme::dark(), cfg, "pending".into(), false, true, tx)
+    App::new(Some(Theme::dark()), cfg, "pending".into(), false, true, tx)
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 
     assert_eq!(flat_line(status_title(&app)), "");
     let pending = flat_spans(status_right(&app));
-    assert!(pending.contains("/keys keys"), "{pending}");
+    assert!(!pending.contains("/keys"), "{pending}");
     assert!(!pending.contains("deepseek-chat"), "{pending}");
     assert!(!pending.contains("high"), "{pending}");
 
@@ -429,10 +429,10 @@ fn meta_row_hints_follow_the_state_machine() {
         spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     };
     let mut app = test_app();
-    // idle · empty → /keys discovery hint (ctrl+k belongs to the editor)
+    // idle · empty → no dock hint at all (no /keys; ctrl+k belongs to the editor)
     let s = flat(context_hints(&app));
-    assert!(s.contains("/keys keys"), "{s}");
-    assert!(!s.contains("^k"), "{s}");
+    assert!(s.is_empty(), "{s}");
+    assert!(!s.contains("keys"), "{s}");
     // idle · draft → enter sends
     app.input.set("hello".into());
     let s = flat(context_hints(&app));
