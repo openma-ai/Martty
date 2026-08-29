@@ -5743,8 +5743,8 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
     }
 
     /// Open one builtin info dialog (popup) from a markdown body. `/keys`,
-    /// `/help` and `/session` share this surface, so the facts never land in
-    /// the scrollback as transcript cells.
+    /// `/help`, `/session` and the painter-side `/status` fallback share this
+    /// surface, so the facts never land in the scrollback as transcript cells.
     fn open_text_overlay(&mut self, id: &str, title: String, text: String) {
         self.view_overlay = Some(ViewOverlay {
             id: id.into(),
@@ -5858,7 +5858,16 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             perm_label,
             if self.modes.plan { "on" } else { "off" },
         ));
-        self.transcript.push_markdown(text);
+        // Same popup surface as `/keys`, `/help` and `/session` (issue #53):
+        // a status pushed into the transcript would be invisible behind the
+        // welcome banner on a fresh start — the chat pane only draws the
+        // banner while `show_banner` is set — and would pollute the
+        // scrollback with facts that belong to the overlay.
+        self.open_text_overlay(
+            "builtin.status",
+            self.locale.tr("Status", "状态").to_string(),
+            text,
+        );
     }
 }
 

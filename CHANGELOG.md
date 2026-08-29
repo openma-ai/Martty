@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `/status` on runs without a Client tree (demo, standalone painter) now
+  opens the same popup as `/keys`, `/help` and `/session` instead of pushing
+  into the scrollback: directly after startup the transcript was hidden
+  behind the welcome banner, so the command appeared to do nothing until a
+  conversation dismissed the banner (issue #53).
 - `ctrl+shift+k` (and vim `dd`) on the last line of the draft now
   removes the whole line — including its newline, so the line above
   becomes the last one — and lifts the cursor onto it; repeated presses

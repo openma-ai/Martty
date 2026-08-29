@@ -88,11 +88,6 @@ pub enum CellKind {
         level: NoticeLevel,
         text: String,
     },
-    /// A notice rendered through the markdown pipeline (headings, tables,
-    /// inline code) instead of plain wrapped text — used by `/keys`.
-    MarkdownNotice {
-        text: String,
-    },
 }
 
 pub struct Cell {
@@ -319,12 +314,6 @@ fn build_body(
             }
             (lines, 0)
         }
-        CellKind::MarkdownNotice { text } => {
-            if text.trim().is_empty() {
-                return (Vec::new(), 0);
-            }
-            (crate::markdown::render(text, theme, width), 0)
-        }
         _ => (Vec::new(), 0),
     }
 }
@@ -479,14 +468,6 @@ impl Transcript {
 
     pub fn push_notice(&mut self, level: NoticeLevel, text: String) {
         self.cells.push(Cell::new(CellKind::Notice { level, text }));
-    }
-
-    /// Push a notice rendered through the markdown pipeline (tables,
-    /// headings, inline code). No `· ` prefix and no manual wrapping: the
-    /// markdown renderer owns line layout and truncation.
-    pub fn push_markdown(&mut self, text: String) {
-        self.cells
-            .push(Cell::new(CellKind::MarkdownNotice { text }));
     }
 
     pub fn push_shell(&mut self, command: String) -> usize {
@@ -991,7 +972,6 @@ impl Transcript {
                     | CellKind::Assistant { .. }
                     | CellKind::Tool { .. }
                     | CellKind::Shell { .. }
-                    | CellKind::MarkdownNotice { .. }
             ) {
                 cell.ensure_render(theme, width as u16, expanded, thumbs);
             }
@@ -1331,16 +1311,6 @@ impl Transcript {
                             ]),
                             None,
                         );
-                    }
-                }
-                CellKind::MarkdownNotice { text } => {
-                    if text.trim().is_empty() {
-                        continue;
-                    }
-                    emit(&mut out, &mut owners, Line::default(), None);
-                    let render = cell.render.as_ref().expect("body cache");
-                    for l in &render.body {
-                        emit(&mut out, &mut owners, l.clone(), None);
                     }
                 }
             }
