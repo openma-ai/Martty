@@ -417,3 +417,76 @@ test('disposing static palette fibers unregisters their palettes', async () => {
   }
   assert.deepEqual(ctx.tuiTheme.list(), [{ id: 'default', label: 'Default' }])
 })
+
+test('boot restore re-activates a saved static gallery palette', async () => {
+  const bootUrl = pathToFileURL(path.join(repoRoot, 'npm/lib/boot.js')).href
+  const { restorePreferredTheme } = await import(bootUrl)
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-tui-theme-restore-'))
+  const settingsPath = path.join(dir, 'settings.json')
+  try {
+    // First boot: user picks iceberg from the static gallery — persisted.
+    const firstCtx = makeCtx()
+    const first = installTuiTheme(firstCtx, { settingsPath })
+    const iceberg = JSON.parse(
+      readFileSync(path.join(repoRoot, 'npm/lib/palettes/iceberg.json'), 'utf8'),
+    )
+    first.register(iceberg)
+    first.activate('iceberg')
+    assert.equal(first.preferred(), 'iceberg')
+
+    // Second boot: the pack is registered again as a static (ownerless)
+    // palette; the saved id is active after the restore pass.
+    const secondCtx = makeCtx()
+    const sent = []
+    const second = installTuiTheme(secondCtx, {
+      settingsPath,
+      notify(method, params) {
+        sent.push({ method, params })
+      },
+    })
+    second.register(iceberg)
+    assert.equal(second.active(), 'default', 'static register must not cover')
+    restorePreferredTheme(second)
+    assert.equal(second.active(), 'iceberg', 'saved static palette is re-activated')
+    assert.equal(
+      sent.findLast((item) => item.params?.activate === true)?.params?.palette?.id,
+      'iceberg',
+      'painter receives the activation update',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('boot restore ignores dynamic, unknown and default preferred ids', async () => {
+  const bootUrl = pathToFileURL(path.join(repoRoot, 'npm/lib/boot.js')).href
+  const { restorePreferredTheme } = await import(bootUrl)
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-tui-theme-restore-'))
+  const settingsPath = path.join(dir, 'settings.json')
+  try {
+    // owner-registered palette → tui-local-plugins owns the restore.
+    const ownedCtx = makeCtx()
+    const owned = installTuiTheme(ownedCtx, { settingsPath })
+    const ember = loadEmber()
+    owned.registerOwned('local:ember', ember)
+    owned.observeSelected({ protocol: 0, id: 'ember' })
+    restorePreferredTheme(owned)
+    assert.equal(owned.active(), 'ember', 'dynamic packs are left to tui-local-plugins')
+
+    // unknown id → no throw, no activation.
+    const unknownCtx = makeCtx()
+    const unknown = installTuiTheme(unknownCtx, { settingsPath })
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'not-a-palette' }))
+    assert.doesNotThrow(() => restorePreferredTheme(unknown))
+    assert.equal(unknown.active(), 'default')
+
+    // default → nothing to do.
+    const defCtx = makeCtx()
+    const def = installTuiTheme(defCtx, { settingsPath })
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'default' }))
+    assert.doesNotThrow(() => restorePreferredTheme(def))
+    assert.equal(def.active(), 'default')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

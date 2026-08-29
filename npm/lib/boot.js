@@ -1,4 +1,25 @@
 /**
+ * Boot-time restore of a statically-registered gallery palette (ayu,
+ * iceberg, …). `/theme` persistence writes `settings.theme`; dynamic
+ * packs are restored by tui-local-plugins (they have an owner), but the
+ * builtin gallery registers with no owner, so nothing would re-activate
+ * the saved pick on the next launch. Runs after every static theme
+ * Plugin is registered; `activate` notifies the painter (or queues until
+ * `bindNotify` flushes). A broken or unknown id must not block boot.
+ */
+export function restorePreferredTheme(tuiTheme) {
+  const preferred = tuiTheme?.preferred?.()
+  if (typeof preferred !== 'string' || preferred === 'default') return
+  if (tuiTheme?.owner?.(preferred) !== undefined) return
+  if (!tuiTheme?.isLoaded?.(preferred)) return
+  try {
+    tuiTheme.activate(preferred)
+  } catch {
+    // a broken pack must not block TUI startup
+  }
+}
+
+/**
  * Cordis client boot: tuiTheme + tuiSlots + acp-client + TUI shell.
  *
  * The process root is a client tree. A profile launch injects Host ACP stdio;
@@ -65,6 +86,7 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
     await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
     await ctx.plugin({ name: 'tui-theme-solarized', inject: solarizedInject, apply: applySolarized })
+    restorePreferredTheme(ctx.get('tuiTheme'))
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
@@ -122,6 +144,7 @@ export async function bootClient(options = {}) {
     applyEverforest(ctx)
     applyIceberg(ctx)
     applySolarized(ctx)
+    restorePreferredTheme(ctx.tuiTheme)
     applySlots(ctx)
     applyCommands(ctx)
     applyOverlay(ctx)
