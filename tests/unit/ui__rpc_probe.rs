@@ -19,7 +19,7 @@ fn probe_app() -> App {
         api_key: None,
     };
     let (tx, _rx) = mpsc::channel();
-    App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx)
+    App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx)
 }
 
 fn push_view(app: &mut App, ctl: &crate::controller::Controller, text: &str) {

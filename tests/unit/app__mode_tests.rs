@@ -36,7 +36,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
     let cfg = test_cfg();
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
-    let app = App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx);
+    let app = App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx);
     (app, ctl, rx)
 }
 
@@ -62,7 +62,7 @@ fn legacy_mode_cache_is_neither_read_nor_written() {
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
     let mut app = App::new(
-        Theme::dark(),
+        Some(Theme::dark()),
         cfg.clone(),
         "s1".into(),
         true,
@@ -137,7 +137,7 @@ fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let (ctl, _commands) = crate::controller::tests::test_controller();
     let mut app = App::new(
-        Theme::dark(),
+        Some(Theme::dark()),
         cfg.clone(),
         "s1".into(),
         true,
@@ -154,7 +154,7 @@ fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
         "{frame}"
     );
 
-    let mut restarted = App::new(Theme::dark(), cfg, "s2".into(), true, false, tx);
+    let mut restarted = App::new(Some(Theme::dark()), cfg, "s2".into(), true, false, tx);
     restarted.show_banner = false;
     let frame = crate::ui::dump_frame(&mut restarted, 100, 24);
     assert!(
@@ -763,7 +763,7 @@ fn the_client_agents_selection_can_open_any_subagent_or_return_to_main() {
 fn live_subagent_changes_publish_a_client_compositor_snapshot() {
     let cfg = test_cfg();
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
-    let mut app = App::new(Theme::dark(), cfg, "live-session".into(), false, true, tx);
+    let mut app = App::new(Some(Theme::dark()), cfg, "live-session".into(), false, true, tx);
     let (ctl, commands) = crate::controller::tests::test_controller();
 
     app.handle(
@@ -2358,7 +2358,7 @@ fn live_queue_changes_publish_a_client_compositor_snapshot() {
 
     let cfg = test_cfg();
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
-    let mut app = App::new(Theme::dark(), cfg, "live-session".into(), false, true, tx);
+    let mut app = App::new(Some(Theme::dark()), cfg, "live-session".into(), false, true, tx);
     let (ctl, commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
     app.input.set("queued from composer".into());
@@ -2402,7 +2402,7 @@ fn live_queue_snapshot_contains_every_queued_prompt() {
 
     let cfg = test_cfg();
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
-    let mut app = App::new(Theme::dark(), cfg, "live-session".into(), false, true, tx);
+    let mut app = App::new(Some(Theme::dark()), cfg, "live-session".into(), false, true, tx);
     let (ctl, commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
 

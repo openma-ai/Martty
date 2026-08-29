@@ -15,7 +15,7 @@ fn test_app_with_root(root: &str, workspace: &str) -> (App, Controller) {
     };
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
-    let app = App::new(Theme::dark(), cfg, "dsh-current".into(), true, false, tx);
+    let app = App::new(Some(Theme::dark()), cfg, "dsh-current".into(), true, false, tx);
     (app, ctl)
 }
 

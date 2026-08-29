@@ -17,7 +17,7 @@ fn test_app() -> (App, Receiver<AppEvent>) {
         api_key: None,
     };
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
-    let app = App::new(Theme::dark(), cfg, "s1".into(), true, false, tx);
+    let app = App::new(Some(Theme::dark()), cfg, "s1".into(), true, false, tx);
     (app, rx)
 }
 

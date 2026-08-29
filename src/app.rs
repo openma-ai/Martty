@@ -1354,7 +1354,7 @@ impl App {
     }
 
     pub fn new(
-        theme: Theme,
+        theme: Option<Theme>,
         cfg: RuntimeConfig,
         session_id: String,
         demo: bool,
@@ -1362,8 +1362,15 @@ impl App {
         bus_tx: Sender<AppEvent>,
     ) -> Self {
         let palettes = vec![crate::theme::PalettePack::builtin_default()];
-        let theme = palettes[0].theme(theme.mode);
         let settings = Self::load_settings(&cfg);
+        // Explicit `--theme` on the CLI wins; otherwise the persisted
+        // light/dark mode; otherwise the builtin default (dark).
+        let mode = theme
+            .as_ref()
+            .map(|t| t.mode)
+            .or_else(|| settings.theme_mode.as_deref().and_then(crate::theme::Mode::parse))
+            .unwrap_or(crate::theme::Mode::Dark);
+        let theme = palettes[0].theme(mode);
         let locale = settings.language;
         App {
             theme,
@@ -1641,6 +1648,7 @@ impl App {
 
     fn toggle_theme_mode(&mut self) {
         self.theme = self.theme.toggled();
+        self.save_settings();
         self.show_tip(format!(
             "theme: {} {}",
             self.active_palette_id,
@@ -3373,6 +3381,7 @@ impl App {
             .filter(|value: &serde_json::Value| value.is_object())
             .unwrap_or_else(|| serde_json::json!({}));
         current["language"] = serde_json::json!(self.locale);
+        current["themeMode"] = serde_json::json!(self.theme.mode.as_str());
         if let Ok(text) = serde_json::to_string_pretty(&current) {
             let _ = std::fs::write(path, text);
         }

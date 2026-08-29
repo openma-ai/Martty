@@ -32,7 +32,7 @@ fn test_app() -> App {
         api_key: None,
     };
     let (tx, _rx) = mpsc::channel();
-    App::new(Theme::dark(), cfg, "dsh-test".into(), true, false, tx)
+    App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx)
 }
 
 /// Issue #38: scrolled CJK content leaves orphan halves of wide chars on the

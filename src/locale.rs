@@ -104,6 +104,12 @@ pub struct UiSettings {
     pub language: Locale,
     #[serde(rename = "uiPreset")]
     pub ui_preset: String,
+    /// Persisted light/dark mode (`dark` | `light`). Absent → the CLI
+    /// `--theme` value or the builtin default. The palette pack id lives
+    /// in the same file under `theme`, owned by the compositor's
+    /// `tuiTheme` service.
+    #[serde(rename = "themeMode")]
+    pub theme_mode: Option<String>,
 }
 
 impl Default for UiSettings {
@@ -111,6 +117,7 @@ impl Default for UiSettings {
         Self {
             language: Locale::default(),
             ui_preset: default_ui_preset(),
+            theme_mode: None,
         }
     }
 }
