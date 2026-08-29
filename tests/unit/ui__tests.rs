@@ -49,6 +49,52 @@ fn live_test_app() -> App {
 }
 
 #[test]
+fn file_menu_popup_renders_above_the_composer() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.input.insert_str("@");
+    // A small controlled workspace: [../, src/, README.md].
+    let ws = std::env::temp_dir().join(format!(
+        "dsh-tui-ui-file-menu-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&ws);
+    std::fs::create_dir_all(ws.join("src")).expect("mkdir");
+    std::fs::write(ws.join("src/main.rs"), "").expect("write");
+    std::fs::write(ws.join("README.md"), "").expect("write");
+    let token = crate::file_ref::active_at_token("@", 1).expect("token");
+    app.cfg.workspace = ws.to_string_lossy().into_owned();
+    app.file_menu =
+        Some(crate::file_ref::FileMenu::open(&ws, 0, &token).expect("menu opens"));
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    let row_text = |y: u16| -> String {
+        (0..80).map(|x| buf[(x, y)].symbol().to_string()).collect()
+    };
+    // The popup sits above the composer box (rows 11..15 on this layout:
+    // 12 list rows cap to 3 entries + 2 border rows).
+    let title_row = row_text(11);
+    assert!(
+        title_row.contains("@") && title_row.contains("."),
+        "popup title shows the relative cwd: {title_row:?}"
+    );
+    let joined = [row_text(12), row_text(13), row_text(14)].join("\n");
+    assert!(
+        joined.contains("src/") && joined.contains("README.md"),
+        "entries listed: {joined:?}"
+    );
+    // The panel surface colors the popup; the selected row uses chip_bg.
+    assert_eq!(buf[(4, 12)].bg, theme.chip_bg, "selected row highlight");
+    assert_eq!(buf[(4, 13)].bg, theme.panel, "unselected rows keep panel");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
 fn composer_is_a_rounded_box_surface() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

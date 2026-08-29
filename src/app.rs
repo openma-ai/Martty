@@ -22,7 +22,7 @@ use crate::bus::{
 };
 use crate::controller::Controller;
 use crate::events::parse_notification;
-use crate::input::Action;
+use crate::input::{Action, VimMode};
 use crate::locale::{Locale, UiSettings};
 use crate::runtime::{legacy_settings_path, settings_path, RuntimeConfig};
 use crate::theme::Theme;
@@ -1021,6 +1021,12 @@ pub struct App {
     /// Last ACP `session_info_update` title.
     session_title: Option<String>,
     pub slash_sel: usize,
+    /// Open `@file` browser menu (grammar + ratatui-explorer in `file_ref`).
+    pub file_menu: Option<crate::file_ref::FileMenu>,
+    /// Esc-dismissed `@` token tag (see `file_ref::token_tag`): an
+    /// unchanged token must not reopen the browser. Survives menu
+    /// rebuilds, so it lives on the App, not in `file_menu`.
+    pub file_menu_dismissed: Option<String>,
     pub picker: Option<Picker>,
     /// Rows the open picker actually shows (`h - border`), recorded by
     /// `ui::draw_model_picker` — the page size for picker PageUp/PageDown.
@@ -1413,6 +1419,8 @@ impl App {
             load_session: false,
             session_title: None,
             slash_sel: 0,
+            file_menu: None,
+            file_menu_dismissed: None,
             picker: None,
             picker_page_rows: 0,
             permission_ask: None,
@@ -2965,6 +2973,7 @@ impl App {
                         head: cell,
                     });
                     self.input_selecting = true;
+                    self.refresh_file_menu();
                     return;
                 }
                 let Some(p) = self.chat_hit(mouse.column, mouse.row) else {
@@ -3612,6 +3621,7 @@ impl App {
         {
             if self.vim.handle_key(&key, &mut self.input) {
                 self.reconcile_attachments();
+                self.refresh_file_menu();
                 return;
             }
         }
@@ -3711,6 +3721,58 @@ impl App {
             return;
         }
 
+        // The @file browser owns its navigation keys while open; everything
+        // else falls through to normal editing (which re-syncs the browser
+        // through `refresh_file_menu`). Enter settles, Tab drills into a
+        // directory, → follows the explorer's enter semantics.
+        if let Some(menu) = &mut self.file_menu {
+            if key.modifiers == KeyModifiers::NONE {
+                match key.code {
+                    KeyCode::Up => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::Up);
+                        return;
+                    }
+                    KeyCode::Down => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::Down);
+                        return;
+                    }
+                    KeyCode::Home => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::Home);
+                        return;
+                    }
+                    KeyCode::End => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::End);
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::PageUp);
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::PageDown);
+                        return;
+                    }
+                    KeyCode::Left => {
+                        crate::file_ref::navigate(menu, crate::file_ref::Input::Left);
+                        return;
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        self.file_menu_drill();
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        self.file_menu_settle();
+                        return;
+                    }
+                    KeyCode::Esc => {
+                        self.dismiss_file_menu();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if let Some(selected) = self.queue_selection {
             let n = self.prompt_queue.len();
             if n == 0 {
@@ -3807,6 +3869,123 @@ impl App {
         // Any edit may have cut an [image n] token — the tray follows the
         // text (grok's lexicon-scan model).
         self.reconcile_attachments();
+        // Caret/token changes drive the @file browser: open, navigate the
+        // query's directory prefix, or close it.
+        self.refresh_file_menu();
+    }
+
+    /// Re-scan the composer line at the caret and sync the `@file` browser:
+    /// open it on an active token (unless the same token was Esc-dismissed
+    /// or vim normal mode is active), re-navigate on query edits, close it
+    /// when the token is gone.
+    fn refresh_file_menu(&mut self) {
+        // Vim normal mode is command editing — no mention browser.
+        if self.vim.is_active() && self.vim.mode == VimMode::Normal {
+            self.file_menu = None;
+            return;
+        }
+        // The slash menu and the @ menu are mutually exclusive.
+        if self.slash_completion_open() {
+            self.file_menu = None;
+            return;
+        }
+        let (row, col) = self.input.char_to_rowcol(self.input.cursor_char());
+        let Some(line) = self.input.lines().get(row).cloned() else {
+            self.file_menu = None;
+            return;
+        };
+        let Some(token) = crate::file_ref::active_at_token(&line, col) else {
+            // The token is gone (draft cleared, caret left it): a fresh
+            // `@` must be able to reopen the browser, so drop the
+            // dismissal tag along with the menu.
+            self.file_menu = None;
+            self.file_menu_dismissed = None;
+            return;
+        };
+        let tag = crate::file_ref::token_tag(token.quoted, &token.query);
+        if let Some(menu) = &mut self.file_menu {
+            if menu.row() != row || menu.start() != token.start || menu.end() != token.end {
+                menu.retoken(row, &token);
+            }
+            menu.apply_query(&token.query);
+        } else {
+            // Esc-dismissed tokens stay closed until their text changes.
+            if self.file_menu_dismissed.as_deref() == Some(tag.as_str()) {
+                return;
+            }
+            self.file_menu_dismissed = None;
+            if let Some(mut menu) = crate::file_ref::FileMenu::open(
+                std::path::Path::new(&self.cfg.workspace),
+                row,
+                &token,
+            ) {
+                // The token may already carry a query (dismissed-token
+                // reopen): drive the browser to it before showing.
+                menu.apply_query(&token.query);
+                self.file_menu = Some(menu);
+            }
+        }
+    }
+
+    /// `Enter` on the selected entry: replace the token with `@path` (or
+    /// `@dir/` for directories) and close the browser.
+    fn file_menu_settle(&mut self) {
+        let Some(mention) = self.file_menu.as_ref().and_then(|m| m.current_mention()) else {
+            return;
+        };
+        let (row, start, end) = {
+            let menu = self.file_menu.as_ref().expect("checked above");
+            (menu.row(), menu.start(), menu.end())
+        };
+        crate::file_ref::replace_span(&mut self.input, row, start, end, &mention);
+        self.file_menu = None;
+        self.input_sel = None;
+        self.reconcile_attachments();
+    }
+
+    /// `Tab` on a directory: rewrite the token to `@dir/` (quoted form
+    /// keeps the quote open) and keep the browser inside the directory.
+    /// `Tab` on a file settles like `Enter`.
+    fn file_menu_drill(&mut self) {
+        let Some(menu) = self.file_menu.as_ref() else {
+            return;
+        };
+        if menu.explorer().files().is_empty() {
+            return;
+        }
+        let file = menu.explorer().current().clone();
+        if !file.is_dir {
+            self.file_menu_settle();
+            return;
+        }
+        let rel = crate::file_ref::relative_path(menu.base(), &file.path);
+        let Some(mention) = crate::file_ref::format_file_mention(&rel, true, menu.quoted()) else {
+            return;
+        };
+        let (row, start) = (menu.row(), menu.start());
+        let end = start + mention.chars().count();
+        crate::file_ref::replace_span(&mut self.input, row, menu.start(), menu.end(), &mention);
+        if let Some(menu) = &mut self.file_menu {
+            menu.retoken(row, &crate::file_ref::AtToken {
+                start,
+                end,
+                query: format!("{rel}/"),
+                quoted: mention.starts_with("@\""),
+            });
+            menu.apply_query(&format!("{rel}/"));
+        }
+    }
+
+    /// Esc: close the browser and remember the token so it stays closed
+    /// until its text changes.
+    fn dismiss_file_menu(&mut self) {
+        if let Some(menu) = &self.file_menu {
+            self.file_menu_dismissed = Some(crate::file_ref::token_tag(
+                menu.quoted(),
+                &menu.token_query(),
+            ));
+        }
+        self.file_menu = None;
     }
 
     /// Apply one classified [`Action`] — the only place key semantics touch
@@ -5893,6 +6072,8 @@ fn fmt_duration(ms: u64) -> String {
 
 impl App {
     fn submit(&mut self, ctl: &Controller) {
+        // A pending @file browser never survives a send.
+        self.file_menu = None;
         let text = self.input.buf().trim().to_string();
         // Client namespaces don't take images — keep the chips editable
         // instead of silently dropping them.
@@ -6618,3 +6799,7 @@ mod right_slot_tests;
 #[cfg(test)]
 #[path = "../tests/unit/app__scroll_tests.rs"]
 mod scroll_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__at_menu_tests.rs"]
+mod at_menu_tests;

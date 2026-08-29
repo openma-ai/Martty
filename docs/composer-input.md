@@ -112,6 +112,25 @@ Composer（底部输入区）自 v0.2.27 起基于 [`ratatui-textarea`](https://
 - `⌫` 或 `delete` 碰到芯片会整块删除（并取消暂存的图片），不会只删一个括号
 - 编辑删除文本中的芯片文本时，托盘自动同步清理
 
+### 6.1 `@file` 路径提及（文件浏览器）
+
+在词边界输入 `@`（行首、空白或标点后；email、URL 中的 `@` 不触发）打开
+workspace 文件浏览器，悬停在输入区上方：
+
+| 按键 | 行为 |
+|---|---|
+| `↑` / `↓` | 移动选择（浏览器打开时输入区的上下键让位） |
+| `←` | 上一级目录（纯浏览，不改草稿） |
+| `→` / `tab` | 目录行下钻 / 文件行落定；下钻把 token 改写为 `@dir/` |
+| `enter` | 落定：文件 → `@path`，目录 → `@dir/`（带空格路径自动转 `@"…"` 引号形式） |
+| `esc` | 关闭浏览器；同一 token 文本不变不会重新弹出 |
+| `home` / `end` / `pgup` / `pgdn` | 首 / 尾 / 翻页 |
+
+- 输入会实时驱动浏览器：`@src/m` 自动进入 `src/` 并选中第一个 `ma*` 条目
+- 引号形式 `@"dir with space/` 在目录下钻时保持引号打开，可继续输入
+- 选中的只是提示文本（`@path`），与文件内容、附件无关；宿主按
+  workspace 相对路径解析（尾斜杠 = 目录）
+
 ### 7. 鼠标
 
 | 操作 | 行为 |
@@ -220,9 +239,28 @@ textarea_mut() -> &mut TextArea // 直接操作 widget（会失效化布局镜�
   全部走 `classify → dispatch` 显式调用。
 - 未启用的库能力：搜索高亮（`search` feature）、行号、placeholder（自绘）。
 
-### 6. 测试
+### 6. `@file` 浏览器（`src/file_ref.rs`）
+
+- **语法层零依赖**：`active_at_token(line, cursor_col)` 是纯函数（词边界、
+  email/URL carve-out、`@"…"` 引号形式），`format_file_mention` 只产出提示文本。
+- **浏览器是 ratatui-explorer**（issue #62 指定的 UI 控件）：`FileMenu` 包一个
+  以 `cfg.workspace` 为根的 `FileExplorer`；目录浏览、排序、隐藏文件过滤都由库负责，
+  Rust 侧不写文件系统遍历。
+- **每次按键后的同步点在 `app.rs::refresh_file_menu`**（handle_key 末尾、vim
+  消费分支、composer 鼠标点击三处）：重新扫描光标所在行的 token，query 变了才驱动
+  浏览器（`apply_query` 对相同 query 是 no-op，箭头导航不会被重置）；token 消失、
+  vim normal 或 slash 菜单打开时关闭。
+- **Esc 的 dismissed 状态存在 App 上**（`file_menu_dismissed`，tag 见
+  `file_ref::token_tag`）：菜单重建（`FileMenu` 每次打开重新 `build`）不能丢它。
+- **主题适配**：`FileMenu::apply_chrome` 每帧用 `app.theme` token 重建
+  ratatui-explorer 的 `Theme`（panel 面板、border 边框、brand 目录、chip_bg 选中行），
+  palette 包和 locale 切换即时生效；与 slash 菜单弹层同几何（composer 上方，宽 72）。
+
+### 7. 测试
 
 - `tests/unit/input__composer__tests.rs`：布局镜像、点击映射、视觉行、kill、滚动镜像、undo/redo
 - `tests/unit/app__mode_tests.rs` / `app__selection_tests.rs`：键位全链路、鼠标选择
-- `tests/unit/ui__tests.rs`：真实 buffer 渲染断言（chip 样式、拖选反色、多行堆叠）
+- `tests/unit/file_ref__tests.rs`：语法（边界、引号、email、URL）、格式化、浏览器导航
+- `tests/unit/app__at_menu_tests.rs`：键交互、token 替换、下钻、dismiss、vim/slash 共存
+- `tests/unit/ui__tests.rs`：真实 buffer 渲染断言（chip 样式、拖选反色、多行堆叠、@ 弹层）
 - `tests/unit/input__keymap__tests.rs`：键位表反漂移（每个文档行必须能被 classify 解析）
