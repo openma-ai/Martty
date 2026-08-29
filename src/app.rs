@@ -3726,6 +3726,13 @@ impl App {
         // through `refresh_file_menu`). Enter settles, Tab drills into a
         // directory, → follows the explorer's enter semantics.
         if let Some(menu) = &mut self.file_menu {
+            // ctrl+h toggles hidden files/dirs (the explorer's own binding
+            // for ToggleShowHidden); it stays modal while the browser is
+            // open, like the navigation keys.
+            if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('h') {
+                crate::file_ref::navigate(menu, crate::file_ref::Input::ToggleShowHidden);
+                return;
+            }
             if key.modifiers == KeyModifiers::NONE {
                 match key.code {
                     KeyCode::Up => {

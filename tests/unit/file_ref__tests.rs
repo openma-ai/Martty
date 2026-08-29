@@ -321,6 +321,29 @@ fn token_tag_distinguishes_quoted_and_query() {
 }
 
 #[test]
+fn ctrl_h_toggles_hidden_entries() {
+    let root = TempRoot::new("hidden");
+    root.dir(".git");
+    root.file("README.md");
+    let mut menu = FileMenu::open(&root.path, 0, &token("")).expect("opens");
+    fn names(menu: &FileMenu) -> Vec<String> {
+        menu.explorer()
+            .files()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect()
+    }
+    assert_eq!(names(&menu), ["../", "README.md"]);
+    navigate(&mut menu, Input::ToggleShowHidden);
+    assert!(menu.explorer().show_hidden());
+    assert_eq!(names(&menu), ["../", ".git/", "README.md"]);
+    navigate(&mut menu, Input::ToggleShowHidden);
+    assert!(!menu.explorer().show_hidden());
+    assert_eq!(names(&menu), ["../", "README.md"]);
+    drop(root);
+}
+
+#[test]
 fn drill_rewrites_the_token_query() {
     let (root, base) = tree();
     let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");

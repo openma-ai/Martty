@@ -347,8 +347,8 @@ impl FileMenu {
         let rel = relative_path(Path::new(workspace), &self.cwd);
         let title = format!(" @{rel} ");
         let hint = locale.tr(
-            " ↑↓ move · ← parent · →/tab open · enter pick · esc close ",
-            " ↑↓ 移动 · ← 上级 · →/tab 进入 · enter 选择 · esc 关闭 ",
+            " ↑↓ move · ← parent · →/tab open · enter pick · ctrl+h hidden · esc close ",
+            " ↑↓ 移动 · ← 上级 · →/tab 进入 · enter 选择 · ctrl+h 隐藏 · esc 关闭 ",
         );
         let explorer_theme = ExplorerTheme::default()
             .with_block(
