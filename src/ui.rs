@@ -760,6 +760,13 @@ fn wrap_line(s: &str, cells: usize) -> Vec<String> {
 /// cells regardless of terminal-specific wide-char erase behavior.
 fn force_full_rewrite(f: &mut Frame, area: Rect) {
     let buf = f.buffer_mut();
+    // Overlays compute their rect from screen math that can saturate at the
+    // top edge; never index a cell outside the buffer (widgets clip via
+    // `intersection`, direct indexing would panic).
+    let area = area.intersection(Rect::new(0, 0, buf.area.width, buf.area.height));
+    if area.is_empty() {
+        return;
+    }
     for pos in area.positions() {
         buf[pos].set_diff_option(ratatui::buffer::CellDiffOption::AlwaysUpdate);
     }
@@ -2764,6 +2771,13 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
         ));
     }
     f.render_widget(Paragraph::new(lines).block(block), area);
+    // The popup floats over the transcript: scrolling it with ↑/↓ moves
+    // wide (CJK) glyphs and can orphan their trailing halves on the real
+    // screen while both ratatui buffers agree the cell is unchanged, so
+    // the diff skips it and the leftover half-glyph stays as a black block
+    // (issue #83 — same class as the #38 transcript fix). Force a full
+    // rewrite of the popup every frame to flush any stale terminal cells.
+    force_full_rewrite(f, area);
 }
 
 /// Rows of the `@file` browser shown at once; the explorer's own List
@@ -2798,6 +2812,10 @@ fn draw_file_menu(f: &mut Frame, app: &mut App, input: Rect, chat: Rect) {
     let area = Rect::new(input.x + 2, y, w, h);
     f.render_widget(Clear, area);
     f.render_widget_ref(menu.explorer().widget(), area);
+    // Same class as #83 / #38: CJK file names scroll through the explorer
+    // window and orphan wide-char trailing cells on the real screen; force
+    // a full rewrite so the diff never trusts a half-erased cell.
+    force_full_rewrite(f, area);
 }
 
 /// Pad `s` to exactly `w` display cells, ellipsizing when longer — keeps
