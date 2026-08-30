@@ -42,6 +42,8 @@ import { apply as applyKanagawa, inject as kanagawaInject } from './kanagawa.js'
 import { apply as applyEverforest, inject as everforestInject } from './everforest.js'
 import { apply as applyIceberg, inject as icebergInject } from './iceberg.js'
 import { apply as applySolarized, inject as solarizedInject } from './solarized.js'
+import { apply as applyOne, inject as oneInject } from './one.js'
+import { apply as applyTomorrow, inject as tomorrowInject } from './tomorrow.js'
 import { apply as applyCommands } from './tui-commands.js'
 import { apply as applyOverlay } from './tui-overlay.js'
 import { apply as applyAgents } from './tui-agents.js'
@@ -86,6 +88,8 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'tui-theme-everforest', inject: everforestInject, apply: applyEverforest })
     await ctx.plugin({ name: 'tui-theme-iceberg', inject: icebergInject, apply: applyIceberg })
     await ctx.plugin({ name: 'tui-theme-solarized', inject: solarizedInject, apply: applySolarized })
+    await ctx.plugin({ name: 'tui-theme-one', inject: oneInject, apply: applyOne })
+    await ctx.plugin({ name: 'tui-theme-tomorrow', inject: tomorrowInject, apply: applyTomorrow })
     restorePreferredTheme(ctx.get('tuiTheme'))
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
@@ -144,6 +148,8 @@ export async function bootClient(options = {}) {
     applyEverforest(ctx)
     applyIceberg(ctx)
     applySolarized(ctx)
+    applyOne(ctx)
+    applyTomorrow(ctx)
     restorePreferredTheme(ctx.tuiTheme)
     applySlots(ctx)
     applyCommands(ctx)

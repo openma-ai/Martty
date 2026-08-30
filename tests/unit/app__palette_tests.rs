@@ -48,6 +48,8 @@ fn gallery_params(id: &str, activate: bool) -> serde_json::Value {
         "everforest" => include_str!("../../docs/fixtures/everforest.v0.json"),
         "iceberg" => include_str!("../../docs/fixtures/iceberg.v0.json"),
         "solarized" => include_str!("../../docs/fixtures/solarized.v0.json"),
+        "one" => include_str!("../../docs/fixtures/one.v0.json"),
+        "tomorrow" => include_str!("../../docs/fixtures/tomorrow.v0.json"),
         _ => panic!("unknown gallery fixture {id}"),
     };
     let palette: serde_json::Value = serde_json::from_str(fixture).unwrap();
@@ -155,6 +157,8 @@ fn slash_theme_switches_between_gallery_packs() {
         "everforest",
         "iceberg",
         "solarized",
+        "one",
+        "tomorrow",
     ] {
         app.handle(
             AppEvent::Rpc {

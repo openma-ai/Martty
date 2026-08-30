@@ -359,6 +359,8 @@ const GALLERY = [
   ['everforest', 'Everforest'],
   ['iceberg', 'Iceberg'],
   ['solarized', 'Solarized'],
+  ['one', 'One'],
+  ['tomorrow', 'Tomorrow'],
 ]
 
 test('npm gallery palettes match docs/fixtures v0.json', () => {
