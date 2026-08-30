@@ -7,6 +7,31 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- New gallery palette pack `tomorrow` (dark from Tomorrow Night
+  Bright, light from Tomorrow), sourced from
+  terminalcolors.com/themes/tomorrow. It registers at Client boot as a
+  sibling `inject = ['tuiTheme']` row and `/theme tomorrow` covers it.
+  Both terminalcolors variants export bright black as `#000000`
+  (equal to the dark background, darker than the light foreground), so
+  secondary text/border take the Tomorrow family's canonical comment
+  tones (`#969896` dark / `#8e908c` light) and panel/chip take the
+  selection background (`#424242` / `#d6d6d6`), following the
+  solarized/everforest readability precedent.
+- New gallery palette pack `one` (dark from One Dark, light from One
+  Light), sourced from terminalcolors.com/themes/one. It registers at
+  Client boot as a sibling `inject = ['tuiTheme']` row and `/theme one`
+  covers it; dark/light follows the existing packs. Three adaptations
+  in light mode, all sourced from the One family's canonical syntax
+  tones because One Light's terminal export lacks them: secondary
+  text/border take the comment gray (`#5c6370`) instead of collapsing
+  onto `panel`'s `#bbbbbb` (which made picker dialog text unreadable),
+  `warn` takes the orange constant tone (`#c18401`) instead of the
+  export's pale tan (invisible as the approval dialog border on the
+  panel), and `hint` takes the aqua tone (`#0184bc`) because the export
+  maps cyan and green to the same swatch, colliding with `ok`. One
+  Dark's inverted selection also makes the user bubble light-on-dark in
+  dark mode and dark-on-light in light mode, straight from the source
+  selection swatches.
 - `@file` mentions in the composer (issue #62): typing `@` at a word
   boundary opens a workspace file browser (ratatui-explorer) above the
   input. The query's directory prefix descends as you type (`@src/m` opens

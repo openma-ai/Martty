@@ -80,6 +80,8 @@ fn fixture_json(name: &str) -> serde_json::Value {
         "everforest" => include_str!("../../docs/fixtures/everforest.v0.json"),
         "iceberg" => include_str!("../../docs/fixtures/iceberg.v0.json"),
         "solarized" => include_str!("../../docs/fixtures/solarized.v0.json"),
+        "one" => include_str!("../../docs/fixtures/one.v0.json"),
+        "tomorrow" => include_str!("../../docs/fixtures/tomorrow.v0.json"),
         _ => panic!("unknown fixture {name}"),
     }
     .parse::<serde_json::Value>()
@@ -136,6 +138,22 @@ fn gallery_fixtures_parse_both_modes() {
             Color::Rgb(38, 139, 210),  // #268BD2
             Color::Rgb(0, 43, 54),     // #002B36
             Color::Rgb(253, 246, 227), // #FDF6E3
+        ),
+        (
+            "one",
+            "One",
+            Color::Rgb(97, 175, 239),  // #61AFEF One Dark blue
+            Color::Rgb(47, 90, 243),   // #2F5AF3 One Light blue
+            Color::Rgb(40, 44, 52),    // #282C34
+            Color::Rgb(248, 248, 248), // #F8F8F8
+        ),
+        (
+            "tomorrow",
+            "Tomorrow",
+            Color::Rgb(122, 166, 218), // #7AA6DA Tomorrow Night Bright blue
+            Color::Rgb(66, 113, 174),  // #4271AE Tomorrow blue
+            Color::Rgb(0, 0, 0),       // #000000
+            Color::Rgb(255, 255, 255), // #FFFFFF
         ),
     ] {
         let pack = PalettePack::from_json(&fixture_json(name)).expect("gallery fixture");
