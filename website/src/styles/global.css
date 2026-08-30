@@ -331,6 +331,7 @@ button:focus-visible,
 
 .hero__copy {
   position: relative;
+  min-width: 0;
   max-width: 39rem;
 }
 
@@ -1065,4 +1066,22 @@ button:focus-visible,
 
 .site-footer__links a:hover {
   color: var(--fg-secondary);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Martty plugin launch artwork                                           */
+/* ---------------------------------------------------------------------- */
+
+.hero__visual-card.hero__visual-card--launch {
+  min-height: 0;
+  aspect-ratio: 16 / 9;
+  border-radius: 1.25rem;
+  background: var(--bg-deep);
+}
+
+.hero__launch-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }

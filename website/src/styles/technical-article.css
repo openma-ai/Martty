@@ -1,0 +1,529 @@
+.article-shell {
+  flex: 1;
+}
+
+.technical-article {
+  width: min(100% - 3rem, 72rem);
+  margin: 0 auto;
+  padding: 4.5rem 0 6rem;
+}
+
+.article-hero {
+  max-width: 58rem;
+  padding-bottom: 3rem;
+}
+
+.article-breadcrumb {
+  display: flex;
+  gap: 0.65rem;
+  margin-bottom: 2.5rem;
+  color: var(--caption);
+  font-size: 0.75rem;
+}
+
+.article-breadcrumb a {
+  color: var(--fg-tertiary);
+}
+
+.article-eyebrow,
+.article-section-label {
+  margin: 0 0 1rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.article-hero h1 {
+  max-width: 22ch;
+  margin: 0;
+  color: var(--fg);
+  font-size: clamp(2.25rem, 6vw, 4.65rem);
+  font-weight: 600;
+  letter-spacing: -0.055em;
+  line-height: 1.03;
+}
+
+.article-lede {
+  max-width: 72ch;
+  margin: 2rem 0 0;
+  color: var(--fg-secondary);
+  font-size: clamp(1rem, 2vw, 1.18rem);
+  line-height: 1.8;
+}
+
+.article-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1.5rem;
+  margin-top: 2rem;
+  color: var(--caption);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.article-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0 0 4rem;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.article-facts div {
+  min-width: 0;
+  padding: 1rem 1.1rem;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.article-facts dt {
+  margin-bottom: 0.45rem;
+  color: var(--caption);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.article-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-size: 0.85rem;
+}
+
+.article-grid {
+  display: grid;
+  gap: 3rem;
+}
+
+.article-quick-answer {
+  max-width: 58rem;
+  margin: -1rem 0 1.25rem;
+  padding: 1.6rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.article-quick-answer__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.article-quick-answer h2 {
+  max-width: 30ch;
+  margin: 0;
+  color: var(--fg);
+  font-size: clamp(1.3rem, 3vw, 1.8rem);
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+}
+
+.article-quick-answer > p {
+  max-width: 80ch;
+  margin: 0 0 0.9rem;
+  color: var(--fg-secondary);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.95rem;
+  line-height: 1.75;
+}
+
+.article-quick-answer .term-block {
+  margin: 1.35rem 0 0;
+}
+
+.article-revision {
+  flex: none;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  color: var(--fg-tertiary);
+  font-size: 0.68rem;
+  line-height: 1.35;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.article-revision:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.article-revision code {
+  color: var(--accent);
+}
+
+.article-thesis {
+  max-width: 58rem;
+  margin: 0 0 4.5rem;
+  padding: 1.5rem 1.6rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%);
+}
+
+.article-thesis h2 {
+  margin: 0 0 0.8rem;
+  color: var(--fg);
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+
+.article-thesis p:last-child {
+  max-width: 80ch;
+  margin: 0;
+  color: var(--fg-secondary);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 1rem;
+  line-height: 1.8;
+}
+
+.article-toc {
+  display: none;
+}
+
+.article-body {
+  min-width: 0;
+  max-width: 48rem;
+}
+
+.article-body > section {
+  padding: 0 0 4rem;
+  scroll-margin-top: 2rem;
+}
+
+.article-body h2 {
+  margin: 0 0 1.25rem;
+  color: var(--fg);
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+}
+
+.article-body p,
+.article-body li {
+  color: var(--fg-secondary);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 1rem;
+  line-height: 1.85;
+}
+
+.article-body p code,
+.article-body li code,
+.article-table-scroll code {
+  color: var(--fg);
+  font-size: 0.88em;
+}
+
+.article-body p {
+  margin: 0 0 1.25rem;
+}
+
+.article-body ul {
+  margin: 1.4rem 0 0;
+  padding: 1.25rem 1.25rem 1.25rem 2.5rem;
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+}
+
+.article-body li + li {
+  margin-top: 0.65rem;
+}
+
+.article-body .term-block {
+  margin-top: 1.5rem;
+}
+
+.article-diagram figure,
+.article-code {
+  margin: 1.6rem 0 0;
+  border: 1px solid var(--border);
+  background: #070a0f;
+}
+
+.article-diagram pre,
+.article-code pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 1.35rem;
+  color: #dbe5f7;
+  font: 0.78rem/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  tab-size: 2;
+}
+
+.article-diagram figcaption {
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border-soft);
+  color: var(--fg-tertiary);
+  font: 0.8rem/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.article-code > figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--caption);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.article-code > figcaption a {
+  overflow-wrap: anywhere;
+  color: var(--accent);
+  text-align: right;
+  text-transform: none;
+}
+
+.article-code__notes {
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface);
+}
+
+.article-code__notes p {
+  margin: 0;
+  color: var(--fg-tertiary);
+  font-size: 0.84rem;
+  line-height: 1.65;
+}
+
+.article-code__notes p + p {
+  margin-top: 0.65rem;
+}
+
+.article-table-scroll {
+  max-width: 100%;
+  margin-top: 1.5rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+}
+
+.article-table-scroll table {
+  width: 100%;
+  min-width: 40rem;
+  border-collapse: collapse;
+  background: var(--surface);
+}
+
+.article-table-scroll th,
+.article-table-scroll td {
+  padding: 0.9rem 1rem;
+  border-right: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg-secondary);
+  font: 0.8rem/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: left;
+  vertical-align: top;
+}
+
+.article-table-scroll th {
+  color: var(--caption);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.article-table-scroll tr:last-child td {
+  border-bottom: 0;
+}
+
+.article-table-scroll th:last-child,
+.article-table-scroll td:last-child {
+  border-right: 0;
+}
+
+.article-source-map td:first-child {
+  width: 42%;
+}
+
+.article-source-map a {
+  color: var(--accent);
+}
+
+.article-failure-modes td:first-child {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.article-verification {
+  padding: 1.5rem !important;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.article-verification h3 {
+  margin: 2rem 0 0.8rem;
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+
+.article-verification ol {
+  margin: 0;
+  padding-left: 1.35rem;
+}
+
+.article-verification li + li {
+  margin-top: 0.65rem;
+}
+
+.article-faq details {
+  border-top: 1px solid var(--border);
+  padding: 1.15rem 0;
+}
+
+.article-faq details:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.article-faq summary {
+  cursor: pointer;
+  color: var(--fg);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.article-faq details p {
+  margin: 1rem 0 0;
+}
+
+.article-related > div {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.article-related a {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1.15rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  text-decoration: none;
+}
+
+.article-related a:hover {
+  border-color: var(--accent-dim);
+}
+
+.article-related strong {
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.article-related span {
+  color: var(--fg-tertiary);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+@media (min-width: 700px) {
+  .article-facts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .article-related > div {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 960px) {
+  .article-grid {
+    grid-template-columns: 13rem minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .article-toc {
+    position: sticky;
+    top: 2rem;
+    display: grid;
+    gap: 0.7rem;
+    padding-left: 1rem;
+    border-left: 1px solid var(--border);
+  }
+
+  .article-toc p {
+    margin: 0 0 0.25rem;
+    color: var(--caption);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+  }
+
+  .article-toc a {
+    color: var(--fg-tertiary);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    text-decoration: none;
+  }
+
+  .article-toc a:hover {
+    color: var(--accent);
+  }
+}
+
+@media (max-width: 639px) {
+  .technical-article {
+    width: min(100% - 2rem, 72rem);
+    padding-top: 2.5rem;
+  }
+
+  .article-hero h1 {
+    letter-spacing: -0.04em;
+  }
+
+  .article-thesis {
+    padding: 1.2rem;
+  }
+
+  .article-quick-answer {
+    padding: 1.2rem;
+  }
+
+  .article-quick-answer__header {
+    display: block;
+  }
+
+  .article-revision {
+    display: inline-block;
+    margin-top: 1rem;
+  }
+
+  .article-diagram pre,
+  .article-code pre {
+    font-size: 0.72rem;
+  }
+
+  .technical-article .term-block {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .technical-article .term-block__code {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    max-width: 100%;
+    overflow-x: hidden;
+    padding-right: 0;
+    white-space: normal;
+  }
+
+  .technical-article .term-block__line {
+    padding-left: 1.1rem;
+    overflow-wrap: anywhere;
+    text-indent: -1.1rem;
+    white-space: pre-wrap;
+  }
+
+  .technical-article .term-block__copy {
+    position: static;
+    grid-row: 1;
+    grid-column: 2;
+    justify-self: end;
+    margin-bottom: 0.75rem;
+  }
+}

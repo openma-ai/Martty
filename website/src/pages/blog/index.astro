@@ -11,7 +11,7 @@ const posts = [
 ---
 <ContentPage {title} {description} path="/blog" eyebrow="Blog">
   <h2>Guides for terminal-native agent workflows</h2>
-  <p>These articles focus on reproducible setup, protocol boundaries, and implementation details. Product reference pages live under <a href="/deepseek-harness-tui">DeepSeek Harness TUI</a>, <a href="/acp-terminal-client">ACP terminal client</a>, and <a href="/plugins">UI plugins</a>.</p>
+  <p>These articles focus on reproducible setup, protocol boundaries, and implementation details. Product reference pages live under <a href="/deepseek-harness-tui">DeepSeek Harness TUI</a>, <a href="/acp-terminal-client">ACP terminal client</a>, <a href="/ratatui-agent-tui">Ratatui agent TUI</a>, and <a href="/plugins">UI plugins</a>.</p>
   <div class="content-grid">
     {posts.map((post) => <div class="content-card"><h3><a href={post.href}>{post.title}</a></h3><p>{post.body}</p><a href={post.href}>Read guide →</a>{post.alternateHref && <span> · <a href={post.alternateHref}>{post.alternateLabel} →</a></span>}</div>)}
   </div>

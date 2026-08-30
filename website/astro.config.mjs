@@ -10,6 +10,10 @@ export default defineConfig({
   integrations: [react()],
   vite: {
     plugins: [tailwindcss()],
+    server: {
+      // The docs site renders the repository-owned Markdown files directly.
+      fs: { allow: [".."] },
+    },
     // Astro's SSR optimizer and hydrated islands must share the same React
     // singleton. Without deduplication, a cold dev start can optimize a
     // second copy and fail every hook-backed island at runtime.

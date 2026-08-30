@@ -1,0 +1,37 @@
+---
+import { DocsPage } from "../components/DocsPage";
+import SeoHead from "../components/SeoHead.astro";
+import { getDocSeo, type DocsLocale } from "../data/docs";
+import "../styles/global.css";
+import "../styles/docs.css";
+
+interface Props {
+  locale: DocsLocale;
+  slug: string;
+}
+
+const { locale, slug } = Astro.props;
+const seo = getDocSeo(locale, slug);
+if (!seo) throw new Error(`unknown docs page: ${locale}/${slug}`);
+const path = locale === "zh" ? `/docs/${slug}` : `/en/docs/${slug}`;
+const alternatePath = locale === "zh" ? `/en/docs/${slug}` : `/docs/${slug}`;
+---
+
+<!doctype html>
+<html lang={locale === "zh" ? "zh-CN" : "en"}>
+  <head>
+    <SeoHead
+      title={seo.title}
+      description={seo.description}
+      lang={locale === "zh" ? "zh-CN" : "en"}
+      {path}
+      imageAlt={locale === "zh" ? "Martty 架构与插件开发文档" : "Martty architecture and plugin development documentation"}
+      kind="webpage"
+      {alternatePath}
+    />
+  </head>
+  <body class="docs-body">
+    <a href="#main" class="skip-link">{locale === "zh" ? "跳到正文" : "Skip to content"}</a>
+    <DocsPage locale={locale} slug={slug} />
+  </body>
+</html>

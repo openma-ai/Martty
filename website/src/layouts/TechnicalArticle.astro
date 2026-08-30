@@ -1,0 +1,263 @@
+---
+import CopyCommand from "../components/CopyCommand.astro";
+import type { SearchLanding } from "../data/search-landings";
+import { TUI_GITHUB_URL, TUI_NPM_URL } from "../data/content";
+import "../styles/global.css";
+import "../styles/technical-article.css";
+
+interface Props {
+  page: SearchLanding;
+}
+
+const { page } = Astro.props;
+const canonical = new URL(`/${page.slug}`, Astro.site ?? Astro.url.origin);
+const socialImage = new URL("/ui_start.png", Astro.site ?? Astro.url.origin);
+const inlineCode = (text: string) => text
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;")
+  .replace(/`([^`]+)`/g, "<code>$1</code>");
+const schema = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      headline: page.title,
+      description: page.description,
+      dateModified: page.updated,
+      datePublished: page.updated,
+      mainEntityOfPage: canonical.href,
+      inLanguage: "en",
+      proficiencyLevel: "Expert",
+      citation: page.sourceMap.map((source) => source.href),
+      author: { "@type": "Organization", name: "OpenMA", url: "https://github.com/openma-ai" },
+      publisher: { "@type": "Organization", name: "OpenMA", url: "https://github.com/openma-ai" },
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: page.faq.map((item) => ({
+        "@type": "Question",
+        name: item.question,
+        acceptedAnswer: { "@type": "Answer", text: item.answer },
+      })),
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Martty", item: new URL("/", canonical).href },
+        { "@type": "ListItem", position: 2, name: page.title, item: canonical.href },
+      ],
+    },
+  ],
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="theme-color" content="#05070a" />
+    <meta name="description" content={page.description} />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.ico?v=3" sizes="any" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Martty" />
+    <meta property="og:title" content={page.metaTitle} />
+    <meta property="og:description" content={page.description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:alt" content="Martty running as a DeepSeek Harness terminal client" />
+    <meta property="article:published_time" content={page.updated} />
+    <meta property="article:modified_time" content={page.updated} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={page.metaTitle} />
+    <meta name="twitter:description" content={page.description} />
+    <meta name="twitter:image" content={socialImage} />
+    <meta name="twitter:image:alt" content="Martty running as a DeepSeek Harness terminal client" />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} />
+    <title>{page.metaTitle}</title>
+  </head>
+  <body>
+    <a href="#article" class="skip-link">Skip to article</a>
+    <div class="shell">
+      <header class="site-header">
+        <div class="wrap site-header__row">
+          <a class="brand" href="/" aria-label="Martty home">
+            <img class="brand__mark" src="/martty-lockup.svg" width="125" height="36" alt="Martty" />
+            <span class="brand__tag">TECHNICAL NOTES</span>
+          </a>
+          <nav class="site-nav" aria-label="Primary">
+            <a href="/docs">Docs</a>
+            <a href={TUI_GITHUB_URL}>GitHub</a>
+            <a href={TUI_NPM_URL} class="site-nav__accent">npm</a>
+          </nav>
+        </div>
+      </header>
+
+      <main id="article" class="article-shell">
+        <article class="technical-article">
+          <header class="article-hero">
+            <nav class="article-breadcrumb" aria-label="Breadcrumb">
+              <a href="/">Martty</a><span aria-hidden="true">/</span><span>Technical notes</span>
+            </nav>
+            <p class="article-eyebrow">{page.eyebrow}</p>
+            <h1>{page.title}</h1>
+            <p class="article-lede">{page.lede}</p>
+            <div class="article-meta">
+              <span>Updated <time datetime={page.updated}>{page.updated}</time></span>
+              <span>{page.readingTime} read</span>
+              <span>Open source</span>
+            </div>
+          </header>
+
+          <dl class="article-facts">
+            {page.facts.map((fact) => <div><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}
+          </dl>
+
+          <section id="quick-answer" class="article-quick-answer" aria-labelledby="quick-answer-heading">
+            <div class="article-quick-answer__header">
+              <div>
+                <p class="article-section-label">Quick answer</p>
+                <h2 id="quick-answer-heading">{page.quickAnswer.title}</h2>
+              </div>
+              <a href={page.sourceRevision.href} class="article-revision">
+                Verified against <code>{page.sourceRevision.commit}</code>
+              </a>
+            </div>
+            {page.quickAnswer.paragraphs.map((paragraph) => <p set:html={inlineCode(paragraph)} />)}
+            {page.quickAnswer.commands && <CopyCommand lines={page.quickAnswer.commands} label="Quick-start commands" />}
+          </section>
+
+          <section class="article-thesis" aria-labelledby="thesis-heading">
+            <p class="article-section-label">Engineering claim</p>
+            <h2 id="thesis-heading">The argument this article will prove</h2>
+            <p set:html={inlineCode(page.thesis)} />
+          </section>
+
+          <div class="article-grid">
+            <aside class="article-toc">
+              <p>On this page</p>
+              <a href="#architecture-map">Architecture map</a>
+              <a href="#source-map">Source map</a>
+              {page.sections.map((section) => <a href={`#${section.id}`}>{section.title}</a>)}
+              <a href="#failure-modes">Failure modes</a>
+              <a href="#verification">Verification</a>
+              <a href="#faq">Questions</a>
+            </aside>
+
+            <div class="article-body">
+              <section id="architecture-map" class="article-diagram">
+                <p class="article-section-label">Architecture map</p>
+                <h2>{page.diagram.title}</h2>
+                <figure>
+                  <pre><code>{page.diagram.body}</code></pre>
+                  <figcaption>{page.diagram.caption}</figcaption>
+                </figure>
+              </section>
+
+              <section id="source-map" class="article-source-map">
+                <p class="article-section-label">Read the implementation</p>
+                <h2>Source map</h2>
+                <p>These repository paths are pinned to the verified revision shown above, so each claim and excerpt can be checked against the implementation that the article describes.</p>
+                <div class="article-table-scroll">
+                  <table>
+                    <thead><tr><th scope="col">Path</th><th scope="col">Responsibility</th></tr></thead>
+                    <tbody>
+                      {page.sourceMap.map((source) => (
+                        <tr><td><a href={source.href}><code>{source.path}</code></a></td><td>{source.role}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              {page.sections.map((section) => (
+                <section id={section.id}>
+                  <h2>{section.title}</h2>
+                  {section.paragraphs.map((paragraph) => <p set:html={inlineCode(paragraph)} />)}
+                  {section.code && (
+                    <figure class="article-code">
+                      <figcaption>
+                        <span>Excerpt</span>
+                        <a href={section.code.href}><code>{section.code.source}</code></a>
+                      </figcaption>
+                      <pre><code class={`language-${section.code.language}`}>{section.code.body}</code></pre>
+                      <div class="article-code__notes">
+                        {section.code.explanation.map((note) => <p set:html={inlineCode(note)} />)}
+                      </div>
+                    </figure>
+                  )}
+                  {section.commands && <CopyCommand lines={section.commands} label={`${section.title} commands`} />}
+                </section>
+              ))}
+
+              <section id="failure-modes" class="article-failure-modes">
+                <p class="article-section-label">Diagnosis</p>
+                <h2>Failure modes worth distinguishing</h2>
+                <p>Start with the first check in the same row. Each symptom can look similar on screen, but it belongs to a different ownership or state boundary.</p>
+                <div class="article-table-scroll">
+                  <table>
+                    <thead><tr><th scope="col">Symptom</th><th scope="col">Likely cause</th><th scope="col">First check</th></tr></thead>
+                    <tbody>
+                      {page.failureModes.map((mode) => (
+                        <tr>
+                          <td set:html={inlineCode(mode.symptom)} />
+                          <td set:html={inlineCode(mode.likelyCause)} />
+                          <td set:html={inlineCode(mode.firstCheck)} />
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section id="verification" class="article-verification">
+                <p class="article-section-label">Reproduce it</p>
+                <h2>{page.verification.title}</h2>
+                <CopyCommand lines={page.verification.commands} label="Verification commands" />
+                <h3>Expected evidence</h3>
+                <ol>{page.verification.expected.map((item) => <li set:html={inlineCode(item)} />)}</ol>
+              </section>
+
+              <section id="faq" class="article-faq">
+                <p class="article-section-label">Questions</p>
+                <h2>Common implementation questions</h2>
+                {page.faq.map((item) => (
+                  <details>
+                    <summary>{item.question}</summary>
+                    <p set:html={inlineCode(item.answer)} />
+                  </details>
+                ))}
+              </section>
+
+              <section class="article-related" aria-labelledby="related-heading">
+                <p class="article-section-label">Continue reading</p>
+                <h2 id="related-heading">Related technical notes</h2>
+                <div>
+                  {page.related.map((item) => (
+                    <a href={item.href}>
+                      <strong>{item.label}</strong>
+                      <span>{item.description}</span>
+                    </a>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </div>
+        </article>
+      </main>
+
+      <footer class="site-footer">
+        <div class="wrap site-footer__row">
+          <span>Martty · DSH-first, ACP-compatible Agent TUI</span>
+          <nav class="site-footer__links" aria-label="Footer">
+            <a href="/">Home</a><a href="/docs">Docs</a><a href={TUI_GITHUB_URL}>Source</a>
+          </nav>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>
