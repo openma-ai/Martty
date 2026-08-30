@@ -714,6 +714,51 @@ fn native_agent_rail_expands_only_during_selection() {
 }
 
 #[test]
+fn native_agent_rail_auto_closes_once_every_task_has_ended() {
+    // Issue #80: the native rail is only a live-progress surface. When no
+    // subagent is running and none failed, it closes instead of leaving a
+    // static summary; an inline selection reopens it.
+    let mut app = test_app();
+    app.show_banner = false;
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-1".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 1".into(),
+        running: false,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-1".into()),
+    });
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-2".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 2".into(),
+        running: false,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-2".into()),
+    });
+
+    let frame = dump_frame(&mut app, 100, 24);
+    assert!(
+        !frame.contains("Agents ·"),
+        "all tasks finished → the native rail auto-closes:\n{frame}"
+    );
+
+    // An active inline selection keeps the rail visible after the tasks end.
+    app.agent_selection = Some("child-1".into());
+    let expanded = dump_frame(&mut app, 100, 24);
+    assert!(
+        expanded.contains("subagent 1"),
+        "selection reopens the rail:\n{expanded}"
+    );
+
+    // A failed task keeps the summary visible as a failure surface.
+    app.agent_selection = None;
+    app.subagents[1].failed = true;
+    let failed = dump_frame(&mut app, 100, 24);
+    assert!(failed.contains("Agents · 2/2"), "{failed}");
+}
+
+#[test]
 fn plugin_agent_navigation_sits_above_composer_meta_with_general_theme_tokens() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -2788,4 +2833,45 @@ fn composer_textarea_renders_chips_selection_and_multiline_drafts() {
         .position(|l| l.contains("line two"))
         .expect("second line");
     assert!(second > first, "hard newline stacks lines");
+}
+
+#[test]
+fn empty_plugin_dock_snapshot_hides_the_agents_row_after_tasks_end() {
+    // Issue #80 end-to-end shape: all subagent views are finished and the
+    // Client panel published an EMPTY navigation.dock snapshot (the
+    // auto-close payload). The native rail must not take over as a
+    // fallback while the plugin owns the slot, so the row disappears.
+    let mut app = test_app();
+    app.show_banner = false;
+    app.subagents.push(crate::app::SubagentView {
+        id: "child-1".into(),
+        parent: "dsh-test".into(),
+        label: "subagent 1".into(),
+        running: false,
+        failed: false,
+        transcript: crate::transcript::Transcript::new("child-1".into()),
+    });
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.navigation.dock",
+                "rev": 7,
+                "nodes": [],
+            }),
+        },
+        &ctl,
+    );
+
+    let frame = dump_frame(&mut app, 100, 24);
+    assert!(
+        !frame.contains("Agents"),
+        "plugin-owned empty dock must hide the row, not fall back to the native rail:\n{frame}"
+    );
+    assert!(
+        !frame.contains("subagent 1"),
+        "no native rail entries either:\n{frame}"
+    );
 }

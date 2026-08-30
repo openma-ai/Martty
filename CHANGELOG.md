@@ -22,6 +22,19 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `/agents` is now an on/off switch (issue #80): bare `/agents` toggles
+  the Agent panel, `on`/`off` set it explicitly, and an agent id still
+  selects that transcript. The panel also auto-closes once every subagent
+  task has ended — a failed task keeps it visible, `/agents on` holds it
+  open until the next batch starts, and the native no-Client-tree rail
+  follows the same rule. Finishing the last task also clears an inline
+  selection left open with ↓, which previously kept the expanded panel
+  visible forever.
+- Chinese command descriptions (issue #80): `vim`, `ui`,
+  `cordis-plugins` and the built-in Client Plugin commands `agents`,
+  `status`, `plan-view` now render in Chinese under `/lang zh`, and the
+  `/plugins` description is corrected everywhere (it only shows Host
+  plugin status — it cannot disable or re-enable plugins).
 - Composer dock context gauge (issue #77): the percentage now uses the
   harness's `usage_update` readout (`used` = final prompt size, `size` =
   the real model window) instead of accumulating per-prompt usage over a

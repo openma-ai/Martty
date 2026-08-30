@@ -72,15 +72,23 @@ fn composer_dock_height(app: &App, main_height: u16, child_view: bool) -> u16 {
 
 /// One compact session-navigation row inside the composer, immediately above
 /// its meta row. A Client Plugin snapshot wins; the native Agent rail is only
-/// the no-Client-tree fallback.
+/// the no-Client-tree fallback, and it auto-closes once every subagent task
+/// has ended (issue #80): a failed task or an active inline selection keeps
+/// it visible.
 fn navigation_dock_height(app: &App, main_height: u16) -> u16 {
-    if main_height >= 8
-        && (slot_has_nodes(app, "conversation.navigation.dock") || !app.subagents.is_empty())
-    {
-        1
-    } else {
-        0
+    if main_height >= 8 {
+        let plugin_owns = app
+            .slot_snapshots
+            .contains_key("conversation.navigation.dock");
+        let native_visible = !plugin_owns
+            && !app.subagents.is_empty()
+            && (app.agent_selection.is_some()
+                || app.subagents.iter().any(|view| view.running || view.failed));
+        if slot_has_nodes(app, "conversation.navigation.dock") || native_visible {
+            return 1;
+        }
     }
+    0
 }
 
 /// Compact client-owned FIFO shelf between the conversation and composer.

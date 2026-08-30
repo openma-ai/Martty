@@ -212,7 +212,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "plugins",
         usage: "/plugins",
-        desc: "show static Host plugins",
+        desc: "show Host plugin status (read-only)",
     },
     SlashCommand {
         name: "cordis-plugins",
@@ -1932,7 +1932,10 @@ impl App {
                         .as_ref()
                         .map(|input| format!("/{} [{}]", command.name, input.hint))
                         .unwrap_or_else(|| format!("/{}", command.name)),
-                    desc: command.description.clone(),
+                    desc: self
+                        .locale
+                        .plugin_command_desc(&command.name, &command.description)
+                        .to_string(),
                     skill: false,
                     plugin: true,
                     section: None,
@@ -2780,6 +2783,15 @@ impl App {
                 if let Some(view) = self.subagents.iter_mut().find(|view| view.id == parent) {
                     view.transcript.apply(ui);
                 }
+            }
+            // Issue #80: the panel auto-closes once every subagent task has
+            // ended. An inline selection left open after the last task would
+            // otherwise keep the rail visible forever — the Client plugin
+            // only hides the summary while nothing is selected.
+            if self.agent_selection.is_some()
+                && !self.subagents.iter().any(|view| view.running || view.failed)
+            {
+                self.agent_selection = None;
             }
             self.needs_redraw = true;
             return;
