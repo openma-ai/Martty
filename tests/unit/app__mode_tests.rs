@@ -4155,3 +4155,151 @@ fn vim_mode_blocks_plain_typing_and_esc_returns_to_normal() {
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &ctl);
     assert_eq!(app.input.buf(), "xqtwo", "plain typing is back at the caret");
 }
+
+#[test]
+fn bridge_style_subagent_events_resolve_each_child_independently() {
+    // Bridge 0.4.26 projects subagent lifecycle as tool_call/tool_call_update
+    // with `_meta.dsh.subagent` (state started/finished + childSessionId).
+    // Every child must resolve to its own view: a finished child flips only
+    // its own running flag, so the rail auto-closes once ALL children end.
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+
+    let subagent_call = |state: &str, child: &str, stop: &str| {
+        let status = if state == "started" {
+            "in_progress"
+        } else if stop == "completed" {
+            "completed"
+        } else {
+            "failed"
+        };
+        serde_json::json!({
+            "sessionUpdate": if state == "started" { "tool_call" } else { "tool_call_update" },
+            "toolCallId": format!("subagent:run-{child}"),
+            "status": status,
+            "rawInput": {"childSessionId": child},
+            "_meta": {"dsh": {"subagent": {
+                "state": state,
+                "runId": format!("run-{child}"),
+                "childSessionId": child,
+                "provider": "codex",
+                "local": false
+            }}}
+        })
+    };
+
+    // Two children start, then each finishes.
+    for child in ["child-1", "child-2"] {
+        app.handle(
+            AppEvent::Rpc {
+                method: "session/update".into(),
+                params: serde_json::json!({
+                    "sessionId": "dsh-test",
+                    "update": subagent_call("started", child, ""),
+                }),
+            },
+            &ctl,
+        );
+    }
+    assert_eq!(app.subagents.len(), 2, "each start creates its own view");
+    assert!(app.subagents.iter().all(|view| view.running));
+
+    app.handle(
+        AppEvent::Rpc {
+            method: "session/update".into(),
+            params: serde_json::json!({
+                "sessionId": "dsh-test",
+                "update": subagent_call("finished", "child-1", "completed"),
+            }),
+        },
+        &ctl,
+    );
+    assert!(!app.subagents[0].running, "child-1 finished");
+    assert!(app.subagents[1].running, "child-2 still runs");
+
+    app.handle(
+        AppEvent::Rpc {
+            method: "session/update".into(),
+            params: serde_json::json!({
+                "sessionId": "dsh-test",
+                "update": subagent_call("finished", "child-2", "completed"),
+            }),
+        },
+        &ctl,
+    );
+    assert!(
+        app.subagents.iter().all(|view| !view.running),
+        "every finished child flips its own view"
+    );
+    let snapshot = app.agents_snapshot();
+    let statuses = snapshot
+        .items
+        .iter()
+        .filter(|item| item.kind == "subagent")
+        .map(|item| item.status.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, ["finished", "finished"], "{snapshot:?}");
+}
+
+#[test]
+fn finished_last_subagent_clears_an_open_inline_selection() {
+    // Issue #80: an inline selection (↓) left open after the last task ends
+    // would keep the Client panel on its expanded branch forever, bypassing
+    // the auto-close. Finishing the last task must clear the selection so
+    // the plugin can hide the rail.
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+
+    let started = |child: &str| {
+        serde_json::json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": format!("subagent:run-{child}"),
+            "status": "in_progress",
+            "rawInput": {"childSessionId": child},
+            "_meta": {"dsh": {"subagent": {
+                "state": "started", "runId": format!("run-{child}"),
+                "childSessionId": child, "provider": "codex", "local": false
+            }}}
+        })
+    };
+    let finished = |child: &str| {
+        serde_json::json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": format!("subagent:run-{child}"),
+            "status": "completed",
+            "_meta": {"dsh": {"subagent": {
+                "state": "finished", "runId": format!("run-{child}"),
+                "childSessionId": child, "provider": "codex", "local": false
+            }}}
+        })
+    };
+    let fire = |app: &mut crate::app::App, update: serde_json::Value| {
+        app.handle(
+            AppEvent::Rpc {
+                method: "session/update".into(),
+                params: serde_json::json!({"sessionId": "dsh-test", "update": update}),
+            },
+            &ctl,
+        );
+    };
+
+    fire(&mut app, started("child-1"));
+    fire(&mut app, started("child-2"));
+    app.agent_selection = Some("child-1".into());
+    assert_eq!(app.agents_snapshot().selected_id.as_deref(), Some("child-1"));
+
+    // child-1 finishes: child-2 still runs, the selection must survive.
+    fire(&mut app, finished("child-1"));
+    assert_eq!(
+        app.agents_snapshot().selected_id.as_deref(),
+        Some("child-1"),
+        "selection stays while another task still runs"
+    );
+
+    // child-2 finishes: no task remains, the selection auto-closes.
+    fire(&mut app, finished("child-2"));
+    assert_eq!(
+        app.agents_snapshot().selected_id, None,
+        "last task ended → the open selection clears"
+    );
+}

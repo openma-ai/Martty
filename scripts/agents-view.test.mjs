@@ -58,7 +58,9 @@ function harness(initial = snapshot()) {
     tuiCommands: {
       register(options, handler) {
         assert.deepEqual(options, {
-          name: 'agents', description: 'Switch the visible Agent transcript',
+          name: 'agents',
+          description: 'Toggle the Agent panel (on/off)',
+          input: { hint: '[on|off|agent-id]' },
         })
         command = handler
         return () => {}
@@ -145,11 +147,11 @@ test('Agent view reserves lifecycle colors for status glyphs', () => {
   assert.equal(expanded[3].status, 'done')
   assert.equal(expanded[3].tone, 'fg')
 
+  // Issue #80: every subagent task ended without a failure → the panel
+  // auto-closes instead of leaving a static summary behind.
   const completed = snapshot()
   completed.items[1].status = 'finished'
-  assert.deepEqual(agentsView.dockNodes(completed)[0], {
-    id: 'summary', kind: 'generic', title: '· Agents', body: '2/2', status: 'done', tone: 'caption',
-  })
+  assert.deepEqual(agentsView.dockNodes(completed), [])
 })
 
 test('collapsed progress counts only the current batch while selection keeps history', () => {
@@ -173,7 +175,7 @@ test('collapsed progress counts only the current batch while selection keeps his
   assert.equal(expanded.at(-2).tone, 'caption')
 })
 
-test('Agent view stays keyboard-owned while the command can select a transcript', async () => {
+test('Agent view stays keyboard-owned while the command toggles the panel', async () => {
   assert.equal(typeof agentsView.apply, 'function')
   if (typeof agentsView.apply !== 'function') return
 
@@ -187,10 +189,43 @@ test('Agent view stays keyboard-owned while the command can select a transcript'
     'the Agent rail must not expose mouse command actions',
   )
 
+  // Bare `/agents` toggles the panel (issue #80). An active inline
+  // selection stays visible even while off, so ↓ navigation never vanishes
+  // mid-flight.
   await view.command()('')
-  assert.deepEqual(view.navigated, ['begin'])
-  assert.deepEqual(view.selected, [])
+  assert.equal(view.nodes().length, 5, 'active selection keeps the panel while off')
 
+  // Leaving selection applies the off preference.
+  view.update(snapshot('root-1'))
+  assert.deepEqual(view.nodes(), [], '/agents off hides the panel')
+  await view.command()('')
+  assert.equal(view.nodes().length, 2, 'bare /agents turns the panel back on')
   await view.command()('child-1')
-  assert.deepEqual(view.selected, ['child-1'])
+  assert.deepEqual(view.selected, ['child-1'], 'an id argument still selects the transcript')
+})
+
+test('Agent view auto-closes after the batch ends unless forced open', async () => {
+  assert.equal(typeof agentsView.apply, 'function')
+  if (typeof agentsView.apply !== 'function') return
+
+  const view = harness()
+  agentsView.apply(view.ctx)
+
+  const done = snapshot()
+  done.items[1].status = 'finished'
+  done.items[2].status = 'finished'
+  view.update(done)
+  assert.deepEqual(view.nodes(), [], 'all tasks ended → the panel auto-closes')
+
+  // `/agents on` forces the summary open while idle.
+  await view.command()('on')
+  assert.equal(view.nodes().length, 2, '/agents on keeps the summary open')
+  assert.equal(view.nodes()[0].status, 'done')
+
+  // A new running batch clears the forced state, so the panel auto-closes
+  // again once this batch ends.
+  view.update(snapshot())
+  assert.equal(view.nodes()[0].status, 'running')
+  view.update(done)
+  assert.deepEqual(view.nodes(), [], 'auto-close applies again after a new batch')
 })

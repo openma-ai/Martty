@@ -62,12 +62,29 @@ impl Locale {
             "image" => "发送本地图片（png/jpeg/webp/gif）",
             "clip" => "附加剪贴板图片（macOS/Linux）",
             "theme" => "切换明暗模式或主题包",
-            "plugins" => "停用或恢复动态插件",
+            "ui" => "切换 UI 插件",
+            "vim" => "切换 vim 模式编辑（默认关闭）",
+            "plugins" => "查看 Host 插件状态（只读）",
+            "cordis-plugins" => "查看或管理动态 Cordis 插件",
             "session" => "显示会话和运行时信息",
             "auth" => "ACP 登录（Backchat authenticate）",
             "lang" => "切换界面语言",
             "liang" => "召唤小难梁 — 🤫 空闲 · ⌨︎ 工作中",
             "quit" => "退出 martty",
+            _ => fallback,
+        }
+    }
+
+    /// Built-in Client Plugin command descriptions (`tuiCommands`), keyed by
+    /// command name; unknown plugin commands keep their authored text.
+    pub fn plugin_command_desc<'a>(self, name: &str, fallback: &'a str) -> &'a str {
+        if self == Self::En {
+            return fallback;
+        }
+        match name {
+            "agents" => "切换 Agent 面板（on/off）",
+            "status" => "显示会话运行状态与关键统计",
+            "plan-view" => "打开当前 ACP 计划",
             _ => fallback,
         }
     }
@@ -129,3 +146,7 @@ impl Default for UiSettings {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/locale__tests.rs"]
+mod tests;
