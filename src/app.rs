@@ -5756,8 +5756,6 @@ impl App {
     fn push_help(&mut self) {
         if self.locale == Locale::Zh {
             let text = "\
-## help
-
 - enter · 发送；空 composer 且 Queue 非空时立即发送队首
 - alt+↑ · 选择任意排队消息；↑/↓ 选择，enter 编辑/保存，ctrl+d 删除，esc 退出
 - ctrl+enter · 立即 steer 当前轮次
@@ -5788,8 +5786,6 @@ token 用量（含缓存命中）以及轮次结束原因。";
             return;
         }
         let text = "\
-## help
-
 - enter · send · with an empty composer, sends the Queue head now
 - alt+↑ · choose any queued prompt · ↑/↓ select, enter edits/saves, ctrl+d deletes, esc closes
 - ctrl+enter · steer the active turn immediately
@@ -5880,8 +5876,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             .map(|effort| format!("\n- effort · {effort}"))
             .unwrap_or_default();
         let mut text = format!(
-            "## session\n\n\
-             - session · {}{}\n\
+            "- session · {}{}\n\
              - provider · {} / {}{}\n\
              - agent · {}{}\n\
              - workspace · {}\n\
@@ -6028,7 +6023,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             }
             _ => None,
         };
-        let mut text = format!("## status\n\n- state · {state}\n- acp · {acp}\n");
+        let mut text = format!("- state · {state}\n- acp · {acp}\n");
         if let Some(auth) = auth_line {
             text.push_str(&format!("- auth · {auth}\n"));
         }

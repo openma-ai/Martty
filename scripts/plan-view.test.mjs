@@ -86,12 +86,13 @@ test('the Plan Client Plugin owns its dock, fallback command, and modal together
 
   await command.handler('')
   assert.equal(opened.id, 'plan-view')
-  // Items render as one markdown task-list node the transcript pipeline
-  // can fully render (heading, [x]/[ ], bold, strikethrough).
+  // The counter lives in the window title; the body is a task-list review
+  // the transcript pipeline can fully render ([x]/[ ], bold, strikethrough).
+  assert.equal(opened.title, 'Plan 1/2')
   assert.equal(opened.nodes.length, 1)
   assert.equal(opened.nodes[0].kind, 'markdown')
   const md = opened.nodes[0].text
-  assert.match(md, /## Plan · 1\/2/)
+  assert.ok(!md.includes('## Plan'), md)
   assert.match(md, /- \[x\] Inspect · priority · high/)
   assert.match(md, /- \[ \] \*\*Implement\*\* · priority · medium/)
 

@@ -27,7 +27,8 @@ export function apply(ctx) {
 }
 
 /**
- * One `## status` markdown node. Run-state facts come from
+ * One markdown node of run-state facts (the window border already names
+ * the popup, so no in-body heading). Facts come from
  * `acpSessionStatus`; every token/turn/step/timing fact comes from
  * `acpSessionStats.current()` — the same snapshot `stats-view` renders in
  * the composer dock, so the two readouts can never drift apart.
@@ -37,7 +38,7 @@ function statusMarkdown(status, stats) {
   const folded = stats?.stats ?? {}
   const total = (usage.input ?? 0) + (usage.output ?? 0)
     + (usage.cached ?? 0) + (usage.reasoning ?? 0)
-  const lines = ['## status', '']
+  const lines = []
   lines.push(`- state · ${status.state ?? 'idle'}`)
   lines.push(`- acp · ${status.connection ?? 'not attached'}`)
   if (status.auth?.status !== undefined) {

@@ -70,7 +70,7 @@ test('the status Client Plugin registers /status and opens the markdown overlay'
   assert.equal(overlay.nodes[0].kind, 'markdown')
 
   const text = overlay.nodes[0].text
-  assert.ok(text.startsWith('## status\n'), text)
+  assert.ok(text.startsWith('- state · running'), text)
   assert.ok(text.includes('- state · running'), text)
   assert.ok(text.includes('- acp · attached'), text)
   assert.ok(text.includes('- auth · configured · agent'), text)
