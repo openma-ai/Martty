@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
 import path from 'node:path'
 
 const supported = [
@@ -48,9 +56,18 @@ function stage(values) {
 
   const destinationDir = path.join(vendorRoot, `${platform}-${arch}`)
   const destination = path.join(destinationDir, spec.file)
+  const temporary = `${destination}.tmp-${process.pid}`
   mkdirSync(destinationDir, { recursive: true })
-  copyFileSync(source, destination)
-  if (platform !== 'win32') chmodSync(destination, 0o755)
+  try {
+    copyFileSync(source, temporary)
+    if (platform !== 'win32') chmodSync(temporary, 0o755)
+    // Never overwrite a Mach-O that may already have been executed. macOS
+    // caches its code signature by vnode and can SIGKILL a binary whose
+    // contents changed in place. rename swaps in a fresh inode atomically.
+    renameSync(temporary, destination)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
   process.stdout.write(`${destination}\n`)
 }
 

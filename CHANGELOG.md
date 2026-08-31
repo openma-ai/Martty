@@ -47,6 +47,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Prompt history now keeps browsing older/newer entries on repeated `↑`/`↓`
+  presses after the first recall. In a non-empty draft, `↑` still moves by
+  visual line until the cursor reaches the top, then stashes the draft and
+  enters history; `↓` restores that draft after the newest history entry.
+- macOS native-package staging now atomically replaces an existing executable,
+  so repeated source-checkout builds do not leave a linked `martty` process
+  killed by a stale Mach-O vnode signature cache.
 - Slash-menu and `@file` black blocks (issue #83): scrolling the command
   candidate list (or the file browser) moved wide (CJK) glyphs and could
   orphan a trailing half-cell on the real screen while both ratatui

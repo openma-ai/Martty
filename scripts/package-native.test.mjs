@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -43,6 +43,35 @@ test('stages native binaries under npm platform keys', () => {
       'native-binary-fixture',
     )
   }
+})
+
+test('restaging replaces the executable inode instead of overwriting it in place', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'dsh-tui-restage-'))
+  const source = path.join(root, 'compiled-binary')
+  const vendorRoot = path.join(root, 'vendor')
+  const destination = path.join(vendorRoot, 'darwin-arm64', 'martty')
+  const args = [
+    'stage',
+    '--source', source,
+    '--platform', 'darwin',
+    '--arch', 'arm64',
+    '--vendor-root', vendorRoot,
+  ]
+
+  writeFileSync(source, 'first-native-binary')
+  const first = run(args)
+  assert.equal(first.status, 0, first.stderr)
+  const firstInode = statSync(destination).ino
+
+  writeFileSync(source, 'second-native-binary')
+  const second = run(args)
+  assert.equal(second.status, 0, second.stderr)
+  assert.notEqual(
+    statSync(destination).ino,
+    firstInode,
+    'macOS caches Mach-O signatures by vnode, so an executed binary must be atomically replaced',
+  )
+  assert.equal(readFileSync(destination, 'utf8'), 'second-native-binary')
 })
 
 test('verifies that a release contains every supported platform', () => {
