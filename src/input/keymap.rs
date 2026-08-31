@@ -920,9 +920,11 @@ pub const MOUSE_ROWS: &[MouseRow] = &[
 pub fn keys_markdown(zh: bool, mac: bool) -> String {
     let mut out = String::new();
     out.push_str(if zh {
-        "## 快捷键\n\n双用途键：`[空输入时]` 滚动，`[输入时]` 编辑。\n\n"
+        // The popup window border already names the dialog (`/keys`); the
+        // body starts with the intro sentence, not a repeated heading.
+        "双用途键：`[空输入时]` 滚动，`[输入时]` 编辑。\n\n"
     } else {
-        "## keys — shortcut map\n\nDual-use keys: `[empty]` scrolls, `[typing]` edits.\n\n"
+        "Dual-use keys: `[empty]` scrolls, `[typing]` edits.\n\n"
     });
     let mut last_group: Option<KeyGroup> = None;
     for row in KEY_ROWS {

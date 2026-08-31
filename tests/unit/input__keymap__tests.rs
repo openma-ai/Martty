@@ -398,7 +398,9 @@ fn keys_markdown_uses_the_platform_spellings_and_groups_everything() {
         );
     }
     let zh = keys_markdown(true, false);
-    assert!(zh.contains("快捷键"), "zh title missing:\n{zh}");
+    // The popup window border names the dialog; the body starts with the
+    // intro sentence instead of a repeated `## 快捷键` heading.
+    assert!(zh.contains("双用途键"), "zh intro missing:\n{zh}");
     assert!(zh.contains("[空输入时]"), "zh context tag missing:\n{zh}");
     assert!(zh.contains("发送"), "zh send group missing:\n{zh}");
     assert!(

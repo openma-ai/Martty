@@ -25,7 +25,7 @@ export function apply(ctx) {
     current = ctx.acpSessionPlan.current()
     ctx.tuiOverlay.openView({
       id: 'plan-view',
-      title: 'Plan',
+      title: viewTitle(current),
       nodes: viewNodes(current),
     })
   })
@@ -67,6 +67,18 @@ function dockNodes(plan) {
   }]
 }
 
+// The overlay window title: the `n/m` counter lives in the border, not in
+// the body, so the review never repeats its heading (issue #85).
+function viewTitle(plan) {
+  if (plan !== null && plan.kind === 'items') {
+    const total = plan.entries.length
+    if (total === 0) return 'Plan'
+    const completed = plan.entries.filter((entry) => entry.status === 'completed').length
+    return `Plan ${completed}/${total}`
+  }
+  return 'Plan'
+}
+
 function viewNodes(plan) {
   if (plan === null) {
     return [{ id: 'empty', kind: 'notice', level: 'info', text: 'No active plan' }]
@@ -78,10 +90,8 @@ function viewNodes(plan) {
     return [{ id: 'file', kind: 'notice', level: 'info', text: plan.uri }]
   }
   // Items render as one markdown node: a task-list review the transcript
-  // pipeline can fully render (headings, bold, strikethrough).
-  const total = plan.entries.length
-  const completed = plan.entries.filter((entry) => entry.status === 'completed').length
-  const lines = [`## Plan · ${completed}/${total}`, '']
+  // pipeline can fully render (bold, strikethrough).
+  const lines = []
   for (const entry of plan.entries) {
     const content = entry.content.replace(/\s*\n\s*/g, ' ')
     let item

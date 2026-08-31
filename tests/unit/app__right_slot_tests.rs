@@ -462,7 +462,7 @@ fn status_slash_fallback_shows_run_state_without_transcript_stats() {
     let crate::slots::TuiNode::Markdown { text, .. } = &overlay.nodes[0] else {
         panic!("/status overlay should be one markdown node, got {:?}", overlay.nodes);
     };
-    assert!(text.contains("## status"), "{text}");
+    assert!(!text.contains("## status"), "{text}");
     assert!(text.contains("- state · "), "{text}");
     // ACP facts: demo run shows the demo marker and its session.
     assert!(text.contains("- acp · demo"), "{text}");
@@ -536,7 +536,7 @@ fn session_slash_shows_effort_when_set() {
     let crate::slots::TuiNode::Markdown { text, .. } = &view.nodes[0] else {
         panic!("/session popup should carry markdown, got {:?}", view.nodes);
     };
-    assert!(text.contains("## session"), "{text}");
+    assert!(!text.contains("## session"), "{text}");
     assert!(text.contains("- effort · max"), "{text}");
     assert!(app.transcript.cells.is_empty(), "no transcript cell for /session");
 

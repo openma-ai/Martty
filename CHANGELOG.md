@@ -138,6 +138,10 @@ All notable changes to this project are documented here. The project follows
   with a queue that never drains.
 - User message bubbles no longer overflow the chat pane by two cells, which
   clipped the last visible character of every wrapped CJK line.
+- Review/info popups no longer repeat their title (issue #85): `/plan-view`
+  moves the `Plan n/m` counter into the popup window title, and the
+  in-body `## …` headings were dropped from `/plan-view`, `/keys`, `/help`,
+  `/session` and `/status` — the popup border already names the window.
 
 ### Added
 
