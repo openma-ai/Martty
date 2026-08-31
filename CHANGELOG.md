@@ -47,6 +47,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Slash-menu and `@file` black blocks (issue #83): scrolling the command
+  candidate list (or the file browser) moved wide (CJK) glyphs and could
+  orphan a trailing half-cell on the real screen while both ratatui
+  buffers agreed the cell was unchanged, so the frame diff skipped it and
+  the leftover half-glyph stayed as a black rectangle. Both popups now
+  mark every cell for a full rewrite each frame, the same guard the
+  transcript and review overlay already use (issue #38 class).
 - `/agents` is now an on/off switch (issue #80): bare `/agents` toggles
   the Agent panel, `on`/`off` set it explicitly, and an agent id still
   selects that transcript. The panel also auto-closes once every subagent
