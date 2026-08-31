@@ -1,5 +1,13 @@
 use super::*;
 
+fn true_command() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "/usr/bin/true"
+    } else {
+        "/bin/true"
+    }
+}
+
 #[tokio::test]
 async fn piped_create_captures_output_and_exit() {
     let broker = TerminalBroker::new(std::env::temp_dir());
@@ -35,7 +43,7 @@ async fn wait_after_the_exit_notification_already_fired_returns() {
     // before the status re-check).
     let broker = TerminalBroker::new(std::env::temp_dir());
     let id = broker
-        .create("/bin/true", &[], None, &[], None)
+        .create(true_command(), &[], None, &[], None)
         .expect("spawn true");
     // Give the waiter thread time to reap and fire notify_waiters() with no
     // listeners registered.
@@ -51,7 +59,7 @@ async fn wait_after_the_exit_notification_already_fired_returns() {
 async fn concurrent_waiters_all_settle() {
     let broker = std::sync::Arc::new(TerminalBroker::new(std::env::temp_dir()));
     let id = broker
-        .create("/bin/true", &[], None, &[], None)
+        .create(true_command(), &[], None, &[], None)
         .expect("spawn true");
     let mut handles = Vec::new();
     for _ in 0..4 {
@@ -70,4 +78,3 @@ async fn concurrent_waiters_all_settle() {
     }
     broker.release(&id);
 }
-

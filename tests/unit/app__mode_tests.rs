@@ -2982,6 +2982,61 @@ fn tab_completes_a_slash_argument_without_running_it() {
 }
 
 #[test]
+fn repeated_up_browses_older_history_after_the_first_recall() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input
+        .history
+        .extend(["first prompt".into(), "second prompt".into()]);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "second prompt");
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "first prompt");
+}
+
+#[test]
+fn down_leaves_history_and_restores_the_empty_prompt() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.history.push("previous prompt".into());
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "previous prompt");
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    assert!(app.input.is_empty());
+    assert!(app.input.hist_pos.is_none());
+}
+
+#[test]
+fn up_at_the_top_of_a_multiline_draft_browses_history_and_down_restores_it() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.history.push("previous prompt".into());
+    app.input.set("hi\nfdff".into());
+    app.input.set_cursor_char(2);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "previous prompt");
+    assert_eq!(app.input.hist_pos, Some(0));
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hi\nfdff");
+    assert!(app.input.hist_pos.is_none());
+}
+
+#[test]
+fn up_inside_a_multiline_draft_moves_the_cursor_before_browsing_history() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.history.push("previous prompt".into());
+    app.input.set("top\nbottom".into());
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "top\nbottom");
+    assert_eq!(app.input.cursor_char(), 3);
+    assert!(app.input.hist_pos.is_none());
+}
+
+#[test]
 fn escape_dismisses_slash_completion_then_arrows_browse_history() {
     let (mut app, ctl, _rx) = test_app();
     app.input.history.push("previous prompt".into());

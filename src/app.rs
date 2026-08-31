@@ -3715,7 +3715,10 @@ impl App {
                 self.begin_agent_navigation();
                 return;
             }
-            let ctx = crate::input::KeyCtx { input_empty: true };
+            let ctx = crate::input::KeyCtx {
+                input_empty: true,
+                history_active: false,
+            };
             if let Some(action) = crate::input::classify(&key, ctx) {
                 match action {
                     Action::Esc
@@ -3881,6 +3884,7 @@ impl App {
 
         let ctx = crate::input::KeyCtx {
             input_empty: self.input.is_empty(),
+            history_active: self.input.hist_pos.is_some(),
         };
         if let Some(action) = crate::input::classify(&key, ctx) {
             self.dispatch(action, ctl);
@@ -4121,7 +4125,13 @@ impl App {
             }
             Action::CursorLeft => self.input.move_left(),
             Action::CursorRight => self.input.move_right(),
-            Action::CursorUp => self.input.move_up(),
+            Action::CursorUp => {
+                let cursor = self.input.cursor_char();
+                self.input.move_up();
+                if self.queue_edit.is_none() && self.input.cursor_char() == cursor {
+                    self.history_prev_from_draft();
+                }
+            }
             Action::CursorDown => self.input.move_down(),
             Action::WordLeft => self.input.word_left(),
             Action::WordRight => self.input.word_right(),
@@ -4317,6 +4327,7 @@ impl App {
                     &key,
                     crate::input::KeyCtx {
                         input_empty: self.input.is_empty(),
+                        history_active: self.input.hist_pos.is_some(),
                     },
                 ),
                 Some(Action::ToggleTheme)

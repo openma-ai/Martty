@@ -72,10 +72,12 @@ pub enum Action {
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
-/// scroll when the draft is empty, edit when it isn't).
+/// scroll when the draft is empty, edit when it isn't; arrows keep browsing
+/// after a history entry makes the draft non-empty).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KeyCtx {
     pub input_empty: bool,
+    pub history_active: bool,
 }
 
 /// Classify one key event. `None` = unbound (ignored — unrecognized
@@ -180,8 +182,8 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // Word hops: ⌥-arrows on macOS · ctrl-arrows on linux/windows.
         KeyCode::Left if alt || ctrl => WordLeft,
         KeyCode::Right if alt || ctrl => WordRight,
-        KeyCode::Up if ctx.input_empty => HistoryPrev,
-        KeyCode::Down if ctx.input_empty => HistoryNext,
+        KeyCode::Up if ctx.input_empty || ctx.history_active => HistoryPrev,
+        KeyCode::Down if ctx.input_empty || ctx.history_active => HistoryNext,
         KeyCode::Up => CursorUp,
         KeyCode::Down => CursorDown,
         KeyCode::Left => CursorLeft,
