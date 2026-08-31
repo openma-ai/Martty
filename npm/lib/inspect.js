@@ -683,7 +683,9 @@ export function statusInspectProvider(acpSessionStatus) {
             call: 'ctx.acpSessionStatus.subscribe((snapshot) => { ... })',
             returns: { type: 'function', role: 'dispose', idempotent: true },
           },
-          transport: 'standard ACP initialize, authenticate, session and session/update messages',
+          transport: 'standard ACP initialize, authenticate, session, session/prompt response, '
+            + 'and session/update messages, plus optional Martty session.status/session.event '
+            + 'extensions',
         },
         referencedTypes: ['SessionStatusSnapshot'],
       }
