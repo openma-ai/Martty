@@ -10,11 +10,24 @@ const ALT: KeyModifiers = KeyModifiers::ALT;
 const SUPER: KeyModifiers = KeyModifiers::SUPER;
 
 fn empty() -> KeyCtx {
-    KeyCtx { input_empty: true }
+    KeyCtx {
+        input_empty: true,
+        history_active: false,
+    }
 }
 
 fn typing() -> KeyCtx {
-    KeyCtx { input_empty: false }
+    KeyCtx {
+        input_empty: false,
+        history_active: false,
+    }
+}
+
+fn browsing_history() -> KeyCtx {
+    KeyCtx {
+        input_empty: false,
+        history_active: true,
+    }
 }
 
 #[test]
@@ -122,7 +135,7 @@ fn agent_cycle_is_ctrl_shift_a_on_every_platform() {
 }
 
 #[test]
-fn arrows_move_inside_a_draft_and_only_browse_history_when_it_is_empty() {
+fn arrows_move_inside_a_draft_and_keep_browsing_active_history() {
     assert_eq!(
         classify(&key(KeyCode::Up, NONE), typing()),
         Some(Action::CursorUp)
@@ -137,6 +150,14 @@ fn arrows_move_inside_a_draft_and_only_browse_history_when_it_is_empty() {
     );
     assert_eq!(
         classify(&key(KeyCode::Down, NONE), empty()),
+        Some(Action::HistoryNext)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Up, NONE), browsing_history()),
+        Some(Action::HistoryPrev)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Down, NONE), browsing_history()),
         Some(Action::HistoryNext)
     );
 }
@@ -303,6 +324,7 @@ fn displayed_chords_resolve_to_their_action() {
                 &KeyEvent::new(*code, *mods),
                 KeyCtx {
                     input_empty: *empty,
+                    history_active: false,
                 },
             );
             assert_eq!(
