@@ -981,6 +981,21 @@ pub struct App {
     pub(crate) input_sel: Option<InputSel>,
     /// A left-button drag inside the composer well is in progress.
     input_selecting: bool,
+    /// Mouse pointer cell from the latest `Moved` event. The composer
+    /// expand button is hover-revealed only while the pointer sits on it
+    /// (issue #92 — mouse-only affordance, no key binding).
+    pub(crate) mouse_pos: Option<(u16, u16)>,
+    /// Composer well enlarged by the mouse-only expand button (issue #92):
+    /// `true` pins the well to the amplified height, `false` restores the
+    /// draft-following auto height.
+    pub(crate) input_expanded: bool,
+    /// Screen rect of the mouse-only expand/collapse button from the
+    /// latest frame — it sits on the composer card's top-right border.
+    /// Recorded every frame, even before the pointer finds it.
+    pub(crate) expand_btn: Option<ratatui::layout::Rect>,
+    /// True while the pointer rests on the expand button; only then does
+    /// the frame painter show it (`needs_redraw` on change).
+    pub(crate) hover_expand_btn: bool,
     pub state: RunState,
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
@@ -1399,6 +1414,10 @@ impl App {
             caret_cell: None,
             input_sel: None,
             input_selecting: false,
+            mouse_pos: None,
+            input_expanded: false,
+            expand_btn: None,
+            hover_expand_btn: false,
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
@@ -2906,7 +2925,7 @@ impl App {
     /// selects with a live highlight (auto-scrolling at the pane edges) and
     /// copies on release; double-click selects & copies a word. Shift+drag
     /// bypasses capture in most terminals → native selection still works.
-    fn handle_mouse(&mut self, mouse: MouseEvent, ctl: &Controller) {
+    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent, ctl: &Controller) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if self.elicitation_ask.is_some() {
@@ -2962,6 +2981,24 @@ impl App {
                     self.last_click = None;
                     self.input_selecting = false;
                     self.toggle_tool(ci);
+                    return;
+                }
+                // The mouse-only expand button (issue #92) wins over caret
+                // placement inside the well: clicking toggles the input
+                // height instead of moving the caret. It lives inside the
+                // well, so it is only live outside child views and the
+                // elicitation form (which owns its own field).
+                if self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.expand_btn_hit(mouse.column, mouse.row)
+                {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.input_selecting = false;
+                    self.input_sel = None;
+                    self.input_expanded = !self.input_expanded;
+                    self.needs_redraw = true;
                     return;
                 }
                 // Click inside the composer well: place the caret at the
@@ -3046,6 +3083,12 @@ impl App {
             MouseEventKind::Moved => {
                 // grok-style hover: track which inline chip the pointer is
                 // over; redraw only on changes (mouse moves are a firehose).
+                self.mouse_pos = Some((mouse.column, mouse.row));
+                let over_btn = self.expand_btn_hit(mouse.column, mouse.row);
+                if over_btn != self.hover_expand_btn {
+                    self.hover_expand_btn = over_btn;
+                    self.needs_redraw = true;
+                }
                 let hover = self.chip_at(mouse.column, mouse.row);
                 if hover != self.hover_att {
                     self.hover_att = hover;
@@ -3116,6 +3159,18 @@ impl App {
             .iter()
             .find(|(s, e, _)| c >= *s && c <= *e)
             .map(|&(_, _, idx)| idx)
+    }
+
+    /// Hit-test the mouse-only composer expand button (issue #92). The
+    /// button's rect is recorded by the painter every frame, so the
+    /// pointer can discover it while moving across the card's top-right.
+    fn expand_btn_hit(&self, col: u16, row: u16) -> bool {
+        self.expand_btn.is_some_and(|r| {
+            col >= r.x
+                && col < r.x.saturating_add(r.width)
+                && row >= r.y
+                && row < r.y.saturating_add(r.height)
+        })
     }
 
     /// Hit-test a screen cell against the inline chips drawn this frame.
