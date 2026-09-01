@@ -86,11 +86,13 @@ resume usage 更新折叠当前 Session 的 token、cache、turn、step、LLM、
 
 ## 当前可调用：`acpSessionStatus`
 
-`acpSessionStatus` 从标准 ACP initialize / authenticate / session / session/update /
-session.event 流量折叠 `/status` 需要的非统计运行状态：state（idle/starting/
-running）、connection、server、auth、session 绑定、model、effort、permission、
-plan 与 agent preset，提供 `current()` 和 `subscribe(listener)`。它**不**累计任何
-token 或耗时——统计只有 `acpSessionStats` 这一套口径。
+`acpSessionStatus` 从标准 ACP initialize / authenticate / session /
+`session/prompt` response / `session/update` 流量，以及可选的 Martty
+`session.status` / `session.event` 扩展，折叠 `/status` 需要的非统计运行状态：
+state（idle/starting/running）、connection、server、auth、session 绑定、model、
+effort、permission、plan 与 agent preset，提供 `current()` 和
+`subscribe(listener)`。它**不**累计任何 token 或耗时——统计只有
+`acpSessionStats` 这一套口径。
 
 内置 `status-view` Client Plugin 正是普通消费者：它注册本地 `/status` 命令，用
 `tuiOverlay.openView()` 打开一个 markdown 状态视图——运行状态事实取自

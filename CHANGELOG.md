@@ -57,6 +57,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `acpSessionStatus` now treats each standard ACP `session/prompt` response
+  (success or error) as that request's terminal turn signal, returning to
+  `idle` after every pending prompt and concurrent steer has settled. This
+  keeps generic ACP V1 agents from leaving `/status` stuck on `starting` or
+  `running` when they do not emit Martty's optional `session.status`
+  extension; cancellation still waits for the original prompt response
+  required by ACP V1 (issue #25).
 - Prompt history now keeps browsing older/newer entries on repeated `↑`/`↓`
   presses after the first recall. In a non-empty draft, `↑` still moves by
   visual line until the cursor reaches the top, then stashes the draft and
