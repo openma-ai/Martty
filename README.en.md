@@ -126,6 +126,32 @@ standalone launch, configure `DSH_TUI_AGENT`:
 DSH_TUI_AGENT="<acp-command> [args...]" martty
 ```
 
+Standalone launches can also keep named ACP harnesses in Martty settings and
+select which one the next launch uses:
+
+```sh
+martty harness list
+martty harness add local --label "Local ACP" --command local-acp --arg --stdio
+martty harness use local
+martty --check-runtime
+```
+
+All three entry points share the same registry: edit `settings.json`, use the
+`martty harness` CLI above, or enter `/harness` in the running TUI for the
+native single-select form. `/harness <id>` saves directly. TUI selection also
+applies only to the next standalone launch, which starts a new session.
+
+`harness list` includes saved entries, the bundled DSH runtime, and executable
+`*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks the active entry.
+`add` and `use` preserve the other fields in `$MARTTY_HOME/settings.json` while
+writing `harnesses` and `activeHarness`. Selection applies to the **next
+standalone launch**, which creates a fresh ACP session through `session/new`.
+Sessions are never carried across Harnesses; this does not hot-swap the current
+session, and `dsh --profile martty` continues to use its Host-owned runtime.
+
+Standalone precedence is `--agent`, `DSH_TUI_AGENT`, `activeHarness`, then the
+bundled default. A one-run `--agent` override never changes the saved choice.
+
 Cordis embedding uses `config.agent: { command, args }` to spawn a server, or
 `config.stream` to attach caller-owned standard pipes. `martty --agent <cmd>`
 plus repeated `--agent-arg` flags are standalone command-line overrides for
@@ -329,6 +355,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | `/` | Open the upward command menu and filter by prefix; after `/command ` the same menu shows argument candidates. Enter selects and runs; Tab only completes. Agent-advertised skills still ship as `/name ` prompts |
 | `/ui` · `/ui ` | Enter directly for the ordinary UI Preset single-select form; add a trailing space for upward Martty / DeepSeek candidates |
 | `/model` · `/agent` | Pick an agent-advertised model or agent preset; `ctrl+shift+a` cycles agents directly without a picker |
+| `/harness [id]` | Select the Harness for a new session on the next standalone launch |
 | `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
 | `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
 | `/vim` | Toggle vim modal editing (off by default; normal mode h/j/k/l move, dd kill line, i insert) |

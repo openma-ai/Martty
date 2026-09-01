@@ -64,7 +64,26 @@ profiles remain compatible.
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
 `martty` and use `--agent <cmd>` plus repeated `--agent-arg <arg>` for another
-ACP server. The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
+ACP server. Named standalone harnesses can also be discovered, saved, and selected:
+
+```sh
+martty harness list
+martty harness add local --command local-acp --arg --stdio
+martty harness use local
+```
+
+The same registry is available through three entry points: edit
+`$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or
+`/harness <id>`) inside the TUI. A saved choice takes effect on the next
+standalone launch, which starts a fresh ACP session. It does not replace a
+running or profile-owned Host, and it never carries a session across Harnesses.
+
+The selected entry is stored in `$MARTTY_HOME/settings.json` and takes effect
+on the next standalone launch through a new `session/new`. `--agent` and
+`DSH_TUI_AGENT` remain higher priority. This does not replace the Host-owned
+runtime or session of `dsh --profile martty`.
+
+The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
 `tui-cordis-client-runner` publishes TUI Client capabilities and evaluates
 approved `code.client` packages from `dsh-tool-cordis` against that client tree.
 

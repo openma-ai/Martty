@@ -28,6 +28,13 @@ fn zh_command_desc_covers_every_builtin_and_plugin_command() {
         zh.plugin_command_desc("plan-view", "Open the current ACP plan"),
         "打开当前 ACP 计划"
     );
+    assert_eq!(
+        zh.plugin_command_desc(
+            "harness",
+            "Switch harness in a new session on the next standalone launch"
+        ),
+        "在下次 standalone 启动的新会话中切换 Harness"
+    );
     // Unknown plugin commands keep their authored description.
     assert_eq!(
         zh.plugin_command_desc("mystery", "Some plugin text"),
