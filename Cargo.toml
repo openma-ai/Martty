@@ -33,3 +33,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [profile.release]
 lto = true
 strip = true
+
+# Fast local build profile for `scripts/devlocalinstall.sh` (and local
+# iterating): plain debug codegen — no optimizations, incremental — the
+# fastest turnaround for build/test loops; the shipped npm packages keep
+# [profile.release] (fat LTO, stripped) untouched. If the debug binary runs
+# too slow for a big workspace, DSH_TUI_CARGO_PROFILE=release falls back to
+# the shipped config.
+[profile.devlocal]
+inherits = "dev"

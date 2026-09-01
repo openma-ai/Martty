@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Fast local build profile `devlocal` (debug codegen, incremental) for
+  `scripts/devlocalinstall.sh`: the local install/build loop no longer
+  pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
+  restores the shipped config). The npm bundles keep the fat-LTO release
+  config untouched.
+
 - Standalone harness registry and discovery: `martty harness list` shows saved
   entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
   on `PATH`; `harness add` saves a named command and repeated arguments, while
