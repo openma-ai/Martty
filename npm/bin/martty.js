@@ -4,7 +4,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { bootClient, parseClientArgv, painterArgs } from '../lib/boot.js'
+import { resolveDependencyStack } from '../lib/agent.js'
+import { bootClient, parseClientArgv, painterArgs, uiSettingsPath } from '../lib/boot.js'
+import { runHarnessCommand } from '../lib/harnesses.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const platformKey = process.platform + '-' + process.arch
@@ -23,6 +25,33 @@ const wantDemoSkin = argv.includes('--demo-skin')
 const wantDemo = argv.includes('--demo')
 const wantHelp = argv.includes('-h') || argv.includes('--help')
 const wantVersion = argv.includes('-V') || argv.includes('--version')
+
+if (argv[0] === 'harness') {
+  let defaults = []
+  try {
+    const agent = resolveDependencyStack()
+    defaults = [{
+      id: 'builtin-dsh',
+      label: 'Bundled DeepSeek Harness',
+      ...agent,
+      source: 'builtin',
+    }]
+  } catch {
+    // Source checkouts without installed dependencies still list PATH entries.
+  }
+  try {
+    const result = runHarnessCommand(argv.slice(1), {
+      settingsPath: uiSettingsPath(),
+      defaults,
+    })
+    if (result.stdout) process.stdout.write(result.stdout)
+    if (result.stderr) process.stderr.write(result.stderr)
+    process.exit(result.code)
+  } catch (error) {
+    console.error(`martty harness: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+}
 
 if (!fs.existsSync(binaryPath)) {
   let available = []

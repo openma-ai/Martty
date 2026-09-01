@@ -215,6 +215,11 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
       ctx.get('tuiCommands')?.list().some((command) => command.name === 'agents'),
       true,
     )
+    assert.equal(
+      ctx.get('tuiCommands')?.list().some((command) => command.name === 'harness'),
+      true,
+      'the third harness entry point is mounted inside the TUI Client tree',
+    )
   } finally {
     restore()
   }

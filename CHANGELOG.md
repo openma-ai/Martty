@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Standalone harness registry and discovery: `martty harness list` shows saved
+  entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
+  on `PATH`; `harness add` saves a named command and repeated arguments, while
+  `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
+  The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
+  entry point, using the native TUI single-select overlay and the same registry.
+  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
+  `activeHarness` → the bundled default. Selection applies on the next launch,
+  which creates a fresh ACP session; sessions never carry across Harnesses and
+  profile-owned Host runtimes and sessions are unchanged.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a

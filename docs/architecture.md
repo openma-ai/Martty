@@ -82,6 +82,8 @@ Client 进程：独立 Cordis root
   stats-view   注入 acpSessionStats + tuiSlots
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
+  harness-view 注入 tuiCommands + tuiOverlay；注册 /harness，持久化下次
+               standalone 新会话启动的 activeHarness
   tui-presets  提供 tuiPresets，注册持久化 /ui 选择与组合生命周期
   martty-preset default UI Plugin，组合 welcome.hero + welcome.info
   deepseek-logo 注入 tuiPresets + tuiSlots，注册 deepseek UI Plugin；
@@ -140,6 +142,7 @@ tui-agents    Rust Agent/session 快照 → Client tree 的 tuiAgents service
 agents-view   tuiAgents → composer 内部 navigation dock + inline 会话选择
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
+harness-view  Harness registry → /harness 单选表单 + 下次 standalone 新会话选择
 martty-preset default UI Plugin → Martty Hero + 原生动态信息区
 deepseek-logo deepseek UI Plugin → DeepSeek Hero + 原生动态信息区
 acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/

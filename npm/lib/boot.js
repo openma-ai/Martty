@@ -33,7 +33,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { apply as applyCordisClientRunner } from './inspect.js'
 import { apply as applyShell } from './index.js'
-import { resolveStackedAgent } from './agent.js'
+import { resolveDependencyStack, resolveStackedAgent } from './agent.js'
 import { apply as applySlots } from './tui-slots.js'
 import { apply as applyTheme } from './tui-theme.js'
 import { apply as applyAyu, inject as ayuInject } from './ayu.js'
@@ -56,6 +56,7 @@ import { apply as applyQueueView, inject as queueViewInject } from './queue-view
 import { apply as applyStatsView, inject as statsViewInject } from './stats-view.js'
 import { apply as applySessionStatus, inject as sessionStatusInject } from './acp-session-status.js'
 import { apply as applyStatusView, inject as statusViewInject } from './status-view.js'
+import { apply as applyHarnessView, inject as harnessViewInject } from './harness-view.js'
 import { apply as applyDeepseekLogo, inject as deepseekLogoInject } from './deepseek-logo.js'
 import { createTuiPluginStore, marttyHome } from './tui-plugin-store.js'
 import { installTuiLocalPlugins } from './tui-local-plugins.js'
@@ -67,6 +68,8 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
  * @param {string} [options.settingsPath]
  * @param {string} [options.artifactRoot]
+ * @param {Array<{ id: string, label: string, command: string, args?: string[], source?: string }>} [options.harnessDefaults]
+ * @param {string} [options.harnessPathValue]
  * @param {Array<{ id: string, kind: 'theme' | 'ui', entry: string }>} [options.packagePlugins]
  */
 export async function bootClient(options = {}) {
@@ -80,6 +83,25 @@ export async function bootClient(options = {}) {
     migrateLegacyUiSettings(settingsPath, legacyUiSettingsPaths(options.extraArgs ?? []))
   }
   const presetConfig = { settingsPath }
+  let harnessDefaults = options.harnessDefaults
+  if (harnessDefaults === undefined) {
+    try {
+      harnessDefaults = [{
+        id: 'builtin-dsh',
+        label: 'Bundled DeepSeek Harness',
+        ...resolveDependencyStack(),
+        source: 'builtin',
+      }]
+    } catch {
+      harnessDefaults = []
+    }
+  }
+  const harnessConfig = {
+    settingsPath,
+    defaults: harnessDefaults,
+    pathValue: options.harnessPathValue,
+    hostOwned: options.stream !== undefined,
+  }
   if (typeof ctx.plugin === 'function') {
     await ctx.plugin({ name: 'tui-theme', inject: [], apply: applyTheme }, presetConfig)
     await ctx.plugin({ name: 'tui-theme-ayu', inject: ayuInject, apply: applyAyu })
@@ -105,6 +127,7 @@ export async function bootClient(options = {}) {
     await ctx.plugin({ name: 'stats-view', inject: statsViewInject, apply: applyStatsView })
     await ctx.plugin({ name: 'acp-session-status', inject: sessionStatusInject, apply: applySessionStatus })
     await ctx.plugin({ name: 'status-view', inject: statusViewInject, apply: applyStatusView })
+    await ctx.plugin({ name: 'harness-view', inject: harnessViewInject, apply: applyHarnessView }, harnessConfig)
     await ctx.plugin({ name: 'deepseek-logo', inject: deepseekLogoInject, apply: applyDeepseekLogo })
     const localPlugins = installTuiLocalPlugins(ctx, {
       store: createTuiPluginStore({ root: options.artifactRoot }),
@@ -165,6 +188,7 @@ export async function bootClient(options = {}) {
     applyStatsView(ctx)
     applySessionStatus(ctx)
     applyStatusView(ctx)
+    applyHarnessView(ctx, harnessConfig)
     applyDeepseekLogo(ctx)
     const localPlugins = installTuiLocalPlugins(ctx, {
       store: createTuiPluginStore({ root: options.artifactRoot }),
@@ -271,9 +295,10 @@ export function migrateLegacyUiSettings(settingsPath, legacyPaths) {
  * `--agent` is also forwarded via {@link painterArgs} so Terminal Auth can
  * re-exec the same command.
  * @param {string[]} argv
+ * @param {{ settingsPath?: string }} [options]
  * @returns {{ agent: { command: string, args: string[] }, rustArgs: string[] }}
  */
-export function parseClientArgv(argv) {
+export function parseClientArgv(argv, options = {}) {
   const rustArgs = []
   let command
   const args = []
@@ -292,7 +317,11 @@ export function parseClientArgv(argv) {
     rustArgs.push(token)
   }
   if (command === undefined) {
-    return { agent: resolveStackedAgent(), rustArgs }
+    const settingsPath = options.settingsPath ?? uiSettingsPath(rustArgs)
+    return {
+      agent: resolveStackedAgent(import.meta.url, { settingsPath }),
+      rustArgs,
+    }
   }
   return { agent: { command, args }, rustArgs }
 }
