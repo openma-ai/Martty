@@ -57,6 +57,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `martty harness list` now renders a width-aware, readable Harness catalog
+  with active state, labels, IDs, sources, separate command arguments, compact
+  local paths, and next-step hints instead of raw tab-separated rows. The
+  Harness help surface now also accepts the conventional `-h` and `--help`
+  aliases and includes commands, options, examples, and the new-session rule.
+  `harness add` now guides setup instead of leaking validation errors, and
+  `harness add codex` saves a ready-to-use Codex ACP adapter recipe.
 - `acpSessionStatus` now treats each standard ACP `session/prompt` response
   (success or error) as that request's terminal turn signal, returning to
   `idle` after every pending prompt and concurrent steer has settled. This

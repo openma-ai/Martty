@@ -131,6 +131,7 @@ select which one the next launch uses:
 
 ```sh
 martty harness list
+martty harness add codex
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -148,6 +149,9 @@ writing `harnesses` and `activeHarness`. Selection applies to the **next
 standalone launch**, which creates a fresh ACP session through `session/new`.
 Sessions are never carried across Harnesses; this does not hot-swap the current
 session, and `dsh --profile martty` continues to use its Host-owned runtime.
+
+`martty harness add codex` is a shortcut that saves an `npx`
+`@agentclientprotocol/codex-acp` recipe, so no Codex CLI flags need to be guessed.
 
 Standalone precedence is `--agent`, `DSH_TUI_AGENT`, `activeHarness`, then the
 bundled default. A one-run `--agent` override never changes the saved choice.

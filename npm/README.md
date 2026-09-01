@@ -68,6 +68,7 @@ ACP server. Named standalone harnesses can also be discovered, saved, and select
 
 ```sh
 martty harness list
+martty harness add codex
 martty harness add local --command local-acp --arg --stdio
 martty harness use local
 ```

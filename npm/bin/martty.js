@@ -43,13 +43,16 @@ if (argv[0] === 'harness') {
     const result = runHarnessCommand(argv.slice(1), {
       settingsPath: uiSettingsPath(),
       defaults,
+      columns: process.stdout.columns,
+      color: process.stdout.isTTY && process.env.NO_COLOR === undefined,
+      cwd: process.cwd(),
     })
     if (result.stdout) process.stdout.write(result.stdout)
     if (result.stderr) process.stderr.write(result.stderr)
     process.exit(result.code)
   } catch (error) {
     console.error(`martty harness: ${error instanceof Error ? error.message : String(error)}`)
-    process.exit(1)
+    process.exit(Number.isInteger(error?.exitCode) ? error.exitCode : 1)
   }
 }
 

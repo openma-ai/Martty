@@ -229,6 +229,7 @@ DSH_TUI_AGENT="<acp-command> [args...]" martty
 
 ```sh
 martty harness list
+martty harness add codex
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -244,6 +245,9 @@ martty --check-runtime
 语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，并固定通过 ACP
 `session/new` 创建新会话；不会把旧 Harness 的会话带到新 Harness，也不会热切换当前会话；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
+
+`martty harness add codex` 是快捷配方，会保存通过 `npx` 启动
+`@agentclientprotocol/codex-acp` 的配置；无需自己猜 Codex CLI 参数。
 
 Standalone 启动优先级是 `--agent`、`DSH_TUI_AGENT`、`activeHarness`、包内置默认值。
 因此 `--agent` 仍适合一次性覆盖，不会修改保存的选择。

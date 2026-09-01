@@ -7,20 +7,202 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 
 const HARNESS_ID = /^[a-z0-9][a-z0-9-]*$/
-const HARNESS_HELP = `martty harness — configure standalone ACP harnesses
+const ANSI = Object.freeze({ reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m' })
 
-USAGE:
-  martty harness list
-  martty harness add <id> --command <cmd> [--label <label>] [--arg <arg>]...
-  martty harness use <id>
+function paint(value, tone, color) {
+  return color ? `${ANSI[tone]}${value}${ANSI.reset}` : value
+}
 
-list discovers executable *-acp and *_acp commands on PATH. The active harness
-is saved in $MARTTY_HOME/settings.json. The next standalone launch starts that
-harness with a new ACP session; sessions are never carried across harnesses.
+function cellWidth(char) {
+  const code = char.codePointAt(0)
+  if (code === undefined || code < 0x20 || (code >= 0x7f && code < 0xa0)) return 0
+  if ((code >= 0x300 && code <= 0x36f) || (code >= 0xfe00 && code <= 0xfe0f)) return 0
+  return code >= 0x1100 && (
+    code <= 0x115f || code === 0x2329 || code === 0x232a
+    || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f)
+    || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0xfe10 && code <= 0xfe19)
+    || (code >= 0xfe30 && code <= 0xfe6f)
+    || (code >= 0xff00 && code <= 0xff60)
+    || (code >= 0xffe0 && code <= 0xffe6)
+    || (code >= 0x1f300 && code <= 0x1faff)
+  ) ? 2 : 1
+}
+
+function displayWidth(value) {
+  return [...value].reduce((width, char) => width + cellWidth(char), 0)
+}
+
+function clip(value, width) {
+  if (width <= 0) return ''
+  if (displayWidth(value) <= width) return value
+  if (width === 1) return '…'
+  let result = ''
+  let used = 0
+  for (const char of value) {
+    const next = cellWidth(char)
+    if (used + next > width - 1) break
+    result += char
+    used += next
+  }
+  return `${result}…`
+}
+
+function compactPath(value, options) {
+  if (!path.isAbsolute(value)) return value
+  const roots = [
+    [options.cwd, '.'],
+    [options.home ?? homedir(), '~'],
+  ]
+  for (const [root, prefix] of roots) {
+    if (typeof root !== 'string' || root.length === 0) continue
+    const relative = path.relative(root, value)
+    if (relative === '') return prefix
+    if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+      return `${prefix}/${relative}`
+    }
+  }
+  return value
+}
+
+function argumentText(args, options) {
+  return args.map((part) => {
+    const display = compactPath(part, options)
+    return /\s/.test(display) ? JSON.stringify(display) : display
+  }).join(' ')
+}
+
+function sourceLabel(source) {
+  if (source === 'configured') return 'Settings'
+  if (source === 'builtin') return 'Bundled'
+  if (source === 'path') return 'PATH'
+  return source
+}
+
+function fieldLine(name, value, columns, color, indent = 4) {
+  const prefix = `${' '.repeat(indent)}${name.padEnd(9)}`
+  return `${paint(prefix, 'dim', color)}${clip(value, columns - displayWidth(prefix))}`
+}
+
+function harnessHelp(color = false) {
+  const section = (value) => paint(value, 'bold', color)
+  const command = (value) => paint(value, 'cyan', color)
+  return `${section('Martty Harnesses')}
+
+Manage the ACP Harness used by the next standalone session.
+
+${section('Usage')}
+  ${command('martty harness <command> [options]')}
+
+${section('Commands')}
+  list              Show saved, bundled, and PATH Harnesses
+  add <id>          Save a named Harness command
+  use <id>          Select a Harness for the next standalone session
+  help              Show this help
+
+${section('Add options')}
+  --command <cmd>   ACP command to launch (required)
+  --label <label>   Human-readable name
+  --arg <arg>       Command argument; repeat as needed
+
+${section('Examples')}
+  ${command('martty harness list')}
+  ${command('martty harness add codex')}
+  ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
+  ${command('martty harness use local')}
+
+Switching Harnesses takes effect on the next standalone launch and starts a
+new ACP session. Sessions are never carried across Harnesses.
 `
+}
+
+function addHarnessHelp(color = false) {
+  const section = (value) => paint(value, 'bold', color)
+  const command = (value) => paint(value, 'cyan', color)
+  return `${section('Add a Harness')}
+
+Martty connects to ACP servers, not directly to agent CLIs.
+
+${section('Quick setup')}
+  ${command('martty harness add codex')}
+  Saves the Codex ACP adapter recipe. No command flags needed.
+
+${section('Custom ACP command')}
+  ${command('martty harness add <id> --command <cmd> [options]')}
+
+${section('Options')}
+  --command <cmd>   ACP server command to launch
+  --label <label>   Human-readable name
+  --arg <arg>       Command argument; repeat as needed
+
+${section('Example')}
+  ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
+`
+}
+
+class HarnessUsageError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'HarnessUsageError'
+    this.exitCode = 2
+  }
+}
+
+function savedHarnessOutput(harness, color = false) {
+  const title = paint(`Saved ${harness.label}`, 'bold', color)
+  const lines = [title, '']
+  lines.push(fieldLine('ID', harness.id, 100, color, 2))
+  lines.push(fieldLine('Command', harness.command, 100, color, 2))
+  if (harness.args.length > 0) {
+    lines.push(fieldLine('Args', argumentText(harness.args, {}), 100, color, 2))
+  }
+  lines.push('')
+  lines.push(fieldLine('Next', `martty harness use ${harness.id}`, 100, color, 2))
+  lines.push(fieldLine('Then', 'restart martty (starts a new ACP session)', 100, color, 2))
+  return `${lines.join('\n')}\n`
+}
+
+function formatHarnessList(entries, active, options = {}) {
+  const columns = Number.isInteger(options.columns) && options.columns > 0
+    ? options.columns
+    : 100
+  const color = options.color === true
+  if (entries.length === 0) {
+    return `${paint('Martty Harnesses', 'bold', color)}
+
+No Harnesses found.
+
+  ${paint('Add one', 'dim', color)}   martty harness add <id> --command <cmd>
+  ${paint('Discover', 'dim', color)}  install an executable named *-acp or *_acp
+`
+  }
+
+  const lines = [paint(`Harnesses (${entries.length})`, 'bold', color), '']
+  for (const entry of entries) {
+    const selected = entry.id === active
+    const marker = paint(selected ? '●' : '○', selected ? 'green' : 'dim', color)
+    const prefix = '  ○ '
+    const label = clip(entry.label, columns - displayWidth(prefix))
+    lines.push(`  ${marker} ${selected ? paint(label, 'bold', color) : label}`)
+    lines.push(fieldLine('ID', entry.id, columns, color))
+    lines.push(fieldLine('Source', sourceLabel(entry.source), columns, color))
+    lines.push(fieldLine('Command', compactPath(entry.command, options), columns, color))
+    if (entry.args.length > 0) {
+      lines.push(fieldLine('Args', argumentText(entry.args, options), columns, color))
+    }
+    lines.push('')
+  }
+  const activeLabel = active ?? 'none (bundled default on next launch)'
+  lines.push(fieldLine('Active', activeLabel, columns, color, 2))
+  lines.push(fieldLine('Switch', 'martty harness use <id>', columns, color, 2))
+  lines.push(fieldLine('In TUI', '/harness', columns, color, 2))
+  return `${lines.join('\n')}\n`
+}
 
 function readSettings(settingsPath) {
   if (!existsSync(settingsPath)) return {}
@@ -155,20 +337,14 @@ export function runHarnessCommand(argv, options) {
     throw new Error('harness command needs a settings path')
   }
   const [action, id, ...tokens] = argv
-  if (action === 'help' || action === undefined) {
-    return { code: 0, stdout: HARNESS_HELP, stderr: '' }
+  if (['help', '-h', '--help'].includes(action) || action === undefined) {
+    return { code: 0, stdout: harnessHelp(options.color === true), stderr: '' }
   }
   if (action === 'list') {
     const settings = readSettings(settingsPath)
     const active = typeof settings.activeHarness === 'string' ? settings.activeHarness : undefined
-    const stdout = discoverHarnesses(settingsPath, options).map((entry) => {
-      const marker = entry.id === active ? '*' : ' '
-      const command = [entry.command, ...entry.args]
-        .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
-        .join(' ')
-      return `${marker} ${entry.id}\t${entry.source}\t${entry.label}\t${command}`
-    }).join('\n')
-    return { code: 0, stdout: stdout.length > 0 ? `${stdout}\n` : '', stderr: '' }
+    const entries = discoverHarnesses(settingsPath, options)
+    return { code: 0, stdout: formatHarnessList(entries, active, options), stderr: '' }
   }
   if (action === 'use') {
     const harness = discoverHarnesses(settingsPath, options).find((entry) => entry.id === id)
@@ -182,18 +358,53 @@ export function runHarnessCommand(argv, options) {
     }
   }
   if (action !== 'add') throw new Error(`unknown harness command ${JSON.stringify(action ?? '')}`)
+  const color = options.color === true
+  const wantsAddHelp = id === undefined
+    || ['help', '-h', '--help'].includes(id)
+    || (tokens.length === 1 && ['-h', '--help'].includes(tokens[0]))
+  if (wantsAddHelp) {
+    return { code: 0, stdout: addHarnessHelp(color), stderr: '' }
+  }
+  if (!HARNESS_ID.test(id)) {
+    throw new HarnessUsageError(
+      `Invalid Harness id ${JSON.stringify(id)}. Use lowercase letters, numbers, and hyphens.`,
+    )
+  }
+  if (id === 'codex' && tokens.length === 0) {
+    const harness = upsertHarness(settingsPath, {
+      id: 'codex',
+      label: 'Codex Harness',
+      command: 'npx',
+      args: ['-y', '@agentclientprotocol/codex-acp'],
+    })
+    return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
+  }
   let command
   let label
   const args = []
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]
     const value = tokens[index + 1]
+    if (value === undefined) {
+      throw new HarnessUsageError(`${token} needs a value.\n\n${addHarnessHelp(color)}`)
+    }
     if (token === '--command') command = value
     else if (token === '--label') label = value
-    else if (token === '--arg') args.push(value ?? '')
-    else throw new Error(`unknown harness add option ${JSON.stringify(token)}`)
+    else if (token === '--arg') args.push(value)
+    else {
+      throw new HarnessUsageError(
+        `Unknown add option ${JSON.stringify(token)}.\n\n${addHarnessHelp(color)}`,
+      )
+    }
     index += 1
   }
-  upsertHarness(settingsPath, { id, label, command, args })
-  return { code: 0, stdout: `saved harness ${id}\n`, stderr: '' }
+  if (typeof command !== 'string' || command.trim().length === 0) {
+    throw new HarnessUsageError(
+      `Missing --command for custom Harness ${JSON.stringify(id)}.\n\n`
+      + `  martty harness add ${id} --command <cmd>\n\n`
+      + 'The command must start an ACP-compatible server on stdin/stdout.',
+    )
+  }
+  const harness = upsertHarness(settingsPath, { id, label, command, args })
+  return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
 }
