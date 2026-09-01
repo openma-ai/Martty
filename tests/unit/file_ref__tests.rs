@@ -265,6 +265,87 @@ fn missing_middle_segment_treats_the_rest_as_one_last_segment() {
 }
 
 #[test]
+fn query_follows_to_a_nested_match_when_the_cwd_has_none() {
+    let (root, base) = tree_with_follow();
+    let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
+    // The workspace root has no `abc*`: the browser hops to the closest
+    // prefix match below — both abc_* entries are prefix-rank, so the
+    // shallower one (docs) wins.
+    menu.apply_query("abc");
+    assert_eq!(menu.explorer().cwd(), &base.join("docs"));
+    assert_eq!(menu.explorer().current().name, "abc_ref.md");
+    drop(root);
+}
+
+#[test]
+fn follow_search_prefers_shallow_and_skips_heavy_dirs() {
+    let (root, base) = tree_with_follow();
+    let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
+    // One deeper `abc_ref.md` under `docs/plans` vs the shallower one under
+    // `docs`: depth wins on equal (exact) rank.
+    menu.apply_query("abc_ref");
+    assert_eq!(menu.explorer().cwd(), &base.join("docs"));
+    assert_eq!(menu.explorer().current().name, "abc_ref.md");
+    // `node_modules` is never entered: a segment that only matches inside
+    // it follows nowhere and the browser re-anchors at the workspace root.
+    menu.apply_query("abc_dep");
+    assert_eq!(menu.explorer().cwd(), &base, "heavy tree skipped, no follow");
+    drop(root);
+}
+
+#[test]
+fn follow_keeps_the_landed_directory_while_typing_extends() {
+    let (root, base) = tree_with_follow();
+    let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
+    menu.apply_query("abc_ref");
+    assert_eq!(menu.explorer().cwd(), &base.join("docs"));
+    // Extending the same segment keeps the browser where it landed.
+    menu.apply_query("abc_ref_x");
+    assert_eq!(menu.explorer().cwd(), &base.join("docs"));
+    // A different segment re-anchors at the workspace root and follows
+    // from there.
+    menu.apply_query("abc");
+    assert_eq!(menu.explorer().cwd(), &base.join("docs"));
+    drop(root);
+}
+
+#[test]
+fn follow_search_never_runs_when_the_cwd_has_a_match() {
+    let (root, base) = tree_with_follow();
+    let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
+    // `README.md` matches the workspace root directly: no navigation.
+    menu.apply_query("read");
+    assert_eq!(menu.explorer().cwd(), &base);
+    assert_eq!(menu.explorer().current().name, "README.md");
+    drop(root);
+}
+
+/// A workspace where the follow search must leave the root: `abc*` files
+/// live only in nested dirs and inside a heavyweight tree.
+fn tree_with_follow() -> (TempRoot, PathBuf) {
+    let root = TempRoot::new("follow");
+    root.file("README.md");
+    root.file("src/main.rs");
+    root.file("src/generated/abc_main.rs");
+    root.file("docs/abc_ref.md");
+    root.file("docs/plans/abc_ref.md");
+    root.file("node_modules/abc_dep.js");
+    let base = root.path.clone();
+    (root, base)
+}
+
+#[test]
+fn match_score_ranks_exact_prefix_contains_subsequence() {
+    assert_eq!(match_score("abc.rs", "abc.rs"), Some(0), "exact");
+    assert_eq!(match_score("abc.rs", "abc"), Some(1), "prefix");
+    assert_eq!(match_score("xabc.rs", "abc"), Some(2), "contains");
+    assert_eq!(match_score("a1b2c3.rs", "abc"), Some(3), "subsequence");
+    assert_eq!(match_score("zzz.rs", "abc"), None, "no match");
+    assert_eq!(match_score("src/", "src"), Some(0), "dir slash stripped");
+    assert_eq!(match_score("README.md", "readme.md"), Some(0), "case-insensitive exact");
+}
+
+#[test]
 fn unchanged_query_preserves_arrow_navigation() {
     let (root, base) = tree();
     let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
@@ -293,8 +374,39 @@ fn current_mention_reflects_the_selection() {
     let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
     menu.apply_query("src/m");
     assert_eq!(menu.current_mention().as_deref(), Some("@src/main.rs"));
-    navigate(&mut menu, Input::Up); // nested/
+    // The live filter narrows the listing to matches (`../` aside), so a
+    // new segment keeps only what it matches.
+    menu.apply_query("src/n");
+    assert_eq!(menu.explorer().current().name, "nested/");
     assert_eq!(menu.current_mention().as_deref(), Some("@src/nested/"));
+    drop(root);
+}
+
+#[test]
+fn query_filters_the_listing_to_matching_entries() {
+    let (root, base) = tree();
+    let mut menu = FileMenu::open(&base, 0, &token("")).expect("opens");
+    menu.apply_query("re");
+    let names: Vec<&str> = menu
+        .explorer()
+        .files()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["../", "README.md"], "only matches + parent entry");
+    // Clearing the segment restores the full listing.
+    menu.apply_query("");
+    let names: Vec<&str> = menu
+        .explorer()
+        .files()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["../", "src/", "README.md", "notes.txt"],
+        "empty query shows everything again"
+    );
     drop(root);
 }
 

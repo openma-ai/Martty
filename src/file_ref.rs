@@ -14,7 +14,11 @@
 //! Typing keeps the token live: the query's directory prefix navigates
 //! the browser (`@src/ma` opens `src/` and jumps to the first `ma*`), and
 //! `Tab` on a directory drills down by rewriting the token to `@dir/`
-//! (quoted form keeps the quote open: `@"dir/`).
+//! (quoted form keeps the quote open: `@"dir/`). When the current
+//! directory has no match, the follow search looks at bounded
+//! subdirectories (skipping heavyweight trees) and hops the browser to
+//! the closest entry, so typing `@abc` finds `docs/abc_ref.md` without a
+//! leading path.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -166,27 +170,51 @@ pub fn relative_path(base: &Path, path: &Path) -> String {
     }
 }
 
-/// Best explorer row for a query's last segment: exact > prefix > contains,
-/// directories preferred over files, `../` never matched.
+/// Match rank for one basename against a query segment: exact = 0,
+/// prefix = 1, substring = 2, subsequence = 3 (fuzzy last resort), or
+/// `None` when the name does not match at all. Case-insensitive;
+/// directory names carry a trailing `/` that never counts.
+fn match_score(name: &str, needle: &str) -> Option<u8> {
+    let needle = needle.to_lowercase();
+    let name = name.strip_suffix('/').unwrap_or(name).to_lowercase();
+    let score = if name == needle {
+        0
+    } else if name.starts_with(&needle) {
+        1
+    } else if name.contains(&needle) {
+        2
+    } else if is_subsequence(&needle, &name) {
+        3
+    } else {
+        return None;
+    };
+    Some(score)
+}
+
+/// Every char of `needle` appears in `hay`, in order — the fzf-style last
+/// resort (`abc` matches `a1b2c3.rs`).
+fn is_subsequence(needle: &str, hay: &str) -> bool {
+    let mut chars = hay.chars();
+    'needle: for n in needle.chars() {
+        for c in chars.by_ref() {
+            if c == n {
+                continue 'needle;
+            }
+        }
+        return false;
+    }
+    true
+}
+
+/// Best explorer row for a query's last segment: exact > prefix > contains
+/// > subsequence, directories preferred over files, `../` never matched.
 fn best_match(files: &[ratatui_explorer::File], last: &str) -> Option<usize> {
-    let needle = last.to_lowercase();
     let mut best: Option<(usize, u8)> = None;
     for (i, file) in files.iter().enumerate() {
         if file.name == "../" {
             continue;
         }
-        let name = file
-            .name
-            .strip_suffix('/')
-            .unwrap_or(&file.name)
-            .to_lowercase();
-        let score = if name == needle {
-            0
-        } else if name.starts_with(&needle) {
-            1
-        } else if name.contains(&needle) {
-            2
-        } else {
+        let Some(score) = match_score(&file.name, last) else {
             continue;
         };
         let total = score * 2 + usize::from(!file.is_dir) as u8;
@@ -195,6 +223,74 @@ fn best_match(files: &[ratatui_explorer::File], last: &str) -> Option<usize> {
         }
     }
     best.map(|(i, _)| i)
+}
+
+/// Heavyweight directory names never descended into by the
+/// cross-directory follow search.
+const SKIP_DIRS: &[&str] = &[
+    ".git", ".hg", ".svn", ".idea", "node_modules", "target", "dist",
+    "build", ".next", ".cache", ".venv", "venv", "__pycache__", "coverage",
+];
+
+/// Directory-visit budget for one follow search, so a huge workspace cannot
+/// stall the per-key refresh.
+const SEARCH_DIR_BUDGET: usize = 512;
+
+/// Max depth (directory levels below the search root) the follow search
+/// explores.
+const SEARCH_MAX_DEPTH: usize = 3;
+
+/// Best entry matching `last` anywhere at or below `root` (the follow
+/// search: typing `@abc` with no `abc*` in the current directory jumps the
+/// browser to the closest `abc*` it can find). Returns the entry's parent
+/// directory and its exact name. Hidden entries and heavyweight trees are
+/// skipped; shallower matches beat deeper ones on equal rank.
+fn cross_dir_search(root: &Path, last: &str) -> Option<(PathBuf, String)> {
+    if last.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u8, usize, PathBuf, String)> = None; // (total, depth, parent, name)
+    let mut budget = SEARCH_DIR_BUDGET;
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        if depth >= SEARCH_MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let is_dir = file_type.is_dir();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Hidden entries stay invisible, exactly like the explorer's
+            // default view (ctrl+h toggles the browser, not this search).
+            if name.starts_with('.') {
+                continue;
+            }
+            // Recurse into plain directories before any matching bookkeep:
+            // heavyweight trees are noise for a follow search.
+            if is_dir && !SKIP_DIRS.contains(&name.as_str()) {
+                stack.push((entry.path(), depth + 1));
+            }
+            if let Some(score) = match_score(&name, last) {
+                let total = score * 2 + u8::from(!is_dir);
+                let better = best.as_ref().is_none_or(|(t, d, ..)| {
+                    total < *t || (total == *t && depth < *d)
+                });
+                if better {
+                    best = Some((total, depth, dir.clone(), name));
+                }
+            }
+        }
+    }
+    best.map(|(_, _, parent, name)| (parent, name))
 }
 
 // --- the browser menu -----------------------------------------------------
@@ -221,6 +317,11 @@ pub struct FileMenu {
     /// Explorer cwd mirror (avoids redundant relisting and keeps the
     /// popup title in lockstep after `Left`/`Right` navigation).
     cwd: PathBuf,
+    /// The follow search's last landing spot: `(parent, last_segment)`.
+    /// Continuing to type the same segment keeps the browser there instead
+    /// of snapping back to the workspace root (shrinking or editing the
+    /// segment re-anchors at the root).
+    followed: Option<(PathBuf, String)>,
 }
 
 impl FileMenu {
@@ -237,6 +338,7 @@ impl FileMenu {
             quoted: token.quoted,
             applied_query: String::new(),
             cwd: base.to_path_buf(),
+            followed: None,
         })
     }
 
@@ -277,20 +379,42 @@ impl FileMenu {
         self.end = token.end;
         self.quoted = token.quoted;
         self.applied_query.clear();
+        self.followed = None;
     }
 
     /// Drive the browser from the token query: directory segments before
     /// the last `/` are descended (the trailing slash is the drill
     /// delimiter — `@src` filters the workspace, `@src/` opens the dir),
     /// then the selection jumps to the best match of the last segment.
-    /// No-op when the query did not change (preserves arrow navigation).
+    /// When the current directory has no match at all, the follow search
+    /// looks at (bounded) subdirectories and hops the browser to the
+    /// closest entry — typing `@abc` jumps to `src/abc.rs` even when the
+    /// workspace root has no `abc*`. No-op when the query did not change
+    /// (preserves arrow navigation).
     pub fn apply_query(&mut self, query: &str) {
         if query == self.applied_query {
             return;
         }
         self.applied_query = query.to_string();
         let (nav, last_seg) = query.rsplit_once('/').map_or(("", query), |(d, l)| (d, l));
-        let mut cwd = self.base.clone();
+        // Start where the previous follow search landed when this keystroke
+        // extends the same last segment (`@abc` → `@abcd` stays in the
+        // found directory); a prefix navigation or a changed/shrunk segment
+        // re-anchors at the workspace root.
+        let mut cwd = if nav.is_empty() {
+            if let Some((parent, prev_last)) = self.followed.take() {
+                if last_seg.starts_with(&prev_last) && last_seg != prev_last {
+                    parent
+                } else {
+                    self.base.clone()
+                }
+            } else {
+                self.base.clone()
+            }
+        } else {
+            self.followed = None;
+            self.base.clone()
+        };
         let mut nav_consumed = 0;
         for seg in nav.split('/') {
             match seg {
@@ -319,12 +443,53 @@ impl FileMenu {
             last.push('/');
         }
         last.push_str(last_seg);
+        // The entry list only shows names matching this segment: exact /
+        // prefix / contains / subsequence; `../` always stays so a filtered
+        // view can still back out. Set the filter before any cwd change so
+        // each listing is filtered in one pass.
+        if last.is_empty() {
+            let _ = self.explorer.remove_filter_map();
+        } else {
+            let needle = last.clone();
+            let _ = self.explorer.set_filter_map(move |file: ratatui_explorer::File| {
+                if file.name == "../" || match_score(&file.name, &needle).is_some() {
+                    Some(file)
+                } else {
+                    None
+                }
+            });
+        }
         if cwd != self.cwd && self.explorer.set_cwd(&cwd).is_ok() {
-            self.cwd = cwd;
+            self.cwd = cwd.clone();
         }
         if !last.is_empty() {
             if let Some(idx) = best_match(self.explorer.files(), &last) {
                 self.explorer.set_selected_idx(idx);
+            } else if !self
+                .explorer
+                .files()
+                .iter()
+                .any(|f| f.name != "../")
+            {
+                // The filter left nothing visible in this directory: follow
+                // the query to the closest cross-tree entry (the same filter
+                // applies to the landing listing). Remember the spot so the
+                // next keystroke keeps following instead of snapping back to
+                // the workspace root.
+                if let Some((parent, name)) = cross_dir_search(&cwd, &last) {
+                    if self.explorer.set_cwd(&parent).is_ok() {
+                        self.cwd = parent.clone();
+                        self.followed = Some((parent, last));
+                        if let Some(idx) = self
+                            .explorer
+                            .files()
+                            .iter()
+                            .position(|f| f.name == name || f.name == format!("{name}/"))
+                        {
+                            self.explorer.set_selected_idx(idx);
+                        }
+                    }
+                }
             }
         }
     }
@@ -341,15 +506,29 @@ impl FileMenu {
         format_file_mention(&rel, file.is_dir, self.quoted)
     }
 
+    /// `@rel` popup title for the current cwd — shared by the painted
+    /// explorer chrome and the no-match empty frame.
+    pub fn chrome_title(&self, workspace: &str) -> String {
+        let rel = relative_path(Path::new(workspace), &self.cwd);
+        format!(" @{rel} ")
+    }
+
+    /// Bottom hint row — shared by the painted chrome and the no-match
+    /// empty frame.
+    pub fn chrome_hint(&self, locale: Locale) -> String {
+        locale
+            .tr(
+                " ↑↓ move · ← parent · →/tab open · enter pick · ctrl+h hidden · esc close ",
+                " ↑↓ 移动 · ← 上级 · →/tab 进入 · enter 选择 · ctrl+h 隐藏 · esc 关闭 ",
+            )
+            .to_string()
+    }
+
     /// Browser theme built from the app theme tokens, refreshed every
     /// frame so palette-pack switches and locale changes land immediately.
     pub fn apply_chrome(&mut self, theme: &AppTheme, locale: Locale, workspace: &str) {
-        let rel = relative_path(Path::new(workspace), &self.cwd);
-        let title = format!(" @{rel} ");
-        let hint = locale.tr(
-            " ↑↓ move · ← parent · →/tab open · enter pick · ctrl+h hidden · esc close ",
-            " ↑↓ 移动 · ← 上级 · →/tab 进入 · enter 选择 · ctrl+h 隐藏 · esc 关闭 ",
-        );
+        let title = self.chrome_title(workspace);
+        let hint = self.chrome_hint(locale);
         let explorer_theme = ExplorerTheme::default()
             .with_block(
                 Block::default()
@@ -360,17 +539,23 @@ impl FileMenu {
             .with_style(Style::default().bg(theme.panel).fg(theme.fg))
             .with_item_style(Style::default().fg(theme.fg))
             .with_dir_style(Style::default().fg(theme.brand).add_modifier(Modifier::BOLD))
-            .with_highlight_item_style(Style::default().fg(theme.fg).bg(theme.chip_bg))
+            .with_highlight_item_style(
+                Style::default()
+                    .fg(theme.brand)
+                    .bg(theme.chip_bg)
+                    .add_modifier(Modifier::BOLD),
+            )
             .with_highlight_dir_style(
                 Style::default()
                     .fg(theme.brand)
                     .bg(theme.chip_bg)
                     .add_modifier(Modifier::BOLD),
             )
-            .with_highlight_symbol("▸ ")
+            .with_highlight_symbol("▶ ")
+            .with_highlight_spacing(ratatui::widgets::HighlightSpacing::Always)
             .with_scroll_padding(1)
             .with_title_top(move |_| ratatui::text::Line::from(title.clone()))
-            .with_title_bottom(move |_| ratatui::text::Line::from(hint));
+            .with_title_bottom(move |_| ratatui::text::Line::from(hint.clone()));
         self.explorer.set_theme(explorer_theme);
     }
 }

@@ -17,6 +17,22 @@ All notable changes to this project are documented here. The project follows
   `activeHarness` → the bundled default. Selection applies on the next launch,
   which creates a fresh ACP session; sessions never carry across Harnesses and
   profile-owned Host runtimes and sessions are unchanged.
+- The `@file` mention browser now follows the typed query across the
+  tree: the listing is live-filtered to matching names (exact > prefix >
+  contains > subsequence, `../` always kept so a filtered view can back
+  out), and when the filter leaves nothing in the current directory a
+  bounded search (max 3 levels, skipping `.git`/`node_modules`/`target`-
+  style trees) hops the browser to the closest entry and selects it —
+  typing `@abc` jumps to `docs/abc_ref.md` without a path prefix, and
+  continuing to type keeps the browser there. An empty match leaves the
+  frame up with a no-match hint instead of hiding the menu.
+- A mouse-only expand affordance now sits on the composer card's
+  top-right frame border (issue #92): an always-visible `⛶` glyph that
+  highlights on hover and pins the input to the amplified height (about
+  5/8 of the main area) on click; clicking again restores the
+  draft-following auto height. The glyph lives on the cap row, outside
+  the text well, so a full draft never hides it. It has no key binding
+  and never moves the caret.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a
