@@ -125,6 +125,7 @@ export function onJsonLines(source, onLine) {
  *   notifyTui: (method: string, params?: object) => void,
  *   requestAgent: (method: string, params?: object) => Promise<unknown>,
  *   requestTui: (method: string, params?: object) => Promise<unknown>,
+ *   resetAgent: () => void,
  * }}
  */
 export function muxAcpAndCompositor(opts) {
@@ -247,6 +248,14 @@ export function muxAcpAndCompositor(opts) {
   })
 
   return {
+    resetAgent() {
+      initializeId = undefined
+      agentCordis = null
+      for (const waiter of pendingAgent.values()) {
+        waiter.reject(new Error('ACP Agent was replaced'))
+      }
+      pendingAgent.clear()
+    },
     notifyTui(method, params) {
       writeJsonLine(
         tui.output,

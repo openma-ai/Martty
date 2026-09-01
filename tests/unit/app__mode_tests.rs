@@ -1191,6 +1191,25 @@ fn live_acp_new_does_not_invent_a_local_id() {
 }
 
 #[test]
+fn harness_restart_clears_the_old_session_before_reconnecting() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.transcript.push_user("old Harness turn".into(), false);
+    assert!(!app.transcript.cells.is_empty());
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Starting {
+            runtime: "harness".into(),
+        }),
+        &ctl,
+    );
+
+    assert!(app.transcript.cells.is_empty());
+    assert!(!app.session_bound);
+    assert_eq!(app.state, RunState::Starting);
+}
+
+#[test]
 fn agent_preset_event_updates_chrome_without_adding_a_transcript_row() {
     let (mut app, _ctl, _rx) = test_app();
     let cells_before = app.transcript.cells.len();

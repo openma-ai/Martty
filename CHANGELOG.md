@@ -14,9 +14,12 @@ All notable changes to this project are documented here. The project follows
   The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
   entry point, using the native TUI single-select overlay and the same registry.
   Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
-  `activeHarness` → the bundled default. Selection applies on the next launch,
-  which creates a fresh ACP session; sessions never carry across Harnesses and
-  profile-owned Host runtimes and sessions are unchanged.
+  `activeHarness` → the bundled default. CLI/settings selection applies on the
+  next standalone launch. In a running standalone TUI, `/harness` now replaces
+  the ACP child immediately over the stable Client transport, repeats
+  `initialize` and `session/new`, and clears the previous conversation before
+  binding the new session. Sessions never carry across Harnesses; profile-owned
+  Host runtimes and sessions remain unchanged.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a

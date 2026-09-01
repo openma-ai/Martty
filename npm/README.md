@@ -75,14 +75,18 @@ martty harness use local
 
 The same registry is available through three entry points: edit
 `$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or
-`/harness <id>`) inside the TUI. A saved choice takes effect on the next
-standalone launch, which starts a fresh ACP session. It does not replace a
-running or profile-owned Host, and it never carries a session across Harnesses.
+`/harness <id>`) inside the TUI. In a standalone TUI, `/harness` immediately
+stops the current ACP child, starts the selected Harness, and creates a fresh
+session without closing Martty. It never carries a session across Harnesses.
+The settings and CLI entry points select the Harness for the next standalone
+launch; a profile-owned Host cannot be replaced by its Client.
 
-The selected entry is stored in `$MARTTY_HOME/settings.json` and takes effect
-on the next standalone launch through a new `session/new`. `--agent` and
-`DSH_TUI_AGENT` remain higher priority. This does not replace the Host-owned
-runtime or session of `dsh --profile martty`.
+Every selection is stored in `$MARTTY_HOME/settings.json`. CLI/settings
+selection takes effect on the next standalone launch through a new
+`session/new`; TUI selection also updates the running standalone process
+immediately. `--agent` and `DSH_TUI_AGENT` remain higher startup priorities.
+None of these replace the Host-owned runtime or session of
+`dsh --profile martty`.
 
 The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
 `tui-cordis-client-runner` publishes TUI Client capabilities and evaluates

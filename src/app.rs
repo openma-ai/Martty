@@ -2471,10 +2471,18 @@ impl App {
             }
             AppEvent::Ctl(ctl_ev) => {
                 match ctl_ev {
-                    CtlEvent::Starting { .. } => {
+                    CtlEvent::Starting { runtime } => {
+                        if runtime == "harness" {
+                            self.reset_session_ui();
+                            self.server_info = None;
+                        }
                         self.state = RunState::Starting;
                         self.run_started = Some(Instant::now());
-                        self.state_note = "starting runtime".into();
+                        self.state_note = if runtime == "harness" {
+                            "switching Harness".into()
+                        } else {
+                            "starting runtime".into()
+                        };
                     }
                     CtlEvent::Ready { server } => {
                         self.server_info = Some(server.clone());

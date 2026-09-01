@@ -77,6 +77,14 @@ struct Surface {
 }
 
 impl Surface {
+    fn reset_agent(&mut self) {
+        let client_compositor = self.client_compositor;
+        *self = Self {
+            client_compositor,
+            ..Self::default()
+        };
+    }
+
     fn apply_config_options(&mut self, options: &Value, bus: &Sender<AppEvent>) {
         let (models, presets, composition_id) = catalog_from_config_options(options);
         self.models = models.clone();
@@ -960,6 +968,131 @@ fn ensure_client_compositor(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent
     advertised
 }
 
+struct HarnessSwitch {
+    label: String,
+    agent_argv: Vec<String>,
+}
+
+fn switched_harness(value: &Value) -> Option<HarnessSwitch> {
+    if value.get("action").and_then(Value::as_str) != Some("harness-switched") {
+        return None;
+    }
+    let harness = value.get("harness")?;
+    let label = harness
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)?;
+    let mut agent_argv = harness
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+        .map(|command| vec![command.to_string()])
+        .unwrap_or_default();
+    agent_argv.extend(
+        harness
+            .get("args")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string),
+    );
+    Some(HarnessSwitch { label, agent_argv })
+}
+
+struct SwitchedAgent {
+    name: String,
+    load_session: bool,
+    methods: Vec<AuthMethodInfo>,
+    selected: Option<AuthMethodInfo>,
+    session_id: Option<SessionId>,
+    session_auth_pending: bool,
+}
+
+async fn initialize_switched_agent(
+    cx: &ConnectionTo<Agent>,
+    cfg: &RuntimeConfig,
+    agent_argv: &[String],
+    cwd: &std::path::Path,
+    surface: &Arc<Mutex<Surface>>,
+    bus: &Sender<AppEvent>,
+) -> std::result::Result<SwitchedAgent, AcpError> {
+    let init = cx.send_request(initialize_request()).block_task().await?;
+    let name = init
+        .agent_info
+        .as_ref()
+        .map(|info| info.name.clone())
+        .unwrap_or_else(|| "acp".into());
+    let init_value = serde_json::to_value(&init).unwrap_or(Value::Null);
+    if let Ok(mut surface) = surface.lock() {
+        surface.prompt_image = init.agent_capabilities.prompt_capabilities.image
+            || prompt_image_supported(&init_value);
+        surface.cordis = crate::cordis::advertised_by_agent(&init_value);
+    }
+    let load_session = init.agent_capabilities.load_session
+        || load_session_supported(&init_value);
+    let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps { load_session }));
+    let auth_raw = init_value
+        .get("authMethods")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let env = process_env();
+    let agent_argv = if agent_argv.is_empty() {
+        cfg.agent_argv()
+    } else {
+        agent_argv.to_vec()
+    };
+    let methods = parse_auth_methods(&auth_raw, &agent_argv, &cfg.workspace, &env);
+    let declared = declared_auth_methods(&auth_raw);
+    let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
+    let selected = select_auth_method(&methods, None).cloned();
+    if auth.status == AuthStatus::NeedsAuth
+        && selected.as_ref().is_some_and(|method| method.form)
+    {
+        auth = configured_snapshot(methods.clone(), selected.as_ref());
+    }
+    let needs_open = auth.status == AuthStatus::NeedsAuth;
+    emit_auth(bus, auth);
+    emit_open_auth_if_needed(
+        bus,
+        if needs_open {
+            AuthStatus::NeedsAuth
+        } else {
+            AuthStatus::None
+        },
+    );
+    let mut session_auth_pending = false;
+    let session_id = match create_prompt_session(
+        cx,
+        cwd,
+        surface,
+        bus,
+        &methods,
+        selected.as_ref(),
+    )
+    .await
+    {
+        Ok(Some(sid)) => Some(sid),
+        Ok(None) => {
+            session_auth_pending = true;
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready {
+        server: name.clone(),
+    }));
+    Ok(SwitchedAgent {
+        name,
+        load_session,
+        methods,
+        selected,
+        session_id,
+        session_auth_pending,
+    })
+}
+
 async fn connect<T>(
     transport: T,
     cfg: RuntimeConfig,
@@ -1434,7 +1567,7 @@ where
                         || prompt_image_supported(&init_value);
                     surface.cordis = crate::cordis::advertised_by_agent(&init_value);
                 }
-                let load_session = init.agent_capabilities.load_session
+                let mut load_session = init.agent_capabilities.load_session
                     || load_session_supported(&init_value);
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps { load_session }));
                 let auth_raw = init_value
@@ -1442,7 +1575,7 @@ where
                     .cloned()
                     .unwrap_or(Value::Null);
                 let env = process_env();
-                let methods = parse_auth_methods(
+                let mut methods = parse_auth_methods(
                     &auth_raw,
                     &cfg.agent_argv(),
                     &cfg.workspace,
@@ -1450,7 +1583,7 @@ where
                 );
                 let declared = declared_auth_methods(&auth_raw);
                 let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
-                let selected = select_auth_method(&methods, None).cloned();
+                let mut selected = select_auth_method(&methods, None).cloned();
                 // A form-capable method may already have persistent credentials.
                 // Without creating a throwaway session we cannot know yet, so stay
                 // optimistic and let the startup session/new prove auth.
@@ -1548,6 +1681,7 @@ where
                                     }
                                 }
                             }
+                            let mut harness_switch = None;
                             match cmd {
                         Cmd::Prompt { text, .. } => {
                             let next = Cmd::Prompt {
@@ -1872,7 +2006,7 @@ where
                             if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
-                            if let Err(error) = call_tui_extension(
+                            match call_tui_extension(
                                 &cx,
                                 crate::cordis::COMMAND_INVOKE,
                                 serde_json::json!({
@@ -1883,9 +2017,12 @@ where
                             )
                             .await
                             {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                Ok(value) => harness_switch = switched_harness(&value),
+                                Err(error) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
                                     "plugin command failed: {error}"
-                                ))));
+                                    ))));
+                                }
                             }
                         }
                         Cmd::PluginThemeSelected { agent_id, id } => {
@@ -1950,10 +2087,13 @@ where
                             } else {
                                 call_tui_extension(&cx, crate::cordis::OVERLAY_EVENT, params).await
                             };
-                            if let Err(error) = result {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                    "plugin overlay event failed: {error}"
-                                ))));
+                            match result {
+                                Ok(value) => harness_switch = switched_harness(&value),
+                                Err(error) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                        "plugin overlay event failed: {error}"
+                                    ))));
+                                }
                             }
                         }
                         Cmd::FetchEfforts { .. } => {
@@ -2397,6 +2537,49 @@ where
                         }
                         Cmd::Shutdown => break,
                     }
+                            if let Some(HarnessSwitch { label, agent_argv }) = harness_switch {
+                                if let Some(task) = inflight.take() {
+                                    task.abort();
+                                }
+                                prompt_queue.clear();
+                                parked = None;
+                                session_id = None;
+                                session_auth_pending = false;
+                                turn_aborted = false;
+                                if let Ok(mut surface) = surface.lock() {
+                                    surface.reset_agent();
+                                }
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
+                                    runtime: "harness".into(),
+                                }));
+                                match initialize_switched_agent(
+                                    &cx,
+                                    &cfg,
+                                    &agent_argv,
+                                    &cwd,
+                                    &surface,
+                                    &bus,
+                                )
+                                .await
+                                {
+                                    Ok(next) => {
+                                        load_session = next.load_session;
+                                        methods = next.methods;
+                                        selected = next.selected;
+                                        session_id = next.session_id;
+                                        session_auth_pending = next.session_auth_pending;
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
+                                            "Harness switched to {label} · new session via {}",
+                                            next.name
+                                        ))));
+                                    }
+                                    Err(error) => {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
+                                            "Harness {label} initialize: {error}"
+                                        ))));
+                                    }
+                                }
+                            }
                             if inflight.is_none() && parked.is_none() {
                                 if let Some(next) = prompt_queue.pop_front() {
                                     inflight = begin_prompt(

@@ -736,6 +736,130 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
     let _ = client.await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeResponse, NewSessionResponse,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    let initializes = Arc::new(AtomicUsize::new(0));
+    let sessions = Arc::new(AtomicUsize::new(0));
+    let agent = Agent
+        .builder()
+        .name("switchable-acp")
+        .on_receive_request(
+            {
+                let initializes = Arc::clone(&initializes);
+                async move |init: InitializeRequest, responder, _cx| {
+                    let generation = initializes.fetch_add(1, Ordering::SeqCst) + 1;
+                    responder.respond(
+                        InitializeResponse::new(init.protocol_version)
+                            .agent_capabilities(AgentCapabilities::new())
+                            .agent_info(Implementation::new(
+                                format!("agent-{generation}"),
+                                "0",
+                            )),
+                    )
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let sessions = Arc::clone(&sessions);
+                async move |_req: NewSessionRequest, responder, cx| {
+                    let generation = sessions.fetch_add(1, Ordering::SeqCst) + 1;
+                    responder.respond(NewSessionResponse::new(SessionId::new(format!(
+                        "s{generation}"
+                    ))))?;
+                    if generation == 1 {
+                        cx.send_notification(UntypedMessage::new(
+                            crate::cordis::COMMANDS_UPDATE,
+                            json!({
+                                "protocol": 0,
+                                "commands": [{
+                                    "name": "harness",
+                                    "description": "Switch Harness"
+                                }]
+                            }),
+                        )?)?;
+                    }
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: UntypedMessage, responder, _cx| {
+                assert_eq!(request.method(), crate::cordis::COMMAND_INVOKE);
+                responder.respond(json!({
+                    "action": "harness-switched",
+                    "harness": {
+                        "id": "builtin-dsh",
+                        "label": "Bundled DeepSeek Harness",
+                        "command": "/pkg/dsh-acp",
+                        "args": ["--stdio"]
+                    }
+                }))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if matches!(
+            bus_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(AppEvent::Rpc { method, .. }) if method == crate::cordis::COMMANDS_UPDATE
+        ) {
+            break;
+        }
+    }
+    cmd_tx
+        .send(Cmd::InvokePluginCommand {
+            name: "harness".into(),
+            args: "builtin-dsh".into(),
+        })
+        .expect("switch Harness");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut rebound = false;
+    while Instant::now() < deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }))
+                if session_id == "s2" =>
+            {
+                rebound = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    assert!(rebound, "Harness switch must bind a session from the new Agent");
+    assert_eq!(initializes.load(Ordering::SeqCst), 2);
+    assert_eq!(sessions.load(Ordering::SeqCst), 2);
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
 #[test]
 fn prompt_image_flag_reads_initialize_payload() {
     assert!(prompt_image_supported(&json!({

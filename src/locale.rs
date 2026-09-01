@@ -85,7 +85,7 @@ impl Locale {
             "agents" => "切换 Agent 面板（on/off）",
             "status" => "显示会话运行状态与关键统计",
             "plan-view" => "打开当前 ACP 计划",
-            "harness" => "在下次 standalone 启动的新会话中切换 Harness",
+            "harness" => "立即切换 Harness 并启动新会话",
             _ => fallback,
         }
     }
