@@ -24,6 +24,35 @@ fn session_setup_keeps_current_mode_when_the_mode_catalog_is_empty() {
 }
 
 #[test]
+fn codex_thought_level_populates_the_effort_catalog() {
+    let (bus, _events) = std::sync::mpsc::channel();
+    let mut surface = Surface::default();
+
+    surface.apply_config_options(
+        &json!([{
+            "type": "select",
+            "id": "reasoning_effort",
+            "category": "thought_level",
+            "currentValue": "high",
+            "options": [
+                {"value": "low", "name": "Low"},
+                {"value": "medium", "name": "Medium"},
+                {"value": "high", "name": "High"},
+                {"value": "xhigh", "name": "Xhigh"},
+                {"value": "max", "name": "Max"},
+                {"value": "ultra", "name": "Ultra"}
+            ]
+        }]),
+        &bus,
+    );
+
+    assert_eq!(
+        surface.efforts,
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+}
+
+#[test]
 fn dynamic_plugin_inventory_uses_the_backend_current_package_and_run_state() {
     let plugins = dynamic_plugins_from_value(&json!([
         {
@@ -539,9 +568,9 @@ async fn cordis_requests_stay_local_when_the_agent_did_not_advertise_cordis() {
         (0..20).any(|_| matches!(
             bus_rx.recv_timeout(Duration::from_millis(20)),
             Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message)))
-                if message.contains("does not advertise _dsh/cordis")
+                if message.contains("client compositor is unavailable")
         )),
-        "the client should report that the Cordis capability is unavailable",
+        "the client should report that the local compositor is unavailable",
     );
 
     let _ = cmd_tx.send(Cmd::Shutdown);
@@ -612,6 +641,96 @@ async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
         }
     }
     assert_eq!(catalog.unwrap()["commands"][0]["name"], "ui");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_compositor_command_does_not_require_agent_cordis_capability() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeResponse, NewSessionResponse,
+    };
+    use std::time::Duration;
+
+    let (invoke_tx, mut invoke_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("standard-acp-with-client-compositor")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new(
+                            "standard-acp-with-client-compositor",
+                            "0",
+                        )),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))?;
+                cx.send_notification(UntypedMessage::new(
+                    crate::cordis::COMMANDS_UPDATE,
+                    json!({
+                        "protocol": 0,
+                        "commands": [{
+                            "name": "harness",
+                            "description": "Switch Harness"
+                        }]
+                    }),
+                )?)
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: UntypedMessage, responder, _cx| {
+                let _ = invoke_tx.send((request.method().to_string(), request.params().clone()));
+                responder.respond(json!({ "ok": true }))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if matches!(
+            bus_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(AppEvent::Rpc { method, .. }) if method == crate::cordis::COMMANDS_UPDATE
+        ) {
+            break;
+        }
+    }
+    cmd_tx
+        .send(Cmd::InvokePluginCommand {
+            name: "harness".into(),
+            args: "path-dsh-acp".into(),
+        })
+        .expect("invoke local Client command");
+
+    let (method, params) = tokio::time::timeout(Duration::from_secs(1), invoke_rx.recv())
+        .await
+        .expect("local compositor invocation should not be blocked by agent capability")
+        .expect("invocation request");
+    assert_eq!(method, crate::cordis::COMMAND_INVOKE);
+    assert_eq!(params["name"], "harness");
+    assert_eq!(params["args"], "path-dsh-acp");
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
@@ -1119,6 +1238,101 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
         saw_plan,
         "the successful response is the authoritative state snapshot"
     );
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn effort_selection_uses_the_advertised_thought_level_config_id() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeResponse, NewSessionResponse, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigSelectOption, SetSessionConfigOptionResponse,
+    };
+    use std::time::{Duration, Instant};
+
+    let (config_tx, mut config_rx) = tokio::sync::mpsc::unbounded_channel();
+    let effort_option = || {
+        SessionConfigOption::select(
+            "reasoning_effort",
+            "Reasoning effort",
+            "high",
+            vec![
+                SessionConfigSelectOption::new("low", "Low"),
+                SessionConfigSelectOption::new("high", "High"),
+                SessionConfigSelectOption::new("ultra", "Ultra"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel)
+    };
+    let agent = Agent
+        .builder()
+        .name("semantic-effort-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("semantic-effort-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1"))
+                        .config_options(vec![effort_option()]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionConfigOptionRequest, responder, _cx| {
+                let _ = config_tx.send(req.config_id.to_string());
+                responder.respond(SetSessionConfigOptionResponse::new(vec![effort_option()]))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    cmd_tx.send(Cmd::NewSession).expect("create ACP session");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if matches!(
+            bus_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) if session_id == "s1"
+        ) {
+            break;
+        }
+    }
+    cmd_tx
+        .send(Cmd::SelectModel {
+            session_id: "s1".into(),
+            provider: None,
+            model: None,
+            effort: Some("ultra".into()),
+        })
+        .expect("select effort");
+
+    let config_id = tokio::time::timeout(Duration::from_secs(1), config_rx.recv())
+        .await
+        .expect("set_config_option request")
+        .expect("config id");
+    assert_eq!(config_id, "reasoning_effort");
+
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }

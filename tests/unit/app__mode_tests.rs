@@ -3080,6 +3080,30 @@ fn editing_a_dismissed_slash_draft_reopens_completion() {
 }
 
 #[test]
+fn effort_picker_selects_the_current_session_value() {
+    let (mut app, _ctl, _rx) = test_app();
+
+    app.open_effort_picker(
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        Some("high".into()),
+    );
+
+    let picker = app.picker.as_ref().expect("effort picker");
+    assert_eq!(
+        picker
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+    assert_eq!(picker.sel, 2, "the live ACP value should be highlighted");
+}
+
+#[test]
 fn plugin_slider_moves_between_effort_marks_for_material_preview() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();

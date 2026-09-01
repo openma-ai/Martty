@@ -4668,6 +4668,10 @@ impl App {
                 })
                 .collect();
         }
+        let sel = default
+            .as_deref()
+            .and_then(|value| items.iter().position(|item| item.id == value))
+            .unwrap_or(0);
         self.picker = Some(Picker {
             kind: PickerKind::Effort,
             title: self
@@ -4677,7 +4681,7 @@ impl App {
                     " 推理强度 · enter 选择 · esc 关闭 ",
                 )
                 .into(),
-            sel: 0,
+            sel,
             items,
         });
     }

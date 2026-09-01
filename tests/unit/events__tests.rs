@@ -779,6 +779,28 @@ fn config_options_report_the_session_model() {
 }
 
 #[test]
+fn config_options_report_semantic_reasoning_effort() {
+    let events = config_option_events(
+        "codex-session".into(),
+        &json!([{
+            "type": "select",
+            "id": "reasoning_effort",
+            "category": "thought_level",
+            "currentValue": "high",
+            "options": []
+        }]),
+    );
+
+    assert_eq!(
+        events,
+        vec![UiEvent::ReasoningEffort {
+            session: "codex-session".into(),
+            effort: "high".into(),
+        }]
+    );
+}
+
+#[test]
 fn context_usage_update_is_not_misread_as_token_breakdown() {
     let events = parse_notification(
         "session/update",

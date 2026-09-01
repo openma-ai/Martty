@@ -45,7 +45,7 @@ use crate::bus::{
 };
 use crate::events::{
     catalog_from_config_options, config_option_events, flatten_select_options,
-    session_modes_from_value, skills_from_available_commands,
+    reasoning_effort_option, session_modes_from_value, skills_from_available_commands,
 };
 use crate::runtime::RuntimeConfig;
 
@@ -65,7 +65,11 @@ struct Surface {
     presets: Vec<CatalogPreset>,
     skills: Vec<crate::bus::SkillInfo>,
     efforts: Vec<String>,
+    effort_config_id: Option<String>,
+    effort_current: Option<String>,
     modes: Vec<CatalogPreset>,
+    /// A local Client compositor advertised one of its TUI projections.
+    client_compositor: bool,
     /// Agent advertised `promptCapabilities.image` (ACP Image blocks allowed).
     prompt_image: bool,
     /// Agent negotiated the DSH Cordis ACP extension family.
@@ -81,10 +85,16 @@ impl Surface {
             self.composition_id = composition_id;
         }
         if let Some(arr) = options.as_array() {
-            if let Some(effort) = arr
-                .iter()
-                .find(|o| o.get("id").and_then(Value::as_str) == Some("effort"))
-            {
+            if let Some(effort) = reasoning_effort_option(options) {
+                self.effort_config_id = effort
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                self.effort_current = effort
+                    .get("currentValue")
+                    .or_else(|| effort.get("current_value"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 self.efforts =
                     flatten_select_options(effort.get("options").unwrap_or(&Value::Null))
                         .into_iter()
@@ -937,6 +947,19 @@ fn ensure_agent_cordis(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent>) ->
     advertised
 }
 
+fn ensure_client_compositor(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent>) -> bool {
+    let advertised = surface
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .client_compositor;
+    if !advertised {
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+            "client compositor is unavailable".into(),
+        )));
+    }
+    advertised
+}
+
 async fn connect<T>(
     transport: T,
     cfg: RuntimeConfig,
@@ -955,6 +978,7 @@ where
     let bus_config = bus.clone();
     let surface_n = Arc::clone(&surface);
     let surface_config = Arc::clone(&surface);
+    let surface_u = Arc::clone(&surface);
     let workspace = cfg.workspace.clone();
     let workspace_read = workspace.clone();
     let workspace_write = workspace.clone();
@@ -1015,6 +1039,9 @@ where
                         | crate::cordis::APPROVALS_UPDATE
                         | crate::cordis::UI_UPDATE
                 ) {
+                    if let Ok(mut surface) = surface_u.lock() {
+                        surface.client_compositor = true;
+                    }
                     let _ = bus_u.send(AppEvent::Rpc {
                         method: msg.method().into(),
                         params: msg.params().clone(),
@@ -1699,10 +1726,16 @@ where
                                     });
                             }
                             if let Some(effort) = effort {
+                                let config_id = surface
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .effort_config_id
+                                    .clone()
+                                    .unwrap_or_else(|| "effort".into());
                                 let _ = cx
                                     .send_request(SetSessionConfigOptionRequest::new(
                                         sid,
-                                        "effort",
+                                        config_id,
                                         SessionConfigOptionValue::value_id(effort),
                                     ))
                                     .block_task()
@@ -1816,7 +1849,7 @@ where
                             }
                         }
                         Cmd::RespondCordisApproval { request_id, decision } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
+                            if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
                             if let Err(error) = call_tui_extension(
@@ -1836,7 +1869,7 @@ where
                             }
                         }
                         Cmd::InvokePluginCommand { name, args } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
+                            if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
                             if let Err(error) = call_tui_extension(
@@ -1856,7 +1889,7 @@ where
                             }
                         }
                         Cmd::PluginThemeSelected { agent_id, id } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
+                            if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
                             let result = call_tui_extension(
@@ -1876,7 +1909,7 @@ where
                             }
                         }
                         Cmd::PluginUiSelected { agent_id, id } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
+                            if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
                             match call_tui_extension(
@@ -1899,7 +1932,7 @@ where
                             }
                         }
                         Cmd::PluginOverlayEvent { id, event, value } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
+                            if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
                             let mut params = serde_json::json!({
@@ -1924,18 +1957,17 @@ where
                             }
                         }
                         Cmd::FetchEfforts { .. } => {
-                            let efforts = surface
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .efforts
-                                .clone();
+                            let (efforts, current) = {
+                                let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                (surface.efforts.clone(), surface.effort_current.clone())
+                            };
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
                                 efforts: if efforts.is_empty() {
                                     vec!["off".into(), "high".into(), "max".into()]
                                 } else {
                                     efforts.clone()
                                 },
-                                default: efforts.first().cloned(),
+                                default: current.or_else(|| efforts.first().cloned()),
                             }));
                         }
                         Cmd::SetPermission { preset, .. } => {

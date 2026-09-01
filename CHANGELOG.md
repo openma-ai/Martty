@@ -61,7 +61,10 @@ All notable changes to this project are documented here. The project follows
   capability and render as TUI notices instead of being forwarded as assistant
   prose. The footer model chip now follows the model reported by the active ACP
   session and no longer falls back to a DeepSeek model name for generic
-  Harnesses.
+  Harnesses. Reasoning effort now follows the semantic ACP `thought_level`
+  option, including its advertised values, current selection, and actual config
+  id. Local Client compositor commands such as `/harness` also remain usable
+  when the attached Agent does not advertise the server-side Cordis extension.
 - `martty harness list` now renders a width-aware, readable Harness catalog
   with active state, labels, IDs, sources, separate command arguments, compact
   local paths, and next-step hints instead of raw tab-separated rows. The

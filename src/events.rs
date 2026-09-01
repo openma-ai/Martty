@@ -697,6 +697,22 @@ fn collaboration_mode_active(options: Option<&Value>) -> Option<bool> {
         .map(|value| value == "plan")
 }
 
+/// Resolve the standard semantic reasoning-effort option while retaining the
+/// legacy literal `effort` id used by older ACP agents.
+pub fn reasoning_effort_option(options: &Value) -> Option<&Value> {
+    let entries = options.as_array()?;
+    entries
+        .iter()
+        .find(|option| {
+            option.get("category").and_then(Value::as_str) == Some("thought_level")
+        })
+        .or_else(|| {
+            entries
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some("effort"))
+        })
+}
+
 /// Fold a complete ACP `configOptions` snapshot into the client-facing facts
 /// that drive existing composer chrome. Used for both setup responses and
 /// later `config_option_update` notifications.
@@ -730,16 +746,11 @@ pub fn config_option_events(session: String, options: &Value) -> Vec<UiEvent> {
             preset,
         });
     }
-    if let Some(effort) = options.as_array().and_then(|entries| {
-        entries
-            .iter()
-            .find(|option| option.get("id").and_then(Value::as_str) == Some("effort"))
-            .and_then(|option| {
-                option
-                    .get("currentValue")
-                    .or_else(|| option.get("current_value"))
-                    .and_then(Value::as_str)
-            })
+    if let Some(effort) = reasoning_effort_option(options).and_then(|option| {
+        option
+            .get("currentValue")
+            .or_else(|| option.get("current_value"))
+            .and_then(Value::as_str)
     }) {
         events.push(UiEvent::ReasoningEffort {
             session,
