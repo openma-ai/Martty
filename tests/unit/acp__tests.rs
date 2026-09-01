@@ -209,6 +209,11 @@ fn initialize_advertises_backchat_auth_caps() {
     assert_eq!(caps["_meta"]["terminal_output"], true);
     assert_eq!(caps["_meta"]["subagent-transcript"], true);
     assert_eq!(caps["_meta"]["dsh"]["cordis"]["protocol"], 0);
+    assert_eq!(caps["_meta"]["jetbrains"]["air"]["version"], 1);
+    assert_eq!(
+        caps["_meta"]["jetbrains"]["air"]["capabilities"],
+        json!(["sessionFailure"])
+    );
     assert_eq!(caps["auth"]["terminal"], true);
     assert_eq!(caps["auth"]["_meta"]["gateway"], true);
     assert_eq!(caps["session"]["configOptions"], json!({}));

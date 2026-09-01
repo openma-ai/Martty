@@ -57,6 +57,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Codex ACP adapter diagnostics now negotiate the typed `sessionFailure`
+  capability and render as TUI notices instead of being forwarded as assistant
+  prose. The footer model chip now follows the model reported by the active ACP
+  session and no longer falls back to a DeepSeek model name for generic
+  Harnesses.
 - `martty harness list` now renders a width-aware, readable Harness catalog
   with active state, labels, IDs, sources, separate command arguments, compact
   local paths, and next-step hints instead of raw tab-separated rows. The

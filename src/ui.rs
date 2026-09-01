@@ -1403,11 +1403,7 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
     if lw + rw + 2 > width {
         // Drop the contextual hints first, but keep the scroll position
         // beside the model so a longer left-side mode label never hides it.
-        let shown_model = app
-            .transcript
-            .last_model
-            .clone()
-            .unwrap_or_else(|| app.cfg.model.clone());
+        let shown_model = displayed_model(app);
         let mut compact = Vec::new();
         if app.scroll_up > 0 {
             compact.push(Span::styled(
@@ -1415,14 +1411,20 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
                 Style::default().fg(theme.caption),
             ));
         }
-        compact.push(Span::styled(
-            format!("{shown_model} "),
-            Style::default().fg(theme.brand_soft),
-        ));
+        if let Some(shown_model) = &shown_model {
+            compact.push(Span::styled(
+                format!("{shown_model} "),
+                Style::default().fg(theme.brand_soft),
+            ));
+        }
         let compact_width = span_widths(&compact);
         if lw + compact_width + 2 <= width {
             right_spans = compact;
-        } else if lw + shown_model.width() + 3 <= width {
+        } else if shown_model
+            .as_deref()
+            .is_some_and(|model| lw + model.width() + 3 <= width)
+        {
+            let shown_model = shown_model.expect("checked above");
             right_spans = vec![Span::styled(
                 format!("{shown_model} "),
                 Style::default().fg(theme.brand_soft),
@@ -1688,22 +1690,17 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     spans.extend(context_hints(app));
     if app.session_bound {
-        // Chip precedence: an explicit /model pick (until a turn realizes it)
-        // → the model that actually streamed last → the configured default.
-        let shown_model = app
-            .selected_model
-            .clone()
-            .or_else(|| app.transcript.last_model.clone())
-            .unwrap_or_else(|| app.cfg.model.clone());
-        spans.push(Span::styled(
-            shown_model,
-            Style::default().fg(theme.brand_soft),
-        ));
-        if let Some(effort) = &app.modes.effort {
+        if let Some(shown_model) = displayed_model(app) {
             spans.push(Span::styled(
-                format!(" · {effort}"),
-                Style::default().fg(theme.caption),
+                shown_model,
+                Style::default().fg(theme.brand_soft),
             ));
+            if let Some(effort) = &app.modes.effort {
+                spans.push(Span::styled(
+                    format!(" · {effort}"),
+                    Style::default().fg(theme.caption),
+                ));
+            }
         }
     }
     if app.demo {
@@ -1714,6 +1711,18 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     spans.push(Span::raw(" "));
     spans
+}
+
+fn displayed_model(app: &App) -> Option<String> {
+    app.selected_model
+        .clone()
+        .or_else(|| app.transcript.last_model.clone())
+        .or_else(|| app.session_model.clone())
+        .or_else(|| {
+            let runtime = app.cfg.bin.to_ascii_lowercase();
+            (app.demo || runtime.contains("dsh-acp") || runtime.contains("deepseek-harness-acp"))
+                .then(|| app.cfg.model.clone())
+        })
 }
 
 fn span_widths(spans: &[Span]) -> usize {

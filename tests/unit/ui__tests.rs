@@ -388,6 +388,33 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 }
 
 #[test]
+fn codex_model_chip_waits_for_acp_then_uses_the_reported_session_model() {
+    let flat = |spans: Vec<Span>| -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    };
+    let mut app = live_test_app();
+    app.cfg.bin = "npx -y @agentclientprotocol/codex-acp".into();
+    app.server_info = Some("@agentclientprotocol/codex-acp".into());
+    app.session_bound = true;
+
+    let pending = flat(status_right(&app));
+    assert!(!pending.contains("deepseek-chat"), "{pending}");
+
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session: app.session_id.clone(),
+            model: "gpt-5.6-codex".into(),
+        }),
+        &ctl,
+    );
+
+    let reported = flat(status_right(&app));
+    assert!(reported.contains("gpt-5.6-codex"), "{reported}");
+    assert!(!reported.contains("deepseek-chat"), "{reported}");
+}
+
+#[test]
 fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     let flat = |line: &Line| -> String {
         line.spans

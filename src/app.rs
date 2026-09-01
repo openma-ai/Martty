@@ -1095,6 +1095,8 @@ pub struct App {
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
     pub selected_model: Option<String>,
+    /// Current model reported by this ACP session's config snapshot.
+    pub session_model: Option<String>,
     pub demo: bool,
     /// A live ACP agent owns runtime, credentials, and its advertised catalog.
     pub attached: bool,
@@ -1145,6 +1147,8 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::UserInjected { session, .. }
         | UiEvent::UserMessage { session, .. }
         | UiEvent::SessionTitle { session, .. }
+        | UiEvent::SessionNotice { session, .. }
+        | UiEvent::SessionModel { session, .. }
         | UiEvent::Plan { session, .. }
         | UiEvent::PlanMode { session, .. }
         | UiEvent::SandboxMode { session, .. }
@@ -1454,6 +1458,7 @@ impl App {
             session_id,
             cfg,
             selected_model: None,
+            session_model: None,
             demo,
             attached,
             session_bound: demo,
@@ -2682,6 +2687,7 @@ impl App {
                     CtlEvent::SessionBound { session_id, notice } => {
                         if self.session_id != session_id {
                             self.reset_subagent_views();
+                            self.session_model = None;
                         }
                         self.session_id = session_id.clone();
                         self.transcript.set_root_session(session_id);
@@ -2835,6 +2841,10 @@ impl App {
             }
             E::SessionTitle { session, title } if *session == self.session_id => {
                 self.session_title = Some(title.clone());
+            }
+            E::SessionModel { session, model } if *session == self.session_id => {
+                self.session_model = Some(model.clone());
+                apply_to_transcript = false;
             }
             _ => {}
         }
