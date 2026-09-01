@@ -16,9 +16,15 @@ export const inject = ['acpClientEvents', 'acpSessionConfig']
 const AUTH_REQUIRED_CODE = -32000
 const SETUP_METHODS = new Set(['session/new', 'session/load'])
 const RUNNING_UPDATE_TYPES = new Set([
+  'user_message_chunk',
   'agent_message_chunk',
   'agent_thought_chunk',
   'tool_call',
+  'tool_call_update',
+  'plan',
+  'plan_update',
+  'plan_removed',
+  'usage_update',
 ])
 
 class AcpSessionStatusService extends Service {
@@ -58,6 +64,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
   let initializeId
   let pendingAuthenticate = new Set()
   const pendingSetup = new Map()
+  const pendingPrompts = new Map()
   let permissionPreset
   let sandboxMode
 
@@ -108,9 +115,15 @@ export function installAcpSessionStatus(ctx, options = {}) {
       )
       return
     }
-    if (message.method === 'session/prompt' && value.state === 'idle') {
-      value.state = 'starting'
-      publish()
+    if (message.method === 'session/prompt' && message.id !== undefined) {
+      pendingPrompts.set(
+        message.id,
+        readString(message.params, 'sessionId', 'session_id'),
+      )
+      if (value.state === 'idle') {
+        value.state = 'starting'
+        publish()
+      }
     }
   }
 
@@ -155,6 +168,21 @@ export function installAcpSessionStatus(ctx, options = {}) {
       publish()
       return
     }
+    if (response(message) && pendingPrompts.has(message.id)) {
+      pendingPrompts.delete(message.id)
+      let changed = false
+      if (message.error !== undefined && isAuthRequired(message.error)
+        && value.auth.status !== 'needs sign-in') {
+        value.auth.status = 'needs sign-in'
+        changed = true
+      }
+      if (pendingPrompts.size === 0 && value.state !== 'idle') {
+        value.state = 'idle'
+        changed = true
+      }
+      if (changed) publish()
+      return
+    }
     if (message.error !== undefined && isAuthRequired(message.error)) {
       value.auth.status = 'needs sign-in'
       publish()
@@ -163,7 +191,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
 
     if (message.method === 'session.status' && object(message.params)) {
       const status = readString(message.params, 'status')
-      if (status === 'running' || status === 'idle') {
+      if (status === 'running' || (status === 'idle' && pendingPrompts.size === 0)) {
         value.state = status
         publish()
       }
@@ -200,12 +228,22 @@ export function installAcpSessionStatus(ctx, options = {}) {
       return
     }
     if (message.method !== 'session/update' || !object(message.params)) return
+    const sessionId = readString(message.params, 'sessionId', 'session_id')
     const update = object(message.params.update) ? message.params.update : undefined
     const type = readString(update, 'sessionUpdate', 'session_update')
-    if (value.state === 'starting' && RUNNING_UPDATE_TYPES.has(type)) {
+    if (value.state !== 'running' && hasPendingPrompt(sessionId)
+      && RUNNING_UPDATE_TYPES.has(type)) {
       value.state = 'running'
       publish()
     }
+  }
+
+  function hasPendingPrompt(sessionId) {
+    if (sessionId === undefined) return false
+    for (const pendingSessionId of pendingPrompts.values()) {
+      if (pendingSessionId === sessionId) return true
+    }
+    return false
   }
 
   function onConfigSnapshot(snapshot) {
@@ -269,6 +307,11 @@ function readString(value, ...keys) {
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function response(message) {
+  return !Object.hasOwn(message, 'method')
+    && (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'))
 }
 
 export function apply(ctx, options = {}) {

@@ -31,11 +31,12 @@ default consumer: it contributes the compact readout to
 ## Open: `acpSessionStatus`
 
 `acpSessionStatus` folds the non-statistics facts `/status` needs from standard
-ACP initialize / authenticate / session / session/update / session.event
-traffic: state (idle/starting/running), connection, server, authenticate state,
-session binding, model, effort, permission, plan, and agent preset. It exposes
-`current()` and `subscribe(listener)` and never accumulates tokens or timings —
-statistics have exactly one source, `acpSessionStats`.
+ACP initialize / authenticate / session / `session/prompt` response /
+`session/update` traffic, plus the optional Martty `session.status` /
+`session.event` extensions: state (idle/starting/running), connection, server,
+authenticate state, session binding, model, effort, permission, plan, and agent
+preset. It exposes `current()` and `subscribe(listener)` and never accumulates
+tokens or timings — statistics have exactly one source, `acpSessionStats`.
 
 The builtin `status-view` Client Plugin is its default consumer: it registers
 the local `/status` command and opens a markdown status view with
