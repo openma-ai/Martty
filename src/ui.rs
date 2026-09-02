@@ -13,7 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, RunState};
 use crate::logo;
 use crate::pet::{SPRITE_H, SPRITE_W, WHALE_XS};
-use crate::theme::{lerp, Theme};
+use crate::theme::{lerp, Mode, Theme};
 
 /// Columns the composer text keeps clear of the pet at its right edge
 /// (widest pet form is 8 cols, plus a one-column gap).
@@ -997,33 +997,43 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The session tab strip (issue #94) — native status chrome fed by
-/// per-session running facts, the same source as `state_line`. Per tab: a
-/// status indicator, a ✓ completion badge for a session that finished
-/// while parked, and a title/short-id label. A `?` indicator (warn color)
-/// marks a tab whose session has an unanswered ACP ask (permission or
-/// elicitation) — the agent is waiting on that tab. Tab rects are recorded
-/// for `App::tab_at` mouse hit-testing.
+/// The session tab strip (issue #94) — Powerline-shaped native status chrome
+/// fed by per-session running facts, the same source as `state_line`. Per tab:
+/// a status indicator, a ✓ completion badge for a session that finished while
+/// parked, and a title/short-id label. A `?` indicator (warn color) marks a tab
+/// whose session has an unanswered ACP ask (permission or elicitation) — the
+/// agent is waiting on that tab. Tab rects include their trailing arrow for
+/// `App::tab_at` mouse hit-testing.
 fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
+    const ARROW: &str = "\u{e0b0}";
+
     let theme = app.theme;
+    let canvas_bg = app.canvas_background_color();
+    let active_fg = match theme.mode {
+        Mode::Dark => theme.bg,
+        Mode::Light => theme.fg,
+    };
+    let background_for = |index: usize, current: bool| {
+        if current {
+            theme.brand
+        } else if index % 2 == 0 {
+            theme.panel
+        } else {
+            theme.bg
+        }
+    };
     let tabs = app.session_tabs();
     let spinner = app.spinner();
     let right = area.right() as usize;
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x as usize;
     for (idx, tab) in tabs.iter().enumerate() {
-        if idx > 0 {
-            if x + 3 > right {
-                break;
-            }
-            spans.push(Span::styled(" │ ", Style::default().fg(theme.border)));
-            x += 3;
-        }
         let label = crate::transcript::clamp_str(&tab.label, 16);
+        let tab_bg = background_for(idx, tab.current);
         let (indicator, indicator_style) = if tab.ask_pending {
             // A session-bound ask outranks every other badge: the agent is
             // blocked until this tab answers.
-            ("?".to_string(), Style::default().fg(theme.warn))
+            ("?".to_string(), Style::default().fg(theme.warn).bg(tab_bg))
         } else if tab.running {
             (
                 if tab.current {
@@ -1031,31 +1041,57 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     "●".to_string()
                 },
-                Style::default().fg(theme.brand),
+                Style::default()
+                    .fg(if tab.current { active_fg } else { theme.brand })
+                    .bg(tab_bg),
             )
         } else if tab.completed_unseen {
-            ("✓".to_string(), Style::default().fg(theme.warn_soft()))
+            (
+                "✓".to_string(),
+                Style::default().fg(theme.warn_soft()).bg(tab_bg),
+            )
         } else {
-            ("·".to_string(), Style::default().fg(theme.caption))
+            (
+                "·".to_string(),
+                Style::default()
+                    .fg(if tab.current {
+                        active_fg
+                    } else {
+                        theme.caption
+                    })
+                    .bg(tab_bg),
+            )
         };
         let label_style = if tab.current {
-            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(active_fg)
+                .bg(tab_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme.fg_tertiary)
+            Style::default().fg(theme.fg_secondary).bg(tab_bg)
         };
-        let width = indicator.width() + label.width() + 3;
+        let arrow_width = ARROW.width();
+        let width = indicator.width() + label.width() + 3 + arrow_width;
         if x + width > right {
             break;
         }
-        app.tab_rects.push((
-            Rect::new(x as u16, area.y, width as u16, 1),
-            idx,
-        ));
-        spans.push(Span::styled(
-            format!(" {indicator} ",),
-            indicator_style,
-        ));
+        app.tab_rects
+            .push((Rect::new(x as u16, area.y, width as u16, 1), idx));
+        spans.push(Span::styled(format!(" {indicator} ",), indicator_style));
         spans.push(Span::styled(format!("{label} "), label_style));
+        let next_fits = tabs.get(idx + 1).is_some_and(|next| {
+            let next_label = crate::transcript::clamp_str(&next.label, 16);
+            // Every native status marker (including the Braille spinner) is
+            // one terminal cell wide.
+            let next_width = next_label.width() + 4;
+            x + width + next_width <= right
+        });
+        let next_bg = tabs
+            .get(idx + 1)
+            .filter(|_| next_fits)
+            .map(|next| background_for(idx + 1, next.current))
+            .unwrap_or(canvas_bg);
+        spans.push(Span::styled(ARROW, Style::default().fg(tab_bg).bg(next_bg)));
         x += width;
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
