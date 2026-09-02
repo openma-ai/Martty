@@ -1211,7 +1211,7 @@ fn agent_preset_event_updates_chrome_without_adding_a_transcript_row() {
 }
 
 #[test]
-fn acp_session_list_opens_picker_and_prefix_loads() {
+fn acp_session_list_opens_picker_and_prefix_resumes() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;
     app.load_session = true;
@@ -1310,15 +1310,44 @@ fn agent_caps_gate_resume_to_session_list() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;
     app.handle(
-        AppEvent::Ctl(CtlEvent::AgentCaps { load_session: true }),
+        AppEvent::Ctl(CtlEvent::AgentCaps {
+            load_session: true,
+            list_session: true,
+            resume_session: true,
+        }),
         &ctl,
     );
     assert!(app.load_session);
+    assert!(app.list_session);
+    assert!(app.resume_session_cap);
     app.run_slash("resume", "", &ctl);
     assert!(
         app.picker.is_none(),
         "live ACP /resume waits for session/list"
     );
+}
+
+#[test]
+fn resume_capability_can_restore_an_exact_id_without_load_or_list() {
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let mut app = App::new(Some(Theme::dark()), cfg, "s-current".into(), false, true, tx);
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(
+        AppEvent::Ctl(CtlEvent::AgentCaps {
+            load_session: false,
+            list_session: false,
+            resume_session: true,
+        }),
+        &ctl,
+    );
+
+    app.run_slash("resume", "s-old", &ctl);
+
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_millis(50)),
+        Ok(Cmd::ResumeSession { session_id }) if session_id == "s-old"
+    ));
 }
 
 #[test]

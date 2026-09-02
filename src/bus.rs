@@ -126,9 +126,13 @@ pub enum CtlEvent {
     Auth(crate::acp_auth::AuthSnapshot),
     /// Open the client `/auth` surface (method picker or the one method).
     OpenAuth,
-    /// Agent advertised `loadSession` (`session/load`, usually with `session/list`).
-    AgentCaps { load_session: bool },
-    /// `session/new` or `session/load` resolved; the UI must use this id.
+    /// Agent-advertised session lifecycle capabilities.
+    AgentCaps {
+        load_session: bool,
+        list_session: bool,
+        resume_session: bool,
+    },
+    /// `session/new`, `session/resume`, or `session/load` resolved; the UI must use this id.
     SessionBound {
         session_id: String,
         notice: Option<String>,
@@ -404,8 +408,8 @@ pub enum Cmd {
     ListSessions {
         prefix: Option<String>,
     },
-    /// Live ACP `/resume` pick → `session/load`.
-    LoadSession {
+    /// Live ACP `/resume` pick → `session/resume`, with legacy `session/load` fallback.
+    ResumeSession {
         session_id: String,
     },
     Shutdown,

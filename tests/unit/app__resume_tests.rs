@@ -148,7 +148,7 @@ fn acp_resume_usage_snapshot_reaches_the_footer_once() {
 
     // Multi-session routing (issue #94): updates only reach the footer of
     // the session they are tagged with, so load the session first.
-    app.load_acp_session("dsh-loaded", &ctl);
+    app.resume_acp_session("dsh-loaded", &ctl);
     app.handle(
         AppEvent::Rpc {
             method: "session/update".into(),
@@ -289,7 +289,7 @@ fn acp_resume_dismisses_the_welcome_banner_before_the_replay_streams() {
     // the ACP session/load path did not, hiding every replayed message
     // until the first prompt+send cleared the banner).
     assert!(app.show_banner, "fresh app shows the welcome banner");
-    app.load_acp_session("acp-old", &ctl);
+    app.resume_acp_session("acp-old", &ctl);
 
     assert!(
         !app.show_banner,

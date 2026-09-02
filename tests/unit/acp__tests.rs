@@ -741,6 +741,30 @@ fn load_session_flag_reads_initialize_payload() {
     assert!(!load_session_supported(&json!({})));
 }
 
+#[test]
+fn resume_session_flag_reads_initialize_payload() {
+    assert!(resume_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "resume": {} } }
+    })));
+    assert!(resume_session_supported(&json!({
+        "agent_capabilities": { "session_capabilities": { "resume": {} } }
+    })));
+    assert!(!resume_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "resume": null } }
+    })));
+    assert!(!resume_session_supported(&json!({})));
+}
+
+#[test]
+fn list_session_flag_reads_initialize_payload() {
+    assert!(list_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "list": {} } }
+    })));
+    assert!(!list_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "list": null } }
+    })));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     use agent_client_protocol::schema::v1::{
@@ -1251,13 +1275,16 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
+async fn resume_session_prefers_resume_and_binds_before_applying_initial_config() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse,
-        SessionConfigOption, SessionConfigSelectOption,
+        ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionConfigOption,
+        SessionConfigSelectOption, SessionResumeCapabilities,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
+    let load_calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent
         .builder()
         .name("load-config-mock")
@@ -1265,7 +1292,14 @@ async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
             async move |init: InitializeRequest, responder, _cx| {
                 responder.respond(
                     InitializeResponse::new(init.protocol_version)
-                        .agent_capabilities(AgentCapabilities::new().load_session(true))
+                        .agent_capabilities(
+                            AgentCapabilities::new()
+                                .load_session(true)
+                                .session_capabilities(
+                                    SessionCapabilities::new()
+                                        .resume(SessionResumeCapabilities::new()),
+                                ),
+                        )
                         .agent_info(Implementation::new("load-config-mock", "0")),
                 )
             },
@@ -1278,8 +1312,8 @@ async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |_req: LoadSessionRequest, responder, _cx| {
-                responder.respond(LoadSessionResponse::new().config_options(vec![
+            async move |_req: ResumeSessionRequest, responder, _cx| {
+                responder.respond(ResumeSessionResponse::new().config_options(vec![
                     SessionConfigOption::select(
                         "collaboration_mode",
                         "Collaboration mode",
@@ -1290,6 +1324,16 @@ async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
                         ],
                     ),
                 ]))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let load_calls = Arc::clone(&load_calls);
+                async move |_req: LoadSessionRequest, responder, _cx| {
+                    load_calls.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(LoadSessionResponse::new())
+                }
             },
             on_receive_request!(),
         );
@@ -1320,10 +1364,10 @@ async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
         }
     }
     cmd_tx
-        .send(Cmd::LoadSession {
+        .send(Cmd::ResumeSession {
             session_id: "s2".into(),
         })
-        .expect("load session");
+        .expect("resume session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut order = Vec::new();
@@ -1344,6 +1388,120 @@ async fn load_session_binds_the_loaded_id_before_applying_its_initial_config() {
     }
 
     assert_eq!(order, ["bound", "plan"]);
+    assert_eq!(load_calls.load(Ordering::SeqCst), 0);
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_session_falls_back_to_load_when_resume_is_rejected() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse,
+        ResumeSessionRequest, SessionCapabilities, SessionResumeCapabilities,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    let resume_calls = Arc::new(AtomicUsize::new(0));
+    let load_calls = Arc::new(AtomicUsize::new(0));
+    let agent = Agent
+        .builder()
+        .name("resume-fallback-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(
+                            AgentCapabilities::new()
+                                .load_session(true)
+                                .session_capabilities(
+                                    SessionCapabilities::new()
+                                        .resume(SessionResumeCapabilities::new()),
+                                ),
+                        )
+                        .agent_info(Implementation::new("resume-fallback-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let resume_calls = Arc::clone(&resume_calls);
+                async move |_req: ResumeSessionRequest, responder, _cx| {
+                    resume_calls.fetch_add(1, Ordering::SeqCst);
+                    responder.respond_with_error(AcpError::new(-32601, "resume unavailable"))
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let load_calls = Arc::clone(&load_calls);
+                async move |_req: LoadSessionRequest, responder, _cx| {
+                    load_calls.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(LoadSessionResponse::new())
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let startup_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < startup_deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) if session_id == "s1" => {
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    cmd_tx
+        .send(Cmd::ResumeSession {
+            session_id: "s2".into(),
+        })
+        .expect("resume session");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut bound_notice = None;
+    while Instant::now() < deadline && bound_notice.is_none() {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, notice }))
+                if session_id == "s2" =>
+            {
+                bound_notice = notice
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    assert_eq!(resume_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(load_calls.load(Ordering::SeqCst), 1);
+    assert!(bound_notice
+        .as_deref()
+        .is_some_and(|text| text.contains("loaded s2")));
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
