@@ -1029,6 +1029,8 @@ fn switched_harness(value: &Value) -> Option<HarnessSwitch> {
 struct SwitchedAgent {
     name: String,
     load_session: bool,
+    list_session: bool,
+    resume_session: bool,
     methods: Vec<AuthMethodInfo>,
     selected: Option<AuthMethodInfo>,
     session_id: Option<SessionId>,
@@ -1057,7 +1059,15 @@ async fn initialize_switched_agent(
     }
     let load_session = init.agent_capabilities.load_session
         || load_session_supported(&init_value);
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps { load_session }));
+    let resume_session = resume_session_supported(&init_value);
+    // Before sessionCapabilities.list existed, Martty-compatible agents paired
+    // session/list with the top-level loadSession flag. Keep that legacy route.
+    let list_session = list_session_supported(&init_value) || load_session;
+    let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
+        load_session,
+        list_session,
+        resume_session,
+    }));
     let auth_raw = init_value
         .get("authMethods")
         .cloned()
@@ -1110,6 +1120,8 @@ async fn initialize_switched_agent(
     Ok(SwitchedAgent {
         name,
         load_session,
+        list_session,
+        resume_session,
         methods,
         selected,
         session_id,
@@ -1593,10 +1605,10 @@ where
                 }
                 let mut load_session = init.agent_capabilities.load_session
                     || load_session_supported(&init_value);
-                let resume_session = resume_session_supported(&init_value);
+                let mut resume_session = resume_session_supported(&init_value);
                 // Before sessionCapabilities.list existed, Martty-compatible agents paired
                 // session/list with the top-level loadSession flag. Keep that legacy route.
-                let list_session = list_session_supported(&init_value) || load_session;
+                let mut list_session = list_session_supported(&init_value) || load_session;
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
                     load_session,
                     list_session,
@@ -2640,6 +2652,8 @@ where
                                 {
                                     Ok(next) => {
                                         load_session = next.load_session;
+                                        list_session = next.list_session;
+                                        resume_session = next.resume_session;
                                         methods = next.methods;
                                         selected = next.selected;
                                         session_id = next.session_id;
