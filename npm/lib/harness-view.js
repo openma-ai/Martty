@@ -8,7 +8,7 @@ import {
 } from './harnesses.js'
 
 export const name = 'harness-view'
-export const inject = ['tuiCommands', 'tuiOverlay', 'acpClient']
+export const inject = ['tuiCommands', 'tuiOverlay', 'acpClient', 'acpSessionStatus']
 
 function entryOptions(settingsPath, options) {
   return discoverHarnesses(settingsPath, options).map((entry) => ({
@@ -23,25 +23,52 @@ function entryOptions(settingsPath, options) {
 export function apply(ctx, options = {}) {
   const settingsPath = options.settingsPath
   const choices = () => entryOptions(settingsPath, options)
+  const switchNow = async (entry) => {
+    if (typeof ctx.acpClient?.switchAgent !== 'function') {
+      throw new Error('Harness switching is unavailable on this ACP transport')
+    }
+    await ctx.acpClient.switchAgent({ command: entry.command, args: entry.args })
+    upsertHarness(settingsPath, entry)
+    activateHarness(settingsPath, entry.id)
+    return {
+      action: 'harness-switched',
+      harness: {
+        id: entry.id,
+        label: entry.label,
+        command: entry.command,
+        args: entry.args,
+      },
+    }
+  }
   const save = async (id) => {
     const entry = discoverHarnesses(settingsPath, options).find(({ id: candidate }) => candidate === id)
     if (entry === undefined) throw new Error(`unknown harness ${JSON.stringify(id)}`)
     if (!options.hostOwned) {
-      if (typeof ctx.acpClient?.switchAgent !== 'function') {
-        throw new Error('Harness switching is unavailable on this ACP transport')
+      if (ctx.acpSessionStatus?.current?.().session?.bound === true) {
+        ctx.tuiOverlay.openSelect({
+          id: 'harness-confirm',
+          title: 'Switch Harness? · starts a new session',
+          value: 'switch',
+          options: [
+            {
+              value: 'switch',
+              label: `Switch to ${entry.label}`,
+              description: 'Current session stays available in /session',
+            },
+            {
+              value: 'cancel',
+              label: 'Stay in current session',
+              description: 'Keep using the current Harness',
+            },
+          ],
+        }, {
+          onSubmit(action) {
+            if (action === 'switch') return switchNow(entry)
+          },
+        })
+        return
       }
-      await ctx.acpClient.switchAgent({ command: entry.command, args: entry.args })
-      upsertHarness(settingsPath, entry)
-      activateHarness(settingsPath, id)
-      return {
-        action: 'harness-switched',
-        harness: {
-          id: entry.id,
-          label: entry.label,
-          command: entry.command,
-          args: entry.args,
-        },
-      }
+      return switchNow(entry)
     }
     upsertHarness(settingsPath, entry)
     activateHarness(settingsPath, id)

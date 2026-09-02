@@ -65,9 +65,10 @@ Client process: independent Cordis root
   stats-view      injects acpSessionStats + tuiSlots
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
-  harness-view    injects tuiCommands + tuiOverlay + acpClient; in standalone
-                  mode /harness replaces the ACP child immediately and requests
-                  a fresh initialize + session/new; profile runtime stays Host-owned
+  harness-view    injects tuiCommands + tuiOverlay + acpClient + acpSessionStatus;
+                  in standalone mode /harness switches immediately before a
+                  session is bound, otherwise confirms before a fresh
+                  initialize + session/new; profile runtime stays Host-owned
   tui-presets     provides tuiPresets; owns persistent /ui composition selection
   martty-preset   default UI Plugin → welcome.hero + welcome.info
   deepseek-logo   injects tuiPresets + tuiSlots; registers the deepseek UI Plugin
@@ -124,7 +125,7 @@ tui-agents            local Agent/session snapshots → tuiAgents service
 agents-view           tuiAgents → navigation dock + inline session selection
 stats-view            standard ACP usage/timing projection → composer dock stats line
 status-view           acpSessionStatus + acpSessionStats → /status markdown overlay
-harness-view          Harness registry → /harness selector + immediate standalone restart/session
+harness-view          Harness registry + bound state → /harness confirmation + new process/session
 martty-preset         default UI Plugin → Martty Hero + native dynamic information
 deepseek-logo         deepseek UI Plugin → DeepSeek Hero + native dynamic information
 acp-session-status    standard ACP run-state projection: connection/server/auth/

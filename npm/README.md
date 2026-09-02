@@ -76,10 +76,13 @@ martty harness use local
 The same registry is available through three entry points: edit
 `$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or
 `/harness <id>`) inside the TUI. In a standalone TUI, `/harness` immediately
-stops the current ACP child, starts the selected Harness, and creates a fresh
-session without closing Martty. It never carries a session across Harnesses.
-The settings and CLI entry points select the Harness for the next standalone
-launch; a profile-owned Host cannot be replaced by its Client.
+switches when no session has been bound yet. After `session/new` succeeds, it
+first confirms that the selected Harness will start another session; the
+current session remains available in `/session`. Confirming stops the current
+ACP child, starts the selected Harness, and creates the new session without
+closing Martty. It never carries one session across Harnesses. The settings and
+CLI entry points select the Harness for the next standalone launch; a
+profile-owned Host cannot be replaced by its Client.
 
 Every selection is stored in `$MARTTY_HOME/settings.json`. CLI/settings
 selection takes effect on the next standalone launch through a new
