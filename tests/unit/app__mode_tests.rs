@@ -1191,6 +1191,27 @@ fn live_acp_new_does_not_invent_a_local_id() {
 }
 
 #[test]
+fn harness_restart_clears_the_old_session_before_reconnecting() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.transcript.push_user("old Harness turn".into(), false);
+    app.session_model = Some("old-harness-model".into());
+    assert!(!app.transcript.cells.is_empty());
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Starting {
+            runtime: "harness".into(),
+        }),
+        &ctl,
+    );
+
+    assert!(app.transcript.cells.is_empty());
+    assert!(app.session_model.is_none());
+    assert!(!app.session_bound);
+    assert_eq!(app.state, RunState::Starting);
+}
+
+#[test]
 fn agent_preset_event_updates_chrome_without_adding_a_transcript_row() {
     let (mut app, _ctl, _rx) = test_app();
     let cells_before = app.transcript.cells.len();
@@ -1806,6 +1827,33 @@ fn bracketed_paste_wrapped_csi_u_ctrl_c_still_quits() {
     }
 
     assert!(app.quit, "two Ctrl+C presses should quit from idle");
+    assert!(
+        app.input.is_empty(),
+        "the CSI-u bytes must never enter the composer"
+    );
+}
+
+#[test]
+fn bracketed_paste_wrapped_ctrl_c_cannot_quit_during_a_harness_switch() {
+    let (mut app, ctl, _rx) = test_app();
+    app.state = RunState::Starting;
+    app.state_note = "switching Harness".into();
+
+    for _ in 0..2 {
+        app.handle(
+            AppEvent::Term(Event::Paste("\u{1b}[99;5u".to_string())),
+            &ctl,
+        );
+    }
+
+    assert!(
+        !app.quit,
+        "Ctrl+C must not tear down an in-flight Harness switch"
+    );
+    assert!(
+        app.ctrl_c_armed.is_none(),
+        "the switch must not leave a latent quit chord armed"
+    );
     assert!(
         app.input.is_empty(),
         "the CSI-u bytes must never enter the composer"
@@ -3106,6 +3154,30 @@ fn editing_a_dismissed_slash_draft_reopens_completion() {
         app.slash_completion_open(),
         "pasting into a dismissed draft is also an edit"
     );
+}
+
+#[test]
+fn effort_picker_selects_the_current_session_value() {
+    let (mut app, _ctl, _rx) = test_app();
+
+    app.open_effort_picker(
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        Some("high".into()),
+    );
+
+    let picker = app.picker.as_ref().expect("effort picker");
+    assert_eq!(
+        picker
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+    assert_eq!(picker.sel, 2, "the live ACP value should be highlighted");
 }
 
 #[test]

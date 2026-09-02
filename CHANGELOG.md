@@ -19,10 +19,22 @@ All notable changes to this project are documented here. The project follows
   `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
   The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
   entry point, using the native TUI single-select overlay and the same registry.
-  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
-  `activeHarness` → the bundled default. Selection applies on the next launch,
-  which creates a fresh ACP session; sessions never carry across Harnesses and
-  profile-owned Host runtimes and sessions are unchanged.
+  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → a
+  product-owned `defaultHarness` (when supplied) → the saved `activeHarness`
+  → the bundled fallback. CLI/settings selection applies on the next
+  standalone launch when the product does not pin a default. In a running
+  standalone TUI, `/harness` replaces the ACP child immediately while no
+  prompt has started the current session. Once
+  the first `session/prompt` has been sent, or an existing session has been
+  loaded, it first confirms that switching starts another session; the current
+  session remains available through session navigation. Standalone startup and
+  Harness replacement now perform `initialize` followed by `session/new`, so
+  the welcome screen immediately receives the Agent's model and effort config.
+  This binds an empty session without starting a model turn and returns the TUI
+  to its landing page; the switch result stays in the composer Tip instead of
+  becoming transcript. Sessions never carry across Harnesses; profile-owned
+  Host runtimes and sessions remain unchanged. `/harness` updates only
+  `activeHarness`, never the product default.
 - The `@file` mention browser now follows the typed query across the
   tree: the listing is live-filtered to matching names (exact > prefix >
   contains > subsequence, `../` always kept so a filtered view can back
@@ -79,11 +91,35 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Harness switching now reclaims raw-mode ownership if the retiring ACP child
+  restores the TTY to cooked mode, and repeated `Ctrl+C` cannot trigger the
+  global quit chord while its replacement initializes. This prevents queued
+  Kitty keyboard reports such as `^[[99;5u` from leaking onto the terminal.
+  The built-in Codex Harness recipe also asks `npx` to prefer its local cache,
+  avoiding an unnecessary registry check on warm launches.
+- Welcome information now takes the runtime and model from the active ACP
+  connection and session. Generic Harnesses wait for the Agent's model report
+  instead of displaying the startup CLI's DeepSeek defaults, and Harness
+  switches clear the previous session's model before reconnecting.
+- Codex ACP adapter diagnostics now negotiate the typed `sessionFailure`
+  capability and render as TUI notices instead of being forwarded as assistant
+  prose. The footer model chip now follows the model reported by the active ACP
+  session and no longer falls back to a DeepSeek model name for generic
+  Harnesses. Reasoning effort now follows the semantic ACP `thought_level`
+  option, including its advertised values, current selection, and actual config
+  id. Local Client compositor commands such as `/harness` also remain usable
+  when the attached Agent does not advertise the server-side Cordis extension.
+- `martty harness list` now renders a width-aware, readable Harness catalog
+  with active state, labels, IDs, sources, separate command arguments, compact
+  local paths, and next-step hints instead of raw tab-separated rows. The
+  Harness help surface now also accepts the conventional `-h` and `--help`
+  aliases and includes commands, options, examples, and the new-session rule.
+  `harness add` now guides setup instead of leaking validation errors, and
+  `harness add codex` saves a ready-to-use Codex ACP adapter recipe.
 - `/resume` now uses ACP `session/resume` when the agent advertises it, so long
   sessions can continue without replaying their full transcript into the TUI.
   Agents that only support the legacy `session/load` path keep working, and a
   rejected resume request falls back to load when that capability is available.
-
 - `acpSessionStatus` now treats each standard ACP `session/prompt` response
   (success or error) as that request's terminal turn signal, returning to
   `idle` after every pending prompt and concurrent steer has settled. This

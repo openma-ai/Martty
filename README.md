@@ -80,7 +80,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `esc` | 中断当前回合并保留草稿 |
 | `/` | 打开命令与参数候选 |
 | `/model` · `/agent` | 选择模型和 Agent Preset |
-| `/harness [id]` | 为下次 standalone 启动的新会话选择 Harness |
+| `/harness [id]` | 在 TUI 内切换 Harness 并启动新的空会话 |
 | `/permission` · `shift+tab` | 选择或轮换权限模式 |
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
@@ -229,6 +229,7 @@ DSH_TUI_AGENT="<acp-command> [args...]" martty
 
 ```sh
 martty harness list
+martty harness add codex
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -236,17 +237,23 @@ martty --check-runtime
 
 三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
 `martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`/harness <id>` 可直接保存。TUI 选择同样只影响下一次 standalone 启动，并创建新会话。
+`/harness <id>` 可直接切换。TUI 选择会立即替换 standalone ACP 子进程；若当前会话
+已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
 
 `harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
 `$MARTTY_HOME/settings.json` 的 `harnesses` 与 `activeHarness`，并保留同文件中的主题、
-语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，并固定通过 ACP
-`session/new` 创建新会话；不会把旧 Harness 的会话带到新 Harness，也不会热切换当前会话；
+语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，启动时依次通过 ACP
+`initialize` 与 `session/new` 连接选中的 Harness，因此欢迎页在首条消息前就能显示
+Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
 
-Standalone 启动优先级是 `--agent`、`DSH_TUI_AGENT`、`activeHarness`、包内置默认值。
-因此 `--agent` 仍适合一次性覆盖，不会修改保存的选择。
+`martty harness add codex` 是快捷配方，会保存通过 `npx` 启动
+`@agentclientprotocol/codex-acp` 的配置；无需自己猜 Codex CLI 参数。
+
+Standalone 启动优先级是 `--agent`、`DSH_TUI_AGENT`、产品注入的
+`defaultHarness`、持久化的 `activeHarness`、包内置回退值。`/harness` 只更新
+`activeHarness`，不修改产品默认值；`--agent` 仍是不改保存选择的一次性覆盖。
 
 Cordis 嵌入场景可以使用 `config.agent: { command, args }` 启动 ACP server，或使用
 `config.stream` 接入调用方已有的标准管道。单次运行也可以使用 `--agent` 与重复的

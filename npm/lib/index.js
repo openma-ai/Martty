@@ -250,6 +250,7 @@ export async function applyShell(ctx, options = {}) {
         throw new Error(`unsupported Cordis TUI method: ${String(message.method)}`)
       },
     })
+    agent.onSwitch?.(() => mux.resetAgent())
     const notifyTui = (method, params) => mux.notifyTui(method, params)
     republishCompositorState = () => {
       handle.bindNotify(notifyTui)

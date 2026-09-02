@@ -112,6 +112,12 @@ pub fn client_capability_meta() -> Meta {
         "dsh".into(),
         json!({ "cordis": { "protocol": crate::cordis::PROTOCOL } }),
     );
+    // Codex ACP 1.7+ keeps adapter diagnostics out of assistant text when
+    // the client negotiates its typed session-failure record.
+    meta.insert(
+        "jetbrains".into(),
+        json!({ "air": { "version": 1, "capabilities": ["sessionFailure"] } }),
+    );
     meta
 }
 

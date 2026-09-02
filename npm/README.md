@@ -68,20 +68,33 @@ ACP server. Named standalone harnesses can also be discovered, saved, and select
 
 ```sh
 martty harness list
+martty harness add codex
 martty harness add local --command local-acp --arg --stdio
 martty harness use local
 ```
 
 The same registry is available through three entry points: edit
 `$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or
-`/harness <id>`) inside the TUI. A saved choice takes effect on the next
-standalone launch, which starts a fresh ACP session. It does not replace a
-running or profile-owned Host, and it never carries a session across Harnesses.
+`/harness <id>`) inside the TUI. In a standalone TUI, `/harness` immediately
+switches before the current session has started. After the first prompt has
+started a session, or an existing session was loaded, it first confirms that
+the selected Harness will start another session; the current session remains
+available in `/session`. Confirming stops the current ACP child and initializes
+the selected Harness without closing Martty, then immediately sends `session/new`
+to bind an empty session. This does not start a model turn. It never carries one session
+across Harnesses. The settings and CLI entry points select the Harness for the
+next standalone launch; a profile-owned Host cannot be replaced by its Client.
 
-The selected entry is stored in `$MARTTY_HOME/settings.json` and takes effect
-on the next standalone launch through a new `session/new`. `--agent` and
-`DSH_TUI_AGENT` remain higher priority. This does not replace the Host-owned
-runtime or session of `dsh --profile martty`.
+Every selection is stored in `$MARTTY_HOME/settings.json`. CLI/settings
+selection takes effect on the next standalone launch; TUI selection also
+updates the running standalone process immediately. Standalone startup only
+initializes the selected Harness and binds an empty ACP session before showing Ready.
+When the product supplies `defaultHarness`, startup always selects it before
+consulting the last persisted `activeHarness`; when omitted, startup resumes
+that active selection. `/harness` never mutates the product default.
+`--agent` and `DSH_TUI_AGENT` remain higher startup priorities.
+None of these replace the Host-owned runtime or session of
+`dsh --profile martty`.
 
 The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
 `tui-cordis-client-runner` publishes TUI Client capabilities and evaluates

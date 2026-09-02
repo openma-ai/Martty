@@ -67,6 +67,7 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * @param {{ stdin: import('node:stream').Writable, stdout: import('node:stream').Readable, child?: import('node:child_process').ChildProcess }} [options.stream]
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
  * @param {string} [options.settingsPath]
+ * @param {{ id: string, label: string, command: string, args?: string[] }} [options.defaultHarness]
  * @param {string} [options.artifactRoot]
  * @param {Array<{ id: string, label: string, command: string, args?: string[], source?: string }>} [options.harnessDefaults]
  * @param {string} [options.harnessPathValue]
@@ -75,10 +76,15 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
 export async function bootClient(options = {}) {
   const { Context } = await import('@deepseek-ai/cordis')
   const ctx = new Context()
+  const settingsPath = options.settingsPath ?? uiSettingsPath(options.extraArgs ?? [])
   const acpConfig = options.stream !== undefined
     ? { stream: options.stream }
-    : { agent: options.agent ?? resolveStackedAgent() }
-  const settingsPath = options.settingsPath ?? uiSettingsPath(options.extraArgs ?? [])
+    : {
+        agent: options.agent ?? resolveStackedAgent(import.meta.url, {
+          settingsPath,
+          defaultHarness: options.defaultHarness,
+        }),
+      }
   if (options.settingsPath === undefined) {
     migrateLegacyUiSettings(settingsPath, legacyUiSettingsPaths(options.extraArgs ?? []))
   }
@@ -96,9 +102,14 @@ export async function bootClient(options = {}) {
       harnessDefaults = []
     }
   }
+  if (options.defaultHarness !== undefined
+    && !harnessDefaults.some(({ id }) => id === options.defaultHarness.id)) {
+    harnessDefaults = [{ ...options.defaultHarness, source: 'default' }, ...harnessDefaults]
+  }
   const harnessConfig = {
     settingsPath,
     defaults: harnessDefaults,
+    defaultHarness: options.defaultHarness,
     pathValue: options.harnessPathValue,
     hostOwned: options.stream !== undefined,
   }
@@ -295,7 +306,7 @@ export function migrateLegacyUiSettings(settingsPath, legacyPaths) {
  * `--agent` is also forwarded via {@link painterArgs} so Terminal Auth can
  * re-exec the same command.
  * @param {string[]} argv
- * @param {{ settingsPath?: string }} [options]
+ * @param {{ settingsPath?: string, defaultHarness?: { id: string, label: string, command: string, args?: string[] } }} [options]
  * @returns {{ agent: { command: string, args: string[] }, rustArgs: string[] }}
  */
 export function parseClientArgv(argv, options = {}) {
@@ -319,7 +330,10 @@ export function parseClientArgv(argv, options = {}) {
   if (command === undefined) {
     const settingsPath = options.settingsPath ?? uiSettingsPath(rustArgs)
     return {
-      agent: resolveStackedAgent(import.meta.url, { settingsPath }),
+      agent: resolveStackedAgent(import.meta.url, {
+        settingsPath,
+        defaultHarness: options.defaultHarness,
+      }),
       rustArgs,
     }
   }

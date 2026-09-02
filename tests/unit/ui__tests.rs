@@ -392,6 +392,57 @@ fn live_meta_row_hides_session_options_until_session_bound() {
 }
 
 #[test]
+fn codex_model_chip_waits_for_acp_then_uses_the_reported_session_model() {
+    let flat = |spans: Vec<Span>| -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    };
+    let mut app = live_test_app();
+    app.cfg.bin = "npx -y @agentclientprotocol/codex-acp".into();
+    app.server_info = Some("@agentclientprotocol/codex-acp".into());
+    app.session_bound = true;
+
+    let pending = flat(status_right(&app));
+    assert!(!pending.contains("deepseek-chat"), "{pending}");
+
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session: app.session_id.clone(),
+            model: "gpt-5.6-codex".into(),
+        }),
+        &ctl,
+    );
+
+    let reported = flat(status_right(&app));
+    assert!(reported.contains("gpt-5.6-codex"), "{reported}");
+    assert!(!reported.contains("deepseek-chat"), "{reported}");
+}
+
+#[test]
+fn welcome_info_uses_the_active_acp_runtime_and_reported_session_model() {
+    let flat = |lines: Vec<Line>| -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = live_test_app();
+    app.server_info = Some("@agentclientprotocol/codex-acp".into());
+
+    let pending = flat(welcome_info_lines(&app));
+    assert!(pending.contains("waiting for ACP"), "{pending}");
+    assert!(pending.contains("codex-acp"), "{pending}");
+    assert!(!pending.contains("deepseek-chat"), "{pending}");
+
+    app.session_model = Some("gpt-5.6-sol".into());
+    let reported = flat(welcome_info_lines(&app));
+    assert!(reported.contains("gpt-5.6-sol"), "{reported}");
+    assert!(!reported.contains("deepseek-chat"), "{reported}");
+}
+
+#[test]
 fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     let flat = |line: &Line| -> String {
         line.spans
@@ -1431,6 +1482,58 @@ fn welcome_and_conversation_are_two_states_without_a_mixed_third_state() {
     assert!(
         first.abs_diff(bottom) <= 1,
         "Welcome remains centered: top={first}, bottom={bottom}"
+    );
+}
+
+#[test]
+fn harness_switch_returns_the_fresh_empty_session_to_the_landing_page() {
+    let mut app = live_test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.transcript.push_user("old Harness turn".into(), false);
+
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Starting {
+            runtime: "harness".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::SessionBound {
+            session_id: "fresh-empty-session".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Ready {
+            server: "dsh-acp".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::TuiOpDone(
+            "Harness switched to Bundled DeepSeek Harness".into(),
+        )),
+        &ctl,
+    );
+
+    assert!(
+        app.show_banner,
+        "a fresh empty Harness session is a landing state"
+    );
+    assert!(
+        app.transcript.cells.is_empty(),
+        "the switch result must not become session transcript"
+    );
+    let frame = dump_frame(&mut app, 140, 60);
+    assert!(
+        frame.contains("https://martty.sh"),
+        "landing page is visible:\n{frame}"
+    );
+    assert!(
+        frame.contains("Harness switched to Bundled DeepSeek Harness"),
+        "the switch result remains visible as chrome:\n{frame}"
     );
 }
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -43,6 +44,44 @@ test('standalone resolution uses the active harness from Martty settings', () =>
       command: '/opt/local/bin/local-acp',
       args: ['--stdio'],
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    if (previous === undefined) delete process.env.DSH_TUI_AGENT
+    else process.env.DSH_TUI_AGENT = previous
+  }
+})
+
+test('a product default Harness wins the last active Harness at startup', () => {
+  const previous = process.env.DSH_TUI_AGENT
+  delete process.env.DSH_TUI_AGENT
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-default-harness-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const defaultHarness = {
+    id: 'product-default',
+    label: 'Product Default',
+    command: 'product-acp',
+    args: ['--stdio'],
+  }
+  try {
+    writeFileSync(settingsPath, JSON.stringify({
+      harnesses: [{
+        id: 'last-used',
+        label: 'Last Used',
+        command: 'last-used-acp',
+        args: [],
+      }],
+      activeHarness: 'last-used',
+    }))
+
+    assert.deepEqual(
+      parseClientArgv([], { settingsPath, defaultHarness }).agent,
+      { command: 'product-acp', args: ['--stdio'] },
+    )
+    assert.equal(
+      JSON.parse(readFileSync(settingsPath, 'utf8')).activeHarness,
+      'last-used',
+      'startup resolution must not overwrite the last user selection',
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
     if (previous === undefined) delete process.env.DSH_TUI_AGENT
@@ -140,4 +179,39 @@ test('apply with a nonexistent agent command does not crash with an uncaught exc
   await new Promise((resolve) => setTimeout(resolve, 200))
   assert.ok(ctx.acpClient.stdin.destroyed, 'stdin destroyed after failed spawn')
   assert.ok(ctx.acpClient.stdout.destroyed, 'stdout destroyed after failed spawn')
+})
+
+test('standalone ACP client replaces its child without replacing the transport', async () => {
+  const ctx = {}
+  apply(ctx, {
+    agent: {
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 10000)', 'first'],
+    },
+  })
+  const service = ctx.acpClient
+  const stableInput = service.stdin
+  const stableOutput = service.stdout
+  const first = service.child
+  const switches = []
+  try {
+    service.onSwitch((next, previous) => switches.push({ next, previous }))
+    await service.switchAgent({
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 10000)', 'second'],
+    })
+
+    assert.equal(service.stdin, stableInput)
+    assert.equal(service.stdout, stableOutput)
+    assert.notEqual(service.child, first)
+    assert.equal(switches.length, 1)
+    assert.equal(switches[0].previous.child, first)
+    assert.equal(switches[0].next.child, service.child)
+    if (first.exitCode === null) await once(first, 'exit')
+    assert.notEqual(first.signalCode, null)
+  } finally {
+    service.close?.()
+    if (service.child?.exitCode === null) service.child.kill('SIGTERM')
+    if (first.exitCode === null) first.kill('SIGTERM')
+  }
 })

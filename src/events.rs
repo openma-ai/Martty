@@ -78,6 +78,18 @@ pub enum UiEvent {
         session: String,
         title: String,
     },
+    /// Structured adapter/runtime notice negotiated through ACP metadata.
+    SessionNotice {
+        session: String,
+        severity: String,
+        title: String,
+        details: Option<String>,
+    },
+    /// Current model from the standard ACP session config snapshot.
+    SessionModel {
+        session: String,
+        model: String,
+    },
     /// ACP `plan` / `plan_update` snapshot (todo entries, not `plan/mode`).
     Plan {
         session: String,
@@ -337,6 +349,35 @@ fn parse_session_update(params: &Value) -> Vec<UiEvent> {
             }
         }
         "session_info_update" => {
+            if let Some(failure) = update
+                .get("_meta")
+                .and_then(|meta| meta.get("jetbrains"))
+                .and_then(|jetbrains| jetbrains.get("air"))
+                .and_then(|air| air.get("sessionFailure"))
+            {
+                let title = failure
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if !title.is_empty() {
+                    return vec![UiEvent::SessionNotice {
+                        session,
+                        severity: failure
+                            .get("severity")
+                            .and_then(Value::as_str)
+                            .unwrap_or("error")
+                            .to_string(),
+                        title: title.to_string(),
+                        details: failure
+                            .get("details")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|details| !details.is_empty())
+                            .map(str::to_string),
+                    }];
+                }
+            }
             let dsh = update.get("_meta").and_then(|meta| meta.get("dsh"));
             if let Some(subagent) = dsh
                 .filter(|dsh| {
@@ -656,11 +697,43 @@ fn collaboration_mode_active(options: Option<&Value>) -> Option<bool> {
         .map(|value| value == "plan")
 }
 
+/// Resolve the standard semantic reasoning-effort option while retaining the
+/// legacy literal `effort` id used by older ACP agents.
+pub fn reasoning_effort_option(options: &Value) -> Option<&Value> {
+    let entries = options.as_array()?;
+    entries
+        .iter()
+        .find(|option| {
+            option.get("category").and_then(Value::as_str) == Some("thought_level")
+        })
+        .or_else(|| {
+            entries
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some("effort"))
+        })
+}
+
 /// Fold a complete ACP `configOptions` snapshot into the client-facing facts
 /// that drive existing composer chrome. Used for both setup responses and
 /// later `config_option_update` notifications.
 pub fn config_option_events(session: String, options: &Value) -> Vec<UiEvent> {
     let mut events = Vec::new();
+    if let Some(model) = options.as_array().and_then(|entries| {
+        entries
+            .iter()
+            .find(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+            .and_then(|option| {
+                option
+                    .get("currentValue")
+                    .or_else(|| option.get("current_value"))
+                    .and_then(Value::as_str)
+            })
+    }) {
+        events.push(UiEvent::SessionModel {
+            session: session.clone(),
+            model: model.to_string(),
+        });
+    }
     if let Some(active) = collaboration_mode_active(Some(options)) {
         events.push(UiEvent::PlanMode {
             session: session.clone(),
@@ -673,16 +746,11 @@ pub fn config_option_events(session: String, options: &Value) -> Vec<UiEvent> {
             preset,
         });
     }
-    if let Some(effort) = options.as_array().and_then(|entries| {
-        entries
-            .iter()
-            .find(|option| option.get("id").and_then(Value::as_str) == Some("effort"))
-            .and_then(|option| {
-                option
-                    .get("currentValue")
-                    .or_else(|| option.get("current_value"))
-                    .and_then(Value::as_str)
-            })
+    if let Some(effort) = reasoning_effort_option(options).and_then(|option| {
+        option
+            .get("currentValue")
+            .or_else(|| option.get("current_value"))
+            .and_then(Value::as_str)
     }) {
         events.push(UiEvent::ReasoningEffort {
             session,

@@ -7,6 +7,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { PassThrough } from 'node:stream'
 import { installAcpClientEvents } from './acp-client-events.js'
 import { installAcpSessionConfig } from './acp-session-config.js'
 import { installAcpSessionPlan } from './acp-session-plan.js'
@@ -89,23 +90,19 @@ export function apply(ctx, config = {}) {
     }
   }
   liveAgent = null
+  const service = createSpawnService(agent)
+  liveAgent = service
+  provide(ctx, service)
+}
+
+function spawnAgent(agent) {
   const child = spawn(agent.command, agent.args ?? [], {
     stdio: ['pipe', 'pipe', 'inherit'],
     env: { ...process.env, ...(agent.env ?? {}) },
   })
   child.stdin.on('error', () => {})
   child.stdout.on('error', () => {})
-  child.on('error', (err) => {
-    // A failed spawn (ENOENT, EACCES) emits 'error' on the child; without a
-    // listener it is an uncaught exception. Surface EOF to the transport
-    // instead so pending requests fail instead of hanging, and drop the
-    // cached handle so the next apply() retries the spawn.
-    console.error(`acp-client: failed to spawn agent ${agent.command}: ${err.message}`)
-    if (liveAgent?.child === child) liveAgent = null
-    child.stdin.destroy()
-    child.stdout.destroy()
-  })
-  const service = {
+  return {
     kind: 'spawn',
     command: agent.command,
     args: agent.args ?? [],
@@ -113,15 +110,113 @@ export function apply(ctx, config = {}) {
     stdout: child.stdout,
     child,
   }
-  liveAgent = service
-  provide(ctx, service)
+}
+
+function waitForSpawn(handle) {
+  if (handle.child.pid !== undefined) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const spawned = () => {
+      handle.child.off('error', failed)
+      resolve()
+    }
+    const failed = (error) => {
+      handle.child.off('spawn', spawned)
+      reject(error)
+    }
+    handle.child.once('spawn', spawned)
+    handle.child.once('error', failed)
+  })
+}
+
+function createSpawnService(agent) {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const switchListeners = new Set()
+  let current = spawnAgent(agent)
+  let closed = false
+
+  const attach = (handle) => {
+    input.pipe(handle.stdin, { end: false })
+    handle.stdout.pipe(output, { end: false })
+  }
+  const detach = (handle) => {
+    input.unpipe(handle.stdin)
+    handle.stdout.unpipe(output)
+  }
+  attach(current)
+
+  const service = {
+    kind: 'spawn',
+    command: current.command,
+    args: current.args,
+    stdin: input,
+    stdout: output,
+    child: current.child,
+    onSwitch(listener) {
+      if (typeof listener !== 'function') throw new Error('acpClient.onSwitch needs a function')
+      switchListeners.add(listener)
+      return () => switchListeners.delete(listener)
+    },
+    async switchAgent(nextAgent) {
+      if (closed) throw new Error('acpClient is closed')
+      const spec = resolveAgent({ agent: nextAgent })
+      const next = spawnAgent(spec)
+      try {
+        await waitForSpawn(next)
+        for (const listener of switchListeners) await listener(next, current)
+      } catch (error) {
+        try {
+          next.child.kill('SIGTERM')
+        } catch {
+          // failed spawns may not own a process
+        }
+        throw error
+      }
+      const previous = current
+      detach(previous)
+      attach(next)
+      current = next
+      service.command = next.command
+      service.args = next.args
+      service.child = next.child
+      watchCurrent(next)
+      try {
+        previous.child.kill('SIGTERM')
+      } catch {
+        // already gone
+      }
+    },
+    close() {
+      if (closed) return
+      closed = true
+      detach(current)
+      try {
+        current.child.kill('SIGTERM')
+      } catch {
+        // already gone
+      }
+      input.destroy()
+      output.destroy()
+      if (liveAgent === service) liveAgent = null
+    },
+  }
+
+  function watchCurrent(handle) {
+    handle.child.on('error', (err) => {
+      if (current !== handle || closed) return
+      console.error(`acp-client: failed to spawn agent ${handle.command}: ${err.message}`)
+      service.close()
+    })
+  }
+  watchCurrent(current)
   process.once('exit', () => {
     try {
-      child.kill('SIGTERM')
+      service.close()
     } catch {
       // already gone
     }
   })
+  return service
 }
 
 function provide(ctx, service) {

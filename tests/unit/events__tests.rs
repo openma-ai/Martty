@@ -718,6 +718,89 @@ fn session_update_maps_chunks_tools_and_agent_option() {
 }
 
 #[test]
+fn typed_acp_session_warning_is_a_notice_not_assistant_text() {
+    let ev = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {
+                    "jetbrains": {"air": {
+                        "version": 1,
+                        "sessionFailure": {
+                            "id": "s:notice:1",
+                            "revision": 1,
+                            "category": "unknown",
+                            "severity": "warning",
+                            "title": "Skill descriptions were shortened",
+                            "details": "Disable unused skills or plugins.",
+                            "actions": []
+                        }
+                    }}
+                }
+            }
+        }),
+    );
+
+    assert_eq!(
+        ev,
+        vec![UiEvent::SessionNotice {
+            session: "s".into(),
+            severity: "warning".into(),
+            title: "Skill descriptions were shortened".into(),
+            details: Some("Disable unused skills or plugins.".into()),
+        }]
+    );
+}
+
+#[test]
+fn config_options_report_the_session_model() {
+    let events = config_option_events(
+        "codex-session".into(),
+        &json!([
+            {
+                "type": "select",
+                "id": "model",
+                "category": "model",
+                "currentValue": "gpt-5.6-codex",
+                "options": []
+            }
+        ]),
+    );
+
+    assert_eq!(
+        events,
+        vec![UiEvent::SessionModel {
+            session: "codex-session".into(),
+            model: "gpt-5.6-codex".into(),
+        }]
+    );
+}
+
+#[test]
+fn config_options_report_semantic_reasoning_effort() {
+    let events = config_option_events(
+        "codex-session".into(),
+        &json!([{
+            "type": "select",
+            "id": "reasoning_effort",
+            "category": "thought_level",
+            "currentValue": "high",
+            "options": []
+        }]),
+    );
+
+    assert_eq!(
+        events,
+        vec![UiEvent::ReasoningEffort {
+            session: "codex-session".into(),
+            effort: "high".into(),
+        }]
+    );
+}
+
+#[test]
 fn context_usage_update_is_not_misread_as_token_breakdown() {
     let events = parse_notification(
         "session/update",

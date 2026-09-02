@@ -1114,6 +1114,8 @@ pub struct App {
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
     pub selected_model: Option<String>,
+    /// Current model reported by this ACP session's config snapshot.
+    pub session_model: Option<String>,
     pub demo: bool,
     /// A live ACP agent owns runtime, credentials, and its advertised catalog.
     pub attached: bool,
@@ -1164,6 +1166,8 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::UserInjected { session, .. }
         | UiEvent::UserMessage { session, .. }
         | UiEvent::SessionTitle { session, .. }
+        | UiEvent::SessionNotice { session, .. }
+        | UiEvent::SessionModel { session, .. }
         | UiEvent::Plan { session, .. }
         | UiEvent::PlanMode { session, .. }
         | UiEvent::SandboxMode { session, .. }
@@ -1479,6 +1483,7 @@ impl App {
             session_id,
             cfg,
             selected_model: None,
+            session_model: None,
             demo,
             attached,
             session_bound: demo,
@@ -2491,10 +2496,19 @@ impl App {
             }
             AppEvent::Ctl(ctl_ev) => {
                 match ctl_ev {
-                    CtlEvent::Starting { .. } => {
+                    CtlEvent::Starting { runtime } => {
+                        if runtime == "harness" {
+                            self.reset_session_ui();
+                            self.show_banner = true;
+                            self.server_info = None;
+                        }
                         self.state = RunState::Starting;
                         self.run_started = Some(Instant::now());
-                        self.state_note = "starting runtime".into();
+                        self.state_note = if runtime == "harness" {
+                            "switching Harness".into()
+                        } else {
+                            "starting runtime".into()
+                        };
                     }
                     CtlEvent::Ready { server } => {
                         self.server_info = Some(server.clone());
@@ -2671,7 +2685,11 @@ impl App {
                         );
                     }
                     CtlEvent::TuiOpDone(desc) => {
-                        self.transcript.push_notice(NoticeLevel::Info, desc);
+                        if self.show_banner {
+                            self.show_tip(desc);
+                        } else {
+                            self.transcript.push_notice(NoticeLevel::Info, desc);
+                        }
                     }
                     CtlEvent::TuiOpFailed(desc) => {
                         self.transcript.push_notice(NoticeLevel::Warn, desc);
@@ -2713,6 +2731,7 @@ impl App {
                     CtlEvent::SessionBound { session_id, notice } => {
                         if self.session_id != session_id {
                             self.reset_subagent_views();
+                            self.session_model = None;
                         }
                         self.session_id = session_id.clone();
                         self.transcript.set_root_session(session_id);
@@ -2866,6 +2885,10 @@ impl App {
             }
             E::SessionTitle { session, title } if *session == self.session_id => {
                 self.session_title = Some(title.clone());
+            }
+            E::SessionModel { session, model } if *session == self.session_id => {
+                self.session_model = Some(model.clone());
+                apply_to_transcript = false;
             }
             _ => {}
         }
@@ -4725,6 +4748,10 @@ impl App {
                 })
                 .collect();
         }
+        let sel = default
+            .as_deref()
+            .and_then(|value| items.iter().position(|item| item.id == value))
+            .unwrap_or(0);
         self.picker = Some(Picker {
             kind: PickerKind::Effort,
             title: self
@@ -4734,7 +4761,7 @@ impl App {
                     " 推理强度 · enter 选择 · esc 关闭 ",
                 )
                 .into(),
-            sel: 0,
+            sel,
             items,
         });
     }
@@ -4897,6 +4924,7 @@ impl App {
         self.transcript.clear();
         self.modes = Modes::default();
         self.selected_model = None;
+        self.session_model = None;
         self.session_title = None;
         self.show_banner = false;
         self.queued = 0;
@@ -5353,6 +5381,11 @@ impl App {
     }
 
     fn handle_ctrl_c(&mut self, _ctl: &Controller) {
+        if self.harness_switch_in_progress() {
+            self.ctrl_c_armed = None;
+            self.show_tip("Harness is switching — Ctrl+C ignored");
+            return;
+        }
         if !self.input.is_empty() {
             // Clearing the draft never counts as the first press of the
             // double-Ctrl+C quit chord.
@@ -5382,6 +5415,10 @@ impl App {
         } else {
             format!("press ctrl+c {remaining} more times to exit while the agent is running")
         });
+    }
+
+    pub(crate) fn harness_switch_in_progress(&self) -> bool {
+        matches!(self.state, RunState::Starting) && self.state_note == "switching Harness"
     }
 
     fn history_prev(&mut self) {

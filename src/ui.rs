@@ -1421,11 +1421,7 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
     if lw + rw + 2 > width {
         // Drop the contextual hints first, but keep the scroll position
         // beside the model so a longer left-side mode label never hides it.
-        let shown_model = app
-            .transcript
-            .last_model
-            .clone()
-            .unwrap_or_else(|| app.cfg.model.clone());
+        let shown_model = displayed_model(app);
         let mut compact = Vec::new();
         if app.scroll_up > 0 {
             compact.push(Span::styled(
@@ -1433,14 +1429,20 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
                 Style::default().fg(theme.caption),
             ));
         }
-        compact.push(Span::styled(
-            format!("{shown_model} "),
-            Style::default().fg(theme.brand_soft),
-        ));
+        if let Some(shown_model) = &shown_model {
+            compact.push(Span::styled(
+                format!("{shown_model} "),
+                Style::default().fg(theme.brand_soft),
+            ));
+        }
         let compact_width = span_widths(&compact);
         if lw + compact_width + 2 <= width {
             right_spans = compact;
-        } else if lw + shown_model.width() + 3 <= width {
+        } else if shown_model
+            .as_deref()
+            .is_some_and(|model| lw + model.width() + 3 <= width)
+        {
+            let shown_model = shown_model.expect("checked above");
             right_spans = vec![Span::styled(
                 format!("{shown_model} "),
                 Style::default().fg(theme.brand_soft),
@@ -1706,22 +1708,17 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     spans.extend(context_hints(app));
     if app.session_bound {
-        // Chip precedence: an explicit /model pick (until a turn realizes it)
-        // → the model that actually streamed last → the configured default.
-        let shown_model = app
-            .selected_model
-            .clone()
-            .or_else(|| app.transcript.last_model.clone())
-            .unwrap_or_else(|| app.cfg.model.clone());
-        spans.push(Span::styled(
-            shown_model,
-            Style::default().fg(theme.brand_soft),
-        ));
-        if let Some(effort) = &app.modes.effort {
+        if let Some(shown_model) = displayed_model(app) {
             spans.push(Span::styled(
-                format!(" · {effort}"),
-                Style::default().fg(theme.caption),
+                shown_model,
+                Style::default().fg(theme.brand_soft),
             ));
+            if let Some(effort) = &app.modes.effort {
+                spans.push(Span::styled(
+                    format!(" · {effort}"),
+                    Style::default().fg(theme.caption),
+                ));
+            }
         }
     }
     if app.demo {
@@ -1732,6 +1729,38 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     spans.push(Span::raw(" "));
     spans
+}
+
+fn displayed_model(app: &App) -> Option<String> {
+    app.selected_model
+        .clone()
+        .or_else(|| app.transcript.last_model.clone())
+        .or_else(|| app.session_model.clone())
+        .or_else(|| deepseek_runtime(app).then(|| app.cfg.model.clone()))
+}
+
+fn active_runtime(app: &App) -> &str {
+    app.server_info.as_deref().unwrap_or(&app.cfg.bin)
+}
+
+fn deepseek_runtime(app: &App) -> bool {
+    let runtime = active_runtime(app).to_ascii_lowercase();
+    app.demo || runtime.contains("dsh-acp") || runtime.contains("deepseek-harness-acp")
+}
+
+fn welcome_model(app: &App) -> String {
+    if deepseek_runtime(app) {
+        return format!(
+            "{} · {}",
+            app.cfg.provider,
+            app.session_model.as_deref().unwrap_or(&app.cfg.model)
+        );
+    }
+    app.session_model.clone().unwrap_or_else(|| {
+        app.locale
+            .tr("waiting for ACP", "等待 ACP 上报")
+            .to_string()
+    })
 }
 
 fn span_widths(spans: &[Span]) -> usize {
@@ -3445,19 +3474,17 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     ));
     out.push(kv(
         app.locale.tr("model", "模型"),
-        format!("{} · {}", app.cfg.provider, app.cfg.model),
+        welcome_model(app),
     ));
     out.push(kv(
         app.locale.tr("workspace", "工作区"),
         shorten_home(&app.cfg.workspace),
     ));
     out.push(kv(app.locale.tr("session", "会话"), app.session_id.clone()));
-    let runtime_short = app
-        .cfg
-        .bin
+    let runtime_short = active_runtime(app)
         .rsplit('/')
         .next()
-        .unwrap_or(&app.cfg.bin)
+        .unwrap_or_else(|| active_runtime(app))
         .to_string();
     out.push(kv(app.locale.tr("runtime", "运行时"), runtime_short));
     if app.demo {

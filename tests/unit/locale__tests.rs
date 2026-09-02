@@ -31,9 +31,9 @@ fn zh_command_desc_covers_every_builtin_and_plugin_command() {
     assert_eq!(
         zh.plugin_command_desc(
             "harness",
-            "Switch harness in a new session on the next standalone launch"
+            "Switch Harness now and start a new session"
         ),
-        "在下次 standalone 启动的新会话中切换 Harness"
+        "立即切换 Harness 并启动新会话"
     );
     // Unknown plugin commands keep their authored description.
     assert_eq!(
