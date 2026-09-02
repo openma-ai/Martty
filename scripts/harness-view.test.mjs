@@ -61,7 +61,7 @@ test('/harness opens a native picker over configured and discovered entries', as
 
     assert.deepEqual(ctx.tuiCommands.list(), [{
       name: 'harness',
-      description: 'Switch Harness; the next prompt starts its session',
+      description: 'Switch Harness now and start a new session',
       input: {
         hint: '[id]',
         options: [
@@ -75,7 +75,7 @@ test('/harness opens a native picker over configured and discovered entries', as
     assert.deepEqual(ctx.tuiOverlay.active(), {
       kind: 'select',
       id: 'harness',
-      title: 'Switch Harness · session starts with first prompt',
+      title: 'Switch Harness · starts a new session',
       value: 'local',
       options: [
         { value: 'local', label: 'Local ACP', description: 'configured · local-acp --stdio' },
@@ -235,7 +235,7 @@ test('submitting the TUI harness picker after the first prompt requires confirma
     assert.deepEqual(ctx.tuiOverlay.active(), {
       kind: 'select',
       id: 'harness-confirm',
-      title: 'Switch Harness? · next prompt starts a new session',
+      title: 'Switch Harness? · starts a new session',
       value: 'switch',
       options: [
         {

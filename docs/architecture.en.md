@@ -66,8 +66,8 @@ Client process: independent Cordis root
   status-view     injects acpSessionStatus + acpSessionStats +
                   tuiCommands + tuiOverlay; registers the /status command
   harness-view    injects tuiCommands + tuiOverlay + acpClient + acpSessionStatus;
-                  standalone startup/switch only initializes; the first prompt
-                  sends session/new; /harness switches immediately before that,
+                  standalone startup/switch initializes and binds an empty session;
+                  /harness switches it immediately before the first prompt,
                   otherwise confirms before initializing the next Harness;
                   profile runtime stays Host-owned
   tui-presets     provides tuiPresets; owns persistent /ui composition selection

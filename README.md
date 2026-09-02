@@ -80,7 +80,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `esc` | 中断当前回合并保留草稿 |
 | `/` | 打开命令与参数候选 |
 | `/model` · `/agent` | 选择模型和 Agent Preset |
-| `/harness [id]` | 在 TUI 内切换 Harness；首条消息才创建它的会话 |
+| `/harness [id]` | 在 TUI 内切换 Harness 并启动新的空会话 |
 | `/permission` · `shift+tab` | 选择或轮换权限模式 |
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
@@ -243,9 +243,9 @@ martty --check-runtime
 `harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
 `$MARTTY_HOME/settings.json` 的 `harnesses` 与 `activeHarness`，并保留同文件中的主题、
-语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，并固定通过 ACP
-`initialize` 连接选中的 Harness；不会在欢迎页创建空会话。用户发送首条消息时才依次
-调用 `session/new` 与 `session/prompt`。不会把旧 Harness 的会话带到新 Harness；
+语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，启动时依次通过 ACP
+`initialize` 与 `session/new` 连接选中的 Harness，因此欢迎页在首条消息前就能显示
+Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
 
 `martty harness add codex` 是快捷配方，会保存通过 `npx` 启动

@@ -186,7 +186,7 @@ test('harness use can persist and activate a discovered local entrypoint', async
     })
     assert.deepEqual(result, {
       code: 0,
-      stdout: 'active harness path-dsh-acp; next standalone launch uses it; first prompt starts its session\n',
+      stdout: 'active harness path-dsh-acp; next standalone launch starts a new session\n',
       stderr: '',
     })
     assert.deepEqual(module.selectedHarness(settingsPath), {
@@ -316,7 +316,7 @@ test('harness help aliases render structured commands, examples, and session gui
   assert.match(result.stdout, /^Commands$/m)
   assert.match(result.stdout, /^Examples$/m)
   assert.match(result.stdout, /martty harness add local --label "Local ACP"/)
-  assert.match(result.stdout, /first prompt starts its ACP session/)
+  assert.match(result.stdout, /starts a\s+new ACP session/)
   for (const alias of ['-h', '--help']) {
     assert.deepEqual(
       module.runHarnessCommand([alias], { settingsPath: '/unused/settings.json' }),

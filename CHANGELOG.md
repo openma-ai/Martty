@@ -20,9 +20,10 @@ All notable changes to this project are documented here. The project follows
   the first `session/prompt` has been sent, or an existing session has been
   loaded, it first confirms that switching starts another session; the current
   session remains available through session navigation. Standalone startup and
-  Harness replacement now stop after `initialize`; the first prompt performs
-  `session/new` immediately before `session/prompt`. Sessions never carry
-  across Harnesses; profile-owned Host runtimes and sessions remain unchanged.
+  Harness replacement now perform `initialize` followed by `session/new`, so
+  the welcome screen immediately receives the Agent's model and effort config.
+  This binds an empty session without starting a model turn. Sessions never
+  carry across Harnesses; profile-owned Host runtimes and sessions remain unchanged.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a

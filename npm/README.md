@@ -80,15 +80,15 @@ switches before the current session has started. After the first prompt has
 started a session, or an existing session was loaded, it first confirms that
 the selected Harness will start another session; the current session remains
 available in `/session`. Confirming stops the current ACP child and initializes
-the selected Harness without closing Martty. Its first prompt then sends
-`session/new` immediately before `session/prompt`. It never carries one session
+the selected Harness without closing Martty, then immediately sends `session/new`
+to bind an empty session. This does not start a model turn. It never carries one session
 across Harnesses. The settings and CLI entry points select the Harness for the
 next standalone launch; a profile-owned Host cannot be replaced by its Client.
 
 Every selection is stored in `$MARTTY_HOME/settings.json`. CLI/settings
 selection takes effect on the next standalone launch; TUI selection also
 updates the running standalone process immediately. Standalone startup only
-initializes the selected Harness, and its first prompt creates the ACP session.
+initializes the selected Harness and binds an empty ACP session before showing Ready.
 `--agent` and `DSH_TUI_AGENT` remain higher startup priorities.
 None of these replace the Host-owned runtime or session of
 `dsh --profile martty`.

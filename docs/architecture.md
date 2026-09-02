@@ -83,8 +83,8 @@ Client 进程：独立 Cordis root
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
   harness-view 注入 tuiCommands + tuiOverlay + acpClient + acpSessionStatus；
-               standalone 启动与切换只 initialize；首个 prompt 才 session/new；
-               会话尚未开始时即时替换 ACP 子进程，首个 session/prompt 后或
+               standalone 启动与切换会 initialize 并绑定空会话；
+               首个 session/prompt 前即时替换 ACP 子进程，发过 prompt 后或
                session/load 恢复旧会话时先确认，再 initialize 新 Harness；
                profile 主路径仍由 Host 拥有 runtime
   tui-presets  提供 tuiPresets，注册持久化 /ui 选择与组合生命周期
@@ -155,7 +155,7 @@ Client runner Client inspect + code.client 挂载/停止
 TUI 壳        消费 Theme、slot 与通用 overlay 快照树；把本地 Queue/Agent 快照路由给对应 service
 acp-client    session/new · authenticate · prompt · cancel · config · commands
               standalone 使用稳定代理流，可替换 ACP 子进程而不断开 TUI compositor；
-              启动/替换时清空旧 Agent capability 并 initialize；首个 prompt 前 session/new
+              启动/替换时清空旧 Agent capability，initialize 后立即 session/new
               提供 acpSessionConfig（观察标准快照；set 仍由 Rust 发标准 ACP）
               提供 acpSessionPlan（观察标准 plan update；内置 Plan 插件只是消费者）
               提供 acpSessionStats 与通用、随 effect 回收的 ACP observer registry

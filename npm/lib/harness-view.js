@@ -1,4 +1,4 @@
-/** Built-in Client Plugin: switch the standalone ACP Harness before its next session. */
+/** Built-in Client Plugin: switch the standalone ACP Harness with a fresh session. */
 
 import {
   activateHarness,
@@ -47,7 +47,7 @@ export function apply(ctx, options = {}) {
       if (ctx.acpSessionStatus?.current?.().session?.started === true) {
         ctx.tuiOverlay.openSelect({
           id: 'harness-confirm',
-          title: 'Switch Harness? · next prompt starts a new session',
+          title: 'Switch Harness? · starts a new session',
           value: 'switch',
           options: [
             {
@@ -81,13 +81,13 @@ export function apply(ctx, options = {}) {
         level: 'info',
         text: options.hostOwned
           ? `${entry.label} is saved for a new standalone session. The current dsh profile and session remain Host-owned.`
-          : `${entry.label} is ready. The next prompt starts its session.`,
+          : `${entry.label} is active in a new session.`,
       }],
     })
   }
   const command = ctx.tuiCommands.register({
     name: 'harness',
-    description: 'Switch Harness; the next prompt starts its session',
+    description: 'Switch Harness now and start a new session',
     input: { hint: '[id]', options: choices() },
   }, async (args) => {
     const requested = args.trim()
@@ -96,7 +96,7 @@ export function apply(ctx, options = {}) {
     const selected = selectedHarness(settingsPath)?.id
     ctx.tuiOverlay.openSelect({
       id: 'harness',
-      title: 'Switch Harness · session starts with first prompt',
+      title: 'Switch Harness · starts a new session',
       value: entries.some(({ value }) => value === selected) ? selected : entries[0].value,
       options: entries,
     }, { onSubmit: save })
