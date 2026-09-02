@@ -1678,7 +1678,7 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
     for text in ["first", "second"] {
         cmd_tx
             .send(Cmd::Prompt {
-                session_id: "local-draft".into(),
+                session_id: "s1".into(),
                 text: text.into(),
             })
             .expect("prompt");
@@ -1709,13 +1709,13 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
     assert!(needs_auth, "the active prompt requests sign-in");
     cmd_tx
         .send(Cmd::Prompt {
-            session_id: "local-draft".into(),
+            session_id: "s1".into(),
             text: "third".into(),
         })
         .expect("prompt entered while auth is unresolved");
     cmd_tx
         .send(Cmd::PromptImages {
-            session_id: "local-draft".into(),
+            session_id: "s1".into(),
             blocks: vec![crate::bus::PromptBlock::Text(
                 "image group during auth".into(),
             )],
@@ -1723,14 +1723,14 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
         .expect("image prompt entered while auth is unresolved");
     cmd_tx
         .send(Cmd::Steer {
-            session_id: "local-draft".into(),
+            session_id: "s1".into(),
             message_id: 7,
             text: "steer during auth".into(),
         })
         .expect("steer entered while auth is unresolved");
     cmd_tx
         .send(Cmd::SteerImages {
-            session_id: "local-draft".into(),
+            session_id: "s1".into(),
             message_id: 8,
             blocks: vec![crate::bus::PromptBlock::Text(
                 "image steer during auth".into(),
@@ -2066,7 +2066,7 @@ async fn late_steer_rejection_is_not_retried_by_the_transport_after_auth() {
 
     cmd_tx
         .send(Cmd::Prompt {
-            session_id: "local-draft".into(),
+            session_id: "s1".into(),
             text: "first".into(),
         })
         .expect("first prompt");
@@ -2079,7 +2079,7 @@ async fn late_steer_rejection_is_not_retried_by_the_transport_after_auth() {
     );
     cmd_tx
         .send(Cmd::Steer {
-            session_id: "local-draft".into(),
+            session_id: "s1".into(),
             message_id: 9,
             text: "steer".into(),
         })
@@ -2303,7 +2303,7 @@ async fn steer_sends_a_concurrent_prompt_without_interrupting_the_turn() {
     );
     while let Ok(event) = bus_rx.try_recv() {
         assert!(
-            !matches!(event, AppEvent::Ctl(CtlEvent::Interrupted)),
+            !matches!(event, AppEvent::Ctl(CtlEvent::Interrupted { .. })),
             "steer is part of the active turn, not an interruption"
         );
     }
@@ -2640,4 +2640,320 @@ async fn attach_fd_socketpair_reads_without_eagain() {
         .await
         .expect("read should not be EAGAIN");
     assert_eq!(&buf, b"hello\n");
+}
+
+#[test]
+fn cmd_session_resolution_honors_carried_id_falls_back_and_rejects_unknown() {
+    let mut sessions = HashMap::<String, SessionHandle>::new();
+    sessions.insert("s1".into(), SessionHandle::default());
+    let current = Some(SessionId::new("s1"));
+
+    // An empty field falls back to the most recently bound session.
+    let fallback = resolve_cmd_session(&sessions, &current, "", "prompt").expect("fallback");
+    assert_eq!(fallback.expect("current session").to_string(), "s1");
+
+    // A bound id is honored exactly as carried.
+    let carried = resolve_cmd_session(&sessions, &current, "s1", "prompt").expect("carried");
+    assert_eq!(carried.expect("bound session").to_string(), "s1");
+
+    // An id this connection never bound is rejected, not rerouted.
+    let err = resolve_cmd_session(&sessions, &current, "ghost", "prompt").expect_err("unknown id");
+    assert!(err.contains("ghost"), "error names the id: {err}");
+
+    // Before the first session exists, any carried id is a local placeholder
+    // with no server meaning yet; it resolves to "no session" like "".
+    let empty = HashMap::<String, SessionHandle>::new();
+    assert!(resolve_cmd_session(&empty, &None, "dsh-draft", "prompt")
+        .expect("placeholder")
+        .is_none());
+    assert!(resolve_cmd_session(&empty, &None, "", "prompt")
+        .expect("no session")
+        .is_none());
+}
+
+#[test]
+fn bind_session_registers_current_and_adopts_pending_prompts() {
+    let mut sessions = HashMap::<String, SessionHandle>::new();
+    let mut current = None;
+    let mut pending = VecDeque::from([Cmd::Prompt {
+        session_id: "dsh-draft".into(),
+        text: "early".into(),
+    }]);
+
+    bind_session(
+        &mut sessions,
+        &mut current,
+        &mut pending,
+        SessionId::new("s1"),
+    );
+
+    assert_eq!(current.expect("current").to_string(), "s1");
+    assert!(pending.is_empty(), "pending prompts move into the session");
+    let handle = sessions.get("s1").expect("registered");
+    assert!(handle.inflight.is_none());
+    assert_eq!(handle.queue.len(), 1);
+    assert!(matches!(
+        handle.queue.front(),
+        Some(Cmd::Prompt { text, .. }) if text == "early"
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_run_concurrent_prompts_on_one_connection() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
+        NewSessionResponse, PromptResponse, StopReason,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    let new_calls = Arc::new(AtomicUsize::new(0));
+    let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (release_s1_tx, release_s1_rx) = tokio::sync::oneshot::channel::<()>();
+    let release_s1_tx = Arc::new(Mutex::new(Some(release_s1_tx)));
+    let release_s1_rx = Arc::new(Mutex::new(Some(release_s1_rx)));
+
+    let agent = Agent
+        .builder()
+        .name("multi-session-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("multi-session-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let new_calls = Arc::clone(&new_calls);
+                async move |_req: NewSessionRequest, responder, _cx| {
+                    let n = new_calls.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(NewSessionResponse::new(SessionId::new(format!(
+                        "s{}",
+                        n + 1
+                    ))))
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let release_s1_tx = Arc::clone(&release_s1_tx);
+                let release_s1_rx = Arc::clone(&release_s1_rx);
+                async move |req: PromptRequest, responder, cx| {
+                    let sid = req.session_id.to_string();
+                    let _ = arrived_tx.send(sid.clone());
+                    if sid == "s1" {
+                        // Hold s1's response until s2's prompt also arrived:
+                        // with a single connection-level in-flight prompt this
+                        // would deadlock, so completing proves the demux.
+                        let release = release_s1_rx.lock().unwrap().take();
+                        cx.spawn(async move {
+                            if let Some(release) = release {
+                                let _ = release.await;
+                            }
+                            let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
+                            Ok(())
+                        })?;
+                        Ok(())
+                    } else {
+                        if let Some(tx) = release_s1_tx.lock().unwrap().take() {
+                            let _ = tx.send(());
+                        }
+                        responder.respond(PromptResponse::new(StopReason::EndTurn))
+                    }
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    // Startup binds s1; /new binds s2 and becomes the fallback session.
+    cmd_tx.send(Cmd::NewSession).expect("new session");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut bound = std::collections::HashSet::new();
+    while Instant::now() < deadline && !bound.contains("s2") {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) => {
+                bound.insert(session_id);
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(bound.contains("s2"), "second session bound: {bound:?}");
+
+    // Prompt s1 explicitly even though s2 is the most recently bound session.
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "s1".into(),
+            text: "a".into(),
+        })
+        .expect("prompt s1");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), arrived_rx.recv())
+            .await
+            .expect("s1 prompt reaches the agent")
+            .as_deref(),
+        Some("s1"),
+        "the carried session id addresses the prompt, not the fallback",
+    );
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "s2".into(),
+            text: "b".into(),
+        })
+        .expect("prompt s2");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), arrived_rx.recv())
+            .await
+            .expect("s2 prompt reaches the agent while s1 is still in flight")
+            .as_deref(),
+        Some("s2"),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut turn_ends = std::collections::HashSet::new();
+    while Instant::now() < deadline && turn_ends.len() < 2 {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::TurnEnd { session, kind }))
+                if kind == "completed" =>
+            {
+                turn_ends.insert(session);
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(
+        turn_ends,
+        std::collections::HashSet::from(["s1".to_string(), "s2".to_string()]),
+        "each session's completion is tagged with its own id",
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_for_an_unbound_session_is_rejected_not_rerouted() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
+        NewSessionResponse, PromptResponse, StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let agent = Agent
+        .builder()
+        .name("unknown-session-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("unknown-session-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: PromptRequest, responder, _cx| {
+                let _ = prompt_tx.send(req.session_id.to_string());
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. })) => break,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "ghost".into(),
+            text: "boo".into(),
+        })
+        .expect("prompt for an unbound session");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut rejection = None;
+    while Instant::now() < deadline && rejection.is_none() {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Error(err))) if err.contains("unknown session") => {
+                rejection = Some(err);
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(rejection.as_deref(), Some("prompt: unknown session ghost"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), prompt_rx.recv())
+            .await
+            .is_err(),
+        "an unbound session id must not be rerouted to the fallback session",
+    );
+
+    // The bound session keeps working after the rejection.
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "s1".into(),
+            text: "real".into(),
+        })
+        .expect("prompt for the bound session");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("bound session still prompts")
+            .as_deref(),
+        Some("s1"),
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
 }

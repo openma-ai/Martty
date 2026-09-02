@@ -488,12 +488,23 @@ fn main() -> Result<()> {
                     // background tools can otherwise begin and finish inside
                     // the same receive burst, making the request invisible.
                     if !render_boundary {
+                        // Buffer the burst and coalesce adjacent session
+                        // deltas first: agents may stream updates at extreme
+                        // rates (session/load replay storm, issue #94), and
+                        // applying each delta individually melts the loop.
+                        // The buffer stops right after a frame-boundary
+                        // event, preserving the original drain semantics.
+                        let mut burst: Vec<bus::AppEvent> = Vec::new();
                         while let Ok(ev) = bus_rx.try_recv() {
-                            let render_boundary = event_requires_immediate_frame(&ev);
-                            app.handle(ev, &controller);
-                            if render_boundary {
+                            let boundary = event_requires_immediate_frame(&ev);
+                            burst.push(ev);
+                            if boundary {
                                 break;
                             }
+                        }
+                        crate::events::coalesce_session_updates(&mut burst);
+                        for ev in burst {
+                            app.handle(ev, &controller);
                         }
                     }
                 }

@@ -146,6 +146,9 @@ fn acp_resume_usage_snapshot_reaches_the_footer_once() {
     let root = tmp_root("acp-usage");
     let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
 
+    // Multi-session routing (issue #94): updates only reach the footer of
+    // the session they are tagged with, so load the session first.
+    app.load_acp_session("dsh-loaded", &ctl);
     app.handle(
         AppEvent::Rpc {
             method: "session/update".into(),

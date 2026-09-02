@@ -736,6 +736,74 @@ pub struct SubagentView {
     pub transcript: Transcript,
 }
 
+/// One non-live session's full state while another tab is viewed (issue
+/// #94). The App's own fields always describe the viewed session; a tab
+/// switch moves them into a slot and loads the target slot in their place.
+pub struct SessionSlot {
+    pub id: String,
+    pub title: Option<String>,
+    pub transcript: Transcript,
+    /// Authoritative per-session running bit (folded from `SessionStatus`
+    /// and turn lifecycle events).
+    pub running: bool,
+    /// Finished while parked → tab badge until the user views the tab.
+    pub completed_unseen: bool,
+    pub prompt_queue: VecDeque<ClientQueuedPrompt>,
+    pub prompt_pending: bool,
+    pub modes: Modes,
+    pub session_bound: bool,
+    pub pending_steer_cells: HashMap<u64, PendingSteer>,
+    pub subagents: Vec<SubagentView>,
+    pub current_subagents: HashSet<String>,
+    pub next_subagent_starts_batch: bool,
+    pub active_subagent: Option<String>,
+    pub agent_selection: Option<String>,
+}
+
+impl SessionSlot {
+    /// A fresh, empty session tab. `bound` is true only when the id is
+    /// already a real session id (demo, local JSONL resume).
+    fn fresh(id: String, bound: bool) -> Self {
+        SessionSlot {
+            transcript: Transcript::new(id.clone()),
+            id,
+            title: None,
+            running: false,
+            completed_unseen: false,
+            prompt_queue: VecDeque::new(),
+            prompt_pending: false,
+            modes: Modes::default(),
+            session_bound: bound,
+            pending_steer_cells: HashMap::new(),
+            subagents: Vec::new(),
+            current_subagents: HashSet::new(),
+            next_subagent_starts_batch: true,
+            active_subagent: None,
+            agent_selection: None,
+        }
+    }
+}
+
+/// One row of the session tab strip (native chrome, `ui::draw_session_tabs`).
+pub struct SessionTab {
+    pub label: String,
+    pub running: bool,
+    pub completed_unseen: bool,
+    pub current: bool,
+}
+
+/// Right-click tab popup. Phase 1 has a single Close item; new items extend
+/// [`TabMenuItem`] and the painter's item list together.
+pub(crate) struct TabMenu {
+    pub tab: usize,
+    pub at: (u16, u16),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabMenuItem {
+    Close,
+}
+
 pub(crate) const AGENT_HISTORY_ID: &str = "__martty_internal__:agent-history";
 
 /// Overlay for one ACP `session/request_permission` ask.
@@ -1106,6 +1174,24 @@ pub struct App {
     pub ambient_tip_at: Instant,
     ctrl_c_armed: Option<CtrlCQuitChord>,
     pub session_id: String,
+    /// Parked sessions — every session except the viewed one (issue #94).
+    /// Conceptual tab order is this list with the live session spliced in
+    /// at `current`; the App's own fields above always mirror the live tab.
+    parked: Vec<SessionSlot>,
+    /// Tab index of the live session (`0..=parked.len()`).
+    current: usize,
+    /// Ids of tabs awaiting their `SessionBound`, FIFO: `/new` placeholders
+    /// and `session/load` targets. The bind lands on the tab that asked,
+    /// even if the user switched away while it resolved.
+    awaiting_binds: VecDeque<String>,
+    /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
+    pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
+    /// The tab strip `+` cell's rect from the latest frame.
+    pub(crate) plus_rect: Option<ratatui::layout::Rect>,
+    /// Open right-click tab popup.
+    pub(crate) tab_menu: Option<TabMenu>,
+    /// The popup's frame rect from the latest draw (item hit-testing).
+    pub(crate) tab_menu_rect: Option<ratatui::layout::Rect>,
     pub cfg: RuntimeConfig,
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
@@ -1175,6 +1261,23 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
     }
 }
 
+/// Register (or revive) the view for a started subagent in `views`.
+fn upsert_subagent_view(views: &mut Vec<SubagentView>, parent: &str, child: &str) {
+    if let Some(view) = views.iter_mut().find(|view| view.id == child) {
+        view.running = true;
+        view.failed = false;
+    } else {
+        views.push(SubagentView {
+            id: child.to_string(),
+            parent: parent.to_string(),
+            label: format!("subagent {}", views.len() + 1),
+            running: true,
+            failed: false,
+            transcript: Transcript::new(child.to_string()),
+        });
+    }
+}
+
 /// Draft pieces after stripping `[image n]` chips, still in reading order.
 #[derive(Clone)]
 enum StagedBlock {
@@ -1182,7 +1285,7 @@ enum StagedBlock {
     Image(crate::attachments::Attachment),
 }
 
-struct ClientQueuedPrompt {
+pub(crate) struct ClientQueuedPrompt {
     id: u64,
     blocks: Vec<StagedBlock>,
 }
@@ -1200,7 +1303,7 @@ pub(crate) struct QueuePreview {
     pub(crate) editing: bool,
 }
 
-struct PendingSteer {
+pub(crate) struct PendingSteer {
     cells: Vec<usize>,
     blocks: Vec<StagedBlock>,
     /// Queue-head retries keep their original FIFO position when deferred.
@@ -1471,6 +1574,13 @@ impl App {
             ambient_tip_at: Instant::now(),
             ctrl_c_armed: None,
             session_id,
+            parked: Vec::new(),
+            current: 0,
+            awaiting_binds: VecDeque::new(),
+            tab_rects: Vec::new(),
+            plus_rect: None,
+            tab_menu: None,
+            tab_menu_rect: None,
             cfg,
             selected_model: None,
             demo,
@@ -1517,6 +1627,324 @@ impl App {
             return &mut self.subagents[index].transcript;
         }
         &mut self.transcript
+    }
+
+    /// Move the live session's per-session state out of the App fields into
+    /// a parking slot, leaving cheap placeholders behind. Always paired with
+    /// [`Self::put_live_slot`] before anything reads the fields again.
+    fn take_live_slot(&mut self) -> SessionSlot {
+        SessionSlot {
+            id: std::mem::take(&mut self.session_id),
+            title: self.session_title.take(),
+            transcript: std::mem::replace(&mut self.transcript, Transcript::new(String::new())),
+            running: self.state != RunState::Idle || self.prompt_pending,
+            completed_unseen: false,
+            prompt_queue: std::mem::take(&mut self.prompt_queue),
+            prompt_pending: std::mem::take(&mut self.prompt_pending),
+            modes: std::mem::take(&mut self.modes),
+            session_bound: std::mem::take(&mut self.session_bound),
+            pending_steer_cells: std::mem::take(&mut self.pending_steer_cells),
+            subagents: std::mem::take(&mut self.subagents),
+            current_subagents: std::mem::take(&mut self.current_subagents),
+            next_subagent_starts_batch: std::mem::replace(&mut self.next_subagent_starts_batch, true),
+            active_subagent: self.active_subagent.take(),
+            agent_selection: self.agent_selection.take(),
+        }
+    }
+
+    /// Load a slot's state into the App fields — the inverse of
+    /// [`Self::take_live_slot`]. RunState is recomputed from the slot's
+    /// authoritative `running` bit; the elapsed timer restarts.
+    fn put_live_slot(&mut self, slot: SessionSlot) {
+        self.session_id = slot.id;
+        self.session_title = slot.title;
+        self.transcript = slot.transcript;
+        self.queued = slot.prompt_queue.len();
+        self.prompt_queue = slot.prompt_queue;
+        self.prompt_pending = slot.prompt_pending;
+        self.modes = slot.modes;
+        self.session_bound = slot.session_bound;
+        self.pending_steer_cells = slot.pending_steer_cells;
+        self.subagents = slot.subagents;
+        self.current_subagents = slot.current_subagents;
+        self.next_subagent_starts_batch = slot.next_subagent_starts_batch;
+        self.active_subagent = slot.active_subagent;
+        self.agent_selection = slot.agent_selection;
+        self.state = if slot.running || slot.prompt_pending {
+            RunState::Running
+        } else {
+            RunState::Idle
+        };
+        self.run_started = None;
+        self.state_note.clear();
+    }
+
+    /// Per-view caches that must not leak across a tab switch.
+    fn after_switch(&mut self) {
+        self.chat_view = ChatView::default();
+        self.scroll_up = 0;
+        self.sel = None;
+        self.selecting = false;
+        self.last_click = None;
+        self.input_sel = None;
+        self.input_selecting = false;
+        self.picker = None;
+        self.queue_selection = None;
+        self.queue_edit = None;
+        // The incoming transcript's own model is the truth for the chip.
+        self.selected_model = None;
+        self.needs_redraw = true;
+    }
+
+    /// Switch the view to tab `tab` (conceptual index, live spliced in at
+    /// `current`): park the live state into its slot, load the target.
+    pub fn switch_to_session(&mut self, tab: usize) {
+        if tab == self.current || tab > self.parked.len() {
+            return;
+        }
+        let pidx = if tab < self.current { tab } else { tab - 1 };
+        let live = self.take_live_slot();
+        let mut target = self.parked.remove(pidx);
+        target.completed_unseen = false;
+        // The parked copy takes the live tab's conceptual position.
+        let park_at = if self.current < tab {
+            self.current
+        } else {
+            self.current - 1
+        };
+        self.parked.insert(park_at, live);
+        self.current = tab;
+        self.put_live_slot(target);
+        self.after_switch();
+    }
+
+    /// Park the live session and open a fresh tab for `id` at the end.
+    /// `bound` is true only when the id is already a real session id.
+    fn open_new_session(&mut self, id: String, bound: bool) {
+        let live = self.take_live_slot();
+        self.parked.insert(self.current, live);
+        self.current = self.parked.len();
+        self.put_live_slot(SessionSlot::fresh(id, bound));
+        self.after_switch();
+    }
+
+    /// Conceptual tab index of the session with this id (live or parked).
+    fn tab_index_of(&self, id: &str) -> Option<usize> {
+        if self.session_id == id {
+            return Some(self.current);
+        }
+        self.parked.iter().position(|slot| slot.id == id).map(|pidx| {
+            if pidx < self.current {
+                pidx
+            } else {
+                pidx + 1
+            }
+        })
+    }
+
+    /// Close a tab locally (issue #94): nothing is sent to the agent — ACP
+    /// has no session/close — the session simply stops being viewed and its
+    /// updates drop at the router. Never removes the last remaining tab.
+    fn close_session(&mut self, tab: usize) {
+        let total = self.parked.len() + 1;
+        if total < 2 || tab >= total {
+            return;
+        }
+        let doomed = if tab == self.current {
+            self.session_id.clone()
+        } else {
+            let pidx = if tab < self.current { tab } else { tab - 1 };
+            match self.parked.get(pidx) {
+                Some(slot) => slot.id.clone(),
+                None => return,
+            }
+        };
+        if tab == self.current {
+            // View a neighbor first; the doomed state parks at the old spot.
+            let neighbor = if tab + 1 < total { tab + 1 } else { tab - 1 };
+            self.switch_to_session(neighbor);
+        }
+        if let Some(pidx) = self.parked.iter().position(|slot| slot.id == doomed) {
+            self.parked.remove(pidx);
+            let removed_tab = if pidx < self.current { pidx } else { pidx + 1 };
+            if removed_tab < self.current {
+                self.current -= 1;
+            }
+        }
+        self.awaiting_binds.retain(|id| *id != doomed);
+        self.needs_redraw = true;
+    }
+
+    /// Tab strip model: every session in tab order with the live tab
+    /// spliced in at `current`. Native status chrome fed by session status
+    /// facts (same source as `state_line`, never the palette/slot systems).
+    pub fn session_tabs(&self) -> Vec<SessionTab> {
+        let mut tabs: Vec<SessionTab> = self
+            .parked
+            .iter()
+            .map(|slot| SessionTab {
+                label: slot
+                    .title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| short_id(&slot.id)),
+                running: slot.running || slot.prompt_pending,
+                completed_unseen: slot.completed_unseen,
+                current: false,
+            })
+            .collect();
+        tabs.insert(
+            self.current,
+            SessionTab {
+                label: self
+                    .session_title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| short_id(&self.session_id)),
+                running: self.state != RunState::Idle || self.prompt_pending,
+                completed_unseen: false,
+                current: true,
+            },
+        );
+        tabs
+    }
+
+    /// Number of session tabs (parked + live).
+    pub fn session_tab_count(&self) -> usize {
+        self.parked.len() + 1
+    }
+
+    /// Hit-test a screen cell against the tab rects recorded by the painter.
+    fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_rects
+            .iter()
+            .find(|(rect, _)| {
+                col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+            })
+            .map(|(_, idx)| *idx)
+    }
+
+    /// Hit-test a screen cell against the tab strip `+` cell.
+    fn plus_hit(&self, col: u16, row: u16) -> bool {
+        self.plus_rect.is_some_and(|rect| {
+            col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+        })
+    }
+
+    /// Hit-test a screen cell against the open tab popup's items.
+    fn tab_menu_item_at(&self, col: u16, row: u16) -> Option<TabMenuItem> {
+        let rect = self.tab_menu_rect?;
+        if col < rect.x || col >= rect.right() {
+            return None;
+        }
+        match row.checked_sub(rect.y + 1) {
+            Some(0) => Some(TabMenuItem::Close),
+            _ => None,
+        }
+    }
+
+    /// Was this session mid-turn (live RunState, or a parked slot's running
+    /// bit)? Read just before folding a `SessionStatus` event.
+    fn session_was_running(&self, session: &str) -> bool {
+        if session == self.session_id {
+            matches!(self.state, RunState::Running)
+        } else {
+            self.parked
+                .iter()
+                .any(|slot| slot.id == session && slot.running)
+        }
+    }
+
+    /// Fold an event addressed to a parked session into its slot: the same
+    /// mode/status facts the live path folds, plus the running → idle edge
+    /// that raises the tab's completion badge. Live UI state is untouched.
+    fn apply_to_slot(slot: &mut SessionSlot, ui: crate::events::UiEvent) {
+        use crate::events::UiEvent as E;
+        let mut apply_to_transcript = true;
+        match &ui {
+            E::PlanMode { active, .. } => {
+                if slot.modes.plan == *active {
+                    apply_to_transcript = false;
+                } else {
+                    slot.modes.plan = *active;
+                }
+            }
+            E::SandboxMode { mode, .. } => slot.modes.sandbox = Some(mode.clone()),
+            E::ApprovalPolicy { policy, .. } => slot.modes.approval = Some(policy.clone()),
+            E::PermissionPreset { preset, .. } => slot.modes.permission = Some(preset.clone()),
+            E::AgentPreset { preset, .. } => {
+                slot.modes.agent_preset = Some(preset.clone());
+                apply_to_transcript = false;
+            }
+            E::ReasoningEffort { effort, .. } => {
+                slot.modes.effort = Some(effort.clone());
+                apply_to_transcript = false;
+            }
+            E::SessionTitle { title, .. } => slot.title = Some(title.clone()),
+            _ => {}
+        }
+        match &ui {
+            E::SessionStatus { running, .. } => {
+                if slot.running && !running {
+                    slot.completed_unseen = true;
+                }
+                slot.running = *running;
+                if !running {
+                    slot.prompt_pending = false;
+                }
+            }
+            E::TurnStart { .. } => slot.running = true,
+            E::TurnEnd { .. } => {
+                if slot.running {
+                    slot.completed_unseen = true;
+                }
+                slot.running = false;
+                slot.prompt_pending = false;
+            }
+            _ => {}
+        }
+        if apply_to_transcript {
+            slot.transcript.apply(ui);
+        }
+    }
+
+    /// Dispatch the head of one session's queue — the live session takes
+    /// the existing path; a parked session echoes into its own transcript
+    /// and sends addressed by its own id (acp.rs fans in per session).
+    fn dispatch_session_queue(&mut self, session: &str, ctl: &Controller) {
+        if session == self.session_id {
+            self.dispatch_next_queued(ctl);
+            return;
+        }
+        let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) else {
+            return;
+        };
+        let Some(prompt) = slot.prompt_queue.pop_front() else {
+            return;
+        };
+        for block in &prompt.blocks {
+            match block {
+                StagedBlock::Text(text) => slot.transcript.push_user(text.clone(), false),
+                StagedBlock::Image(att) => slot.transcript.push_image(
+                    att.name.clone(),
+                    String::new(),
+                    att.path.clone(),
+                    att.data.clone(),
+                    false,
+                ),
+            }
+        }
+        slot.prompt_pending = true;
+        match prompt.blocks.as_slice() {
+            [StagedBlock::Text(text)] => ctl.send(Cmd::Prompt {
+                session_id: session.to_string(),
+                text: text.clone(),
+            }),
+            _ => ctl.send(Cmd::PromptImages {
+                session_id: session.to_string(),
+                blocks: prompt_blocks_from_staged(prompt.blocks),
+            }),
+        }
     }
 
     /// Re-detect the workspace git branch for the composer cap label. One
@@ -2168,8 +2596,12 @@ impl App {
     }
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
-        let queue_before = (!self.demo).then(|| self.queue_snapshot());
-        let agents_before = (!self.demo).then(|| self.agents_snapshot());
+        // Cheap fingerprints instead of full snapshot clones: chatty agents
+        // can stream hundreds of thousands of session updates (issue #94 —
+        // a session/load replay storm), and cloning every queue/agents
+        // snapshot per event multiplies that into a UI-melting alloc storm.
+        let queue_before = (!self.demo).then(|| self.queue_fingerprint());
+        let agents_before = (!self.demo).then(|| self.agents_fingerprint());
         self.handle_inner(ev, ctl);
         // A turn ran on the picked model → the stream is the truth again.
         if self.selected_model.is_some()
@@ -2178,17 +2610,77 @@ impl App {
             self.selected_model = None;
         }
         if let Some(before) = queue_before {
-            let after = self.queue_snapshot();
-            if after != before {
-                ctl.send(Cmd::QueueSnapshot { snapshot: after });
+            if self.queue_fingerprint() != before {
+                ctl.send(Cmd::QueueSnapshot {
+                    snapshot: self.queue_snapshot(),
+                });
             }
         }
         if let Some(before) = agents_before {
-            let after = self.agents_snapshot();
-            if after != before {
-                ctl.send(Cmd::AgentsSnapshot { snapshot: after });
+            if self.agents_fingerprint() != before {
+                ctl.send(Cmd::AgentsSnapshot {
+                    snapshot: self.agents_snapshot(),
+                });
             }
         }
+    }
+
+    /// Identity of everything `queue_snapshot` projects, without the summary
+    /// strings: ordered prompt ids (order captures reordering) plus the
+    /// selection/edit/confirm flags. A summary edit always passes through an
+    /// `editing_id` transition, so text changes are covered too.
+    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool) {
+        (
+            self.prompt_queue.iter().map(|prompt| prompt.id).collect(),
+            self.queue_selection
+                .and_then(|index| self.prompt_queue.get(index))
+                .map(|prompt| prompt.id),
+            self.queue_edit.as_ref().map(|edit| edit.prompt_id),
+            self.queue_delete_confirming(),
+        )
+    }
+
+    /// Identity of everything `agents_snapshot` projects, without label
+    /// strings: root running bit, per-view id/status/current, the history
+    /// count, and the active/selected ids. Labels are assigned at view
+    /// creation, so they cannot change without the id set changing.
+    fn agents_fingerprint(&self) -> (String, Option<String>, bool, Vec<(String, u8, bool)>, usize) {
+        let active_id = match self.active_subagent.as_deref() {
+            Some(id) if !self.subagent_in_current_batch(id) => AGENT_HISTORY_ID.into(),
+            Some(id) => id.into(),
+            None => self.session_id.clone(),
+        };
+        let root_running = !matches!(self.state, RunState::Idle) || self.prompt_pending;
+        let views: Vec<(String, u8, bool)> = self
+            .subagents
+            .iter()
+            .map(|view| {
+                let status = if view.running {
+                    0
+                } else if view.failed {
+                    1
+                } else {
+                    2
+                };
+                (
+                    view.id.clone(),
+                    status,
+                    self.subagent_in_current_batch(&view.id),
+                )
+            })
+            .collect();
+        let history_count = self
+            .subagents
+            .iter()
+            .filter(|view| !self.subagent_in_current_batch(&view.id))
+            .count();
+        let selected_id = self.agent_selection.as_ref().and_then(|selected| {
+            (self.subagents.iter().any(|view| view.id == *selected)
+                || *selected == self.session_id
+                || (history_count > 0 && selected == AGENT_HISTORY_ID))
+                .then(|| selected.clone())
+        });
+        (active_id, selected_id, root_running, views, history_count)
     }
 
     fn queue_snapshot(&self) -> crate::bus::QueueSnapshot {
@@ -2282,14 +2774,16 @@ impl App {
             }
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Ui(ui) => {
-                let became_idle = matches!(
-                    &ui,
-                    crate::events::UiEvent::SessionStatus { session, running: false }
-                        if session == &self.session_id
-                ) && matches!(self.state, RunState::Running);
+                let idle_session = match &ui {
+                    crate::events::UiEvent::SessionStatus {
+                        session,
+                        running: false,
+                    } if self.session_was_running(session) => Some(session.clone()),
+                    _ => None,
+                };
                 self.apply_ui(ui);
-                if became_idle {
-                    self.dispatch_next_queued(ctl);
+                if let Some(session) = idle_session {
+                    self.dispatch_session_queue(&session, ctl);
                 }
             }
             AppEvent::Rpc { method, params } => {
@@ -2447,14 +2941,16 @@ impl App {
                     return;
                 }
                 for ui in parse_notification(&method, &params) {
-                    let became_idle = matches!(
-                        &ui,
-                        crate::events::UiEvent::SessionStatus { session, running: false }
-                            if session == &self.session_id
-                    ) && matches!(self.state, RunState::Running);
+                    let idle_session = match &ui {
+                        crate::events::UiEvent::SessionStatus {
+                            session,
+                            running: false,
+                        } if self.session_was_running(session) => Some(session.clone()),
+                        _ => None,
+                    };
                     self.apply_ui(ui);
-                    if became_idle {
-                        self.dispatch_next_queued(ctl);
+                    if let Some(session) = idle_session {
+                        self.dispatch_session_queue(&session, ctl);
                     }
                 }
                 self.needs_redraw = true;
@@ -2469,6 +2965,14 @@ impl App {
                 self.queue_selection = None;
                 self.queue_edit = None;
                 self.pending_steer_cells.clear();
+                for slot in &mut self.parked {
+                    // The dead runtime owned every session's delivery state,
+                    // not just the viewed one.
+                    slot.running = false;
+                    slot.prompt_pending = false;
+                    slot.prompt_queue.clear();
+                    slot.pending_steer_cells.clear();
+                }
                 if self.state != RunState::Idle {
                     self.state = RunState::Idle;
                     self.run_started = None;
@@ -2539,15 +3043,28 @@ impl App {
                         self.state_note = "cancelling".into();
                         self.transcript.cancel_open_work();
                     }
-                    CtlEvent::Interrupted => {
-                        self.prompt_pending = false;
-                        self.state = RunState::Idle;
-                        self.run_started = None;
-                        self.state_note.clear();
-                        self.transcript.cancel_open_work();
-                        self.transcript
-                            .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
-                        self.dispatch_next_queued(ctl);
+                    CtlEvent::Interrupted { session_id } => {
+                        // One connection can run turns for several sessions;
+                        // settle whichever session the interruption names —
+                        // the viewed one, or a parked slot.
+                        if session_id == self.session_id {
+                            self.prompt_pending = false;
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.state_note.clear();
+                            self.transcript.cancel_open_work();
+                            self.transcript
+                                .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            slot.prompt_pending = false;
+                            slot.running = false;
+                            slot.transcript.cancel_open_work();
+                            slot.transcript
+                                .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                        }
+                        self.dispatch_session_queue(&session_id, ctl);
                     }
                     CtlEvent::Skills { skills } => {
                         self.skills = skills;
@@ -2699,14 +3216,63 @@ impl App {
                         self.load_session = load_session;
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
-                        if self.session_id != session_id {
-                            self.reset_subagent_views();
+                        // The session that just bound, for the queue dispatch
+                        // below (prompts submitted while the tab was unbound
+                        // are held in its queue — acp.rs rejects unbound ids).
+                        let mut just_bound: Option<String> = None;
+                        if let Some(awaiting) = self.awaiting_binds.pop_front() {
+                            // The tab that asked for session/new (placeholder
+                            // id) or session/load (target id) owns this bind —
+                            // the user may have switched away while it
+                            // resolved, so rebind by the awaiting id, not by
+                            // which tab happens to be live.
+                            if self.session_id == awaiting {
+                                self.session_id = session_id.clone();
+                                self.transcript.set_root_session(session_id.clone());
+                                self.session_bound = true;
+                                if let Some(notice) = notice {
+                                    self.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                just_bound = Some(self.session_id.clone());
+                            } else if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == awaiting)
+                            {
+                                slot.id = session_id.clone();
+                                slot.transcript.set_root_session(session_id.clone());
+                                slot.session_bound = true;
+                                if let Some(notice) = notice {
+                                    slot.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                just_bound = Some(slot.id.clone());
+                            } else {
+                                self.show_tip(format!(
+                                    "session {session_id} bound after its tab was closed"
+                                ));
+                            }
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            // A session/load for a parked tab resolved.
+                            slot.session_bound = true;
+                            if let Some(notice) = notice {
+                                slot.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            just_bound = Some(slot.id.clone());
+                        } else {
+                            // Startup / reconnect: rebind the viewed session.
+                            if self.session_id != session_id {
+                                self.reset_subagent_views();
+                            }
+                            self.session_id = session_id.clone();
+                            self.transcript.set_root_session(session_id);
+                            self.session_bound = true;
+                            if let Some(notice) = notice {
+                                self.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            just_bound = Some(self.session_id.clone());
                         }
-                        self.session_id = session_id.clone();
-                        self.transcript.set_root_session(session_id);
-                        self.session_bound = true;
-                        if let Some(notice) = notice {
-                            self.transcript.push_notice(NoticeLevel::Info, notice);
+                        if let Some(bound) = just_bound {
+                            self.dispatch_session_queue(&bound, ctl);
                         }
                         ctl.send(Cmd::FetchSkills);
                     }
@@ -2759,24 +3325,33 @@ impl App {
         }
 
         if let E::SubagentStarted { parent, child } = &ui {
+            if parent != &self.session_id && !self.subagents.iter().any(|view| view.id == *parent)
+            {
+                // A parked session's subagent tree: register the child in
+                // its slot and fold the event into the slot's transcripts.
+                for slot in &mut self.parked {
+                    if slot.id == *parent {
+                        upsert_subagent_view(&mut slot.subagents, parent, child);
+                        slot.transcript.apply(ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == *parent) {
+                        view.transcript.apply(ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // Unknown parent: a session this client never opened (or
+                // already closed) — drop it, never leak it into live state.
+                return;
+            }
             if self.next_subagent_starts_batch {
                 self.current_subagents.clear();
                 self.next_subagent_starts_batch = false;
             }
             self.current_subagents.insert(child.clone());
-            if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *child) {
-                view.running = true;
-                view.failed = false;
-            } else {
-                self.subagents.push(SubagentView {
-                    id: child.clone(),
-                    parent: parent.clone(),
-                    label: format!("subagent {}", self.subagents.len() + 1),
-                    running: true,
-                    failed: false,
-                    transcript: Transcript::new(child.clone()),
-                });
-            }
+            upsert_subagent_view(&mut self.subagents, parent, child);
             if parent == &self.session_id {
                 self.transcript.apply(ui);
             } else if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *parent) {
@@ -2787,6 +3362,27 @@ impl App {
         }
 
         if let E::SubagentFinished { child, failed } = &ui {
+            if !self.subagents.iter().any(|view| view.id == *child) {
+                // A parked session's subagent: settle it inside its slot.
+                for slot in &mut self.parked {
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == *child) {
+                        view.running = false;
+                        view.failed = *failed;
+                        let parent = view.parent.clone();
+                        if parent == slot.id {
+                            slot.transcript.apply(ui);
+                        } else if let Some(pview) =
+                            slot.subagents.iter_mut().find(|view| view.id == parent)
+                        {
+                            pview.transcript.apply(ui);
+                        }
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // Unknown child — drop (same guard as SubagentStarted).
+                return;
+            }
             let parent = self
                 .subagents
                 .iter_mut()
@@ -2823,6 +3419,15 @@ impl App {
                     self.needs_redraw = true;
                     return;
                 }
+                if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) {
+                    Self::apply_to_slot(slot, ui);
+                    self.needs_redraw = true;
+                    return;
+                }
+                // A session this client never opened (or already closed):
+                // drop the event. Foreign-session facts must never fall
+                // through into the live transcript (issue #94 leak guard).
+                return;
             }
         }
 
@@ -2951,6 +3556,36 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
+                // Session tab strip (issue #94): left-click a tab switches,
+                // `+` opens a fresh session, and an open tab popup consumes
+                // the click (item pick or dismiss).
+                if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.input_sel = None;
+                    self.input_selecting = false;
+                    self.tab_menu = None;
+                    self.switch_to_session(tab);
+                    return;
+                }
+                if self.plus_hit(mouse.column, mouse.row) {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.input_sel = None;
+                    self.input_selecting = false;
+                    self.tab_menu = None;
+                    self.new_session_flow("", ctl);
+                    return;
+                }
+                if let Some(menu) = self.tab_menu.take() {
+                    if self.tab_menu_item_at(mouse.column, mouse.row) == Some(TabMenuItem::Close) {
+                        self.close_session(menu.tab);
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
                 if let Some(action) = self
                     .slot_actions
                     .iter()
@@ -3079,6 +3714,19 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) if self.input_selecting => {
                 self.input_selecting = false;
                 self.finish_input_selection();
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Right-click a session tab: popup with local tab actions
+                // (Close; structured so more items slot in later).
+                if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
+                    self.tab_menu = Some(TabMenu {
+                        tab,
+                        at: (mouse.column, mouse.row),
+                    });
+                } else {
+                    self.tab_menu = None;
+                }
+                self.needs_redraw = true;
             }
             MouseEventKind::Moved => {
                 // grok-style hover: track which inline chip the pointer is
@@ -4827,22 +5475,36 @@ impl App {
             }
         };
 
-        self.session_id = session.id.clone();
-        self.reset_subagent_views();
-        self.transcript.clear();
-        self.transcript.set_root_session(session.id.clone());
-        // Replay folds the session's own authoritative mode facts from empty.
-        self.modes = Modes::default();
+        if self.session_id != session.id {
+            if let Some(tab) = self.tab_index_of(&session.id) {
+                // Already open in a tab — switching to it is the resume.
+                self.switch_to_session(tab);
+                self.resume_candidates = Vec::new();
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    format!("⟲ {} is already open — switched to its tab", session.id),
+                );
+                return;
+            }
+            // Park the live session and replay into a fresh tab (issue #94).
+            self.open_new_session(session.id.clone(), true);
+        } else {
+            self.reset_subagent_views();
+            self.transcript.clear();
+            self.transcript.set_root_session(session.id.clone());
+            // Replay folds the session's own authoritative mode facts from empty.
+            self.modes = Modes::default();
+            self.queued = 0;
+            self.prompt_queue.clear();
+            self.queue_selection = None;
+            self.queue_edit = None;
+            self.pending_steer_cells.clear();
+            self.prompt_pending = false;
+            self.sel = None;
+        }
         // The resumed stream's own model is the truth for the chip.
         self.selected_model = None;
         self.show_banner = false;
-        self.queued = 0;
-        self.prompt_queue.clear();
-        self.queue_selection = None;
-        self.queue_edit = None;
-        self.pending_steer_cells.clear();
-        self.prompt_pending = false;
-        self.sel = None;
         let mut replayed = 0usize;
         for ev in &events {
             if ev.get("type").and_then(serde_json::Value::as_str) == Some("session") {
@@ -4880,6 +5542,33 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// The `/new` flow, shared by the slash command and the tab strip `+`
+    /// cell: park the live session and open a fresh tab (issue #94).
+    fn new_session_flow(&mut self, arg: &str, ctl: &Controller) {
+        if self.demo {
+            let id = if arg.is_empty() {
+                format!("dsh-{}", timestamp())
+            } else {
+                arg.to_string()
+            };
+            self.open_new_session(id.clone(), true);
+            ctl.send(Cmd::FetchSkills);
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                format!("new session · {id} — /agent picks its agent preset"),
+            );
+        } else {
+            // A local placeholder ids the tab until session/new resolves —
+            // the same shape main.rs seeds the startup session with. The
+            // real id lands on this tab via `awaiting_binds` at SessionBound.
+            let placeholder = format!("dsh-{}", timestamp());
+            self.open_new_session(placeholder.clone(), false);
+            self.awaiting_binds.push_back(placeholder);
+            ctl.send(Cmd::NewSession);
+            self.show_tip("session/new …");
+        }
+    }
+
     fn reset_session_ui(&mut self) {
         self.reset_subagent_views();
         self.transcript.clear();
@@ -4911,9 +5600,22 @@ impl App {
     }
 
     fn load_acp_session(&mut self, id: &str, ctl: &Controller) {
-        self.reset_session_ui();
-        self.session_id = id.to_string();
-        self.transcript.set_root_session(id.to_string());
+        if self.session_id == id {
+            // Reloading the viewed session: reset its UI and re-stream.
+            self.reset_session_ui();
+            self.session_id = id.to_string();
+            self.transcript.set_root_session(id.to_string());
+        } else if let Some(tab) = self.tab_index_of(id) {
+            // Already open — its transcript is intact; re-loading would
+            // duplicate it, so switching tabs is the whole resume.
+            self.switch_to_session(tab);
+            return;
+        } else {
+            // Park the live session; the transcript streams in via
+            // session/update tagged with this id, as today.
+            self.open_new_session(id.to_string(), false);
+            self.awaiting_binds.push_back(id.to_string());
+        }
         ctl.send(Cmd::LoadSession {
             session_id: id.to_string(),
         });
@@ -5553,29 +6255,7 @@ impl App {
                     self.set_mode(arg.to_string(), ctl);
                 }
             }
-            "new" => {
-                if self.demo {
-                    let id = if arg.is_empty() {
-                        format!("dsh-{}", timestamp())
-                    } else {
-                        arg.to_string()
-                    };
-                    self.reset_subagent_views();
-                    self.session_id = id.clone();
-                    self.transcript.set_root_session(id.clone());
-                    self.modes = Modes::default();
-                    self.session_title = None;
-                    ctl.send(Cmd::FetchSkills);
-                    self.transcript.push_notice(
-                        NoticeLevel::Info,
-                        format!("new session · {id} — /agent picks its agent preset"),
-                    );
-                } else {
-                    self.reset_session_ui();
-                    ctl.send(Cmd::NewSession);
-                    self.show_tip("session/new …");
-                }
-            }
+            "new" => self.new_session_flow(arg, ctl),
             "session" => self.push_session_info(),
             "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
@@ -6224,7 +6904,13 @@ impl App {
     /// passthroughs like /plan).
     fn send_agent_text(&mut self, text: String, ctl: &Controller) {
         self.show_banner = false;
-        let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
+        // An unbound tab (placeholder id awaiting session/new·load) must not
+        // send: acp.rs rejects ids it never bound. Hold the prompt in the
+        // queue; the SessionBound handler dispatches it with the real id.
+        let running = self.state == RunState::Running
+            || self.prompt_pending
+            || self.queued > 0
+            || !self.session_bound;
         if running {
             let id = self.next_prompt_id();
             self.prompt_queue.push_back(ClientQueuedPrompt {
@@ -6288,6 +6974,13 @@ impl App {
     /// Empty Enter promotes the FIFO head into the active turn. If the agent
     /// cannot accept the steer, settlement restores the item to the front.
     fn send_queue_head_now(&mut self, ctl: &Controller) {
+        if !self.session_bound {
+            self.show_tip(self.locale.tr(
+                "session still binding — prompt stays queued",
+                "会话仍在绑定中 —— 消息保留在队列里",
+            ));
+            return;
+        }
         if !self.input.is_empty()
             || !self.pending_images.is_empty()
             || self.queue_selection.is_some()
@@ -6864,6 +7557,10 @@ pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize, String)
 #[cfg(test)]
 #[path = "../tests/unit/app__resume_tests.rs"]
 mod resume_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__session_tabs_tests.rs"]
+mod session_tabs_tests;
 
 #[cfg(test)]
 #[path = "../tests/unit/app__selection_tests.rs"]

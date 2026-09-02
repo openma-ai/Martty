@@ -86,7 +86,9 @@ pub enum CtlEvent {
     /// is on the wire. The in-flight `session/prompt` has not unwound yet.
     CancelRequested,
     /// Backchat `session.cancelled`: the prompt future settled after abort.
-    Interrupted,
+    /// `session_id` names the session whose turn was interrupted; one
+    /// connection can run turns for several sessions concurrently.
+    Interrupted { session_id: String },
     /// Host model catalog + advertised composition select.
     Catalog {
         models: Vec<CatalogModel>,

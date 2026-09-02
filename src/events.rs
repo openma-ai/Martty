@@ -980,6 +980,106 @@ fn u64_field(v: &Value, key: &str) -> Option<u64> {
     v.get(key).and_then(Value::as_u64)
 }
 
+/// Coalesce a burst of drained bus events before they reach `App::handle`.
+///
+/// ACP agents may stream session updates at extreme rates — the dsh-acp
+/// `session/load` replay re-emits every historical delta of a long session
+/// (a 10k-event log became 258k notifications / 1.4 GB, melting the UI loop
+/// for minutes; issue #94 freeze). Deltas are append-only and tool-call
+/// updates are state-replacing, so merging adjacent ones is lossless for the
+/// final transcript:
+///
+/// - consecutive text chunks (`agent_message_chunk` / `agent_thought_chunk`)
+///   for the same session and message are concatenated; a trailing `_meta`
+///   (model attribution on the final chunk) is preserved;
+/// - consecutive *bare* `tool_call_update`s for the same session and call
+///   keep only the latest state. Updates carrying `content`, `rawOutput`,
+///   or `_meta` (diff blocks, terminal streams) are never dropped.
+///
+/// `tool_call` (turn start of a call) is a different kind and never merges,
+/// so the tool start/result frame boundary in the drain loop is untouched.
+pub fn coalesce_session_updates(events: &mut Vec<crate::bus::AppEvent>) {
+    use crate::bus::AppEvent;
+    if events.len() < 2 {
+        return;
+    }
+    let mut out: Vec<AppEvent> = Vec::with_capacity(events.len());
+    for ev in events.drain(..) {
+        if let (
+            Some(AppEvent::Rpc {
+                method: prev_method,
+                params: prev_params,
+            }),
+            AppEvent::Rpc { method, params },
+        ) = (out.last_mut(), &ev)
+        {
+            if prev_method == "session/update" && method == "session/update" {
+                match merge_update(prev_params, params) {
+                    MergeOutcome::Merged => continue,
+                    MergeOutcome::Keep => {}
+                }
+            }
+        }
+        out.push(ev);
+    }
+    *events = out;
+}
+
+enum MergeOutcome {
+    Merged,
+    Keep,
+}
+
+fn merge_update(prev: &mut Value, new: &Value) -> MergeOutcome {
+    let same_str = |a: &Value, b: &Value, key: &str| a.get(key).and_then(Value::as_str) == b.get(key).and_then(Value::as_str);
+    if !same_str(prev, new, "sessionId") {
+        return MergeOutcome::Keep;
+    }
+    let (Some(prev_update), Some(new_update)) = (prev.get_mut("update"), new.get("update")) else {
+        return MergeOutcome::Keep;
+    };
+    if !same_str(prev_update, new_update, "sessionUpdate") {
+        return MergeOutcome::Keep;
+    }
+    let kind = new_update
+        .get("sessionUpdate")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "agent_message_chunk" | "agent_thought_chunk" => {
+            if !same_str(prev_update, new_update, "messageId") {
+                return MergeOutcome::Keep;
+            }
+            let Some(new_text) = new_update.pointer("/content/text").and_then(Value::as_str) else {
+                return MergeOutcome::Keep;
+            };
+            match prev_update.pointer_mut("/content/text") {
+                Some(Value::String(buf)) => buf.push_str(new_text),
+                _ => return MergeOutcome::Keep,
+            }
+            // The final chunk of a message carries the model attribution.
+            if let Some(meta) = new_update.get("_meta") {
+                prev_update["_meta"] = meta.clone();
+            }
+            MergeOutcome::Merged
+        }
+        "tool_call_update" => {
+            if !same_str(prev_update, new_update, "toolCallId") {
+                return MergeOutcome::Keep;
+            }
+            let bare = |u: &Value| {
+                u.get("content").is_none() && u.get("rawOutput").is_none() && u.get("_meta").is_none()
+            };
+            if !bare(prev_update) || !bare(new_update) {
+                return MergeOutcome::Keep;
+            }
+            *prev_update = new_update.clone();
+            MergeOutcome::Merged
+        }
+        _ => MergeOutcome::Keep,
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/unit/events__tests.rs"]
 mod tests;

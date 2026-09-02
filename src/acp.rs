@@ -5,7 +5,7 @@
 //! Transcript paint comes from `session/update`. Negotiated Cordis TUI
 //! compositor state arrives as `_dsh/cordis/tui/*` extension notifications.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -230,6 +230,73 @@ struct PromptFinish {
     parked_on_auth: ParkedPrompt,
 }
 
+/// Per-session turn state on one shared ACP connection. The server allows one
+/// in-flight `session/prompt` per session, so every bound session gets its own
+/// handle; completions are demultiplexed by the id inside `PromptFinish`.
+#[derive(Default)]
+struct SessionHandle {
+    /// Occupancy marker for the in-flight `session/prompt` task. The task
+    /// reports through the prompt-done channel, so the handle is only ever
+    /// cleared, never awaited.
+    inflight: Option<tokio::task::JoinHandle<()>>,
+    /// Follow-ups waiting for this session's active turn to settle.
+    queue: VecDeque<Cmd>,
+    /// `session/cancel` was sent for the in-flight prompt; its finish is
+    /// reported as an interruption, not a turn result.
+    turn_aborted: bool,
+}
+
+/// Resolve the session a command addresses: the id the UI carried, or the
+/// most recently bound session when the field is empty (backward compat).
+/// Before the first session exists, any carried id is a local placeholder
+/// with no server meaning yet, so it resolves to "no session" like an empty
+/// field. Once sessions exist, an id this connection never bound is rejected
+/// instead of silently rerouted to another session. `kind` names the command
+/// in the rejection so the UI notice says what was dropped.
+fn resolve_cmd_session(
+    sessions: &HashMap<String, SessionHandle>,
+    current: &Option<SessionId>,
+    cmd_session: &str,
+    kind: &str,
+) -> std::result::Result<Option<SessionId>, String> {
+    if cmd_session.is_empty() {
+        return Ok(current.clone());
+    }
+    if sessions.contains_key(cmd_session) {
+        return Ok(Some(SessionId::new(cmd_session)));
+    }
+    if sessions.is_empty() {
+        return Ok(None);
+    }
+    Err(format!("{kind}: unknown session {cmd_session}"))
+}
+
+/// Register a freshly created or loaded session, make it the fallback target
+/// for commands that arrive without a usable session id, and adopt any
+/// prompts that queued up before the first session existed.
+fn bind_session(
+    sessions: &mut HashMap<String, SessionHandle>,
+    current: &mut Option<SessionId>,
+    pending: &mut VecDeque<Cmd>,
+    sid: SessionId,
+) {
+    let handle = sessions.entry(sid.to_string()).or_default();
+    handle.queue.append(pending);
+    *current = Some(sid);
+}
+
+/// Point a prompt-like command at a freshly bound session: the id the UI
+/// carried was a pre-bind placeholder with no server meaning yet.
+fn retarget_session(cmd: &mut Cmd, sid: &SessionId) {
+    match cmd {
+        Cmd::Prompt { session_id, .. }
+        | Cmd::Steer { session_id, .. }
+        | Cmd::PromptImages { session_id, .. }
+        | Cmd::SteerImages { session_id, .. } => *session_id = sid.to_string(),
+        _ => {}
+    }
+}
+
 struct SteerFinish {
     message_id: u64,
     result: Result<agent_client_protocol::schema::v1::PromptResponse, AcpError>,
@@ -251,7 +318,8 @@ fn spawn_session_prompt(
     sid: SessionId,
     content: Vec<ContentBlock>,
     parked_on_auth: ParkedPrompt,
-) -> tokio::task::JoinHandle<PromptFinish> {
+    done: tokio::sync::mpsc::UnboundedSender<PromptFinish>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnStart {
             session: sid.to_string(),
@@ -268,11 +336,11 @@ fn spawn_session_prompt(
             .send_request(PromptRequest::new(sid.clone(), content))
             .block_task()
             .await;
-        PromptFinish {
+        let _ = done.send(PromptFinish {
             session_id: sid.to_string(),
             result,
             parked_on_auth,
-        }
+        });
     })
 }
 
@@ -295,6 +363,7 @@ fn spawn_steer_prompt(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin_prompt(
     cmd: Cmd,
     cx: &ConnectionTo<Agent>,
@@ -305,7 +374,8 @@ fn begin_prompt(
     selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
-) -> Option<tokio::task::JoinHandle<PromptFinish>> {
+    done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
+) -> Option<tokio::task::JoinHandle<()>> {
     match cmd {
         Cmd::Prompt { text, .. } => {
             let Some(sid) = session_id.clone() else {
@@ -324,6 +394,7 @@ fn begin_prompt(
                 sid,
                 vec![text.clone().into()],
                 ParkedPrompt::Text(text),
+                done.clone(),
             ))
         }
         Cmd::Steer { text, .. } => {
@@ -343,6 +414,7 @@ fn begin_prompt(
                 sid,
                 vec![text.clone().into()],
                 ParkedPrompt::Text(text),
+                done.clone(),
             ))
         }
         Cmd::PromptImages { blocks, .. } => {
@@ -368,6 +440,7 @@ fn begin_prompt(
                     sid,
                     content,
                     parked_on_auth,
+                    done.clone(),
                 )),
                 Ok(_) => {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Error("empty image prompt".into())));
@@ -402,6 +475,7 @@ fn begin_prompt(
                     sid,
                     content,
                     parked_on_auth,
+                    done.clone(),
                 )),
                 Ok(_) => {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Error("empty image prompt".into())));
@@ -414,6 +488,52 @@ fn begin_prompt(
             }
         }
         _ => None,
+    }
+}
+
+/// Start queued prompts whose session is free. Each session runs at most one
+/// in-flight `session/prompt`; a busy session simply keeps its FIFO.
+#[allow(clippy::too_many_arguments)]
+fn drain_ready_sessions(
+    sessions: &mut HashMap<String, SessionHandle>,
+    cx: &ConnectionTo<Agent>,
+    bus: &Sender<AppEvent>,
+    parked: &mut Option<ParkedPrompt>,
+    methods: &[AuthMethodInfo],
+    selected: Option<&AuthMethodInfo>,
+    surface: &Arc<Mutex<Surface>>,
+    workspace: &str,
+    done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
+) {
+    if parked.is_some() {
+        return;
+    }
+    let keys: Vec<String> = sessions.keys().cloned().collect();
+    for key in keys {
+        let Some(handle) = sessions.get_mut(&key) else {
+            continue;
+        };
+        if handle.inflight.is_some() {
+            continue;
+        }
+        let Some(next) = handle.queue.pop_front() else {
+            continue;
+        };
+        handle.inflight = begin_prompt(
+            next,
+            cx,
+            bus,
+            &Some(SessionId::new(key.as_str())),
+            parked,
+            methods,
+            selected,
+            surface,
+            workspace,
+            done,
+        );
+        if parked.is_some() {
+            return;
+        }
     }
 }
 
@@ -1442,7 +1562,16 @@ where
                     AuthStatus::None
                 });
                 let mut session_auth_pending = false;
-                let mut session_id = match create_prompt_session(
+                // One stdio connection drives many sessions: each bound id
+                // gets its own turn state, and `current` is only the fallback
+                // target for commands that arrive without a usable id.
+                let mut sessions = HashMap::<String, SessionHandle>::new();
+                let mut current: Option<SessionId> = None;
+                // Prompt-like commands that arrived before the first session
+                // existed (sign-in still pending). They adopt the first bound
+                // session, in arrival order behind the parked intent.
+                let mut pending = VecDeque::<Cmd>::new();
+                match create_prompt_session(
                     &cx,
                     &cwd,
                     &surface,
@@ -1452,18 +1581,16 @@ where
                 )
                 .await
                 {
-                    Ok(Some(sid)) => Some(sid),
+                    Ok(Some(sid)) => bind_session(&mut sessions, &mut current, &mut pending, sid),
                     Ok(None) => {
                         session_auth_pending = true;
-                        None
                     }
                     Err(err) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
                             "session/new: {err}"
                         ))));
-                        None
                     }
-                };
+                }
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
                 let mut parked: Option<ParkedPrompt> = None;
 
@@ -1479,16 +1606,15 @@ where
                     })
                     .map_err(|err| AcpError::new(-32603, err.to_string()))?;
 
-                let mut inflight: Option<tokio::task::JoinHandle<PromptFinish>> = None;
-                let mut prompt_queue = VecDeque::<Cmd>::new();
+                let (prompt_done_tx, mut prompt_done_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<PromptFinish>();
                 let (steer_done_tx, mut steer_done_rx) =
                     tokio::sync::mpsc::unbounded_channel::<SteerFinish>();
-                let mut turn_aborted = false;
                 loop {
                     tokio::select! {
                         cmd = fwd_rx.recv() => {
-                            let Some(cmd) = cmd else { break };
-                            if session_id.is_none()
+                            let Some(mut cmd) = cmd else { break };
+                            if current.is_none()
                                 && parked.is_none()
                                 && parked_prompt(&cmd).is_some()
                             {
@@ -1505,7 +1631,13 @@ where
                                     selected.as_ref(),
                                 ).await {
                                     Ok(Some(sid)) => {
-                                        session_id = Some(sid);
+                                        retarget_session(&mut cmd, &sid);
+                                        bind_session(
+                                            &mut sessions,
+                                            &mut current,
+                                            &mut pending,
+                                            sid,
+                                        );
                                         session_auth_pending = false;
                                     }
                                     Ok(None) => {
@@ -1522,152 +1654,219 @@ where
                                 }
                             }
                             match cmd {
-                        Cmd::Prompt { text, .. } => {
+                        Cmd::Prompt { session_id: cmd_session, text } => {
                             let next = Cmd::Prompt {
-                                session_id: String::new(),
+                                session_id: cmd_session.clone(),
                                 text,
                             };
-                            if inflight.is_some() || parked.is_some() {
-                                prompt_queue.push_back(next);
-                            } else {
-                                inflight = begin_prompt(
-                                    next,
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                            }
-                        }
-                        Cmd::Steer { message_id, text, .. } => {
-                            if inflight.is_some() {
-                                if let Some(sid) = session_id.clone() {
-                                    spawn_steer_prompt(
-                                        cx.clone(),
-                                        sid,
-                                        vec![text.into()],
-                                        message_id,
-                                        steer_done_tx.clone(),
-                                    );
-                                }
-                            } else if parked.is_some() {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: true,
-                                }));
-                            } else {
-                                inflight = begin_prompt(
-                                    Cmd::Steer {
-                                        session_id: String::new(),
-                                        message_id,
-                                        text,
-                                    },
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: false,
-                                }));
-                            }
-                        }
-                        Cmd::PromptImages { blocks, .. } => {
-                            let next = Cmd::PromptImages {
-                                session_id: String::new(),
-                                blocks,
-                            };
-                            if inflight.is_some() || parked.is_some() {
-                                prompt_queue.push_back(next);
-                            } else {
-                                inflight = begin_prompt(
-                                    next,
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                            }
-                        }
-                        Cmd::SteerImages { message_id, blocks, .. } => {
-                            if inflight.is_some() {
-                                if let Some(sid) = session_id.clone() {
-                                    let prompt_image = surface
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .prompt_image;
-                                    match prompt_content_blocks(blocks, prompt_image, &cfg.workspace) {
-                                        Ok(content) if !content.is_empty() => spawn_steer_prompt(
-                                            cx.clone(),
-                                            sid,
-                                            content,
-                                            message_id,
-                                            steer_done_tx.clone(),
-                                        ),
-                                        Ok(_) => {
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
-                                                "empty image prompt".into(),
-                                            )));
-                                        }
-                                        Err(err) => {
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
-                                        }
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt") {
+                                Ok(Some(sid)) => {
+                                    let handle = sessions.entry(sid.to_string()).or_default();
+                                    if handle.inflight.is_some() || parked.is_some() {
+                                        handle.queue.push_back(next);
+                                    } else {
+                                        handle.inflight = begin_prompt(
+                                            next,
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            &prompt_done_tx,
+                                        );
                                     }
                                 }
-                            } else if parked.is_some() {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: true,
-                                }));
-                            } else {
-                                inflight = begin_prompt(
-                                    Cmd::SteerImages {
-                                        session_id: String::new(),
-                                        message_id,
-                                        blocks,
-                                    },
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: false,
-                                }));
+                                Ok(None) => pending.push_back(next),
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                }
                             }
                         }
-                        Cmd::Interrupt { .. } => {
+                        Cmd::Steer { session_id: cmd_session, message_id, text } => {
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "steer") {
+                                Ok(Some(sid)) => {
+                                    let busy = sessions
+                                        .get(&sid.to_string())
+                                        .is_some_and(|handle| handle.inflight.is_some());
+                                    if busy {
+                                        spawn_steer_prompt(
+                                            cx.clone(),
+                                            sid,
+                                            vec![text.into()],
+                                            message_id,
+                                            steer_done_tx.clone(),
+                                        );
+                                    } else if parked.is_some() {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: true,
+                                        }));
+                                    } else {
+                                        let handle = sessions.entry(sid.to_string()).or_default();
+                                        handle.inflight = begin_prompt(
+                                            Cmd::Steer {
+                                                session_id: cmd_session,
+                                                message_id,
+                                                text,
+                                            },
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            &prompt_done_tx,
+                                        );
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: false,
+                                        }));
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                        message_id,
+                                        deferred: true,
+                                    }));
+                                }
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                }
+                            }
+                        }
+                        Cmd::PromptImages { session_id: cmd_session, blocks } => {
+                            let next = Cmd::PromptImages {
+                                session_id: cmd_session.clone(),
+                                blocks,
+                            };
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt_images") {
+                                Ok(Some(sid)) => {
+                                    let handle = sessions.entry(sid.to_string()).or_default();
+                                    if handle.inflight.is_some() || parked.is_some() {
+                                        handle.queue.push_back(next);
+                                    } else {
+                                        handle.inflight = begin_prompt(
+                                            next,
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            &prompt_done_tx,
+                                        );
+                                    }
+                                }
+                                Ok(None) => pending.push_back(next),
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                }
+                            }
+                        }
+                        Cmd::SteerImages { session_id: cmd_session, message_id, blocks } => {
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "steer_images") {
+                                Ok(Some(sid)) => {
+                                    let busy = sessions
+                                        .get(&sid.to_string())
+                                        .is_some_and(|handle| handle.inflight.is_some());
+                                    if busy {
+                                        let prompt_image = surface
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .prompt_image;
+                                        match prompt_content_blocks(blocks, prompt_image, &cfg.workspace) {
+                                            Ok(content) if !content.is_empty() => spawn_steer_prompt(
+                                                cx.clone(),
+                                                sid,
+                                                content,
+                                                message_id,
+                                                steer_done_tx.clone(),
+                                            ),
+                                            Ok(_) => {
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                                    "empty image prompt".into(),
+                                                )));
+                                            }
+                                            Err(err) => {
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                            }
+                                        }
+                                    } else if parked.is_some() {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: true,
+                                        }));
+                                    } else {
+                                        let handle = sessions.entry(sid.to_string()).or_default();
+                                        handle.inflight = begin_prompt(
+                                            Cmd::SteerImages {
+                                                session_id: cmd_session,
+                                                message_id,
+                                                blocks,
+                                            },
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            &prompt_done_tx,
+                                        );
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: false,
+                                        }));
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                        message_id,
+                                        deferred: true,
+                                    }));
+                                }
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                }
+                            }
+                        }
+                        Cmd::Interrupt { session_id: cmd_session } => {
                             // Only a live turn can be aborted. Setting the
                             // flag with no inflight prompt would poison the
                             // *next* prompt's finish (its result would be
                             // swallowed and the turn misreported as
                             // interrupted).
-                            if inflight.is_some() {
-                                abort_turn(&cx, &session_id, &bus);
-                                turn_aborted = true;
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "interrupt") {
+                                Ok(Some(sid)) => {
+                                    if let Some(handle) = sessions.get_mut(&sid.to_string()) {
+                                        if handle.inflight.is_some() {
+                                            abort_turn(&cx, &Some(sid), &bus);
+                                            handle.turn_aborted = true;
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                }
                             }
                         }
-                        Cmd::SelectModel { model, effort, .. } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
+                        Cmd::SelectModel { session_id: cmd_session, model, effort, .. } => {
+                            let sid = match resolve_cmd_session(&sessions, &current, &cmd_session, "select_model") {
+                                Ok(Some(sid)) => sid,
+                                Ok(None) => continue,
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    continue;
+                                }
                             };
                             if let Some(model) = model {
                                 let value = {
@@ -1938,9 +2137,14 @@ where
                                 default: efforts.first().cloned(),
                             }));
                         }
-                        Cmd::SetPermission { preset, .. } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
+                        Cmd::SetPermission { session_id: cmd_session, preset } => {
+                            let sid = match resolve_cmd_session(&sessions, &current, &cmd_session, "set_permission") {
+                                Ok(Some(sid)) => sid,
+                                Ok(None) => continue,
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    continue;
+                                }
                             };
                             match cx
                                 .send_request(SetSessionModeRequest::new(sid.clone(), preset.clone()))
@@ -1975,9 +2179,14 @@ where
                                 }
                             }
                         }
-                        Cmd::SetPreset { preset, .. } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
+                        Cmd::SetPreset { session_id: cmd_session, preset } => {
+                            let sid = match resolve_cmd_session(&sessions, &current, &cmd_session, "set_preset") {
+                                Ok(Some(sid)) => sid,
+                                Ok(None) => continue,
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    continue;
+                                }
                             };
                             let config_id = surface
                                 .lock()
@@ -2025,7 +2234,8 @@ where
                         Cmd::SetConfigOption {
                             config_id, value, ..
                         } => {
-                            let Some(sid) = session_id.clone() else {
+                            // Carries no session id; address the fallback session.
+                            let Some(sid) = current.clone() else {
                                 continue;
                             };
                             match cx
@@ -2114,7 +2324,7 @@ where
                             }
                             match cx.send_request(req).block_task().await {
                                 Ok(_) => {
-                                    if session_id.is_none() {
+                                    if current.is_none() {
                                         match create_prompt_session(
                                             &cx,
                                             &cwd,
@@ -2126,7 +2336,12 @@ where
                                         .await
                                         {
                                             Ok(Some(sid)) => {
-                                                session_id = Some(sid);
+                                                bind_session(
+                                                    &mut sessions,
+                                                    &mut current,
+                                                    &mut pending,
+                                                    sid,
+                                                );
                                                 session_auth_pending = false;
                                             }
                                             Ok(None) => {
@@ -2152,14 +2367,14 @@ where
                                             )));
                                         }
                                         Some(prompt) => {
-                                            let Some(sid) = session_id.clone() else {
+                                            let Some(sid) = current.clone() else {
                                                 parked = Some(prompt);
                                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
                                                     "signed in — resend from the composer".into(),
                                                 )));
                                                 continue;
                                             };
-                                            prompt_queue.push_front(match prompt {
+                                            let retry = match prompt {
                                                 ParkedPrompt::Text(text) => Cmd::Prompt {
                                                     session_id: sid.to_string(),
                                                     text,
@@ -2168,7 +2383,12 @@ where
                                                     session_id: sid.to_string(),
                                                     blocks,
                                                 },
-                                            });
+                                            };
+                                            sessions
+                                                .entry(sid.to_string())
+                                                .or_default()
+                                                .queue
+                                                .push_front(retry);
                                             let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
                                                 "signed in — retried the parked prompt".into(),
                                             )));
@@ -2199,7 +2419,12 @@ where
                                 .await
                             {
                                 Ok(created) => {
-                                    session_id = Some(created.session_id.clone());
+                                    bind_session(
+                                        &mut sessions,
+                                        &mut current,
+                                        &mut pending,
+                                        created.session_id.clone(),
+                                    );
                                     session_auth_pending = false;
                                     apply_created(
                                         &created,
@@ -2278,7 +2503,12 @@ where
                                 .await
                             {
                                 Ok(loaded) => {
-                                    session_id = Some(sid.clone());
+                                    bind_session(
+                                        &mut sessions,
+                                        &mut current,
+                                        &mut pending,
+                                        sid.clone(),
+                                    );
                                     emit_session_bound(
                                         &bus,
                                         &sid,
@@ -2365,21 +2595,17 @@ where
                         }
                         Cmd::Shutdown => break,
                     }
-                            if inflight.is_none() && parked.is_none() {
-                                if let Some(next) = prompt_queue.pop_front() {
-                                    inflight = begin_prompt(
-                                        next,
-                                        &cx,
-                                        &bus,
-                                        &session_id,
-                                        &mut parked,
-                                        &methods,
-                                        selected.as_ref(),
-                                        &surface,
-                                        &cfg.workspace,
-                                    );
-                                }
-                            }
+                            drain_ready_sessions(
+                                &mut sessions,
+                                &cx,
+                                &bus,
+                                &mut parked,
+                                &methods,
+                                selected.as_ref(),
+                                &surface,
+                                &cfg.workspace,
+                                &prompt_done_tx,
+                            );
                         }
                         steer = steer_done_rx.recv() => {
                             if let Some(SteerFinish { message_id, result }) = steer {
@@ -2389,75 +2615,66 @@ where
                                     deferred,
                                 }));
                             }
-                            if inflight.is_none() && parked.is_none() {
-                                if let Some(next) = prompt_queue.pop_front() {
-                                    inflight = begin_prompt(
-                                        next,
-                                        &cx,
-                                        &bus,
-                                        &session_id,
-                                        &mut parked,
-                                        &methods,
-                                        selected.as_ref(),
-                                        &surface,
-                                        &cfg.workspace,
-                                    );
-                                }
-                            }
+                            drain_ready_sessions(
+                                &mut sessions,
+                                &cx,
+                                &bus,
+                                &mut parked,
+                                &methods,
+                                selected.as_ref(),
+                                &surface,
+                                &cfg.workspace,
+                                &prompt_done_tx,
+                            );
                         }
-                        finish = async {
-                            match &mut inflight {
-                                Some(h) => Some(h.await),
-                                None => std::future::pending().await,
+                        finish = prompt_done_rx.recv() => {
+                            let Some(done) = finish else { continue };
+                            let key = done.session_id.clone();
+                            let mut aborted = false;
+                            if let Some(handle) = sessions.get_mut(&key) {
+                                handle.inflight = None;
+                                aborted = std::mem::take(&mut handle.turn_aborted);
                             }
-                        } => {
-                            inflight = None;
-                            let aborted = std::mem::take(&mut turn_aborted);
                             if aborted {
-                                if let Some(sid) = &session_id {
-                                    let _ = bus.send(AppEvent::Ui(
-                                        crate::events::UiEvent::TurnEnd {
-                                            session: sid.to_string(),
-                                            kind: "interrupted".into(),
-                                        },
-                                    ));
-                                }
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
-                            }
-                            match finish {
-                                Some(Ok(done)) if !aborted => apply_prompt_finish(
+                                let _ = bus.send(AppEvent::Ui(
+                                    crate::events::UiEvent::TurnEnd {
+                                        session: key.clone(),
+                                        kind: "interrupted".into(),
+                                    },
+                                ));
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                    session_id: key.clone(),
+                                }));
+                            } else {
+                                apply_prompt_finish(
                                     done,
                                     &mut parked,
                                     &bus,
                                     &methods,
                                     selected.as_ref(),
-                                ),
-                                Some(Ok(_)) => {}
-                                Some(Err(err)) if !aborted => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "prompt task: {err}"
-                                    ))));
-                                }
-                                Some(Err(_)) | None => {}
+                                );
                             }
                             if parked.is_none() {
-                                if let Some(next) = prompt_queue.pop_front() {
-                                    inflight = begin_prompt(
-                                        next,
+                                let queued = sessions
+                                    .get(&key)
+                                    .is_some_and(|handle| !handle.queue.is_empty());
+                                if queued {
+                                    drain_ready_sessions(
+                                        &mut sessions,
                                         &cx,
                                         &bus,
-                                        &session_id,
                                         &mut parked,
                                         &methods,
                                         selected.as_ref(),
                                         &surface,
                                         &cfg.workspace,
+                                        &prompt_done_tx,
                                     );
-                                } else if let Some(sid) = &session_id {
+                                } else {
                                     let _ = bus.send(AppEvent::Rpc {
                                         method: "session.status".into(),
                                         params: json!({
-                                            "sessionId": sid.to_string(),
+                                            "sessionId": key,
                                             "status": "idle"
                                         }),
                                     });

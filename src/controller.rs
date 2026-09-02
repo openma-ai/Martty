@@ -244,7 +244,9 @@ fn controller_loop(
                         let _ =
                             rt.request("session/interrupt", Some(params), Duration::from_secs(10));
                     }
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                        session_id: session_id.clone(),
+                    }));
                     continue;
                 }
                 // The kill itself happens in interrupt_now(); this is the
@@ -254,7 +256,7 @@ fn controller_loop(
                 if let Some(rt) = guard.take() {
                     rt.kill();
                 }
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted { session_id }));
             }
             Cmd::SelectModel {
                 session_id,
@@ -802,7 +804,9 @@ fn handle_prompt(
                         rt.kill();
                         *runtime.lock().unwrap() = None;
                         if interrupted.swap(false, Ordering::SeqCst) {
-                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                session_id: session_id.to_string(),
+                            }));
                         } else {
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
                                 "initialize failed: {err:#}"
@@ -833,7 +837,9 @@ fn handle_prompt(
         }
         Err(err) => {
             if interrupted.swap(false, Ordering::SeqCst) {
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                    session_id: session_id.to_string(),
+                }));
             } else {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
                     "session/prompt failed: {err:#}"

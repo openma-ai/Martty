@@ -5,7 +5,40 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The UI no longer freezes for minutes when an agent floods the connection
+  with session updates — reproduced with dsh-acp's `session/load` replay of
+  a long session, which re-emits every historical delta (a 10k-event log
+  arrived as ~258k notifications / 1.4 GB and saturated the event loop.
+  Two defenses: drained bursts of `session/update` notifications are now
+  coalesced before application (adjacent text deltas of one message are
+  concatenated; superseded bare `tool_call_update`s keep only the latest
+  state — lossless for the final transcript), and the per-event
+  queue/agents projection comparisons now use cheap fingerprints instead of
+  full snapshot clones. The composer stays responsive while such a storm
+  drains in the background.
+
 ### Added
+
+- Multi-session parallel management (issue #94): one ACP connection now
+  drives several sessions concurrently. Once a second session exists, a
+  native tab strip appears at the top — one tab per session with a running
+  indicator (spinner on the viewed tab, `●` in the background) and a `✓`
+  completion badge for sessions that finished while in the background.
+  Left-click a tab to switch, the trailing `+` opens a fresh session, and
+  right-clicking a tab opens a local menu with "Close tab". `/new` and
+  `/resume` now park the current session instead of discarding it: switching
+  back restores its transcript, prompt queue, modes, and subagent panels
+  exactly as left, while background sessions keep folding their
+  `session/update` events into their own transcripts (the event router also
+  no longer lets foreign-session events leak into the viewed transcript).
+  Prompts, steers, interrupts, and per-session queues are addressed by
+  session id, so turns on different sessions run truly concurrently.
+  Closing a tab is local only (the ACP surface has no `session/close`).
+- `scripts/acp-multi-session.smoke.mjs`: opt-in smoke check that the
+  spawned dsh-acp agent drives concurrent sessions over one ACP connection
+  (consumes a small amount of model tokens; not part of `npm test`).
 
 - Fast local build profile `devlocal` (debug codegen, incremental) for
   `scripts/devlocalinstall.sh`: the local install/build loop no longer
