@@ -1029,10 +1029,14 @@ pub struct App {
     pub chat_view: ChatView,
     /// Sessions offered by the open `/resume` picker (id → file lookup).
     resume_candidates: Vec<crate::sessions::SessionSummary>,
-    /// `/resume` picker rows came from ACP `session/list` (pick → `session/load`).
+    /// `/resume` picker rows came from ACP `session/list` (pick → resume/load).
     resume_via_acp: bool,
     /// Agent advertised `loadSession`.
     load_session: bool,
+    /// Agent advertised `sessionCapabilities.list` (or legacy `loadSession`).
+    list_session: bool,
+    /// Agent advertised `sessionCapabilities.resume`.
+    resume_session_cap: bool,
     /// Last ACP `session_info_update` title.
     session_title: Option<String>,
     pub slash_sel: usize,
@@ -1113,7 +1117,7 @@ pub struct App {
     pub demo: bool,
     /// A live ACP agent owns runtime, credentials, and its advertised catalog.
     pub attached: bool,
-    /// A real `session/new` or `session/load` has supplied this session id.
+    /// A real `session/new`, `session/resume`, or `session/load` supplied this id.
     /// Cached session options stay hidden until this becomes true.
     pub session_bound: bool,
     /// ACP initialize / authenticate status (live ACP only).
@@ -1436,6 +1440,8 @@ impl App {
             resume_candidates: Vec::new(),
             resume_via_acp: false,
             load_session: false,
+            list_session: false,
+            resume_session_cap: false,
             session_title: None,
             slash_sel: 0,
             file_menu: None,
@@ -2695,8 +2701,14 @@ impl App {
                     CtlEvent::OpenAuth => {
                         self.open_auth_surface(ctl);
                     }
-                    CtlEvent::AgentCaps { load_session } => {
+                    CtlEvent::AgentCaps {
+                        load_session,
+                        list_session,
+                        resume_session,
+                    } => {
                         self.load_session = load_session;
+                        self.list_session = list_session;
+                        self.resume_session_cap = resume_session;
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
                         if self.session_id != session_id {
@@ -4426,7 +4438,7 @@ impl App {
                     PickerKind::Permission => self.set_permission(item.id, ctl),
                     PickerKind::Session => {
                         if self.resume_via_acp {
-                            self.load_acp_session(&item.id, ctl);
+                            self.resume_acp_session(&item.id, ctl);
                         } else {
                             self.resume_session(&item.id, ctl);
                         }
@@ -4730,13 +4742,13 @@ impl App {
     /// `/resume`: list this workspace's durable sessions in a picker
     /// (grok-build's session picker). Live ACP prefers `session/list`.
     fn open_resume_picker(&mut self, ctl: &Controller) {
-        if !self.demo && self.load_session {
+        if !self.demo && self.list_session {
             ctl.send(Cmd::ListSessions { prefix: None });
             self.show_tip("listing ACP sessions…");
             return;
         }
         if !self.demo {
-            self.show_tip("agent did not advertise loadSession — listing local JSONL");
+            self.show_tip("agent did not advertise session/list — listing local JSONL");
         }
         self.open_local_resume_picker();
     }
@@ -4910,14 +4922,14 @@ impl App {
         self.agent_selection = None;
     }
 
-    fn load_acp_session(&mut self, id: &str, ctl: &Controller) {
+    fn resume_acp_session(&mut self, id: &str, ctl: &Controller) {
         self.reset_session_ui();
         self.session_id = id.to_string();
         self.transcript.set_root_session(id.to_string());
-        ctl.send(Cmd::LoadSession {
+        ctl.send(Cmd::ResumeSession {
             session_id: id.to_string(),
         });
-        self.show_tip(format!("session/load {id} …"));
+        self.show_tip(format!("resuming {id} …"));
         self.needs_redraw = true;
     }
 
@@ -4933,7 +4945,7 @@ impl App {
         if let Some(prefix) = prefix.as_deref().filter(|p| !p.is_empty()) {
             match unique_session_list_match(&sessions, prefix) {
                 Ok(id) => {
-                    self.load_acp_session(&id, ctl);
+                    self.resume_acp_session(&id, ctl);
                     return;
                 }
                 Err(msg) => {
@@ -5000,15 +5012,15 @@ impl App {
             "session/list unavailable ({error}) — listing local JSONL"
         ));
         if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
-            if self.load_session {
-                self.load_acp_session(&prefix, ctl);
+            if self.resume_session_cap || self.load_session {
+                self.resume_acp_session(&prefix, ctl);
                 return;
             }
             self.resume_session(&prefix, ctl);
             return;
         }
         self.open_local_resume_picker();
-        if self.load_session {
+        if self.resume_session_cap || self.load_session {
             self.resume_via_acp = true;
         }
     }
@@ -5582,15 +5594,17 @@ impl App {
             "resume" => {
                 if arg.is_empty() {
                     self.open_resume_picker(ctl);
-                } else if !self.demo && self.load_session {
+                } else if !self.demo && self.list_session {
                     ctl.send(Cmd::ListSessions {
                         prefix: Some(arg.to_string()),
                     });
                     self.show_tip("listing ACP sessions…");
+                } else if !self.demo && (self.resume_session_cap || self.load_session) {
+                    self.resume_acp_session(arg, ctl);
                 } else {
                     if !self.demo {
                         self.show_tip(
-                            "agent did not advertise loadSession — replaying local JSONL",
+                            "agent did not advertise session/resume or loadSession — replaying local JSONL",
                         );
                     }
                     self.resume_session(arg, ctl);

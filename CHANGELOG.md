@@ -79,6 +79,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `/resume` now uses ACP `session/resume` when the agent advertises it, so long
+  sessions can continue without replaying their full transcript into the TUI.
+  Agents that only support the legacy `session/load` path keep working, and a
+  rejected resume request falls back to load when that capability is available.
+
 - `acpSessionStatus` now treats each standard ACP `session/prompt` response
   (success or error) as that request's terminal turn signal, returning to
   `idle` after every pending prompt and concurrent steer has settled. This
