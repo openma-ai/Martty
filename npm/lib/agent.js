@@ -32,7 +32,7 @@ export function resolveDependencyStack(anchor = import.meta.url) {
 /**
  * Resolve the standalone ACP command without affecting the profile path.
  * @param {string | URL} [anchor]
- * @param {{ settingsPath?: string }} [options]
+ * @param {{ settingsPath?: string, defaultHarness?: { id: string, label: string, command: string, args?: string[] } }} [options]
  * @returns {{ command: string, args: string[] }}
  */
 export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
@@ -40,6 +40,17 @@ export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
   if (typeof envCmd === 'string' && envCmd.trim().length > 0) {
     const tokens = envCmd.trim().split(/\s+/)
     return { command: tokens[0], args: tokens.slice(1) }
+  }
+  if (options.defaultHarness !== undefined) {
+    const configured = options.defaultHarness
+    if (configured === null || typeof configured !== 'object' || Array.isArray(configured)
+      || typeof configured.command !== 'string' || configured.command.trim().length === 0) {
+      throw new Error('defaultHarness must declare a non-empty command')
+    }
+    return {
+      command: configured.command,
+      args: Array.isArray(configured.args) ? configured.args.map(String) : [],
+    }
   }
   if (typeof options.settingsPath === 'string') {
     const selected = selectedHarness(options.settingsPath)

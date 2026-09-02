@@ -251,8 +251,9 @@ Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 tur
 `martty harness add codex` 是快捷配方，会保存通过 `npx` 启动
 `@agentclientprotocol/codex-acp` 的配置；无需自己猜 Codex CLI 参数。
 
-Standalone 启动优先级是 `--agent`、`DSH_TUI_AGENT`、`activeHarness`、包内置默认值。
-因此 `--agent` 仍适合一次性覆盖，不会修改保存的选择。
+Standalone 启动优先级是 `--agent`、`DSH_TUI_AGENT`、产品注入的
+`defaultHarness`、持久化的 `activeHarness`、包内置回退值。`/harness` 只更新
+`activeHarness`，不修改产品默认值；`--agent` 仍是不改保存选择的一次性覆盖。
 
 Cordis 嵌入场景可以使用 `config.agent: { command, args }` 启动 ACP server，或使用
 `config.stream` 接入调用方已有的标准管道。单次运行也可以使用 `--agent` 与重复的

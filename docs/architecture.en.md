@@ -69,6 +69,8 @@ Client process: independent Cordis root
                   standalone startup/switch initializes and binds an empty session;
                   /harness switches it immediately before the first prompt,
                   otherwise confirms before initializing the next Harness;
+                  product defaultHarness wins persisted activeHarness at startup,
+                  while /harness only updates activeHarness;
                   profile runtime stays Host-owned
   tui-presets     provides tuiPresets; owns persistent /ui composition selection
   martty-preset   default UI Plugin → welcome.hero + welcome.info

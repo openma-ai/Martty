@@ -89,6 +89,9 @@ Every selection is stored in `$MARTTY_HOME/settings.json`. CLI/settings
 selection takes effect on the next standalone launch; TUI selection also
 updates the running standalone process immediately. Standalone startup only
 initializes the selected Harness and binds an empty ACP session before showing Ready.
+When the product supplies `defaultHarness`, startup always selects it before
+consulting the last persisted `activeHarness`; when omitted, startup resumes
+that active selection. `/harness` never mutates the product default.
 `--agent` and `DSH_TUI_AGENT` remain higher startup priorities.
 None of these replace the Host-owned runtime or session of
 `dsh --profile martty`.

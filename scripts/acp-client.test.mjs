@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -44,6 +44,44 @@ test('standalone resolution uses the active harness from Martty settings', () =>
       command: '/opt/local/bin/local-acp',
       args: ['--stdio'],
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    if (previous === undefined) delete process.env.DSH_TUI_AGENT
+    else process.env.DSH_TUI_AGENT = previous
+  }
+})
+
+test('a product default Harness wins the last active Harness at startup', () => {
+  const previous = process.env.DSH_TUI_AGENT
+  delete process.env.DSH_TUI_AGENT
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-default-harness-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const defaultHarness = {
+    id: 'product-default',
+    label: 'Product Default',
+    command: 'product-acp',
+    args: ['--stdio'],
+  }
+  try {
+    writeFileSync(settingsPath, JSON.stringify({
+      harnesses: [{
+        id: 'last-used',
+        label: 'Last Used',
+        command: 'last-used-acp',
+        args: [],
+      }],
+      activeHarness: 'last-used',
+    }))
+
+    assert.deepEqual(
+      parseClientArgv([], { settingsPath, defaultHarness }).agent,
+      { command: 'product-acp', args: ['--stdio'] },
+    )
+    assert.equal(
+      JSON.parse(readFileSync(settingsPath, 'utf8')).activeHarness,
+      'last-used',
+      'startup resolution must not overwrite the last user selection',
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
     if (previous === undefined) delete process.env.DSH_TUI_AGENT

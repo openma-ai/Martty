@@ -87,6 +87,53 @@ test('/harness opens a native picker over configured and discovered entries', as
   }
 })
 
+test('/harness marks the configured product default until this process switches', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-default-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const productDefault = {
+    id: 'product-default',
+    label: 'Product Default',
+    command: 'product-acp',
+    args: [],
+    source: 'builtin',
+  }
+  try {
+    upsertHarness(settingsPath, {
+      id: 'last-used', label: 'Last Used', command: 'last-used-acp', args: [],
+    })
+    activateHarness(settingsPath, 'last-used')
+    const switched = []
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent(agent) {
+        switched.push(agent)
+      },
+    })
+    harnessView.apply(ctx, {
+      settingsPath,
+      defaultHarness: productDefault,
+      defaults: [productDefault],
+      pathValue: '',
+    })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
+    assert.equal(ctx.tuiOverlay.active()?.value, 'product-default')
+
+    await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness',
+      event: 'submit',
+      value: 'last-used',
+    })
+    assert.deepEqual(switched, [{ command: 'last-used-acp', args: [] }])
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
+    assert.equal(ctx.tuiOverlay.active()?.value, 'last-used')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('submitting the TUI harness picker without an active session immediately replaces the agent', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-submit-'))
   const settingsPath = path.join(root, 'settings.json')

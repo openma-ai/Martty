@@ -23,6 +23,9 @@ function entryOptions(settingsPath, options) {
 export function apply(ctx, options = {}) {
   const settingsPath = options.settingsPath
   const choices = () => entryOptions(settingsPath, options)
+  let runningHarnessId = typeof options.defaultHarness?.id === 'string'
+    ? options.defaultHarness.id
+    : selectedHarness(settingsPath)?.id
   const switchNow = async (entry) => {
     if (typeof ctx.acpClient?.switchAgent !== 'function') {
       throw new Error('Harness switching is unavailable on this ACP transport')
@@ -30,6 +33,7 @@ export function apply(ctx, options = {}) {
     await ctx.acpClient.switchAgent({ command: entry.command, args: entry.args })
     upsertHarness(settingsPath, entry)
     activateHarness(settingsPath, entry.id)
+    runningHarnessId = entry.id
     return {
       action: 'harness-switched',
       harness: {
@@ -93,7 +97,7 @@ export function apply(ctx, options = {}) {
     const requested = args.trim()
     if (requested.length > 0) return save(requested)
     const entries = choices()
-    const selected = selectedHarness(settingsPath)?.id
+    const selected = runningHarnessId
     ctx.tuiOverlay.openSelect({
       id: 'harness',
       title: 'Switch Harness · starts a new session',

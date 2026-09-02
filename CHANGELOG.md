@@ -13,9 +13,11 @@ All notable changes to this project are documented here. The project follows
   `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
   The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
   entry point, using the native TUI single-select overlay and the same registry.
-  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
-  `activeHarness` → the bundled default. CLI/settings selection applies on the
-  next standalone launch. In a running standalone TUI, `/harness` replaces the
+  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → a
+  product-owned `defaultHarness` (when supplied) → the saved `activeHarness`
+  → the bundled fallback. CLI/settings selection applies on the next
+  standalone launch when the product does not pin a default. In a running
+  standalone TUI, `/harness` replaces the
   ACP child immediately while no prompt has started the current session. Once
   the first `session/prompt` has been sent, or an existing session has been
   loaded, it first confirms that switching starts another session; the current
@@ -25,7 +27,8 @@ All notable changes to this project are documented here. The project follows
   This binds an empty session without starting a model turn and returns the TUI
   to its landing page; the switch result stays in the composer Tip instead of
   becoming transcript. Sessions never carry across Harnesses; profile-owned
-  Host runtimes and sessions remain unchanged.
+  Host runtimes and sessions remain unchanged. `/harness` updates only
+  `activeHarness`, never the product default.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a
