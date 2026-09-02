@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `/resume` over ACP (`session/load`) no longer leaves the welcome banner
+  covering the replayed transcript: the banner was only dismissed by the
+  first prompt send (and by the local JSONL resume path), so resuming
+  before ever sending a prompt hid every loaded message until the user
+  typed and sent something. `load_acp_session` now dismisses the banner
+  before the replay streams in, like `resume_session` already did.
+
 - Painter info popups (`/help`, `/keys`, `/session`, and the painter
   `/status` fallback) and the `/plugins` / `/cordis-plugins` inventory tree
   now follow their session across tabs like the ACP asks do: opening one,

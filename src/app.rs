@@ -5642,6 +5642,11 @@ impl App {
     }
 
     fn load_acp_session(&mut self, id: &str, ctl: &Controller) {
+        // The welcome banner only ever paints instead of the transcript, so
+        // any path that (re)loads real history must dismiss it — the local
+        // `resume_session` does the same. Without this, a /resume before the
+        // first prompt left the banner covering the whole replayed chat.
+        self.show_banner = false;
         if self.session_id == id {
             // Reloading the viewed session: reset its UI and re-stream.
             self.reset_session_ui();
