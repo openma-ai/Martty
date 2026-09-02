@@ -65,7 +65,11 @@ test('the status service folds connection, server, auth, and session facts', () 
   const current = service.current()
   assert.equal(current.state, 'idle')
   assert.equal(current.connection, 'connecting')
-  assert.equal(current.session.bound, false)
+  assert.deepEqual(current.session, {
+    sessionId: undefined,
+    bound: false,
+    started: false,
+  })
   // Seed folded from the already-advertised config options.
   assert.equal(current.model, 'deepseek-v4-flash')
   assert.equal(current.effort, 'high')
@@ -86,7 +90,29 @@ test('the status service folds connection, server, auth, and session facts', () 
 
   service.observeClient({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} })
   service.observeAgent({ jsonrpc: '2.0', id: 2, result: { sessionId: 's-1' } })
-  assert.deepEqual(service.current().session, { sessionId: 's-1', bound: true })
+  assert.deepEqual(service.current().session, {
+    sessionId: 's-1',
+    bound: true,
+    started: false,
+  })
+
+  service.observeClient({
+    jsonrpc: '2.0', id: 'first-prompt', method: 'session/prompt', params: { sessionId: 's-1' },
+  })
+  assert.equal(service.current().session.started, true)
+  service.observeAgent({
+    jsonrpc: '2.0', id: 'first-prompt', result: { stopReason: 'end_turn' },
+  })
+
+  service.observeClient({
+    jsonrpc: '2.0', id: 'load', method: 'session/load', params: { sessionId: 'saved-session' },
+  })
+  service.observeAgent({ jsonrpc: '2.0', id: 'load', result: {} })
+  assert.deepEqual(service.current().session, {
+    sessionId: 'saved-session',
+    bound: true,
+    started: true,
+  })
 
   // authRequired errors anywhere flip the authenticate state.
   service.observeAgent({

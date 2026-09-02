@@ -44,7 +44,7 @@ export function apply(ctx, options = {}) {
     const entry = discoverHarnesses(settingsPath, options).find(({ id: candidate }) => candidate === id)
     if (entry === undefined) throw new Error(`unknown harness ${JSON.stringify(id)}`)
     if (!options.hostOwned) {
-      if (ctx.acpSessionStatus?.current?.().session?.bound === true) {
+      if (ctx.acpSessionStatus?.current?.().session?.started === true) {
         ctx.tuiOverlay.openSelect({
           id: 'harness-confirm',
           title: 'Switch Harness? · starts a new session',

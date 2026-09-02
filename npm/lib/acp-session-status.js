@@ -2,7 +2,7 @@
  * Standard-ACP-backed run-state projection for the Client tree.
  *
  * Folds the non-statistics facts `/status` needs — connection, server,
- * authenticate state, session binding, model, effort, permission, plan,
+ * authenticate state, session binding/use, model, effort, permission, plan,
  * agent preset, and the running/idle state — from messages the mux already
  * observes. Statistics stay in `acpSessionStats`; this service never
  * counts tokens or timings, so there is exactly one stats source.
@@ -45,7 +45,7 @@ function zero() {
     connection: 'connecting',
     server: undefined,
     auth: { status: undefined, method: undefined },
-    session: { sessionId: undefined, bound: false },
+    session: { sessionId: undefined, bound: false, started: false },
     model: undefined,
     effort: undefined,
     permission: undefined,
@@ -107,19 +107,23 @@ export function installAcpSessionStatus(ctx, options = {}) {
       return
     }
     if (SETUP_METHODS.has(message.method) && message.id !== undefined) {
-      pendingSetup.set(
-        message.id,
-        message.method === 'session/load'
+      pendingSetup.set(message.id, {
+        sessionId: message.method === 'session/load'
           ? readString(message.params, 'sessionId', 'session_id')
           : undefined,
-      )
+        started: message.method === 'session/load',
+      })
       return
     }
     if (message.method === 'session/prompt' && message.id !== undefined) {
+      const sessionId = readString(message.params, 'sessionId', 'session_id')
       pendingPrompts.set(
         message.id,
-        readString(message.params, 'sessionId', 'session_id'),
+        sessionId,
       )
+      if (value.session.sessionId === sessionId && !value.session.started) {
+        value.session.started = true
+      }
       if (value.state === 'idle') {
         value.state = 'starting'
         publish()
@@ -156,14 +160,18 @@ export function installAcpSessionStatus(ctx, options = {}) {
       return
     }
     if (message.id !== undefined && pendingSetup.has(message.id)) {
-      const requested = pendingSetup.get(message.id)
+      const setup = pendingSetup.get(message.id)
       pendingSetup.delete(message.id)
       if (message.error !== undefined) {
         if (isAuthRequired(message.error)) value.auth.status = 'needs sign-in'
-        value.session = { sessionId: requested, bound: false }
+        value.session = { sessionId: setup.sessionId, bound: false, started: false }
       } else {
-        const sessionId = readString(message.result, 'sessionId', 'session_id') ?? requested
-        value.session = { sessionId, bound: sessionId !== undefined }
+        const sessionId = readString(message.result, 'sessionId', 'session_id') ?? setup.sessionId
+        value.session = {
+          sessionId,
+          bound: sessionId !== undefined,
+          started: sessionId !== undefined && setup.started,
+        }
       }
       publish()
       return
@@ -250,7 +258,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (snapshot === null || typeof snapshot !== 'object') return
     if (typeof snapshot.sessionId === 'string' && snapshot.sessionId.length > 0
       && value.session.sessionId === undefined) {
-      value.session = { sessionId: snapshot.sessionId, bound: true }
+      value.session = { sessionId: snapshot.sessionId, bound: true, started: false }
     }
     value.model = optionValue(snapshot.options, 'model') ?? value.model
     value.effort = optionValue(snapshot.options, 'effort') ?? value.effort

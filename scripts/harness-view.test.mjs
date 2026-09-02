@@ -9,14 +9,20 @@ import { activateHarness, selectedHarness, upsertHarness } from '../npm/lib/harn
 
 const harnessView = await import('../npm/lib/harness-view.js').catch(() => ({}))
 
-function makeCtx(acpClient, sessionBound = false) {
+function makeCtx(acpClient, session = {}) {
+  const currentSession = {
+    sessionId: undefined,
+    bound: false,
+    started: false,
+    ...session,
+  }
   const ctx = {
     effect(fn) { return fn() },
     get() {},
     on() { return () => {} },
     acpSessionStatus: {
       current() {
-        return { session: { sessionId: sessionBound ? 'session-1' : undefined, bound: sessionBound } }
+        return { session: currentSession }
       },
     },
     ...(acpClient === undefined ? {} : { acpClient }),
@@ -138,7 +144,58 @@ test('submitting the TUI harness picker without session/new immediately replaces
   }
 })
 
-test('submitting the TUI harness picker after session/new requires confirmation', async () => {
+test('submitting the TUI harness picker from an unused bound session switches immediately', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-empty-bound-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    upsertHarness(settingsPath, {
+      id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
+    })
+    activateHarness(settingsPath, 'local')
+    const switched = []
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent(agent) {
+        switched.push(agent)
+      },
+    }, { sessionId: 'session-1', bound: true, started: false })
+    harnessView.apply(ctx, {
+      settingsPath,
+      pathValue: '',
+      defaults: [{
+        id: 'builtin-dsh',
+        label: 'Bundled DeepSeek Harness',
+        command: '/pkg/dsh-acp',
+        args: [],
+        source: 'builtin',
+      }],
+    })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
+    const result = await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness',
+      event: 'submit',
+      value: 'builtin-dsh',
+    })
+
+    assert.deepEqual(switched, [{ command: '/pkg/dsh-acp', args: [] }])
+    assert.equal(ctx.tuiOverlay.active(), null)
+    assert.deepEqual(result, {
+      action: 'harness-switched',
+      harness: {
+        id: 'builtin-dsh',
+        label: 'Bundled DeepSeek Harness',
+        command: '/pkg/dsh-acp',
+        args: [],
+      },
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('submitting the TUI harness picker after the first prompt requires confirmation', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-confirm-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
@@ -152,7 +209,7 @@ test('submitting the TUI harness picker after session/new requires confirmation'
       async switchAgent(agent) {
         switched.push(agent)
       },
-    }, true)
+    }, { sessionId: 'session-1', bound: true, started: true })
     harnessView.apply(ctx, {
       settingsPath,
       pathValue: '',
