@@ -1482,6 +1482,58 @@ fn welcome_and_conversation_are_two_states_without_a_mixed_third_state() {
 }
 
 #[test]
+fn harness_switch_returns_the_fresh_empty_session_to_the_landing_page() {
+    let mut app = live_test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.transcript.push_user("old Harness turn".into(), false);
+
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Starting {
+            runtime: "harness".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::SessionBound {
+            session_id: "fresh-empty-session".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Ready {
+            server: "dsh-acp".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::TuiOpDone(
+            "Harness switched to Bundled DeepSeek Harness".into(),
+        )),
+        &ctl,
+    );
+
+    assert!(
+        app.show_banner,
+        "a fresh empty Harness session is a landing state"
+    );
+    assert!(
+        app.transcript.cells.is_empty(),
+        "the switch result must not become session transcript"
+    );
+    let frame = dump_frame(&mut app, 140, 60);
+    assert!(
+        frame.contains("https://martty.sh"),
+        "landing page is visible:\n{frame}"
+    );
+    assert!(
+        frame.contains("Harness switched to Bundled DeepSeek Harness"),
+        "the switch result remains visible as chrome:\n{frame}"
+    );
+}
+
+#[test]
 fn welcome_hero_slot_replaces_only_the_martty_lockup() {
     let mut app = test_app();
     let (ctl, _commands) = crate::controller::tests::test_controller();

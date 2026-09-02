@@ -2474,6 +2474,7 @@ impl App {
                     CtlEvent::Starting { runtime } => {
                         if runtime == "harness" {
                             self.reset_session_ui();
+                            self.show_banner = true;
                             self.server_info = None;
                         }
                         self.state = RunState::Starting;
@@ -2659,7 +2660,11 @@ impl App {
                         );
                     }
                     CtlEvent::TuiOpDone(desc) => {
-                        self.transcript.push_notice(NoticeLevel::Info, desc);
+                        if self.show_banner {
+                            self.show_tip(desc);
+                        } else {
+                            self.transcript.push_notice(NoticeLevel::Info, desc);
+                        }
                     }
                     CtlEvent::TuiOpFailed(desc) => {
                         self.transcript.push_notice(NoticeLevel::Warn, desc);

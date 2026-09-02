@@ -22,8 +22,10 @@ All notable changes to this project are documented here. The project follows
   session remains available through session navigation. Standalone startup and
   Harness replacement now perform `initialize` followed by `session/new`, so
   the welcome screen immediately receives the Agent's model and effort config.
-  This binds an empty session without starting a model turn. Sessions never
-  carry across Harnesses; profile-owned Host runtimes and sessions remain unchanged.
+  This binds an empty session without starting a model turn and returns the TUI
+  to its landing page; the switch result stays in the composer Tip instead of
+  becoming transcript. Sessions never carry across Harnesses; profile-owned
+  Host runtimes and sessions remain unchanged.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a
