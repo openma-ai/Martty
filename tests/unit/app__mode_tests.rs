@@ -1195,6 +1195,7 @@ fn harness_restart_clears_the_old_session_before_reconnecting() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;
     app.transcript.push_user("old Harness turn".into(), false);
+    app.session_model = Some("old-harness-model".into());
     assert!(!app.transcript.cells.is_empty());
 
     app.handle(
@@ -1205,6 +1206,7 @@ fn harness_restart_clears_the_old_session_before_reconnecting() {
     );
 
     assert!(app.transcript.cells.is_empty());
+    assert!(app.session_model.is_none());
     assert!(!app.session_bound);
     assert_eq!(app.state, RunState::Starting);
 }

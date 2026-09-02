@@ -415,6 +415,30 @@ fn codex_model_chip_waits_for_acp_then_uses_the_reported_session_model() {
 }
 
 #[test]
+fn welcome_info_uses_the_active_acp_runtime_and_reported_session_model() {
+    let flat = |lines: Vec<Line>| -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = live_test_app();
+    app.server_info = Some("@agentclientprotocol/codex-acp".into());
+
+    let pending = flat(welcome_info_lines(&app));
+    assert!(pending.contains("waiting for ACP"), "{pending}");
+    assert!(pending.contains("codex-acp"), "{pending}");
+    assert!(!pending.contains("deepseek-chat"), "{pending}");
+
+    app.session_model = Some("gpt-5.6-sol".into());
+    let reported = flat(welcome_info_lines(&app));
+    assert!(reported.contains("gpt-5.6-sol"), "{reported}");
+    assert!(!reported.contains("deepseek-chat"), "{reported}");
+}
+
+#[test]
 fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     let flat = |line: &Line| -> String {
         line.spans

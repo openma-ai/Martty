@@ -1718,11 +1718,31 @@ fn displayed_model(app: &App) -> Option<String> {
         .clone()
         .or_else(|| app.transcript.last_model.clone())
         .or_else(|| app.session_model.clone())
-        .or_else(|| {
-            let runtime = app.cfg.bin.to_ascii_lowercase();
-            (app.demo || runtime.contains("dsh-acp") || runtime.contains("deepseek-harness-acp"))
-                .then(|| app.cfg.model.clone())
-        })
+        .or_else(|| deepseek_runtime(app).then(|| app.cfg.model.clone()))
+}
+
+fn active_runtime(app: &App) -> &str {
+    app.server_info.as_deref().unwrap_or(&app.cfg.bin)
+}
+
+fn deepseek_runtime(app: &App) -> bool {
+    let runtime = active_runtime(app).to_ascii_lowercase();
+    app.demo || runtime.contains("dsh-acp") || runtime.contains("deepseek-harness-acp")
+}
+
+fn welcome_model(app: &App) -> String {
+    if deepseek_runtime(app) {
+        return format!(
+            "{} · {}",
+            app.cfg.provider,
+            app.session_model.as_deref().unwrap_or(&app.cfg.model)
+        );
+    }
+    app.session_model.clone().unwrap_or_else(|| {
+        app.locale
+            .tr("waiting for ACP", "等待 ACP 上报")
+            .to_string()
+    })
 }
 
 fn span_widths(spans: &[Span]) -> usize {
@@ -3347,19 +3367,17 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     ));
     out.push(kv(
         app.locale.tr("model", "模型"),
-        format!("{} · {}", app.cfg.provider, app.cfg.model),
+        welcome_model(app),
     ));
     out.push(kv(
         app.locale.tr("workspace", "工作区"),
         shorten_home(&app.cfg.workspace),
     ));
     out.push(kv(app.locale.tr("session", "会话"), app.session_id.clone()));
-    let runtime_short = app
-        .cfg
-        .bin
+    let runtime_short = active_runtime(app)
         .rsplit('/')
         .next()
-        .unwrap_or(&app.cfg.bin)
+        .unwrap_or_else(|| active_runtime(app))
         .to_string();
     out.push(kv(app.locale.tr("runtime", "运行时"), runtime_short));
     if app.demo {

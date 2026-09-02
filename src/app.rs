@@ -4852,6 +4852,7 @@ impl App {
         self.transcript.clear();
         self.modes = Modes::default();
         self.selected_model = None;
+        self.session_model = None;
         self.session_title = None;
         self.show_banner = false;
         self.queued = 0;

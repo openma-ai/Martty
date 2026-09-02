@@ -68,6 +68,10 @@ All notable changes to this project are documented here. The project follows
   Kitty keyboard reports such as `^[[99;5u` from leaking onto the terminal.
   The built-in Codex Harness recipe also asks `npx` to prefer its local cache,
   avoiding an unnecessary registry check on warm launches.
+- Welcome information now takes the runtime and model from the active ACP
+  connection and session. Generic Harnesses wait for the Agent's model report
+  instead of displaying the startup CLI's DeepSeek defaults, and Harness
+  switches clear the previous session's model before reconnecting.
 - Codex ACP adapter diagnostics now negotiate the typed `sessionFailure`
   capability and render as TUI notices instead of being forwarded as assistant
   prose. The footer model chip now follows the model reported by the active ACP
