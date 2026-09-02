@@ -61,7 +61,7 @@ test('/harness opens a native picker over configured and discovered entries', as
 
     assert.deepEqual(ctx.tuiCommands.list(), [{
       name: 'harness',
-      description: 'Switch Harness now and start a new session',
+      description: 'Switch Harness; the next prompt starts its session',
       input: {
         hint: '[id]',
         options: [
@@ -75,7 +75,7 @@ test('/harness opens a native picker over configured and discovered entries', as
     assert.deepEqual(ctx.tuiOverlay.active(), {
       kind: 'select',
       id: 'harness',
-      title: 'Switch Harness · starts a new session',
+      title: 'Switch Harness · session starts with first prompt',
       value: 'local',
       options: [
         { value: 'local', label: 'Local ACP', description: 'configured · local-acp --stdio' },
@@ -87,7 +87,7 @@ test('/harness opens a native picker over configured and discovered entries', as
   }
 })
 
-test('submitting the TUI harness picker without session/new immediately replaces the agent', async () => {
+test('submitting the TUI harness picker without an active session immediately replaces the agent', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-submit-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
@@ -235,7 +235,7 @@ test('submitting the TUI harness picker after the first prompt requires confirma
     assert.deepEqual(ctx.tuiOverlay.active(), {
       kind: 'select',
       id: 'harness-confirm',
-      title: 'Switch Harness? · starts a new session',
+      title: 'Switch Harness? · next prompt starts a new session',
       value: 'switch',
       options: [
         {

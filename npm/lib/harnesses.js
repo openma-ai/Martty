@@ -94,7 +94,7 @@ function harnessHelp(color = false) {
   const command = (value) => paint(value, 'cyan', color)
   return `${section('Martty Harnesses')}
 
-Manage the ACP Harness used by the next standalone session.
+Manage the ACP Harness used by standalone Martty.
 
 ${section('Usage')}
   ${command('martty harness <command> [options]')}
@@ -102,7 +102,7 @@ ${section('Usage')}
 ${section('Commands')}
   list              Show saved, bundled, and PATH Harnesses
   add <id>          Save a named Harness command
-  use <id>          Select a Harness for the next standalone session
+  use <id>          Select a Harness for the next standalone launch
   help              Show this help
 
 ${section('Add options')}
@@ -116,8 +116,9 @@ ${section('Examples')}
   ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
   ${command('martty harness use local')}
 
-Switching Harnesses takes effect on the next standalone launch and starts a
-new ACP session. Sessions are never carried across Harnesses.
+Switching Harnesses takes effect on the next standalone launch. That launch
+initializes the Harness; the first prompt starts its ACP session. Sessions are
+never carried across Harnesses.
 `
 }
 
@@ -163,7 +164,7 @@ function savedHarnessOutput(harness, color = false) {
   }
   lines.push('')
   lines.push(fieldLine('Next', `martty harness use ${harness.id}`, 100, color, 2))
-  lines.push(fieldLine('Then', 'restart martty (starts a new ACP session)', 100, color, 2))
+  lines.push(fieldLine('Then', 'restart martty (first prompt starts its ACP session)', 100, color, 2))
   return `${lines.join('\n')}\n`
 }
 
@@ -353,7 +354,7 @@ export function runHarnessCommand(argv, options) {
     activateHarness(settingsPath, id)
     return {
       code: 0,
-      stdout: `active harness ${id}; next standalone launch starts a new session\n`,
+      stdout: `active harness ${id}; next standalone launch uses it; first prompt starts its session\n`,
       stderr: '',
     }
   }

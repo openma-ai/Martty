@@ -80,7 +80,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `esc` | 中断当前回合并保留草稿 |
 | `/` | 打开命令与参数候选 |
 | `/model` · `/agent` | 选择模型和 Agent Preset |
-| `/harness [id]` | 为下次 standalone 启动的新会话选择 Harness |
+| `/harness [id]` | 在 TUI 内切换 Harness；首条消息才创建它的会话 |
 | `/permission` · `shift+tab` | 选择或轮换权限模式 |
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
@@ -237,13 +237,15 @@ martty --check-runtime
 
 三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
 `martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`/harness <id>` 可直接保存。TUI 选择同样只影响下一次 standalone 启动，并创建新会话。
+`/harness <id>` 可直接切换。TUI 选择会立即替换 standalone ACP 子进程；若当前会话
+已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
 
 `harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
 `$MARTTY_HOME/settings.json` 的 `harnesses` 与 `activeHarness`，并保留同文件中的主题、
 语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，并固定通过 ACP
-`session/new` 创建新会话；不会把旧 Harness 的会话带到新 Harness，也不会热切换当前会话；
+`initialize` 连接选中的 Harness；不会在欢迎页创建空会话。用户发送首条消息时才依次
+调用 `session/new` 与 `session/prompt`。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
 
 `martty harness add codex` 是快捷配方，会保存通过 `npx` 启动

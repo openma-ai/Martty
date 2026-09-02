@@ -254,9 +254,7 @@ fn initialize_advertises_backchat_auth_caps() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
-    use agent_client_protocol::schema::v1::{
-        AgentCapabilities, InitializeResponse, NewSessionResponse,
-    };
+    use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeResponse};
     use std::time::Duration;
 
     let (extension_tx, mut extension_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -265,7 +263,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
         .builder()
         .name("plugin-command-mock")
         .on_receive_request(
-            async move |init: InitializeRequest, responder, _cx| {
+            async move |init: InitializeRequest, responder, cx| {
                 let mut meta = serde_json::Map::new();
                 meta.insert(
                     "dsh".into(),
@@ -275,13 +273,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
                     InitializeResponse::new(init.protocol_version)
                         .agent_capabilities(AgentCapabilities::new().meta(meta))
                         .agent_info(Implementation::new("plugin-command-mock", "0")),
-                )
-            },
-            on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |_req: NewSessionRequest, responder, cx| {
-                responder.respond(NewSessionResponse::new(SessionId::new("s1")))?;
+                )?;
                 cx.send_notification(UntypedMessage::new(
                     crate::cordis::COMMANDS_UPDATE,
                     json!({ "protocol": 0, "commands": [] }),
@@ -579,27 +571,19 @@ async fn cordis_requests_stay_local_when_the_agent_did_not_advertise_cordis() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
-    use agent_client_protocol::schema::v1::{
-        AgentCapabilities, InitializeResponse, NewSessionResponse,
-    };
+    use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeResponse};
     use std::time::Duration;
 
     let agent = Agent
         .builder()
         .name("standard-acp-agent")
         .on_receive_request(
-            async move |init: InitializeRequest, responder, _cx| {
+            async move |init: InitializeRequest, responder, cx| {
                 responder.respond(
                     InitializeResponse::new(init.protocol_version)
                         .agent_capabilities(AgentCapabilities::new())
                         .agent_info(Implementation::new("standard-acp-agent", "0")),
-                )
-            },
-            on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |_req: NewSessionRequest, responder, cx| {
-                responder.respond(NewSessionResponse::new(SessionId::new("s1")))?;
+                )?;
                 cx.send_notification(UntypedMessage::new(
                     crate::cordis::COMMANDS_UPDATE,
                     json!({
@@ -648,9 +632,7 @@ async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_compositor_command_does_not_require_agent_cordis_capability() {
-    use agent_client_protocol::schema::v1::{
-        AgentCapabilities, InitializeResponse, NewSessionResponse,
-    };
+    use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeResponse};
     use std::time::Duration;
 
     let (invoke_tx, mut invoke_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -658,7 +640,7 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
         .builder()
         .name("standard-acp-with-client-compositor")
         .on_receive_request(
-            async move |init: InitializeRequest, responder, _cx| {
+            async move |init: InitializeRequest, responder, cx| {
                 responder.respond(
                     InitializeResponse::new(init.protocol_version)
                         .agent_capabilities(AgentCapabilities::new())
@@ -666,13 +648,7 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
                             "standard-acp-with-client-compositor",
                             "0",
                         )),
-                )
-            },
-            on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |_req: NewSessionRequest, responder, cx| {
-                responder.respond(NewSessionResponse::new(SessionId::new("s1")))?;
+                )?;
                 cx.send_notification(UntypedMessage::new(
                     crate::cordis::COMMANDS_UPDATE,
                     json!({
@@ -737,9 +713,9 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
+async fn harness_switch_reinitializes_the_agent_and_defers_session_until_first_prompt() {
     use agent_client_protocol::schema::v1::{
-        AgentCapabilities, InitializeResponse, NewSessionResponse,
+        AgentCapabilities, InitializeResponse, NewSessionResponse, PromptResponse, StopReason,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -752,7 +728,7 @@ async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
         .on_receive_request(
             {
                 let initializes = Arc::clone(&initializes);
-                async move |init: InitializeRequest, responder, _cx| {
+                async move |init: InitializeRequest, responder, cx| {
                     let generation = initializes.fetch_add(1, Ordering::SeqCst) + 1;
                     responder.respond(
                         InitializeResponse::new(init.protocol_version)
@@ -761,19 +737,7 @@ async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
                                 format!("agent-{generation}"),
                                 "0",
                             )),
-                    )
-                }
-            },
-            on_receive_request!(),
-        )
-        .on_receive_request(
-            {
-                let sessions = Arc::clone(&sessions);
-                async move |_req: NewSessionRequest, responder, cx| {
-                    let generation = sessions.fetch_add(1, Ordering::SeqCst) + 1;
-                    responder.respond(NewSessionResponse::new(SessionId::new(format!(
-                        "s{generation}"
-                    ))))?;
+                    )?;
                     if generation == 1 {
                         cx.send_notification(UntypedMessage::new(
                             crate::cordis::COMMANDS_UPDATE,
@@ -788,6 +752,24 @@ async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
                     }
                     Ok(())
                 }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let sessions = Arc::clone(&sessions);
+                async move |_req: NewSessionRequest, responder, _cx| {
+                    let generation = sessions.fetch_add(1, Ordering::SeqCst) + 1;
+                    responder.respond(NewSessionResponse::new(SessionId::new(format!(
+                        "s{generation}"
+                    ))))
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: PromptRequest, responder, _cx| {
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
             },
             on_receive_request!(),
         )
@@ -830,6 +812,11 @@ async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
             break;
         }
     }
+    assert_eq!(
+        sessions.load(Ordering::SeqCst),
+        0,
+        "startup must not create an ACP session before the first prompt"
+    );
     cmd_tx
         .send(Cmd::InvokePluginCommand {
             name: "harness".into(),
@@ -838,13 +825,11 @@ async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
         .expect("switch Harness");
 
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut rebound = false;
+    let mut switched = false;
     while Instant::now() < deadline {
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }))
-                if session_id == "s2" =>
-            {
-                rebound = true;
+            Ok(AppEvent::Ctl(CtlEvent::Ready { server })) if server == "agent-2" => {
+                switched = true;
                 break;
             }
             Ok(_) => {}
@@ -853,9 +838,37 @@ async fn harness_switch_reinitializes_the_agent_and_binds_a_fresh_session() {
         }
     }
 
-    assert!(rebound, "Harness switch must bind a session from the new Agent");
+    assert!(switched, "Harness switch must initialize the new Agent");
     assert_eq!(initializes.load(Ordering::SeqCst), 2);
-    assert_eq!(sessions.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        sessions.load(Ordering::SeqCst),
+        0,
+        "Harness switch must stay sessionless until the first prompt"
+    );
+
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "local-draft".into(),
+            text: "first".into(),
+        })
+        .expect("first prompt");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut bound = false;
+    while Instant::now() < deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }))
+                if session_id == "s1" =>
+            {
+                bound = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(bound, "the first prompt must create and bind the ACP session");
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
@@ -990,12 +1003,15 @@ fn load_session_flag_reads_initialize_payload() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
+async fn form_auth_stays_optimistically_configured_until_first_prompt_proves_it() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeResponse, NewSessionResponse,
+        PromptResponse, StopReason,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
+    let sessions = Arc::new(AtomicUsize::new(0));
     let mut meta = serde_json::Map::new();
     meta.insert("api-key".into(), json!({ "provider": "deepseek" }));
     let agent = Agent
@@ -1015,8 +1031,18 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |_req: NewSessionRequest, responder, _cx| {
-                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            {
+                let sessions = Arc::clone(&sessions);
+                async move |_req: NewSessionRequest, responder, _cx| {
+                    sessions.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: PromptRequest, responder, _cx| {
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
             },
             on_receive_request!(),
         );
@@ -1060,6 +1086,23 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
         !opened_auth,
         "initialize alone must not open sign-in for possibly persisted credentials"
     );
+    assert_eq!(
+        sessions.load(Ordering::SeqCst),
+        0,
+        "auth probing must not create an empty startup session"
+    );
+
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "local-draft".into(),
+            text: "first".into(),
+        })
+        .expect("first prompt");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && sessions.load(Ordering::SeqCst) == 0 {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
@@ -1554,6 +1597,8 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
 
+    cmd_tx.send(Cmd::NewSession).expect("create ACP session");
+
     let result = tokio::time::timeout(Duration::from_secs(2), result_rx.recv())
         .await
         .expect("Client config request settled")
@@ -1839,7 +1884,7 @@ async fn prompts_while_running_wait_in_fifo_without_session_cancel() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn composition_catalog_is_ready_before_the_first_prompt() {
+async fn composition_catalog_arrives_with_the_first_prompt_session() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
         NewSessionResponse, PromptResponse, SessionConfigOption, SessionConfigSelectOption,
@@ -1933,8 +1978,43 @@ async fn composition_catalog_is_ready_before_the_first_prompt() {
         }
     }
     assert!(ready, "initialize completes during startup");
+    assert_eq!(
+        catalog, None,
+        "startup initialize must not create a session just to fetch config options"
+    );
+    assert!(prompt_rx.try_recv().is_err(), "initialize is not a turn");
+
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "local-draft".into(),
+            text: "first".into(),
+        })
+        .expect("first prompt");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && catalog.is_none() {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Catalog { presets, .. })) if !presets.is_empty() => {
+                catalog = Some(
+                    presets
+                        .into_iter()
+                        .map(|preset| preset.id)
+                        .collect::<Vec<_>>(),
+                );
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
     assert_eq!(catalog, Some(vec!["standard".into(), "creator".into()]));
-    assert!(prompt_rx.try_recv().is_err(), "session/new is not a turn");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("first prompt reaches the Agent")
+            .as_deref(),
+        Some("first")
+    );
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;

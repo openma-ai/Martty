@@ -83,9 +83,9 @@ Client 进程：独立 Cordis root
   status-view  注入 acpSessionStatus + acpSessionStats + tuiCommands +
                tuiOverlay，注册 /status 命令
   harness-view 注入 tuiCommands + tuiOverlay + acpClient + acpSessionStatus；
-               standalone 下空白 session（包括启动时自动绑定的 session/new）即时替换
-               ACP 子进程；首个 session/prompt 后或 session/load 恢复旧会话时先确认，
-               再请求新的 initialize + session/new；
+               standalone 启动与切换只 initialize；首个 prompt 才 session/new；
+               会话尚未开始时即时替换 ACP 子进程，首个 session/prompt 后或
+               session/load 恢复旧会话时先确认，再 initialize 新 Harness；
                profile 主路径仍由 Host 拥有 runtime
   tui-presets  提供 tuiPresets，注册持久化 /ui 选择与组合生命周期
   martty-preset default UI Plugin，组合 welcome.hero + welcome.info
@@ -145,7 +145,7 @@ tui-agents    Rust Agent/session 快照 → Client tree 的 tuiAgents service
 agents-view   tuiAgents → composer 内部 navigation dock + inline 会话选择
 stats-view    标准 ACP usage/timing 投影 → composer dock 统计行
 status-view   acpSessionStatus + acpSessionStats → /status markdown overlay
-harness-view  Harness registry + session started 状态 → /harness 确认 + 换进程/新会话
+harness-view  Harness registry + session started 状态 → /harness 确认 + 换进程
 martty-preset default UI Plugin → Martty Hero + 原生动态信息区
 deepseek-logo deepseek UI Plugin → DeepSeek Hero + 原生动态信息区
 acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会话/模型/
@@ -155,7 +155,7 @@ Client runner Client inspect + code.client 挂载/停止
 TUI 壳        消费 Theme、slot 与通用 overlay 快照树；把本地 Queue/Agent 快照路由给对应 service
 acp-client    session/new · authenticate · prompt · cancel · config · commands
               standalone 使用稳定代理流，可替换 ACP 子进程而不断开 TUI compositor；
-              替换时清空旧 Agent capability，再重新 initialize + session/new
+              启动/替换时清空旧 Agent capability 并 initialize；首个 prompt 前 session/new
               提供 acpSessionConfig（观察标准快照；set 仍由 Rust 发标准 ACP）
               提供 acpSessionPlan（观察标准 plan update；内置 Plan 插件只是消费者）
               提供 acpSessionStats 与通用、随 effect 回收的 ACP observer registry

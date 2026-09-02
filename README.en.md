@@ -140,15 +140,18 @@ martty --check-runtime
 All three entry points share the same registry: edit `settings.json`, use the
 `martty harness` CLI above, or enter `/harness` in the running TUI for the
 native single-select form. `/harness <id>` saves directly. TUI selection also
-applies only to the next standalone launch, which starts a new session.
+replaces the standalone ACP child immediately. If the current session has
+already received a prompt or was restored through `/session`, Martty confirms
+first and keeps that session available for navigation.
 
 `harness list` includes saved entries, the bundled DSH runtime, and executable
 `*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks the active entry.
 `add` and `use` preserve the other fields in `$MARTTY_HOME/settings.json` while
 writing `harnesses` and `activeHarness`. Selection applies to the **next
-standalone launch**, which creates a fresh ACP session through `session/new`.
-Sessions are never carried across Harnesses; this does not hot-swap the current
-session, and `dsh --profile martty` continues to use its Host-owned runtime.
+standalone launch**, which initializes the selected Harness without creating an
+empty session. The first prompt sends `session/new` immediately before
+`session/prompt`. Sessions are never carried across Harnesses, and
+`dsh --profile martty` continues to use its Host-owned runtime.
 
 `martty harness add codex` is a shortcut that saves an `npx`
 `@agentclientprotocol/codex-acp` recipe, so no Codex CLI flags need to be guessed.
@@ -359,7 +362,7 @@ Agent-oriented, fully verifiable installation steps live in the
 | `/` | Open the upward command menu and filter by prefix; after `/command ` the same menu shows argument candidates. Enter selects and runs; Tab only completes. Agent-advertised skills still ship as `/name ` prompts |
 | `/ui` · `/ui ` | Enter directly for the ordinary UI Preset single-select form; add a trailing space for upward Martty / DeepSeek candidates |
 | `/model` · `/agent` | Pick an agent-advertised model or agent preset; `ctrl+shift+a` cycles agents directly without a picker |
-| `/harness [id]` | Select the Harness for a new session on the next standalone launch |
+| `/harness [id]` | Switch the standalone Harness; its first prompt creates the session |
 | `/auth` | ACP sign-in (method picker when several methods; otherwise Terminal Auth or `authenticate` `_meta`); mid-session `auth_required` opens the same surface; the agent's `/login` stays a prompt |
 | `/permission` · `shift+tab` | Pick or cycle agent-advertised permission modes |
 | `/vim` | Toggle vim modal editing (off by default; normal mode h/j/k/l move, dd kill line, i insert) |

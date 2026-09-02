@@ -16,14 +16,13 @@ All notable changes to this project are documented here. The project follows
   Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
   `activeHarness` → the bundled default. CLI/settings selection applies on the
   next standalone launch. In a running standalone TUI, `/harness` replaces the
-  ACP child immediately while the current session is unused, including the
-  empty session that standalone startup binds automatically. Once the first
-  `session/prompt` has been sent, or an existing session has been loaded, it
-  first confirms that switching starts another session; the current session
-  remains available through session navigation. After confirmation it repeats
-  `initialize` and `session/new` before binding the new session. Sessions never
-  carry across Harnesses; profile-owned Host runtimes and sessions remain
-  unchanged.
+  ACP child immediately while no prompt has started the current session. Once
+  the first `session/prompt` has been sent, or an existing session has been
+  loaded, it first confirms that switching starts another session; the current
+  session remains available through session navigation. Standalone startup and
+  Harness replacement now stop after `initialize`; the first prompt performs
+  `session/new` immediately before `session/prompt`. Sessions never carry
+  across Harnesses; profile-owned Host runtimes and sessions remain unchanged.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a

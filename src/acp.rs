@@ -1014,7 +1014,6 @@ async fn initialize_switched_agent(
     cx: &ConnectionTo<Agent>,
     cfg: &RuntimeConfig,
     agent_argv: &[String],
-    cwd: &std::path::Path,
     surface: &Arc<Mutex<Surface>>,
     bus: &Sender<AppEvent>,
 ) -> std::result::Result<SwitchedAgent, AcpError> {
@@ -1062,24 +1061,6 @@ async fn initialize_switched_agent(
             AuthStatus::None
         },
     );
-    let mut session_auth_pending = false;
-    let session_id = match create_prompt_session(
-        cx,
-        cwd,
-        surface,
-        bus,
-        &methods,
-        selected.as_ref(),
-    )
-    .await
-    {
-        Ok(Some(sid)) => Some(sid),
-        Ok(None) => {
-            session_auth_pending = true;
-            None
-        }
-        Err(error) => return Err(error),
-    };
     let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready {
         server: name.clone(),
     }));
@@ -1088,8 +1069,8 @@ async fn initialize_switched_agent(
         load_session,
         methods,
         selected,
-        session_id,
-        session_auth_pending,
+        session_id: None,
+        session_auth_pending: false,
     })
 }
 
@@ -1586,7 +1567,7 @@ where
                 let mut selected = select_auth_method(&methods, None).cloned();
                 // A form-capable method may already have persistent credentials.
                 // Without creating a throwaway session we cannot know yet, so stay
-                // optimistic and let the startup session/new prove auth.
+                // optimistic and let the first prompt's session/new prove auth.
                 if auth.status == AuthStatus::NeedsAuth
                     && selected.as_ref().is_some_and(|method| method.form)
                 {
@@ -1602,28 +1583,7 @@ where
                     AuthStatus::None
                 });
                 let mut session_auth_pending = false;
-                let mut session_id = match create_prompt_session(
-                    &cx,
-                    &cwd,
-                    &surface,
-                    &bus,
-                    &methods,
-                    selected.as_ref(),
-                )
-                .await
-                {
-                    Ok(Some(sid)) => Some(sid),
-                    Ok(None) => {
-                        session_auth_pending = true;
-                        None
-                    }
-                    Err(err) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                            "session/new: {err}"
-                        ))));
-                        None
-                    }
-                };
+                let mut session_id = None;
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
                 let mut parked: Option<ParkedPrompt> = None;
 
@@ -2556,7 +2516,6 @@ where
                                     &cx,
                                     &cfg,
                                     &agent_argv,
-                                    &cwd,
                                     &surface,
                                     &bus,
                                 )
@@ -2569,7 +2528,7 @@ where
                                         session_id = next.session_id;
                                         session_auth_pending = next.session_auth_pending;
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                                            "Harness switched to {label} · new session via {}",
+                                            "Harness switched to {label} · ready via {}",
                                             next.name
                                         ))));
                                     }
