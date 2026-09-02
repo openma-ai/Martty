@@ -7,11 +7,16 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # primary dev profile). Must match the `dsh --profile <name>` you run.
 PROFILE="${1:-${DSH_TUI_PROFILE:-martty}}"
 
-# 1. Build the release binary first so the installed copy always reflects
-#    the current source (cargo build --release --locked; lto is slow).
-BIN="target/release/martty"
-echo "building $BIN (cargo build --release --locked, lto is slow)…" >&2
-cargo build --release --locked
+# Cargo profile for the local build: devlocal (debug codegen) by default —
+# the fastest turnaround for build/test loops; release matches the shipped
+# npm bundles when the debug binary is too slow. The names map 1:1 to the
+# [profile.*] sections in Cargo.toml.
+CARGO_PROFILE="${DSH_TUI_CARGO_PROFILE:-devlocal}"
+
+# 1. Build first so the installed copy always reflects the current source.
+BIN="target/${CARGO_PROFILE}/martty"
+echo "building $BIN (cargo build --profile $CARGO_PROFILE --locked)…" >&2
+cargo build --profile "$CARGO_PROFILE" --locked
 
 # 2. Resolve exactly the binary `dsh --profile $PROFILE` runs — no hardcoded
 #    package names or home dirs:

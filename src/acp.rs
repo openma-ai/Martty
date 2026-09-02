@@ -1,6 +1,6 @@
 //! Official ACP client (`agent-client-protocol` 2.0).
 //!
-//! Speaks initialize / authenticate / session/new / session/load /
+//! Speaks initialize / authenticate / session/new / session/resume / session/load /
 //! session/list / prompt / cancel / set_config_option / set_mode.
 //! Transcript paint comes from `session/update`. Negotiated Cordis TUI
 //! compositor state arrives as `_dsh/cordis/tui/*` extension notifications.
@@ -22,9 +22,10 @@ use agent_client_protocol::schema::v1::{
     KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResourceLink, SelectedPermissionOutcome,
-    SessionConfigOptionValue, SessionConfigOptionsCapabilities, SessionId, SessionNotification,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, TerminalOutputRequest,
+    RequestPermissionRequest, RequestPermissionResponse, ResourceLink, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionConfigOptionValue, SessionConfigOptionsCapabilities,
+    SessionId, SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    TerminalOutputRequest,
     TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
     WriteTextFileRequest, WriteTextFileResponse,
 };
@@ -629,6 +630,30 @@ fn load_session_supported(init: &Value) -> bool {
         .and_then(|caps| caps.get("loadSession").or_else(|| caps.get("load_session")))
         .and_then(Value::as_bool)
         == Some(true)
+}
+
+fn resume_session_supported(init: &Value) -> bool {
+    let resume = init
+        .get("agentCapabilities")
+        .or_else(|| init.get("agent_capabilities"))
+        .and_then(|caps| {
+            caps.get("sessionCapabilities")
+                .or_else(|| caps.get("session_capabilities"))
+        })
+        .and_then(|caps| caps.get("resume"));
+    matches!(resume, Some(Value::Object(_)) | Some(Value::Bool(true)))
+}
+
+fn list_session_supported(init: &Value) -> bool {
+    let list = init
+        .get("agentCapabilities")
+        .or_else(|| init.get("agent_capabilities"))
+        .and_then(|caps| {
+            caps.get("sessionCapabilities")
+                .or_else(|| caps.get("session_capabilities"))
+        })
+        .and_then(|caps| caps.get("list"));
+    matches!(list, Some(Value::Object(_)) | Some(Value::Bool(true)))
 }
 
 fn no_session() -> AcpError {
@@ -1568,7 +1593,15 @@ where
                 }
                 let mut load_session = init.agent_capabilities.load_session
                     || load_session_supported(&init_value);
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps { load_session }));
+                let resume_session = resume_session_supported(&init_value);
+                // Before sessionCapabilities.list existed, Martty-compatible agents paired
+                // session/list with the top-level loadSession flag. Keep that legacy route.
+                let list_session = list_session_supported(&init_value) || load_session;
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
+                    load_session,
+                    list_session,
+                    resume_session,
+                }));
                 let auth_raw = init_value
                     .get("authMethods")
                     .cloned()
@@ -2397,10 +2430,11 @@ where
                             }
                         }
                         Cmd::ListSessions { prefix } => {
-                            if !load_session {
+                            if !list_session {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
                                     prefix,
-                                    error: "agent did not advertise loadSession".into(),
+                                    error: "agent did not advertise sessionCapabilities.list"
+                                        .into(),
                                 }));
                                 continue;
                             }
@@ -2440,26 +2474,70 @@ where
                                 }
                             }
                         }
-                        Cmd::LoadSession { session_id: id } => {
+                        Cmd::ResumeSession { session_id: id } => {
                             let sid = SessionId::new(id.clone());
-                            match cx
-                                .send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
-                                .block_task()
-                                .await
-                            {
-                                Ok(loaded) => {
+                            let restored = if resume_session {
+                                match cx
+                                    .send_request(ResumeSessionRequest::new(
+                                        sid.clone(),
+                                        cwd.clone(),
+                                    ))
+                                    .block_task()
+                                    .await
+                                {
+                                    Ok(resumed) => Ok((
+                                        serde_json::to_value(resumed).unwrap_or(Value::Null),
+                                        true,
+                                    )),
+                                    Err(err)
+                                        if load_session && !is_auth_required_error(&err) =>
+                                    {
+                                        cx.send_request(LoadSessionRequest::new(
+                                            sid.clone(),
+                                            cwd.clone(),
+                                        ))
+                                        .block_task()
+                                        .await
+                                        .map(|loaded| {
+                                            (
+                                                serde_json::to_value(loaded)
+                                                    .unwrap_or(Value::Null),
+                                                false,
+                                            )
+                                        })
+                                    }
+                                    Err(err) => Err(err),
+                                }
+                            } else {
+                                cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
+                                    .block_task()
+                                    .await
+                                    .map(|loaded| {
+                                        (
+                                            serde_json::to_value(loaded).unwrap_or(Value::Null),
+                                            false,
+                                        )
+                                    })
+                            };
+                            match restored {
+                                Ok((setup, resumed)) => {
                                     session_id = Some(sid.clone());
+                                    let notice = if resumed {
+                                        format!(
+                                            "⟲ resumed {id} — previous transcript was not replayed"
+                                        )
+                                    } else {
+                                        format!(
+                                            "⟲ loaded {id} — transcript from session/update"
+                                        )
+                                    };
                                     emit_session_bound(
                                         &bus,
                                         &sid,
-                                        Some(format!(
-                                            "⟲ loaded {id} — transcript from session/update"
-                                        )),
+                                        Some(notice),
                                     );
-                                    if let Ok(value) = serde_json::to_value(&loaded) {
-                                        let session = sid.to_string();
-                                        apply_setup(&value, Some(&session), &surface, &bus);
-                                    }
+                                    let session = sid.to_string();
+                                    apply_setup(&setup, Some(&session), &surface, &bus);
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
                                     emit_needs_auth_open(
@@ -2471,7 +2549,7 @@ where
                                 }
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "session/load: {err}"
+                                        "session/resume: {err}"
                                     ))));
                                 }
                             }

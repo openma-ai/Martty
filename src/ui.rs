@@ -34,7 +34,8 @@ fn composer_height(height: u16) -> u16 {
 
 /// Grow with hard/soft-wrapped draft rows, while leaving at least half of a
 /// normal terminal to the conversation. Beyond the cap, `draw_input` keeps a
-/// cursor-following viewport inside the composer.
+/// cursor-following viewport inside the composer. The mouse-only expand
+/// button (issue #92) pins the well to the amplified height instead.
 fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     let minimum = composer_height(area.height);
     let pet_pad = if app.pet_visible && area.width >= 60 && area.height >= 10 {
@@ -45,12 +46,21 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     let inner_width = area.width.saturating_sub(2 + pet_pad);
     let prompt_width = "❯ ".width() as u16;
     let wrap_width = inner_width.saturating_sub(prompt_width).max(1) as usize;
-    let maximum = (area.height / 2).max(minimum).min(12);
-    let desired = app
-        .input
-        .visual_row_count(wrap_width)
-        .saturating_add(1)
-        .min(maximum as usize) as u16;
+    // Expanded: up to 5/8 of the main area, no compact 12-row cap — the
+    // conversation keeps the remaining 3/8. Auto: half the screen, ≤ 12.
+    let maximum = if app.input_expanded {
+        (area.height * 5 / 8).max(minimum).min(area.height.saturating_sub(4).max(minimum))
+    } else {
+        (area.height / 2).max(minimum).min(12)
+    };
+    let desired = if app.input_expanded {
+        maximum
+    } else {
+        app.input
+            .visual_row_count(wrap_width)
+            .saturating_add(1)
+            .min(maximum as usize) as u16
+    };
     desired.max(minimum).min(maximum)
 }
 
@@ -150,6 +160,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.slot_actions.clear();
     app.pet_want = None;
     app.caret_cell = None;
+    // The mouse-only expand button's frame rect is rebuilt by
+    // `layout_expand_btn`; clear it first so a child view (or a frame where
+    // the card vanished) cannot keep a stale hit-test rect alive.
+    app.expand_btn = None;
     f.render_widget(
         Block::default().style(
             Style::default()
@@ -1382,12 +1396,16 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16, navigat
         inner.height.saturating_sub(1 + navigation_dock_h),
     );
     app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
+    layout_expand_btn(app, Rect::new(inner.x, inner.y, inner.width, 1));
     draw_input(f, app, well);
     draw_meta_row(
         f,
         app,
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
+    // The mouse-only expand button sits on the card's top row, outside the
+    // well; painted last so no text render can paint over it (issue #92).
+    paint_expand_btn(f, app);
 }
 
 /// Meta row: run state + mode/permission chips left, model right,
@@ -2293,7 +2311,11 @@ fn draw_composer_box(
 ) {
     let theme = app.theme;
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
-    let workspace = workspace_cap_title(app, area.width as usize);
+    // Leave the cap row's top-right corner to the mouse-only expand glyph:
+    // the workspace title ends three cells early, so the `⛶` (and its
+    // hovered chip block) never covers title text (issue #92).
+    let mut workspace = workspace_cap_title(app, area.width as usize);
+    workspace.spans.push(Span::raw(" ".repeat(EXPAND_BTN_W as usize)));
     let workspace_width = span_widths(&workspace.spans);
     let title_budget = (area.width as usize).saturating_sub(2 + workspace_width + 1);
     let dock_sections = has_input_dock
@@ -2321,6 +2343,9 @@ fn draw_composer_box(
         .style(Style::default().bg(theme.panel));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // The expand glyph lives on the cap row's top-right, recorded before
+    // any dock actions so both hit-tests stay disjoint.
+    layout_expand_btn(app, Rect::new(area.x, area.y, area.width, 1));
     if inner.width < 4 || inner.height < 2 {
         return;
     }
@@ -2375,6 +2400,10 @@ fn draw_composer_box(
     app.att_thumbs.clear();
     app.composer_wrap_width = input.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, input);
+    // The mouse-only expand button sits on the card's top border (the cap
+    // row), outside the well — a full draft never hides it. Painted last
+    // so nothing can paint over it (issue #92).
+    paint_expand_btn(f, app);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -2479,6 +2508,65 @@ fn paint_caret(f: &mut Frame, x: u16, y: u16) {
         if let Some(cell) = buf.cell_mut((x + 1, y)) {
             cell.set_style(style);
         }
+    }
+}
+
+/// Mouse-only composer expand/collapse button (issue #92): a `⛶` glyph on
+/// the composer card's top-right frame border — outside the text well, so
+/// a full draft never hides it. Always visible; hovering (no key binding)
+/// highlights it; clicking pins the well to the amplified height or
+/// restores the draft-following auto height.
+const EXPAND_BTN_W: u16 = 3;
+const EXPAND_BTN_H: u16 = 1;
+const EXPAND_BTN_MARGIN: u16 = 1;
+
+/// Record the expand button's screen rect for hit-testing. `cap` is the
+/// composer's top row: the rounded card's cap line (boxed layout) or the
+/// well's first row (short-terminal fallback). Runs every frame, so the
+/// pointer can discover the glyph before hovering it.
+fn layout_expand_btn(app: &mut App, cap: Rect) {
+    if cap.width < EXPAND_BTN_W + EXPAND_BTN_MARGIN + 1 {
+        app.expand_btn = None;
+        return;
+    }
+    let x = cap
+        .x
+        .saturating_add(cap.width)
+        .saturating_sub(EXPAND_BTN_W + EXPAND_BTN_MARGIN);
+    app.expand_btn = Some(Rect::new(x, cap.y, EXPAND_BTN_W, EXPAND_BTN_H));
+}
+
+/// Paint the expand glyph. Idle: `⛶` in the quiet caption tone on the
+/// card's top-right (the workspace title leaves this corner free).
+/// Hovered: the glyph brightens to the strongest foreground on a small
+/// frame-less chip block. Called after the card render so it always wins
+/// the pixels.
+fn paint_expand_btn(f: &mut Frame, app: &mut App) {
+    let Some(rect) = app.expand_btn else {
+        return;
+    };
+    if rect.width < EXPAND_BTN_W || rect.height < EXPAND_BTN_H {
+        return;
+    }
+    let theme = app.theme;
+    let b = f.buffer_mut();
+    // The glyph sits one cell in from the card's corner: rightmost cell of
+    // the rect minus one, so the corner `╮` stays visible beside it.
+    let x = rect.x + rect.width - 2;
+    if app.hover_expand_btn {
+        let block = Style::default().bg(theme.chip_bg);
+        b.set_string(rect.x, rect.y, "  ", block);
+        b.set_string(
+            x,
+            rect.y,
+            "⛶",
+            Style::default()
+                .fg(theme.fg)
+                .bg(theme.chip_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    } else {
+        b.set_string(x, rect.y, "⛶", Style::default().fg(theme.caption));
     }
 }
 
@@ -2817,18 +2905,11 @@ fn draw_file_menu(f: &mut Frame, app: &mut App, input: Rect, chat: Rect) {
     let Some(menu) = &mut app.file_menu else {
         return;
     };
-    if menu.explorer().files().is_empty() {
-        return;
-    }
-    // Rebuild the explorer chrome from the app theme every frame: palette
-    // packs and locale can switch under us, and the title factories need
-    // the current cwd.
     let theme = app.theme;
     let locale = app.locale;
-    menu.apply_chrome(&theme, locale, &app.cfg.workspace);
     let n = menu.explorer().files().len();
     let vis = FILE_MENU_ROWS
-        .min(n)
+        .min(n.max(1))
         .min(chat.height.saturating_sub(2) as usize);
     if vis == 0 {
         return;
@@ -2840,6 +2921,32 @@ fn draw_file_menu(f: &mut Frame, app: &mut App, input: Rect, chat: Rect) {
     let y = input.y.saturating_sub(h);
     let area = Rect::new(input.x + 2, y, w, h);
     f.render_widget(Clear, area);
+    if n == 0 {
+        // The live filter left nothing here (and the follow search found
+        // nothing): keep the frame up with a no-match hint instead of
+        // making the menu vanish mid-typing.
+        let title = menu.chrome_title(&app.cfg.workspace);
+        let hint = menu.chrome_hint(locale);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.panel))
+            .title(Span::styled(title, Style::default().fg(theme.caption)))
+            .title_bottom(Line::from(Span::styled(
+                hint,
+                Style::default().fg(theme.caption),
+            )));
+        f.render_widget(block, area);
+        // Same class as #83 / #38: keep the diff from trusting half-erased
+        // wide cells when the frame swaps between list and empty states.
+        force_full_rewrite(f, area);
+        return;
+    }
+    // Rebuild the explorer chrome from the app theme every frame: palette
+    // packs and locale can switch under us, and the title factories need
+    // the current cwd.
+    menu.apply_chrome(&theme, locale, &app.cfg.workspace);
     f.render_widget_ref(menu.explorer().widget(), area);
     // Same class as #83 / #38: CJK file names scroll through the explorer
     // window and orphan wide-char trailing cells on the real screen; force

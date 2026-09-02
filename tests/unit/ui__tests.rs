@@ -91,6 +91,10 @@ fn file_menu_popup_renders_above_the_composer() {
     // The panel surface colors the popup; the selected row uses chip_bg.
     assert_eq!(buf[(4, 12)].bg, theme.chip_bg, "selected row highlight");
     assert_eq!(buf[(4, 13)].bg, theme.panel, "unselected rows keep panel");
+    // The highlight is unmistakable: a solid ▶ marker in the brand accent
+    // and the selected row text in brand + bold.
+    assert_eq!(buf[(3, 12)].symbol(), "▶", "bigger highlight marker");
+    assert_eq!(buf[(3, 12)].fg, theme.brand, "marker takes the accent");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -2977,4 +2981,216 @@ fn empty_plugin_dock_snapshot_hides_the_agents_row_after_tasks_end() {
         !frame.contains("subagent 1"),
         "no native rail entries either:\n{frame}"
     );
+}
+
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// Issue #92: the composer well's top-right corner carries a mouse-only,
+/// always-visible `⛶` on the composer card's top-right border — outside
+/// the text well, so a full draft never hides it; hover highlights it.
+/// No key binding.
+#[test]
+fn expand_button_is_hover_revealed_and_toggles_the_well() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+
+    let area = ratatui::layout::Rect::new(0, 0, 100, 34);
+    let auto = resolved_composer_height(area, &app);
+    let btn = app.expand_btn.expect("records the expand button rect");
+    assert_eq!(btn.width, 3, "small hit block, no frame");
+    assert_eq!(btn.height, 1);
+    // The glyph sits on the card's cap row (its top border), never on the
+    // text well.
+    assert!(btn.y < app.input_area.y, "outside the well: cap row");
+
+    // Clicking pins the well to the amplified height.
+    app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            btn.x + 1,
+            btn.y,
+        ),
+        &ctl,
+    );
+    assert!(app.input_expanded);
+    let expanded = resolved_composer_height(area, &app);
+    assert!(
+        expanded > auto,
+        "expanded well {expanded} must exceed the auto height {auto}"
+    );
+    assert_eq!(expanded, 34 * 5 / 8, "amplified to 5/8 of the main area");
+
+    // Clicking again restores the draft-following auto height.
+    app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            btn.x + 1,
+            btn.y,
+        ),
+        &ctl,
+    );
+    assert!(!app.input_expanded);
+    assert_eq!(resolved_composer_height(area, &app), auto);
+}
+
+/// The button's hit-test survives the hover-reveal (it never paints over
+/// the caret placement: clicking it must not move the caret).
+#[test]
+fn expand_button_click_does_not_place_the_caret() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.input.set("hello".into());
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let btn = app.expand_btn.expect("button rect");
+    let before = app.input.cursor_char();
+    app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            btn.x + 1,
+            btn.y,
+        ),
+        &ctl,
+    );
+    assert_eq!(
+        app.input.cursor_char(),
+        before,
+        "button click toggles the well, never the caret"
+    );
+    assert!(app.input_expanded);
+}
+
+/// The idle `⛶` is always painted on the card's top-right; hovering turns
+/// it into the brightened glyph on a small chip block; the pointer leaving
+/// restores the quiet tone.
+#[test]
+fn expand_button_idle_glyph_and_hover_icon() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let btn = app.expand_btn.expect("button rect");
+
+    // Idle: the `⛶` glyph is visible in the quiet caption tone, on the
+    // cap row next to the card corner — a full draft cannot reach it.
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    assert_eq!(buf[(0, btn.y)].symbol(), "╭", "cap row of the card");
+    assert_eq!(
+        buf[(btn.x + 1, btn.y)].symbol(),
+        "⛶",
+        "idle state keeps the expand glyph visible"
+    );
+    assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
+    assert_eq!(buf[(btn.x + 2, btn.y)].symbol(), " ", "one cell between glyph and corner");
+
+    // Hover: the same glyph brightened to the strongest foreground on a
+    // chip block.
+    app.handle_mouse(mouse(MouseEventKind::Moved, btn.x + 2, btn.y), &ctl);
+    assert!(app.hover_expand_btn);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(btn.x, btn.y)].bg, theme.chip_bg, "block starts");
+    assert_eq!(buf[(btn.x, btn.y)].symbol(), " ");
+    assert_eq!(buf[(btn.x + 1, btn.y)].bg, theme.chip_bg, "block padding");
+    assert_eq!(
+        buf[(btn.x + 1, btn.y)].symbol(),
+        "⛶",
+        "the same glyph, occupied exactly one cell"
+    );
+    assert_eq!(
+        buf[(btn.x + 1, btn.y)].fg,
+        theme.fg,
+        "hover brightens the glyph to the strongest foreground"
+    );
+    assert_eq!(
+        buf[(btn.x + 3, btn.y)].symbol(),
+        "╮",
+        "the glyph sits right next to the card's top-right corner"
+    );
+    assert_eq!(buf[(btn.x + 1, btn.y)].bg, theme.chip_bg);
+    assert_eq!(
+        buf[(btn.x, btn.y)].symbol(),
+        " ",
+        "no frame characters anywhere"
+    );
+
+    // Expanded: the same cell keeps the same glyph (one icon, two states).
+    app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            btn.x + 2,
+            btn.y,
+        ),
+        &ctl,
+    );
+    assert!(app.input_expanded);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let btn2 = app.expand_btn.expect("button rect after expanding");
+    assert_eq!(buf[(btn2.x + 1, btn2.y)].symbol(), "⛶");
+
+    // The pointer leaves: back to the quiet glyph, block gone.
+    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
+    assert!(!app.hover_expand_btn);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let idle_btn = app.expand_btn.expect("button rect when idle");
+    assert_eq!(
+        buf[(idle_btn.x + 1, idle_btn.y)].symbol(),
+        "⛶",
+        "idle glyph restored when the pointer leaves"
+    );
+    assert_eq!(buf[(idle_btn.x, idle_btn.y)].bg, theme.panel, "block cleared");
+}
+
+/// A full draft cannot reach the border-mounted glyph: with the well
+/// completely filled, the cap row's right corner still shows `⛶` on
+/// untouched title text.
+#[test]
+fn expand_button_survives_a_full_draft() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    // Fill the well: auto height 4 rows, well 3 rows × ~96 columns.
+    app.input.set(" word".repeat(60));
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    let btn = app.expand_btn.expect("button rect");
+    assert_eq!(
+        buf[(btn.x + 1, btn.y)].symbol(),
+        "⛶",
+        "full draft: the glyph stays on the border"
+    );
+    assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
+    // The well rows themselves carry no button glyph.
+    assert_ne!(buf[(btn.x + 2, app.input_area.y)].symbol(), "⛶");
 }

@@ -176,6 +176,11 @@ From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, bina
 MARTTY_BIN=$(pwd)/target/release/martty martty --agent dsh-acp
 ```
 
+For local iterating, `scripts/devlocalinstall.sh` builds with the fast
+`devlocal` Cargo profile (debug codegen, incremental — the quickest
+turnaround) and stages the binary into the running `dsh --profile <name>`
+setup; `DSH_TUI_CARGO_PROFILE=release` restores the shipped config.
+
 Third-party capabilities are ordinary Cordis plugins on the client tree: they
 declare the services they need, register contributions in `apply`, and retract
 them with the owning fiber. Themes, the root right rail, local commands,

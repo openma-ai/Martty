@@ -588,9 +588,10 @@ fn controller_loop(
                     "session/set_config_option needs a live ACP connection".into(),
                 )));
             }
-            Cmd::NewSession | Cmd::ListSessions { .. } | Cmd::LoadSession { .. } => {
+            Cmd::NewSession | Cmd::ListSessions { .. } | Cmd::ResumeSession { .. } => {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                    "session/new, session/list, and session/load need a live ACP connection".into(),
+                    "session/new, session/list, and session/resume need a live ACP connection"
+                        .into(),
                 )));
             }
             Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } => {

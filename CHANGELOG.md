@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Fast local build profile `devlocal` (debug codegen, incremental) for
+  `scripts/devlocalinstall.sh`: the local install/build loop no longer
+  pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
+  restores the shipped config). The npm bundles keep the fat-LTO release
+  config untouched.
+
 - Standalone harness registry and discovery: `martty harness list` shows saved
   entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
   on `PATH`; `harness add` saves a named command and repeated arguments, while
@@ -17,8 +23,8 @@ All notable changes to this project are documented here. The project follows
   product-owned `defaultHarness` (when supplied) → the saved `activeHarness`
   → the bundled fallback. CLI/settings selection applies on the next
   standalone launch when the product does not pin a default. In a running
-  standalone TUI, `/harness` replaces the
-  ACP child immediately while no prompt has started the current session. Once
+  standalone TUI, `/harness` replaces the ACP child immediately while no
+  prompt has started the current session. Once
   the first `session/prompt` has been sent, or an existing session has been
   loaded, it first confirms that switching starts another session; the current
   session remains available through session navigation. Standalone startup and
@@ -29,6 +35,22 @@ All notable changes to this project are documented here. The project follows
   becoming transcript. Sessions never carry across Harnesses; profile-owned
   Host runtimes and sessions remain unchanged. `/harness` updates only
   `activeHarness`, never the product default.
+- The `@file` mention browser now follows the typed query across the
+  tree: the listing is live-filtered to matching names (exact > prefix >
+  contains > subsequence, `../` always kept so a filtered view can back
+  out), and when the filter leaves nothing in the current directory a
+  bounded search (max 3 levels, skipping `.git`/`node_modules`/`target`-
+  style trees) hops the browser to the closest entry and selects it —
+  typing `@abc` jumps to `docs/abc_ref.md` without a path prefix, and
+  continuing to type keeps the browser there. An empty match leaves the
+  frame up with a no-match hint instead of hiding the menu.
+- A mouse-only expand affordance now sits on the composer card's
+  top-right frame border (issue #92): an always-visible `⛶` glyph that
+  highlights on hover and pins the input to the amplified height (about
+  5/8 of the main area) on click; clicking again restores the
+  draft-following auto height. The glyph lives on the cap row, outside
+  the text well, so a full draft never hides it. It has no key binding
+  and never moves the caret.
 - New gallery palette pack `tomorrow` (dark from Tomorrow Night
   Bright, light from Tomorrow), sourced from
   terminalcolors.com/themes/tomorrow. It registers at Client boot as a
@@ -94,6 +116,10 @@ All notable changes to this project are documented here. The project follows
   aliases and includes commands, options, examples, and the new-session rule.
   `harness add` now guides setup instead of leaking validation errors, and
   `harness add codex` saves a ready-to-use Codex ACP adapter recipe.
+- `/resume` now uses ACP `session/resume` when the agent advertises it, so long
+  sessions can continue without replaying their full transcript into the TUI.
+  Agents that only support the legacy `session/load` path keep working, and a
+  rejected resume request falls back to load when that capability is available.
 - `acpSessionStatus` now treats each standard ACP `session/prompt` response
   (success or error) as that request's terminal turn signal, returning to
   `idle` after every pending prompt and concurrent steer has settled. This
