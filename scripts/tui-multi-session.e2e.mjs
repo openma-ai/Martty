@@ -254,7 +254,7 @@ try {
   // 3. Open a second tab: the native tab strip appears on row 0.
   await type('/new')
   term.write('\r')
-  await waitFor(() => row0().includes('│') && row0().includes('+'), 30000, 'tab strip with 2 tabs')
+  await waitFor(() => row0().includes('│'), 30000, 'tab strip with 2 tabs')
   check('tab strip renders with ≥2 sessions', true)
 
   // 4. Prompt session B (instant answer) while A is still streaming.
@@ -303,13 +303,11 @@ try {
   check('✓ badge cleared after viewing tab A', badgeCleared, badgeCleared ? '' : `row0: ${row0()}`)
 
   // 8. Click session B's tab: compute its column from row 0's layout — the
-  //    region between the first │ separator and the next one (or the + cell).
+  //    region between the first │ separator and the next one (or the end).
   const strip = row0()
   const sep1 = strip.indexOf('│')
   const tabBStart = sep1 + 2 // 0-based index right after " │ "
   let tabBEnd = strip.indexOf('│', tabBStart)
-  const plus = strip.indexOf('+', tabBStart)
-  if (tabBEnd < 0 || (plus >= 0 && plus < tabBEnd)) tabBEnd = plus
   if (tabBEnd < 0) tabBEnd = strip.length
   const tabBCol = tabBStart + Math.max(1, Math.floor((tabBEnd - tabBStart) / 2)) + 1 // 1-based
   console.log(`tab B click target: col ${tabBCol} (strip: "${strip}")`)

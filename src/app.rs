@@ -792,18 +792,6 @@ pub struct SessionTab {
     pub current: bool,
 }
 
-/// Right-click tab popup. Phase 1 has a single Close item; new items extend
-/// [`TabMenuItem`] and the painter's item list together.
-pub(crate) struct TabMenu {
-    pub tab: usize,
-    pub at: (u16, u16),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TabMenuItem {
-    Close,
-}
-
 pub(crate) const AGENT_HISTORY_ID: &str = "__martty_internal__:agent-history";
 
 /// Overlay for one ACP `session/request_permission` ask.
@@ -1186,12 +1174,6 @@ pub struct App {
     awaiting_binds: VecDeque<String>,
     /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
     pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
-    /// The tab strip `+` cell's rect from the latest frame.
-    pub(crate) plus_rect: Option<ratatui::layout::Rect>,
-    /// Open right-click tab popup.
-    pub(crate) tab_menu: Option<TabMenu>,
-    /// The popup's frame rect from the latest draw (item hit-testing).
-    pub(crate) tab_menu_rect: Option<ratatui::layout::Rect>,
     pub cfg: RuntimeConfig,
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
@@ -1578,9 +1560,6 @@ impl App {
             current: 0,
             awaiting_binds: VecDeque::new(),
             tab_rects: Vec::new(),
-            plus_rect: None,
-            tab_menu: None,
-            tab_menu_rect: None,
             cfg,
             selected_model: None,
             demo,
@@ -1742,39 +1721,6 @@ impl App {
         })
     }
 
-    /// Close a tab locally (issue #94): nothing is sent to the agent — ACP
-    /// has no session/close — the session simply stops being viewed and its
-    /// updates drop at the router. Never removes the last remaining tab.
-    fn close_session(&mut self, tab: usize) {
-        let total = self.parked.len() + 1;
-        if total < 2 || tab >= total {
-            return;
-        }
-        let doomed = if tab == self.current {
-            self.session_id.clone()
-        } else {
-            let pidx = if tab < self.current { tab } else { tab - 1 };
-            match self.parked.get(pidx) {
-                Some(slot) => slot.id.clone(),
-                None => return,
-            }
-        };
-        if tab == self.current {
-            // View a neighbor first; the doomed state parks at the old spot.
-            let neighbor = if tab + 1 < total { tab + 1 } else { tab - 1 };
-            self.switch_to_session(neighbor);
-        }
-        if let Some(pidx) = self.parked.iter().position(|slot| slot.id == doomed) {
-            self.parked.remove(pidx);
-            let removed_tab = if pidx < self.current { pidx } else { pidx + 1 };
-            if removed_tab < self.current {
-                self.current -= 1;
-            }
-        }
-        self.awaiting_binds.retain(|id| *id != doomed);
-        self.needs_redraw = true;
-    }
-
     /// Tab strip model: every session in tab order with the live tab
     /// spliced in at `current`. Native status chrome fed by session status
     /// facts (same source as `state_line`, never the palette/slot systems).
@@ -1822,25 +1768,6 @@ impl App {
                 col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
             })
             .map(|(_, idx)| *idx)
-    }
-
-    /// Hit-test a screen cell against the tab strip `+` cell.
-    fn plus_hit(&self, col: u16, row: u16) -> bool {
-        self.plus_rect.is_some_and(|rect| {
-            col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
-        })
-    }
-
-    /// Hit-test a screen cell against the open tab popup's items.
-    fn tab_menu_item_at(&self, col: u16, row: u16) -> Option<TabMenuItem> {
-        let rect = self.tab_menu_rect?;
-        if col < rect.x || col >= rect.right() {
-            return None;
-        }
-        match row.checked_sub(rect.y + 1) {
-            Some(0) => Some(TabMenuItem::Close),
-            _ => None,
-        }
     }
 
     /// Was this session mid-turn (live RunState, or a parked slot's running
@@ -3556,34 +3483,14 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
-                // Session tab strip (issue #94): left-click a tab switches,
-                // `+` opens a fresh session, and an open tab popup consumes
-                // the click (item pick or dismiss).
+                // Session tab strip (issue #94): left-click a tab switches.
                 if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
                     self.sel = None;
                     self.selecting = false;
                     self.last_click = None;
                     self.input_sel = None;
                     self.input_selecting = false;
-                    self.tab_menu = None;
                     self.switch_to_session(tab);
-                    return;
-                }
-                if self.plus_hit(mouse.column, mouse.row) {
-                    self.sel = None;
-                    self.selecting = false;
-                    self.last_click = None;
-                    self.input_sel = None;
-                    self.input_selecting = false;
-                    self.tab_menu = None;
-                    self.new_session_flow("", ctl);
-                    return;
-                }
-                if let Some(menu) = self.tab_menu.take() {
-                    if self.tab_menu_item_at(mouse.column, mouse.row) == Some(TabMenuItem::Close) {
-                        self.close_session(menu.tab);
-                    }
-                    self.needs_redraw = true;
                     return;
                 }
                 if let Some(action) = self
@@ -3714,19 +3621,6 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) if self.input_selecting => {
                 self.input_selecting = false;
                 self.finish_input_selection();
-            }
-            MouseEventKind::Down(MouseButton::Right) => {
-                // Right-click a session tab: popup with local tab actions
-                // (Close; structured so more items slot in later).
-                if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
-                    self.tab_menu = Some(TabMenu {
-                        tab,
-                        at: (mouse.column, mouse.row),
-                    });
-                } else {
-                    self.tab_menu = None;
-                }
-                self.needs_redraw = true;
             }
             MouseEventKind::Moved => {
                 // grok-style hover: track which inline chip the pointer is

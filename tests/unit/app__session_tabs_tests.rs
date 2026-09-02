@@ -218,37 +218,11 @@ fn parked_session_idle_dispatches_its_own_queue() {
 }
 
 #[test]
-fn closing_tabs_keeps_the_rest_in_order() {
-    let (mut app, ctl, _rx) = test_app();
-    app.run_slash("new", "s-two", &ctl);
-    app.run_slash("new", "s-three", &ctl);
-    // Tabs: [dsh-test, s-two, s-three]; viewing s-three.
-    assert_eq!(app.session_tab_count(), 3);
-    assert_eq!(app.session_id, "s-three");
-
-    // Closing the viewed tab moves to the left neighbor (it was last).
-    app.close_session(2);
-    assert_eq!(app.session_id, "s-two");
-    let labels: Vec<String> = app.session_tabs().into_iter().map(|t| t.label).collect();
-    assert_eq!(labels, ["dsh-test", "s-two"]);
-
-    // Closing a parked tab left of the live one keeps the view put.
-    app.close_session(0);
-    assert_eq!(app.session_id, "s-two");
-    assert_eq!(app.session_tab_count(), 1);
-
-    // The last remaining session is never closed.
-    app.close_session(0);
-    assert_eq!(app.session_id, "s-two");
-    assert_eq!(app.session_tab_count(), 1);
-}
-
-#[test]
 fn tab_strip_renders_only_with_multiple_sessions() {
     let (mut app, ctl, _rx) = test_app();
     let single = crate::ui::dump_frame(&mut app, 100, 30);
     assert!(
-        !single.lines().next().unwrap_or_default().contains('+'),
+        !single.lines().next().unwrap_or_default().contains("· dsh-test"),
         "one session renders no tab strip:\n{single}"
     );
 
@@ -257,7 +231,7 @@ fn tab_strip_renders_only_with_multiple_sessions() {
     let row0 = frame.lines().next().unwrap_or_default();
     assert!(row0.contains("dsh-test"), "parked tab label:\n{frame}");
     assert!(row0.contains("s-two"), "live tab label:\n{frame}");
-    assert!(row0.contains('+'), "plus cell:\n{frame}");
+    assert!(row0.contains('│'), "tab separator:\n{frame}");
 }
 
 #[test]

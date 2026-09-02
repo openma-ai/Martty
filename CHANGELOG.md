@@ -25,17 +25,15 @@ All notable changes to this project are documented here. The project follows
   drives several sessions concurrently. Once a second session exists, a
   native tab strip appears at the top — one tab per session with a running
   indicator (spinner on the viewed tab, `●` in the background) and a `✓`
-  completion badge for sessions that finished while in the background.
-  Left-click a tab to switch, the trailing `+` opens a fresh session, and
-  right-clicking a tab opens a local menu with "Close tab". `/new` and
-  `/resume` now park the current session instead of discarding it: switching
-  back restores its transcript, prompt queue, modes, and subagent panels
-  exactly as left, while background sessions keep folding their
-  `session/update` events into their own transcripts (the event router also
-  no longer lets foreign-session events leak into the viewed transcript).
-  Prompts, steers, interrupts, and per-session queues are addressed by
-  session id, so turns on different sessions run truly concurrently.
-  Closing a tab is local only (the ACP surface has no `session/close`).
+  completion badge for sessions that finished while in the background;
+  left-click a tab to switch. `/new` and `/resume` now park the current
+  session instead of discarding it: switching back restores its transcript,
+  prompt queue, modes, and subagent panels exactly as left, while background
+  sessions keep folding their `session/update` events into their own
+  transcripts (the event router also no longer lets foreign-session events
+  leak into the viewed transcript). Prompts, steers, interrupts, and
+  per-session queues are addressed by session id, so turns on different
+  sessions run truly concurrently.
 - `scripts/acp-multi-session.smoke.mjs`: opt-in smoke check that the
   spawned dsh-acp agent drives concurrent sessions over one ACP connection
   (consumes a small amount of model tokens; not part of `npm test`).

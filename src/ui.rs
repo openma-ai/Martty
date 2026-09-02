@@ -159,7 +159,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
     app.slot_actions.clear();
     app.tab_rects.clear();
-    app.plus_rect = None;
     app.pet_want = None;
     app.caret_cell = None;
     // The mouse-only expand button's frame rect is rebuilt by
@@ -372,7 +371,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         // composer (drawn last so it tops the menu-free chat area).
         draw_attachment_preview(f, app, composer, area);
     }
-    draw_tab_menu(f, app, area);
     draw_model_picker(f, app, area);
     draw_plugin_tree(f, app, area);
     draw_plugin_slider(f, app, area);
@@ -1055,47 +1053,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         spans.push(Span::styled(format!("{label} "), label_style));
         x += width;
     }
-    if x + 6 <= right {
-        spans.push(Span::styled(" │ ", Style::default().fg(theme.border)));
-        x += 3;
-        app.plus_rect = Some(Rect::new(x as u16, area.y, 3, 1));
-        spans.push(Span::styled(" + ", Style::default().fg(theme.caption)));
-    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// The right-click tab popup (issue #94) — local tab actions only; nothing
-/// here is sent to the agent. Phase 1 carries Close; new items extend
-/// `TabMenuItem` and this list together. The rect is recorded for
-/// `App::tab_menu_item_at` hit-testing.
-fn draw_tab_menu(f: &mut Frame, app: &mut App, area: Rect) {
-    app.tab_menu_rect = None;
-    let Some(menu) = &app.tab_menu else {
-        return;
-    };
-    let theme = app.theme;
-    let items = [app.locale.tr("Close tab", "关闭标签页")];
-    let width = items
-        .iter()
-        .map(|item| item.width())
-        .max()
-        .unwrap_or(0) as u16
-        + 4;
-    let height = items.len() as u16 + 2;
-    let x = menu.at.0.min(area.width.saturating_sub(width));
-    let y = menu.at.1.saturating_add(1).min(area.height.saturating_sub(height));
-    let rect = Rect::new(x, y, width, height);
-    app.tab_menu_rect = Some(rect);
-    let lines: Vec<Line> = items
-        .iter()
-        .map(|item| Line::from(Span::styled(format!(" {item} "), Style::default().fg(theme.fg))))
-        .collect();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border))
-        .style(Style::default().bg(theme.panel).fg(theme.fg));
-    f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {
