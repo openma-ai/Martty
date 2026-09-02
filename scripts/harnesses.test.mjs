@@ -135,14 +135,17 @@ test('harness add codex saves the official ACP adapter recipe and explains activ
     assert.equal(result.stderr, '')
     assert.match(result.stdout, /^Saved Codex Harness$/m)
     assert.match(result.stdout, /^  Command  npx$/m)
-    assert.match(result.stdout, /^  Args     -y @agentclientprotocol\/codex-acp$/m)
+    assert.match(
+      result.stdout,
+      /^  Args     --yes --prefer-offline @agentclientprotocol\/codex-acp$/m,
+    )
     assert.match(result.stdout, /martty harness use codex/)
     assert.match(result.stdout, /restart martty/)
     assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses, [{
       id: 'codex',
       label: 'Codex Harness',
       command: 'npx',
-      args: ['-y', '@agentclientprotocol/codex-acp'],
+      args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp'],
     }])
   } finally {
     rmSync(root, { recursive: true, force: true })

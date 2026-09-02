@@ -5308,6 +5308,11 @@ impl App {
     }
 
     fn handle_ctrl_c(&mut self, _ctl: &Controller) {
+        if self.harness_switch_in_progress() {
+            self.ctrl_c_armed = None;
+            self.show_tip("Harness is switching — Ctrl+C ignored");
+            return;
+        }
         if !self.input.is_empty() {
             // Clearing the draft never counts as the first press of the
             // double-Ctrl+C quit chord.
@@ -5337,6 +5342,10 @@ impl App {
         } else {
             format!("press ctrl+c {remaining} more times to exit while the agent is running")
         });
+    }
+
+    pub(crate) fn harness_switch_in_progress(&self) -> bool {
+        matches!(self.state, RunState::Starting) && self.state_note == "switching Harness"
     }
 
     fn history_prev(&mut self) {

@@ -1803,6 +1803,33 @@ fn bracketed_paste_wrapped_csi_u_ctrl_c_still_quits() {
 }
 
 #[test]
+fn bracketed_paste_wrapped_ctrl_c_cannot_quit_during_a_harness_switch() {
+    let (mut app, ctl, _rx) = test_app();
+    app.state = RunState::Starting;
+    app.state_note = "switching Harness".into();
+
+    for _ in 0..2 {
+        app.handle(
+            AppEvent::Term(Event::Paste("\u{1b}[99;5u".to_string())),
+            &ctl,
+        );
+    }
+
+    assert!(
+        !app.quit,
+        "Ctrl+C must not tear down an in-flight Harness switch"
+    );
+    assert!(
+        app.ctrl_c_armed.is_none(),
+        "the switch must not leave a latent quit chord armed"
+    );
+    assert!(
+        app.input.is_empty(),
+        "the CSI-u bytes must never enter the composer"
+    );
+}
+
+#[test]
 fn ordinary_and_mixed_paste_payloads_are_not_treated_as_keys() {
     let (mut app, ctl, _rx) = test_app();
 

@@ -62,6 +62,12 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Harness switching now reclaims raw-mode ownership if the retiring ACP child
+  restores the TTY to cooked mode, and repeated `Ctrl+C` cannot trigger the
+  global quit chord while its replacement initializes. This prevents queued
+  Kitty keyboard reports such as `^[[99;5u` from leaking onto the terminal.
+  The built-in Codex Harness recipe also asks `npx` to prefer its local cache,
+  avoiding an unnecessary registry check on warm launches.
 - Codex ACP adapter diagnostics now negotiate the typed `sessionFailure`
   capability and render as TUI notices instead of being forwarded as assistant
   prose. The footer model chip now follows the model reported by the active ACP

@@ -375,7 +375,7 @@ export function runHarnessCommand(argv, options) {
       id: 'codex',
       label: 'Codex Harness',
       command: 'npx',
-      args: ['-y', '@agentclientprotocol/codex-acp'],
+      args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp'],
     })
     return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
   }
