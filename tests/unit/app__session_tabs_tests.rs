@@ -276,3 +276,336 @@ fn prompt_waits_for_session_bind_and_sends_with_the_real_id() {
     }
     assert!(app.prompt_queue.is_empty());
 }
+
+fn ask_options() -> Vec<PermissionAskOption> {
+    vec![
+        PermissionAskOption {
+            option_id: "deny".into(),
+            kind: "reject_once".into(),
+            name: "Reject".into(),
+        },
+        PermissionAskOption {
+            option_id: "allow".into(),
+            kind: "allow_once".into(),
+            name: "Allow once".into(),
+        },
+    ]
+}
+
+#[test]
+fn permission_ask_follows_its_session_across_tab_switches() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.handle(
+        AppEvent::PermissionAsk {
+            session_id: "s-two".into(),
+            title: "bash".into(),
+            options: ask_options(),
+            reply: tx,
+        },
+        &ctl,
+    );
+    assert!(app.permission_ask.is_some(), "live ask shows on its own tab");
+
+    // Switching away must take the popup off screen with its session —
+    // never leave it floating over the newly viewed tab.
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    assert!(
+        app.permission_ask.is_none(),
+        "no stray popup on the tab just viewed"
+    );
+    let parked = app
+        .parked
+        .iter()
+        .find(|slot| slot.id == "s-two")
+        .expect("s-two parked");
+    assert!(
+        parked.permission_ask.is_some(),
+        "the ask parks with its session"
+    );
+    assert!(app.session_tabs()[1].ask_pending, "its tab is badged");
+
+    // The parked ask cannot be answered from the wrong tab and survives
+    // untouched until its own tab is viewed again.
+    app.switch_to_session(1);
+    assert_eq!(app.session_id, "s-two");
+    let ask = app.permission_ask.as_ref().expect("ask resurfaces");
+    assert_eq!(ask.title, "bash");
+    assert_eq!(ask.sel, 1, "selection survived the round trip");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        rx.blocking_recv().expect("reply"),
+        PermissionAskReply::Selected("allow".into())
+    );
+    assert!(
+        !app.session_tabs().iter().any(|tab| tab.ask_pending),
+        "answering clears the badge"
+    );
+}
+
+#[test]
+fn ask_for_a_parked_session_waits_in_its_slot() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.handle(
+        AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
+            title: "write".into(),
+            options: ask_options(),
+            reply: tx,
+        },
+        &ctl,
+    );
+    assert!(
+        app.permission_ask.is_none(),
+        "a parked session's ask never pops over the live tab"
+    );
+    let slot = app
+        .parked
+        .iter()
+        .find(|slot| slot.id == "dsh-test")
+        .expect("dsh-test parked");
+    assert!(slot.permission_ask.is_some(), "ask parked with its owner");
+    let tabs = app.session_tabs();
+    assert!(
+        tabs[0].ask_pending && !tabs[1].ask_pending,
+        "only the owning tab is badged"
+    );
+
+    // Esc on the owning tab cancels — never silently while parked.
+    app.switch_to_session(0);
+    assert!(app.permission_ask.is_some(), "ask surfaced on its own tab");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        rx.blocking_recv().expect("reply"),
+        PermissionAskReply::Cancelled
+    );
+    assert!(!app.session_tabs()[0].ask_pending);
+}
+
+#[test]
+fn elicitation_form_round_trips_through_parking_unchanged() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.handle(
+        AppEvent::ElicitationAsk {
+            session_id: Some("s-two".into()),
+            form: crate::elicitation::ElicitationForm {
+                message: "The agent needs your input.".into(),
+                fields: Vec::new(),
+            },
+            reply: tx,
+        },
+        &ctl,
+    );
+    assert!(app.elicitation_ask.is_some(), "form opened on its tab");
+
+    app.switch_to_session(0);
+    assert!(app.elicitation_ask.is_none(), "form left the screen");
+    assert_eq!(app.session_tabs()[1].ask_pending, true);
+
+    app.switch_to_session(1);
+    let ask = app.elicitation_ask.as_ref().expect("form restored");
+    assert_eq!(ask.form.message, "The agent needs your input.");
+
+    // Session teardown (the slot is dropped) cancels the open ask.
+    drop(app);
+    assert_eq!(
+        rx.blocking_recv().expect("reply"),
+        crate::elicitation::ElicitationReply::Cancelled
+    );
+}
+
+#[test]
+fn unknown_session_ask_stays_answerable_on_the_live_view() {
+    let (mut app, ctl, _rx) = test_app();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.handle(
+        AppEvent::PermissionAsk {
+            session_id: "s-foreign".into(),
+            title: "bash".into(),
+            options: ask_options(),
+            reply: tx,
+        },
+        &ctl,
+    );
+    assert!(
+        app.permission_ask.is_some(),
+        "an unattributable ask falls back to the live view instead of cancelling"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(
+        rx.blocking_recv().expect("reply"),
+        PermissionAskReply::Selected("allow".into())
+    );
+}
+
+fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn push_plugin_view(app: &mut App, ctl: &Controller, id: &str, text: &str) {
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::OVERLAY_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "overlay": {
+                    "kind": "view",
+                    "id": id,
+                    "title": id,
+                    "nodes": [{ "id": "content", "kind": "markdown", "text": text }]
+                }
+            }),
+        },
+        ctl,
+    );
+}
+
+#[test]
+fn painter_popups_park_with_their_session_and_resurface() {
+    let (mut app, ctl, _rx) = test_app();
+    app.push_keys();
+    assert!(app.view_overlay.is_some(), "/keys opened");
+    // The /plugins tree parks the same way (tree selection included).
+    app.plugin_tree = Some(PluginTree {
+        title: "plugins".into(),
+        state: tui_tree_widget::TreeState::default(),
+    });
+
+    app.open_new_session("s-two".into(), true);
+    assert!(
+        app.view_overlay.is_none(),
+        "the popup left the screen with its tab"
+    );
+    assert!(app.plugin_tree.is_none(), "/plugins left the screen too");
+    assert!(
+        app.parked[0].view_overlay.is_some(),
+        "/keys parked with dsh-test"
+    );
+    assert!(app.parked[0].plugin_tree.is_some(), "/plugins parked too");
+
+    app.switch_to_session(0);
+    let view = app.view_overlay.as_ref().expect("/keys resurfaced");
+    assert_eq!(view.id, "builtin.keys");
+    assert!(!view.notify_plugin, "painter popup, not compositor-owned");
+    assert!(app.plugin_tree.is_some(), "/plugins tree resurfaced");
+
+    // Esc closes it on its own tab, painter-side (no plugin event).
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(app.view_overlay.is_none());
+    app.switch_to_session(1);
+    app.switch_to_session(0);
+    assert!(
+        app.view_overlay.is_none(),
+        "closed popups stay closed across switches"
+    );
+}
+
+#[test]
+fn tab_click_cancels_a_plugin_view_with_its_esc_event() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    push_plugin_view(&mut app, &ctl, "plan-view", "step 1");
+    assert!(app.view_overlay.is_some(), "plugin view opened");
+    assert!(app.view_overlay.as_ref().unwrap().notify_plugin);
+
+    // Tab strip geometry, as recorded by the painter each frame.
+    app.tab_rects.push((ratatui::layout::Rect::new(0, 0, 10, 1), 0));
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0), &ctl);
+
+    assert_eq!(app.session_id, "dsh-test", "switched to the clicked tab");
+    assert!(
+        app.view_overlay.is_none(),
+        "the compositor overlay did not ride along"
+    );
+    match commands.try_recv() {
+        Ok(Cmd::PluginOverlayEvent { id, event, value }) => {
+            assert_eq!(id, "plan-view");
+            assert_eq!(event, "cancel");
+            assert!(value.is_none(), "view cancel carries no value");
+        }
+        other => panic!("expected the cancel event, got {other:?}"),
+    }
+}
+
+#[test]
+fn tab_click_cancels_a_plugin_select_carrying_the_selection_value() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.open_new_session("s-two".into(), true);
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::OVERLAY_UPDATE.into(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "overlay": {
+                    "kind": "select",
+                    "id": "harness",
+                    "title": "Harness",
+                    "value": "b",
+                    "options": [
+                        { "value": "a", "label": "A" },
+                        { "value": "b", "label": "B" }
+                    ]
+                }
+            }),
+        },
+        &ctl,
+    );
+    assert!(app.select_overlay.is_some(), "select opened");
+
+    app.tab_rects.push((ratatui::layout::Rect::new(0, 0, 10, 1), 0));
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0), &ctl);
+
+    assert!(app.select_overlay.is_none(), "select dismissed on the switch");
+    match commands.try_recv() {
+        Ok(Cmd::PluginOverlayEvent { id, event, value }) => {
+            assert_eq!(id, "harness");
+            assert_eq!(event, "cancel");
+            assert_eq!(value, Some(serde_json::json!("b")));
+        }
+        other => panic!("expected the select cancel event, got {other:?}"),
+    }
+}
+
+#[test]
+fn plugin_null_ack_after_a_tab_switch_keeps_the_restored_painter_popup() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.push_keys(); // painter popup on dsh-test
+    app.open_new_session("s-two".into(), true); // parks it with dsh-test
+    push_plugin_view(&mut app, &ctl, "status", "idle");
+
+    // Click tab 0: the plugin view is cancelled and /keys resurfaces.
+    app.tab_rects.push((ratatui::layout::Rect::new(0, 0, 10, 1), 0));
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 0), &ctl);
+    assert_eq!(app.session_id, "dsh-test");
+    assert!(
+        app.view_overlay.as_ref().is_some_and(|view| !view.notify_plugin),
+        "the painter popup was restored"
+    );
+
+    // The compositor's null ack lands afterwards and must not eat /keys.
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::OVERLAY_UPDATE.into(),
+            params: serde_json::json!({ "protocol": 0, "overlay": null }),
+        },
+        &ctl,
+    );
+    assert!(
+        app.view_overlay.as_ref().is_some_and(|view| !view.notify_plugin),
+        "the null ack only closes compositor-owned overlays"
+    );
+}

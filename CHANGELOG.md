@@ -7,6 +7,28 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Painter info popups (`/help`, `/keys`, `/session`, and the painter
+  `/status` fallback) and the `/plugins` / `/cordis-plugins` inventory tree
+  now follow their session across tabs like the ACP asks do: opening one,
+  clicking another tab, and returning restores the popup exactly as left
+  (scroll and tree selection included), instead of floating over the newly
+  viewed session. Compositor-owned plugin overlays (the live `/status`
+  view, plan views, select/slider modals) cannot ride along — they belong
+  to the client Plugin runtime's single-overlay slot — so a tab switch
+  cancels them with the same event Esc would send (the plugin releases its
+  slot; shipped plugins have no cancel side effects). A plugin's later
+  "overlay closed" ack no longer eats a painter popup restored by that
+  switch.
+
+- Session-bound ACP asks (permission and elicitation popups) now follow
+  their session across tabs instead of floating over whatever session is on
+  screen: an ask that arrives for a background session waits in that
+  session's tab (marked with a `?` in the tab strip) and only shows when
+  its own tab is viewed; switching away never cancels or answers it, and
+  answering or Esc-ing it works from its own tab only. Two asks on
+  different sessions no longer clobber each other (the displaced ask used
+  to auto-cancel, silently denying the agent's tool call).
+
 - The UI no longer freezes for minutes when an agent floods the connection
   with session updates — reproduced with dsh-acp's `session/load` replay of
   a long session, which re-emits every historical delta (a 10k-event log

@@ -3978,6 +3978,7 @@ fn acp_permission_ask_enter_selects_option_id() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
             title: "bash".into(),
             options: ask_options(),
             reply: tx,
@@ -4002,6 +4003,7 @@ fn acp_permission_ask_esc_cancels() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
             title: "bash".into(),
             options: ask_options(),
             reply: tx,
@@ -4028,6 +4030,7 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::ElicitationAsk {
+            session_id: Some("dsh-test".into()),
             form: ElicitationForm {
                 message: "The agent needs your input.".into(),
                 fields: vec![ElicitationField {

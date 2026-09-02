@@ -20,14 +20,20 @@ pub enum AppEvent {
     Ctl(CtlEvent),
     /// ACP `session/request_permission`: UI picks an option, then replies
     /// on the oneshot. The ACP task waits; the UI thread does not.
+    /// `session_id` names the owning session so the ask can follow its tab
+    /// instead of floating over whatever session is on screen.
     PermissionAsk {
+        session_id: String,
         title: String,
         options: Vec<PermissionAskOption>,
         reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
     },
     /// ACP `elicitation/create` form: the UI owns the modal and answers the
     /// request through this oneshot without blocking session updates.
+    /// Request-scoped elicitations (auth/config phases, no session yet)
+    /// carry `None` and surface on the live view.
     ElicitationAsk {
+        session_id: Option<String>,
         form: crate::elicitation::ElicitationForm,
         reply: tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>,
     },

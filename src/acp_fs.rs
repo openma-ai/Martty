@@ -85,7 +85,12 @@ pub fn write_text_file(path: &Path, content: &str) -> Result<(), AcpError> {
 }
 
 /// Ask through the existing permission overlay: AllowOnce vs reject.
-pub async fn confirm_write_outside(bus: &Sender<AppEvent>, path: &Path) -> bool {
+/// The ask is tagged with `session_id` so it follows that session's tab.
+pub async fn confirm_write_outside(
+    bus: &Sender<AppEvent>,
+    session_id: &str,
+    path: &Path,
+) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let options = vec![
         PermissionAskOption {
@@ -101,6 +106,7 @@ pub async fn confirm_write_outside(bus: &Sender<AppEvent>, path: &Path) -> bool 
     ];
     if bus
         .send(AppEvent::PermissionAsk {
+            session_id: session_id.into(),
             title: format!("write {} · outside workspace", path.display()),
             options,
             reply: tx,

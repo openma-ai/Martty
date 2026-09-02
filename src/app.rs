@@ -758,6 +758,22 @@ pub struct SessionSlot {
     pub next_subagent_starts_batch: bool,
     pub active_subagent: Option<String>,
     pub agent_selection: Option<String>,
+    /// A session-bound ACP ask (permission or elicitation) that arrived
+    /// while this session was out of view — or that was on screen when the
+    /// user switched away. Asks follow their session: only the live tab
+    /// renders and answers them, switching never cancels one, and the tab
+    /// strip marks a tab with a pending ask.
+    pub permission_ask: Option<PermissionAskOverlay>,
+    pub elicitation_ask: Option<ElicitationAskOverlay>,
+    /// Painter-owned info popup (`/help`, `/keys`, `/session`, painter
+    /// `/status` — `notify_plugin == false`) parked with its session: it
+    /// leaves the screen on a switch and resurfaces, scroll and all, when
+    /// the user returns. Compositor-owned plugin views never park — the
+    /// tab-click path cancels them instead (see `cancel_plugin_overlays`).
+    pub view_overlay: Option<ViewOverlay>,
+    /// `/plugins` / `/cordis-plugins` inventory tree (selection state
+    /// included) parked with its session like the info popups.
+    pub plugin_tree: Option<PluginTree>,
 }
 
 impl SessionSlot {
@@ -780,6 +796,10 @@ impl SessionSlot {
             next_subagent_starts_batch: true,
             active_subagent: None,
             agent_selection: None,
+            permission_ask: None,
+            elicitation_ask: None,
+            view_overlay: None,
+            plugin_tree: None,
         }
     }
 }
@@ -789,6 +809,9 @@ pub struct SessionTab {
     pub label: String,
     pub running: bool,
     pub completed_unseen: bool,
+    /// A session-bound ACP ask (permission/elicitation) is pending on this
+    /// tab — the agent is waiting for an answer only this tab can give.
+    pub ask_pending: bool,
     pub current: bool,
 }
 
@@ -1628,6 +1651,14 @@ impl App {
             next_subagent_starts_batch: std::mem::replace(&mut self.next_subagent_starts_batch, true),
             active_subagent: self.active_subagent.take(),
             agent_selection: self.agent_selection.take(),
+            permission_ask: self.permission_ask.take(),
+            elicitation_ask: self.elicitation_ask.take(),
+            // Painter info popups ride along with their session; plugin
+            // views are filtered out (a compositor overlay must never be
+            // resurrected stale on another tab — the tab-click path
+            // cancels it before the switch, anything left here is dropped).
+            view_overlay: self.view_overlay.take().filter(|view| !view.notify_plugin),
+            plugin_tree: self.plugin_tree.take(),
         }
     }
 
@@ -1649,6 +1680,14 @@ impl App {
         self.next_subagent_starts_batch = slot.next_subagent_starts_batch;
         self.active_subagent = slot.active_subagent;
         self.agent_selection = slot.agent_selection;
+        // A session-bound ask rides along with its session: an ask that was
+        // open when the user left this tab (or that arrived while parked)
+        // resurfaces here, untouched, ready to answer or Esc away.
+        self.permission_ask = slot.permission_ask;
+        self.elicitation_ask = slot.elicitation_ask;
+        // Painter popups and the /plugins tree resurface the same way.
+        self.view_overlay = slot.view_overlay;
+        self.plugin_tree = slot.plugin_tree;
         self.state = if slot.running || slot.prompt_pending {
             RunState::Running
         } else {
@@ -1736,6 +1775,7 @@ impl App {
                     .unwrap_or_else(|| short_id(&slot.id)),
                 running: slot.running || slot.prompt_pending,
                 completed_unseen: slot.completed_unseen,
+                ask_pending: slot.permission_ask.is_some() || slot.elicitation_ask.is_some(),
                 current: false,
             })
             .collect();
@@ -1749,6 +1789,7 @@ impl App {
                     .unwrap_or_else(|| short_id(&self.session_id)),
                 running: self.state != RunState::Idle || self.prompt_pending,
                 completed_unseen: false,
+                ask_pending: self.permission_ask.is_some() || self.elicitation_ask.is_some(),
                 current: true,
             },
         );
@@ -2840,9 +2881,20 @@ impl App {
                                 self.view_overlay = None;
                             }
                             None => {
+                                // The plugin's overlay closed (dispatch ack
+                                // or plugin-side close). Only compositor
+                                // surfaces go with it: a painter popup that
+                                // was parked/restored by a tab switch in the
+                                // meantime must survive the ack.
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
-                                self.view_overlay = None;
+                                if self
+                                    .view_overlay
+                                    .as_ref()
+                                    .is_some_and(|view| view.notify_plugin)
+                                {
+                                    self.view_overlay = None;
+                                }
                             }
                         },
                         Ok(_) => {}
@@ -3213,19 +3265,19 @@ impl App {
                 self.needs_redraw = true;
             }
             AppEvent::PermissionAsk {
+                session_id,
                 title,
                 options,
                 reply,
             } => {
-                self.open_permission_ask(title, options, reply);
+                self.open_permission_ask(&session_id, title, options, reply);
             }
-            AppEvent::ElicitationAsk { form, reply } => {
-                self.elicitation_ask = Some(ElicitationAskOverlay {
-                    form: crate::elicitation::ElicitationFormState::new(form),
-                    scroll: 0,
-                    reply: Some(reply),
-                });
-                self.needs_redraw = true;
+            AppEvent::ElicitationAsk {
+                session_id,
+                form,
+                reply,
+            } => {
+                self.open_elicitation_ask(session_id.as_deref(), form, reply);
             }
             AppEvent::ShellDone { id, code, output } => {
                 if let Some(pos) = self.shell_pending.iter().position(|(sid, _)| *sid == id) {
@@ -3453,6 +3505,42 @@ impl App {
         }
     }
 
+    /// Cancel compositor-owned modals before a session switch, mirroring
+    /// the Esc paths of `handle_view_key` / `handle_select_key` /
+    /// `handle_slider_key` so the plugin releases its single-overlay slot
+    /// (its `current` clears and future overlay opens work again).
+    /// Painter-owned views (`notify_plugin == false`, i.e. `/help`, `/keys`,
+    /// `/session`, painter `/status`) are left alone — they park with their
+    /// session inside the switch and resurface on return.
+    fn cancel_plugin_overlays(&mut self, ctl: &Controller) {
+        if let Some(view) = self.view_overlay.take() {
+            if view.notify_plugin {
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: view.id,
+                    event: "cancel".into(),
+                    value: None,
+                });
+            } else {
+                self.view_overlay = Some(view);
+            }
+        }
+        if let Some(slider) = self.slider_overlay.take() {
+            ctl.send(Cmd::PluginOverlayEvent {
+                id: slider.id,
+                event: "cancel".into(),
+                value: Some(serde_json::json!(slider.value)),
+            });
+        }
+        if let Some(select) = self.select_overlay.take() {
+            let value = select.options[select.sel].value.clone();
+            ctl.send(Cmd::PluginOverlayEvent {
+                id: select.id,
+                event: "cancel".into(),
+                value: Some(serde_json::json!(value)),
+            });
+        }
+    }
+
     /// grok-build mouse semantics, scaled down: wheel scrolls; left-drag
     /// selects with a live highlight (auto-scrolling at the pane edges) and
     /// copies on release; double-click selects & copies a word. Shift+drag
@@ -3490,6 +3578,16 @@ impl App {
                     self.last_click = None;
                     self.input_sel = None;
                     self.input_selecting = false;
+                    if tab != self.current {
+                        // Compositor-owned modals (plugin view/select/
+                        // slider, e.g. live /status) cannot ride along to
+                        // another tab: leaving cancels them exactly like
+                        // Esc so the plugin releases its single-overlay
+                        // slot. Painter popups (/help, /keys, /session,
+                        // painter /status) park with the session inside
+                        // `switch_to_session`.
+                        self.cancel_plugin_overlays(ctl);
+                    }
                     self.switch_to_session(tab);
                     return;
                 }
@@ -4889,19 +4987,69 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Route an incoming ACP permission ask to the session that owns it:
+    /// the live view when the owning tab is on screen, otherwise the
+    /// owning parked slot (the ask waits there and its tab is badged until
+    /// the user returns). An ask whose session the tab model does not know
+    /// falls back to the live view rather than silently cancelling the
+    /// agent's tool call. Dropping an unanswered overlay cancels it.
     fn open_permission_ask(
         &mut self,
+        session_id: &str,
         title: String,
         options: Vec<PermissionAskOption>,
         reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
     ) {
         let sel = permission_ask_default_sel(&options);
-        self.permission_ask = Some(PermissionAskOverlay {
+        let overlay = PermissionAskOverlay {
             title,
             sel,
             options,
             reply: Some(reply),
-        });
+        };
+        if session_id == self.session_id {
+            self.permission_ask = Some(overlay);
+        } else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
+            // A parked session asked while out of view: keep the ask on its
+            // tab — it must not float over the tab on screen.
+            slot.permission_ask = Some(overlay);
+        } else {
+            self.show_tip("permission ask from an unknown session — shown here");
+            self.permission_ask = Some(overlay);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Route an ACP elicitation form like [`Self::open_permission_ask`].
+    /// `None` sessions are request-scoped elicitations (auth/config phase)
+    /// with no tab to belong to — they surface on the live view.
+    fn open_elicitation_ask(
+        &mut self,
+        session_id: Option<&str>,
+        form: crate::elicitation::ElicitationForm,
+        reply: tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>,
+    ) {
+        let overlay = ElicitationAskOverlay {
+            form: crate::elicitation::ElicitationFormState::new(form),
+            scroll: 0,
+            reply: Some(reply),
+        };
+        let for_live = match session_id {
+            None => true,
+            Some(sid) => sid == self.session_id,
+        };
+        if for_live {
+            self.elicitation_ask = Some(overlay);
+        } else if let Some(slot) = self
+            .parked
+            .iter_mut()
+            .find(|slot| Some(slot.id.as_str()) == session_id)
+        {
+            slot.elicitation_ask = Some(overlay);
+        } else {
+            self.show_tip("elicitation from an unknown session — shown here");
+            self.elicitation_ask = Some(overlay);
+        }
         self.needs_redraw = true;
     }
 

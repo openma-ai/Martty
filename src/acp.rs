@@ -18,6 +18,7 @@ use agent_client_protocol::schema::v1::{
     ClientSessionCapabilities, ContentBlock, CreateElicitationRequest, CreateElicitationResponse,
     CreateTerminalRequest, CreateTerminalResponse, ElicitationAcceptAction, ElicitationAction,
     ElicitationCapabilities, ElicitationContentValue, ElicitationFormCapabilities,
+    ElicitationScope,
     FileSystemCapabilities, ImageContent, Implementation, InitializeRequest, KillTerminalRequest,
     KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, ReadTextFileRequest, ReadTextFileResponse,
@@ -1190,6 +1191,7 @@ where
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if bus_p
                     .send(AppEvent::PermissionAsk {
+                        session_id: req.session_id.to_string(),
                         title,
                         options,
                         reply: tx,
@@ -1217,6 +1219,13 @@ where
         )
         .on_receive_request(
             async move |req: CreateElicitationRequest, responder, _cx| {
+                let session_id = match req.scope() {
+                    ElicitationScope::Session(scope) => Some(scope.session_id.to_string()),
+                    // Auth/config-phase elicitation (or a future scope kind)
+                    // has no session to attach to; the client shows it on
+                    // the live view.
+                    _ => None,
+                };
                 let form = match crate::elicitation::form_from_request(&req) {
                     Ok(form) => form,
                     Err(err) => {
@@ -1225,7 +1234,11 @@ where
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if bus_e
-                    .send(AppEvent::ElicitationAsk { form, reply: tx })
+                    .send(AppEvent::ElicitationAsk {
+                        session_id,
+                        form,
+                        reply: tx,
+                    })
                     .is_err()
                 {
                     return responder.respond(CreateElicitationResponse::new(
@@ -1306,6 +1319,7 @@ where
                 let bus = bus_write;
                 let workspace = workspace_write;
                 async move |req: WriteTextFileRequest, responder, _cx| {
+                    let session_id = req.session_id.to_string();
                     let path = crate::acp_fs::resolve_with_cwd(
                         &req.path,
                         std::path::Path::new(&workspace),
@@ -1317,7 +1331,7 @@ where
                         let allowed = if crate::acp_fs::is_inside_cwd(&path, &workspace) {
                             true
                         } else {
-                            crate::acp_fs::confirm_write_outside(&bus, &path).await
+                            crate::acp_fs::confirm_write_outside(&bus, &session_id, &path).await
                         };
                         let result = if allowed {
                             crate::acp_fs::write_text_file(&path, &content)

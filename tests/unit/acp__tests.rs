@@ -899,7 +899,12 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
     let mut form_reply = None;
     while Instant::now() < deadline {
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(AppEvent::ElicitationAsk { form, reply }) => {
+            Ok(AppEvent::ElicitationAsk {
+                session_id,
+                form,
+                reply,
+            }) => {
+                assert_eq!(session_id.as_deref(), Some("s1"));
                 assert_eq!(form.fields[0].title, "Target");
                 form_reply = Some(reply);
                 break;

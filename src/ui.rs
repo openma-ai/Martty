@@ -999,10 +999,11 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
 
 /// The session tab strip (issue #94) — native status chrome fed by
 /// per-session running facts, the same source as `state_line`. Per tab: a
-/// running indicator (spinner live, ● parked), a ✓ completion badge for a
-/// session that finished while parked, and a title/short-id label; the
-/// trailing `+` cell opens a fresh session. Tab rects are recorded for
-/// `App::tab_at` mouse hit-testing.
+/// status indicator, a ✓ completion badge for a session that finished
+/// while parked, and a title/short-id label. A `?` indicator (warn color)
+/// marks a tab whose session has an unanswered ACP ask (permission or
+/// elicitation) — the agent is waiting on that tab. Tab rects are recorded
+/// for `App::tab_at` mouse hit-testing.
 fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let tabs = app.session_tabs();
@@ -1019,7 +1020,11 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
             x += 3;
         }
         let label = crate::transcript::clamp_str(&tab.label, 16);
-        let (indicator, indicator_style) = if tab.running {
+        let (indicator, indicator_style) = if tab.ask_pending {
+            // A session-bound ask outranks every other badge: the agent is
+            // blocked until this tab answers.
+            ("?".to_string(), Style::default().fg(theme.warn))
+        } else if tab.running {
             (
                 if tab.current {
                     spinner.to_string()
