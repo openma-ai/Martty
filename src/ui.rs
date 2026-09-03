@@ -2694,8 +2694,9 @@ fn layout_expand_btn(app: &mut App, cap: Rect) {
 /// Paint the expand glyph. Idle: `⛶` in the quiet caption tone on the
 /// card's top-right (the workspace title leaves this corner free).
 /// Hovered: the glyph brightens to the strongest foreground on a small
-/// frame-less chip block. Called after the card render so it always wins
-/// the pixels.
+/// frame-less chip block — no BOLD, which terminals synthesize by widening
+/// the glyph and clip at the cell edge (the right corner would vanish).
+/// Called after the card render so it always wins the pixels.
 fn paint_expand_btn(f: &mut Frame, app: &mut App) {
     let Some(rect) = app.expand_btn else {
         return;
@@ -2715,10 +2716,7 @@ fn paint_expand_btn(f: &mut Frame, app: &mut App) {
             x,
             rect.y,
             "⛶",
-            Style::default()
-                .fg(theme.fg)
-                .bg(theme.chip_bg)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.fg).bg(theme.chip_bg),
         );
     } else {
         b.set_string(x, rect.y, "⛶", Style::default().fg(theme.caption));
