@@ -2693,10 +2693,11 @@ fn layout_expand_btn(app: &mut App, cap: Rect) {
 
 /// Paint the expand glyph. Idle: `⛶` in the quiet caption tone on the
 /// card's top-right (the workspace title leaves this corner free).
-/// Hovered: the glyph brightens to the strongest foreground on a small
-/// frame-less chip block — no BOLD, which terminals synthesize by widening
-/// the glyph and clip at the cell edge (the right corner would vanish).
-/// Called after the card render so it always wins the pixels.
+/// Hovered: the glyph brightens to the strongest foreground — no BOLD,
+/// which terminals synthesize by widening the glyph and clip at the cell
+/// edge (the right corner would vanish), and no background chip; the
+/// brightness shift alone is the hover affordance. Called after the card
+/// render so it always wins the pixels.
 fn paint_expand_btn(f: &mut Frame, app: &mut App) {
     let Some(rect) = app.expand_btn else {
         return;
@@ -2709,18 +2710,12 @@ fn paint_expand_btn(f: &mut Frame, app: &mut App) {
     // The glyph sits one cell in from the card's corner: rightmost cell of
     // the rect minus one, so the corner `╮` stays visible beside it.
     let x = rect.x + rect.width - 2;
-    if app.hover_expand_btn {
-        let block = Style::default().bg(theme.chip_bg);
-        b.set_string(rect.x, rect.y, "  ", block);
-        b.set_string(
-            x,
-            rect.y,
-            "⛶",
-            Style::default().fg(theme.fg).bg(theme.chip_bg),
-        );
+    let tone = if app.hover_expand_btn {
+        theme.fg
     } else {
-        b.set_string(x, rect.y, "⛶", Style::default().fg(theme.caption));
-    }
+        theme.caption
+    };
+    b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
 }
 
 /// The input well. Long prompts wrap across the (now taller) well, and the

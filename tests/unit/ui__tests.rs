@@ -3009,15 +3009,17 @@ fn expand_button_idle_glyph_and_hover_icon() {
     assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
     assert_eq!(buf[(btn.x + 2, btn.y)].symbol(), " ", "one cell between glyph and corner");
 
-    // Hover: the same glyph brightened to the strongest foreground on a
-    // chip block.
+    // Hover: the same glyph brightened to the strongest foreground — no
+    // BOLD, no background chip; the brightness shift alone is the affordance.
     app.handle_mouse(mouse(MouseEventKind::Moved, btn.x + 2, btn.y), &ctl);
     assert!(app.hover_expand_btn);
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
     let buf = terminal.backend().buffer().clone();
-    assert_eq!(buf[(btn.x, btn.y)].bg, theme.chip_bg, "block starts");
-    assert_eq!(buf[(btn.x, btn.y)].symbol(), " ");
-    assert_eq!(buf[(btn.x + 1, btn.y)].bg, theme.chip_bg, "block padding");
+    assert_ne!(
+        buf[(btn.x, btn.y)].bg,
+        theme.chip_bg,
+        "no hover background chip"
+    );
     assert_eq!(
         buf[(btn.x + 1, btn.y)].symbol(),
         "⛶",
@@ -3033,7 +3035,7 @@ fn expand_button_idle_glyph_and_hover_icon() {
         "╮",
         "the glyph sits right next to the card's top-right corner"
     );
-    assert_eq!(buf[(btn.x + 1, btn.y)].bg, theme.chip_bg);
+    assert_eq!(buf[(btn.x + 1, btn.y)].bg, buf[(btn.x, btn.y)].bg, "no background change on hover");
     assert_eq!(
         buf[(btn.x, btn.y)].symbol(),
         " ",
