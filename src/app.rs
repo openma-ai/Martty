@@ -2687,17 +2687,68 @@ impl App {
             .collect()
     }
 
+    /// The value currently in effect for an open builtin option menu
+    /// (`/model `, `/effort `, `/agent `, `/theme `, `/permission `), if
+    /// the menu is one. Command-name lists and plugin option lists carry no
+    /// client-side "current". Mirrors the pickers (issue #102).
+    pub(crate) fn builtin_option_current(&self, matches: &[SlashEntry]) -> Option<String> {
+        let first = matches.first()?;
+        if first.completion.is_none() || matches.iter().any(|entry| entry.plugin) {
+            return None;
+        }
+        match first.name.as_str() {
+            "model" => Some(self.current_model()),
+            "effort" => self.modes.effort.clone(),
+            "agent" => Some(self.current_mode()),
+            "theme" => Some(self.active_palette_id.clone()),
+            "permission" => Some(self.current_permission().to_string()),
+            _ => None,
+        }
+    }
+
+    /// Restart the slash menu selection on the option currently in effect
+    /// when the open menu is a builtin option list; other menus restart at
+    /// their head. Text edits call this instead of pinning `slash_sel` to 0
+    /// so `/model ` / `/effort ` open on the running value (issue #102).
+    fn snap_slash_sel(&mut self) {
+        let matches = self.slash_matches();
+        let current = self.builtin_option_current(&matches);
+        self.slash_sel = current
+            .and_then(|value| {
+                matches.iter().position(|entry| {
+                    entry.completion.as_deref().and_then(|completion| {
+                        completion.strip_prefix(&format!("/{} ", entry.name))
+                    }) == Some(value.as_str())
+                })
+            })
+            .unwrap_or(0);
+    }
+
     fn builtin_argument_options(&self, name: &str) -> Vec<(String, String, String)> {
         let plain =
             |value: &str, desc: &str| (value.to_string(), value.to_string(), desc.to_string());
         match name {
             "model" => {
+                // The option list always carries the effective model (pick →
+                // stream → config default) so the inline menu can mark and
+                // preselect what the session runs (issue #102).
+                let current = self.current_model();
                 if !self.last_models.is_empty() {
-                    return self
+                    let mut rows: Vec<(String, String, String)> = self
                         .last_models
                         .iter()
-                        .map(|model| (model.id.clone(), model.name.clone(), model.provider.clone()))
+                        .map(|model| {
+                            (
+                                model.id.clone(),
+                                model.name.clone(),
+                                model.provider.clone(),
+                            )
+                        })
                         .collect();
+                    if !rows.iter().any(|(id, _, _)| id == &current) {
+                        rows.insert(0, (current.clone(), current.clone(), String::new()));
+                    }
+                    return rows;
                 }
                 let mut ids = host_catalog_models().unwrap_or_else(|| {
                     MODEL_PRESETS
@@ -2705,8 +2756,8 @@ impl App {
                         .map(|value| (*value).to_string())
                         .collect()
                 });
-                if !ids.iter().any(|id| id == &self.cfg.model) {
-                    ids.insert(0, self.cfg.model.clone());
+                if !ids.iter().any(|id| id == &current) {
+                    ids.insert(0, current);
                 }
                 ids.into_iter()
                     .map(|id| (id.clone(), id, String::new()))
@@ -3404,11 +3455,11 @@ impl App {
                             self.last_models = models.clone();
                         }
                         let mode_current = self.current_mode();
+                        let model_current = self.current_model();
+                        let model_provider = self.cfg.provider.clone();
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
                                 PickerKind::Model if !models.is_empty() => {
-                                    let current = self.cfg.model.clone();
-                                    let current_provider = self.cfg.provider.clone();
                                     picker.items = models
                                         .into_iter()
                                         .map(|m| PickerItem {
@@ -3427,9 +3478,17 @@ impl App {
                                         .items
                                         .iter()
                                         .position(|i| {
-                                            i.id == current
+                                            i.id == model_current
                                                 && i.provider.as_deref()
-                                                    == Some(current_provider.as_str())
+                                                    == Some(model_provider.as_str())
+                                        })
+                                        // Same id under an unknown provider
+                                        // still beats pinning row 0.
+                                        .or_else(|| {
+                                            picker
+                                                .items
+                                                .iter()
+                                                .position(|i| i.id == model_current)
                                         })
                                         .unwrap_or(0);
                                 }
@@ -5352,7 +5411,7 @@ impl App {
         match action {
             Action::Insert(ch) => {
                 self.input.insert_char(ch);
-                self.slash_sel = 0;
+                self.snap_slash_sel();
             }
             Action::Newline => {
                 self.input.insert_newline();
@@ -5390,6 +5449,7 @@ impl App {
                             .clone()
                             .unwrap_or_else(|| format!("/{} ", entry.name)),
                     );
+                    self.snap_slash_sel();
                 }
             }
             Action::Esc => self.handle_esc(ctl),
@@ -6032,20 +6092,33 @@ impl App {
                 provider: None,
             })
             .collect();
-        if !items.iter().any(|i| i.id == self.cfg.model) {
+        // The effective model (explicit pick → last streamed → configured
+        // default) is the picker's "current": the highlight and the ✓ mark
+        // land on the model the session is actually running (issue #102).
+        let current = self.current_model();
+        if !items.iter().any(|i| i.id == current) {
             items.insert(
                 0,
                 PickerItem {
-                    id: self.cfg.model.clone(),
-                    label: self.cfg.model.clone(),
+                    id: current.clone(),
+                    label: current.clone(),
                     meta: String::new(),
                     provider: None,
                 },
             );
         }
+        let current_provider = self.cfg.provider.clone();
         let sel = items
             .iter()
-            .position(|i| i.id == self.cfg.model)
+            .position(|i| {
+                i.id == current
+                    && i.provider
+                        .as_deref()
+                        .is_none_or(|provider| provider == current_provider)
+            })
+            // The running model may come from the transcript without a
+            // provider: fall back to an id-only match rather than row 0.
+            .or_else(|| items.iter().position(|i| i.id == current))
             .unwrap_or(0);
         self.picker = Some(Picker {
             offset: 0,
@@ -6090,6 +6163,20 @@ impl App {
                 })
                 .collect();
         }
+        // The highlight lands on the effort actually in effect (host-echoed
+        // `config_option_update` / last `/effort`), falling back to the
+        // model's advertised default, then the first row (issue #102).
+        let sel = self
+            .modes
+            .effort
+            .as_deref()
+            .and_then(|effort| items.iter().position(|i| i.id == effort))
+            .or_else(|| {
+                default
+                    .as_deref()
+                    .and_then(|d| items.iter().position(|i| i.id == d))
+            })
+            .unwrap_or(0);
         self.picker = Some(Picker {
             offset: 0,
             kind: PickerKind::Effort,
@@ -6100,7 +6187,7 @@ impl App {
                     " 推理强度 · enter 选择 · esc 关闭 ",
                 )
                 .into(),
-            sel: 0,
+            sel,
             items,
         });
     }
@@ -6777,6 +6864,17 @@ impl App {
                 .to_string()
         };
         self.set_permission(next, ctl);
+    }
+
+    /// The effective model: an explicit `/model` pick until a turn realizes
+    /// it, then the model that actually streamed last, then the configured
+    /// default. Mirrors the meta-row chip chain, so the model picker
+    /// highlights and ✓-marks the model the session is running (issue #102).
+    pub fn current_model(&self) -> String {
+        self.selected_model
+            .clone()
+            .or_else(|| self.transcript.last_model.clone())
+            .unwrap_or_else(|| self.cfg.model.clone())
     }
 
     /// The effective permission preset: the folded `permission/preset` fact,

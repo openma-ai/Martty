@@ -2070,6 +2070,141 @@ fn model_picker_marks_only_the_current_provider_model_pair() {
 }
 
 #[test]
+fn model_picker_marks_the_streamed_model_when_it_differs_from_config() {
+    use crate::app::{Picker, PickerItem, PickerKind};
+    let mut app = test_app();
+    app.show_banner = false;
+    // A turn streamed on `deepseek-v4-pro` while the config still names the
+    // fallback: the picker must mark the running model (issue #102).
+    app.cfg.model = "deepseek-v4-flash".into();
+    app.transcript.last_model = Some("deepseek-v4-pro".into());
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Model,
+        title: " model ".into(),
+        sel: 1,
+        items: vec![
+            PickerItem {
+                id: "deepseek-v4-flash".into(),
+                label: "deepseek-v4-flash".into(),
+                meta: String::new(),
+                provider: None,
+            },
+            PickerItem {
+                id: "deepseek-v4-pro".into(),
+                label: "deepseek-v4-pro".into(),
+                meta: String::new(),
+                provider: None,
+            },
+        ],
+    });
+
+    let frame = dump_frame(&mut app, 100, 24);
+    let marked: Vec<&str> = frame.lines().filter(|line| line.contains("✓")).collect();
+    assert_eq!(marked.len(), 1, "one current model:\n{frame}");
+    assert!(
+        marked[0].contains("deepseek-v4-pro"),
+        "the running model is marked: {}\n{frame}",
+        marked[0]
+    );
+    assert!(
+        marked[0].contains("▸"),
+        "highlight follows the running model: {}",
+        marked[0]
+    );
+}
+
+#[test]
+fn effort_picker_marks_and_highlights_the_current_effort() {
+    use crate::app::{Picker, PickerItem, PickerKind};
+    let mut app = test_app();
+    app.show_banner = false;
+    app.modes.effort = Some("max".into());
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Effort,
+        title: " reasoning effort · enter select · esc close ".into(),
+        sel: 2,
+        items: ["off", "high", "max"]
+            .iter()
+            .map(|e| PickerItem {
+                id: e.to_string(),
+                label: e.to_string(),
+                meta: String::new(),
+                provider: None,
+            })
+            .collect(),
+    });
+
+    let frame = dump_frame(&mut app, 100, 24);
+    let max_row = frame
+        .lines()
+        .find(|l| l.contains("max"))
+        .expect("max row listed");
+    assert!(max_row.contains("max ✓"), "current effort marked: {max_row}");
+    assert!(
+        max_row.contains("▸"),
+        "highlight on the active effort: {max_row}"
+    );
+}
+
+#[test]
+fn slash_effort_menu_marks_and_highlights_the_active_effort() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.show_banner = false;
+    app.modes.effort = Some("max".into());
+    app.input.set("/effort".into());
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    // The typed `/effort ` option menu opens on the effort in effect.
+    let frame = dump_frame(&mut app, 100, 30);
+    let marked: Vec<&str> = frame.lines().filter(|line| line.contains('✓')).collect();
+    assert_eq!(marked.len(), 1, "only the active effort is marked:\n{frame}");
+    assert!(
+        marked[0].contains("max") && marked[0].contains("▸"),
+        "highlight and ✓ sit on the active effort: {}\n{frame}",
+        marked[0]
+    );
+}
+
+#[test]
+fn slash_model_menu_marks_the_running_model() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    app.show_banner = false;
+    app.cfg.model = "deepseek-v4-flash".into();
+    app.transcript.last_model = Some("deepseek-v4-pro".into());
+    app.input.set("/model".into());
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    // The inline `/model ` list leads with the running model, marked ✓ and
+    // highlighted, instead of the config default.
+    let frame = dump_frame(&mut app, 100, 30);
+    let marked: Vec<&str> = frame.lines().filter(|line| line.contains('✓')).collect();
+    assert_eq!(marked.len(), 1, "only the running model is marked:\n{frame}");
+    assert!(
+        marked[0].contains("deepseek-v4-pro") && marked[0].contains("▸"),
+        "highlight and ✓ sit on the running model: {}\n{frame}",
+        marked[0]
+    );
+}
+
+#[test]
 fn scroll_up_survives_draw_and_shows_indicator() {
     let mut app = test_app();
     app.show_banner = false;
