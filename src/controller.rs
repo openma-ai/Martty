@@ -559,7 +559,10 @@ fn controller_loop(
                 });
                 match result {
                     Some(Ok(_)) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet { preset }));
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet {
+                            session_id,
+                            preset,
+                        }));
                     }
                     Some(Err(err)) => {
                         // The host locks the preset once the session's agent
@@ -595,6 +598,10 @@ fn controller_loop(
                     "session/new, session/list, and session/resume need a live ACP connection"
                         .into(),
                 )));
+            }
+            Cmd::ForgetSession { .. } => {
+                // Sessions only exist on the ACP transport; the legacy/demo
+                // controller owns nothing to forget.
             }
             Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } => {
                 // The legacy/demo controller has no local Cordis compositor.

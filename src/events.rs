@@ -1041,6 +1041,11 @@ fn merge_update(prev: &mut Value, new: &Value) -> MergeOutcome {
     if !same_str(prev_update, new_update, "sessionUpdate") {
         return MergeOutcome::Keep;
     }
+    let prev_subagent = prev_update.pointer("/_meta/dsh/subagent/childSessionId");
+    let new_subagent = new_update.pointer("/_meta/dsh/subagent/childSessionId");
+    if prev_subagent != new_subagent {
+        return MergeOutcome::Keep;
+    }
     let kind = new_update
         .get("sessionUpdate")
         .and_then(Value::as_str)

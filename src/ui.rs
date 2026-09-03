@@ -1004,6 +1004,13 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
 /// whose session has an unanswered ACP ask (permission or elicitation) — the
 /// agent is waiting on that tab. Tab rects include their trailing arrow for
 /// `App::tab_at` mouse hit-testing.
+///
+/// The strip scrolls: only the tabs in its window (`App::tab_strip_offset`)
+/// are drawn. Clicking the window's edge tab in `App::handle_mouse` nudges
+/// the window by one so the neighbor appears, which lets a mouse walk
+/// through every tab; the window is re-anchored here whenever the live tab
+/// leaves it (keyboard jumps, tab closes) and snaps to the head when the
+/// suffix fits on one row.
 fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     const ARROW: &str = "\u{e0b0}";
 
@@ -1025,9 +1032,60 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     let tabs = app.session_tabs();
     let spinner = app.spinner();
     let right = area.right() as usize;
+    let total = tabs.len();
+    if total == 0 || area.width < 4 {
+        return;
+    }
+    // Per-tab display width: `" {indicator} {label} "` plus the trailing
+    // arrow. Every indicator — Braille spinner included — is one cell, so
+    // the widths only depend on the clamped label.
+    let widths: Vec<usize> = tabs
+        .iter()
+        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 5)
+        .collect();
+    let avail = right.saturating_sub(area.x as usize);
+
+    // The strip's scroll window. The draw pass owns its normalization so a
+    // stale offset (labels grew, tabs closed) can never draw garbage.
+    let mut start = app.tab_strip_offset.min(total.saturating_sub(1));
+    if widths.iter().sum::<usize>() <= avail {
+        // The whole strip fits on one row: there is nothing to scroll, so
+        // a stale offset (tabs closed since the last walk) snaps to 0.
+        // Note this only fires when *everything* fits — once a walk has
+        // started, a window whose suffix fits but whose head does not
+        // stays where the mouse put it, or the walk could never reveal the
+        // final tab.
+        start = 0;
+    }
+    // Greedy end of the window from `start` — mirrors the render loop's
+    // `x + width > right` cut exactly.
+    let window_end = |start: usize| -> usize {
+        let mut x = area.x as usize;
+        let mut end = start;
+        while end < total && x + widths[end] <= right {
+            x += widths[end];
+            end += 1;
+        }
+        end
+    };
+    let live = app.live_tab_index().min(total - 1);
+    if live < start || live >= window_end(start) {
+        // The live tab left the window (keyboard jump, /close): re-anchor
+        // with the live tab at the right edge and as many predecessors as
+        // fit, so the tab being viewed is always on screen.
+        let mut anchor = live;
+        let mut width = widths[live];
+        while anchor > 0 && width + widths[anchor - 1] <= avail {
+            anchor -= 1;
+            width += widths[anchor];
+        }
+        start = anchor;
+    }
+    app.tab_strip_offset = start;
+
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x as usize;
-    for (idx, tab) in tabs.iter().enumerate() {
+    for (idx, tab) in tabs.iter().enumerate().skip(start) {
         let label = crate::transcript::clamp_str(&tab.label, 16);
         let tab_bg = background_for(idx, tab.current);
         let (indicator, indicator_style) = if tab.ask_pending {
@@ -1073,6 +1131,11 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         let arrow_width = ARROW.width();
         let width = indicator.width() + label.width() + 3 + arrow_width;
         if x + width > right {
+            let remaining = total - idx;
+            let note = format!(" +{remaining}");
+            if x + note.len() <= right {
+                spans.push(Span::styled(note, Style::default().fg(theme.caption)));
+            }
             break;
         }
         app.tab_rects
@@ -3166,8 +3229,6 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(title, Style::default().fg(theme.caption)))
         .style(Style::default().bg(theme.panel));
-    // TableState follows the selection into view (the viewport stays pinned
-    // to the ends), matching the old ListView behavior.
     let table = Table::new(
         rows,
         [
@@ -3185,12 +3246,50 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             .bg(theme.chip_bg)
             .add_modifier(Modifier::BOLD),
     );
-    let mut table_state =
-        TableState::new().with_selected(Some(sel.min(items.len().saturating_sub(1))));
+    // The picker owns its viewport window (`offset`, persisted across
+    // frames): keys and the wheel only move the selection, and this draw
+    // pass scrolls the window by the minimum needed to keep the selection
+    // visible. A selection that stays inside the window therefore leaves
+    // the window alone — ↑/↓ and the wheel sweep the highlight through a
+    // static list, and only scroll the content once the highlight reaches
+    // an edge. Rebuilding the window from the selection every frame (the
+    // ratatui auto-reveal default) would instead re-pin the highlight to
+    // the window edge and slide the whole list on every key press.
+    let viewport_rows = h.saturating_sub(2) as usize;
+    let last = items.len().saturating_sub(1);
+    let sel = sel.min(last);
+    let mut offset = picker.offset;
+    if items.len() > viewport_rows {
+        if sel < offset {
+            // Selection crossed the top edge: pin it to the first row.
+            offset = sel;
+        } else if sel >= offset + viewport_rows {
+            // Selection crossed the bottom edge: pin it to the last row.
+            offset = sel + 1 - viewport_rows;
+        }
+    } else {
+        offset = 0;
+    }
+    let mut table_state = TableState::new()
+        .with_selected(Some(sel))
+        .with_offset(offset);
     f.render_stateful_widget(table, area, &mut table_state);
     if overflow {
         let inner = area.inner(Margin::new(1, 1));
-        let mut sb_state = ScrollbarState::new(item_count).position(table_state.offset());
+        // ratatui's scrollbar treats `content_length - 1` as the bottom of
+        // the track, while the window offset tops out at
+        // `items - visible rows`. Rescale so the thumb really reaches the
+        // bottom at the deepest scroll instead of stalling a third of the
+        // way down the track.
+        let max_offset = items.len().saturating_sub(viewport_rows);
+        let position = if max_offset == 0 {
+            0
+        } else {
+            offset.saturating_mul(items.len().saturating_sub(1)) / max_offset
+        };
+        let mut sb_state = ScrollbarState::new(item_count)
+            .position(position)
+            .viewport_content_length(viewport_rows);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -3200,14 +3299,17 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             &mut sb_state,
         );
     }
-    // The viewport is the source of truth for what is visible; selection
-    // moves (mouse later, programmatic now) land back in the picker.
+    // The draw pass is the source of truth for the window: the selection
+    // it actually rendered (clamped to the rows) and the offset ratatui
+    // kept (unchanged when our pre-clamping already satisfied the window
+    // invariants) land back in the picker.
     if let Some(picker) = &mut app.picker {
         if let Some(selected) = table_state.selected() {
             picker.sel = selected;
         }
+        picker.offset = table_state.offset();
         // Page keys jump a screenful: the rows the popup actually shows.
-        app.picker_page_rows = h.saturating_sub(2) as usize;
+        app.picker_page_rows = viewport_rows;
     }
 }
 

@@ -237,6 +237,7 @@ fn picker_page_keys_jump_a_screenful_and_home_end_pin_the_ends() {
     let root = tmp_root("page");
     let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
     app.picker = Some(Picker {
+        offset: 0,
         kind: PickerKind::Session,
         title: " resume session · 40 sessions · enter select · esc close ".into(),
         sel: 0,
@@ -279,6 +280,62 @@ fn picker_page_keys_jump_a_screenful_and_home_end_pin_the_ends() {
 }
 
 #[test]
+fn resume_picker_wheel_walks_the_selection_and_clamps_at_the_ends() {
+    let root = tmp_root("wheel");
+    let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Session,
+        title: " resume session · 8 sessions · enter select · esc close ".into(),
+        sel: 0,
+        items: (0..8)
+            .map(|i| PickerItem {
+                id: format!("s{i:02}"),
+                label: format!("session {i:02}"),
+                meta: String::new(),
+                provider: None,
+            })
+            .collect(),
+    });
+    let wheel = |app: &mut App, kind: MouseEventKind| {
+        app.handle_mouse(
+            MouseEvent {
+                kind,
+                column: 40,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            &ctl,
+        );
+    };
+
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    assert_eq!(app.picker.as_ref().unwrap().sel, 1, "one notch = one row");
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    assert_eq!(app.picker.as_ref().unwrap().sel, 2, "wheel down again");
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    assert_eq!(
+        app.picker.as_ref().unwrap().sel,
+        7,
+        "clamps at the last row (8 items)"
+    );
+    wheel(&mut app, MouseEventKind::ScrollUp);
+    assert_eq!(app.picker.as_ref().unwrap().sel, 6, "wheel up walks back");
+    app.picker.as_mut().unwrap().sel = 0;
+    wheel(&mut app, MouseEventKind::ScrollUp);
+    assert_eq!(
+        app.picker.as_ref().unwrap().sel,
+        0,
+        "overscroll clamps at the first row — no wrap"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn acp_resume_dismisses_the_welcome_banner_before_the_replay_streams() {
     let root = tmp_root("banner");
     let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
@@ -296,5 +353,171 @@ fn acp_resume_dismisses_the_welcome_banner_before_the_replay_streams() {
         "ACP resume hides the banner so the loaded transcript paints"
     );
     assert_eq!(app.session_id, "acp-old", "switched to the loaded session");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn picker_wheel_and_keys_share_a_stable_window() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    let root = tmp_root("window");
+    let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+    app.picker = Some(Picker {
+        kind: PickerKind::Session,
+        title: " resume session · 40 sessions · enter select · esc close ".into(),
+        sel: 0,
+        offset: 0,
+         items: (0..40)
+            .map(|i| PickerItem {
+                id: format!("sess-{i:02}"),
+                label: format!("session {i:02}"),
+                meta: format!("meta {i:02}"),
+                provider: None,
+            })
+            .collect(),
+    });
+    // 24-row terminal: 20 visible rows (the draw records the viewport).
+    let draw = |app: &mut App| {
+        crate::ui::dump_frame(app, 100, 24);
+    };
+    let wheel = |app: &mut App, kind: MouseEventKind| {
+        app.handle_mouse(
+            MouseEvent { kind, column: 60, row: 12, modifiers: KeyModifiers::NONE },
+            &ctl,
+        );
+    };
+    let key = |app: &mut App, code: KeyCode| {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctl);
+    };
+    let sel = |app: &App| app.picker.as_ref().unwrap().sel;
+    let offset = |app: &App| app.picker.as_ref().unwrap().offset;
+
+    draw(&mut app);
+    assert_eq!(offset(&app), 0, "fresh picker starts at the head");
+
+    // The wheel sweeps the highlight through a static window row by row.
+    for _ in 0..19 {
+        wheel(&mut app, MouseEventKind::ScrollDown);
+    }
+    draw(&mut app);
+    assert_eq!(sel(&app), 19, "wheel walks one row per notch");
+    assert_eq!(offset(&app), 0, "window static while the highlight is inside it");
+
+    // Crossing the bottom edge scrolls the window by the deficit only.
+    wheel(&mut app, MouseEventKind::ScrollDown);
+    draw(&mut app);
+    assert_eq!(sel(&app), 20, "first row past the window edge");
+    assert_eq!(offset(&app), 1, "window scrolls exactly one row");
+    assert_eq!(app.picker_page_rows, 20, "page size unchanged");
+
+    // Keys after wheel moves keep the window: ↑ walks the highlight up
+    // inside the static window instead of re-pinning it to the edge and
+    // sliding the whole list (the old jump).
+    key(&mut app, KeyCode::Up);
+    draw(&mut app);
+    assert_eq!(sel(&app), 19, "↑ moves the selection");
+    assert_eq!(offset(&app), 1, "window does not move while 19 stays visible");
+
+    // Same at the tail: End parks the window at the bottom; ↑ walks the
+    // highlight through it without scrolling the content.
+    key(&mut app, KeyCode::End);
+    draw(&mut app);
+    assert_eq!(sel(&app), 39, "end pins the tail");
+    assert_eq!(offset(&app), 20, "window parked at the deepest scroll");
+    // 19 ↑ presses with a draw after each: the highlight walks from the
+    // tail to the window's first row (20) while the window never moves —
+    // the old code slid the whole window down on every single press.
+    for _ in 0..19 {
+        key(&mut app, KeyCode::Up);
+        draw(&mut app);
+    }
+    assert_eq!(sel(&app), 20, "walked up to the window's first row");
+    assert_eq!(offset(&app), 20, "window parked the whole walk");
+
+    // The next press leaves the window through the top: the window pins
+    // the selection to its new first row.
+    key(&mut app, KeyCode::Up);
+    draw(&mut app);
+    assert_eq!(sel(&app), 19, "left the window through the top");
+    assert_eq!(offset(&app), 19, "window pinned the selection to the first row");
+
+    key(&mut app, KeyCode::Home);
+    draw(&mut app);
+    assert_eq!(sel(&app), 0, "home pins the head");
+    assert_eq!(offset(&app), 0, "window back at the top");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn picker_scrollbar_thumb_reaches_both_ends_of_the_track() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let root = tmp_root("thumb");
+    let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+    app.picker = Some(Picker {
+        kind: PickerKind::Session,
+        title: " resume session · 40 sessions · enter select · esc close ".into(),
+        sel: 0,
+        offset: 0,
+         items: (0..40)
+            .map(|i| PickerItem {
+                id: format!("sess-{i:02}"),
+                label: format!("session {i:02}"),
+                meta: format!("meta {i:02}"),
+                provider: None,
+            })
+            .collect(),
+    });
+    // Row 0 carries the popup title; body rows 1..20 are the table rows
+    // with the scrollbar in the column left of the right border. The
+    // composer text overlapping the popup's lower rows ends in other
+    // glyphs, so read the exact scrollbar cell by column.
+    let thumb_rows = |app: &mut App| -> Vec<u16> {
+        let frame = crate::ui::dump_frame(app, 100, 24);
+        let lines: Vec<&str> = frame.lines().collect();
+        let border = lines[0]
+            .chars()
+            .position(|c| c == '╮')
+            .expect("popup right border");
+        let mut rows = Vec::new();
+        for (i, line) in lines.iter().enumerate().skip(1).take(20) {
+            if line.chars().nth(border - 1) == Some('█') {
+                rows.push(i as u16);
+            }
+        }
+        rows
+    };
+
+    let at_top = thumb_rows(&mut app);
+    assert!(!at_top.is_empty(), "thumb rendered at the head");
+    assert_eq!(*at_top.first().unwrap(), 1, "thumb starts on the first body row");
+    assert!(
+        !at_top.contains(&20),
+        "thumb does not touch the track bottom at the head: {at_top:?}"
+    );
+
+    // End: the thumb must travel all the way to the bottom of the track —
+    // the old code scaled it against the full item count and left it a
+    // third of the way down at the deepest scroll.
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &ctl);
+    let at_bottom = thumb_rows(&mut app);
+    assert!(!at_bottom.is_empty(), "thumb rendered at the tail");
+    assert!(
+        at_bottom.contains(&20),
+        "thumb reaches the last body row at the deepest scroll: {at_bottom:?}"
+    );
+    assert!(
+        !at_bottom.contains(&1),
+        "thumb left the track top at the deepest scroll: {at_bottom:?}"
+    );
+
+    // Mid-list the thumb sits between the two ends, not pinned to the top:
+    // offset 11 of 20 rescales to the middle of the 39-step track.
+    let p = app.picker.as_mut().unwrap();
+    p.sel = 30;
+    p.offset = 0;
+    let mid = thumb_rows(&mut app);
+    assert!(
+        !mid.contains(&1) && !mid.contains(&20),
+        "thumb mid-track: {mid:?}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }

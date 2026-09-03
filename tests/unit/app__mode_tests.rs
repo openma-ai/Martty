@@ -1159,6 +1159,7 @@ fn preset_ack_folds_the_chip_and_new_session_waits_for_the_host_mode() {
     let (mut app, ctl, _rx) = test_app();
     app.handle(
         AppEvent::Ctl(CtlEvent::PresetSet {
+            session_id: String::new(),
             preset: "cordis".into(),
         }),
         &ctl,
@@ -3502,7 +3503,7 @@ fn advertised_plan_command_toggles_off_when_plan_is_active() {
 
     assert!(matches!(
         commands.recv_timeout(std::time::Duration::from_secs(1)),
-        Ok(Cmd::SetConfigOption { config_id, value })
+        Ok(Cmd::SetConfigOption { config_id, value, .. })
             if config_id == "collaboration_mode" && value == "default"
     ));
 }

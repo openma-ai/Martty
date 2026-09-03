@@ -108,15 +108,27 @@ pub enum CtlEvent {
     CordisPlugins { plugins: Vec<CordisPluginItem> },
     /// ACP session modes (permission / `session/set_mode`).
     SessionModes {
+        session_id: Option<String>,
         modes: Vec<CatalogPreset>,
         current: Option<String>,
     },
     /// The agent accepted a composition switch (`session/set_config_option`).
-    PresetSet { preset: String },
+    PresetSet {
+        session_id: String,
+        preset: String,
+    },
     /// Selectable reasoning efforts for the current model.
     Efforts {
         efforts: Vec<String>,
         default: Option<String>,
+    },
+    /// A command failed for one specific session (prompt, steer, config
+    /// select, …). The UI routes the notice into that session's own
+    /// transcript — parked sessions no longer spill their errors onto the
+    /// viewed tab.
+    SessionError {
+        session_id: String,
+        message: String,
     },
     /// A client-side control call succeeded.
     TuiOpDone(String),
@@ -137,6 +149,12 @@ pub enum CtlEvent {
         session_id: String,
         notice: Option<String>,
     },
+    /// A `session/new` or `session/resume` request failed outright (not an
+    /// auth stall — auth keeps the request parked). acp completes bind
+    /// requests in order, so the awaiting-bind FIFO head owns the failure;
+    /// the UI drops that entry instead of letting a later bind land on a
+    /// dead request (issue #94 bind poisoning).
+    BindFailed,
     /// `session/list` rows (`prefix` is the `/resume` argument, if any).
     SessionList {
         sessions: Vec<SessionListItem>,
@@ -393,6 +411,7 @@ pub enum Cmd {
     /// Agent-advertised command action (`_meta.commandAction`) mapped onto
     /// standard ACP `session/set_config_option`.
     SetConfigOption {
+        session_id: String,
         config_id: String,
         value: String,
     },
@@ -410,6 +429,13 @@ pub enum Cmd {
     },
     /// Live ACP `/resume` pick → `session/resume`, with legacy `session/load` fallback.
     ResumeSession {
+        session_id: String,
+    },
+    /// `/close`: this client stops viewing a session. ACP has no
+    /// session/close, so the server-side session survives; the controller
+    /// drops the session's turn state and queued prompts so nothing more is
+    /// sent into the void, and its later events settle at the router.
+    ForgetSession {
         session_id: String,
     },
     Shutdown,
