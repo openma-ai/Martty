@@ -135,34 +135,14 @@ pub struct SlashCommand {
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
-        name: "help",
-        usage: "/help",
-        desc: "show help and tips",
+        name: "agent",
+        usage: "/agent [id]",
+        desc: "switch agent preset · ctrl+shift+a",
     },
     SlashCommand {
-        name: "keys",
-        usage: "/keys",
-        desc: "keyboard shortcuts",
-    },
-    SlashCommand {
-        name: "vim",
-        usage: "/vim [on|off]",
-        desc: "toggle vim modal editing (default off)",
-    },
-    SlashCommand {
-        name: "new",
-        usage: "/new [id]",
-        desc: "start a fresh session",
-    },
-    SlashCommand {
-        name: "resume",
-        usage: "/resume [id]",
-        desc: "resume a durable session from this workspace",
-    },
-    SlashCommand {
-        name: "close",
-        usage: "/close",
-        desc: "close the current session tab (last tab cannot close)",
+        name: "auth",
+        usage: "/auth [method|api-key]",
+        desc: "ACP sign-in (Backchat authenticate)",
     },
     SlashCommand {
         name: "clear",
@@ -170,54 +150,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "clear the scrollback",
     },
     SlashCommand {
-        name: "model",
-        usage: "/model [id]",
-        desc: "switch model · live over ACP",
-    },
-    SlashCommand {
-        name: "agent",
-        usage: "/agent [id]",
-        desc: "switch agent preset · ctrl+shift+a",
-    },
-    SlashCommand {
-        name: "effort",
-        usage: "/effort [off|high|max]",
-        desc: "reasoning effort for this session",
-    },
-    SlashCommand {
-        name: "permission",
-        usage: "/permission [preset]",
-        desc: "permission preset picker · shift+tab cycles",
-    },
-    SlashCommand {
-        name: "plan",
-        usage: "/plan [on|off]",
-        desc: "toggle host plan mode",
-    },
-    SlashCommand {
-        name: "image",
-        usage: "/image <path> [text]",
-        desc: "send a local image (png/jpeg/webp/gif)",
-    },
-    SlashCommand {
         name: "clip",
         usage: "/clip [text]",
         desc: "attach the clipboard image (macOS/Linux)",
     },
     SlashCommand {
-        name: "theme",
-        usage: "/theme [id|toggle]",
-        desc: "switch Theme Plugin or toggle dark/light",
-    },
-    SlashCommand {
-        name: "ui",
-        usage: "/ui [id]",
-        desc: "switch UI Plugin",
-    },
-    SlashCommand {
-        name: "plugins",
-        usage: "/plugins",
-        desc: "show Host plugin status (read-only)",
+        name: "close",
+        usage: "/close",
+        desc: "close the current session tab (last tab cannot close)",
     },
     SlashCommand {
         name: "cordis-plugins",
@@ -225,14 +165,24 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "review or manage dynamic Cordis plugins",
     },
     SlashCommand {
-        name: "session",
-        usage: "/session [view|prev|next]",
-        desc: "show session info · prev/next switch session tab",
+        name: "effort",
+        usage: "/effort [off|high|max]",
+        desc: "reasoning effort for this session",
     },
     SlashCommand {
-        name: "auth",
-        usage: "/auth [method|api-key]",
-        desc: "ACP sign-in (Backchat authenticate)",
+        name: "help",
+        usage: "/help",
+        desc: "show help and tips",
+    },
+    SlashCommand {
+        name: "image",
+        usage: "/image <path> [text]",
+        desc: "send a local image (png/jpeg/webp/gif)",
+    },
+    SlashCommand {
+        name: "keys",
+        usage: "/keys",
+        desc: "keyboard shortcuts",
     },
     SlashCommand {
         name: "lang",
@@ -245,9 +195,59 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "召唤小难梁 — 🤫 idle · ⌨︎ working",
     },
     SlashCommand {
+        name: "model",
+        usage: "/model [id]",
+        desc: "switch model · live over ACP",
+    },
+    SlashCommand {
+        name: "new",
+        usage: "/new [id]",
+        desc: "start a fresh session",
+    },
+    SlashCommand {
+        name: "permission",
+        usage: "/permission [preset]",
+        desc: "permission preset picker · shift+tab cycles",
+    },
+    SlashCommand {
+        name: "plan",
+        usage: "/plan [on|off]",
+        desc: "toggle host plan mode",
+    },
+    SlashCommand {
+        name: "plugins",
+        usage: "/plugins",
+        desc: "show Host plugin status (read-only)",
+    },
+    SlashCommand {
         name: "quit",
         usage: "/quit",
         desc: "exit martty",
+    },
+    SlashCommand {
+        name: "resume",
+        usage: "/resume [id]",
+        desc: "resume a durable session from this workspace",
+    },
+    SlashCommand {
+        name: "session",
+        usage: "/session [view|prev|next]",
+        desc: "show session info · prev/next switch session tab",
+    },
+    SlashCommand {
+        name: "theme",
+        usage: "/theme [id|toggle]",
+        desc: "switch Theme Plugin or toggle dark/light",
+    },
+    SlashCommand {
+        name: "ui",
+        usage: "/ui [id]",
+        desc: "switch UI Plugin",
+    },
+    SlashCommand {
+        name: "vim",
+        usage: "/vim [on|off]",
+        desc: "toggle vim modal editing (default off)",
     },
 ];
 
@@ -2574,52 +2574,61 @@ impl App {
                 completion: None,
             })
             .collect();
-        for command in &self.plugin_commands {
-            if command.name.starts_with(prefix)
-                && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
-            {
-                out.push(SlashEntry {
-                    name: command.name.clone(),
-                    usage: command
-                        .input
-                        .as_ref()
-                        .map(|input| format!("/{} [{}]", command.name, input.hint))
-                        .unwrap_or_else(|| format!("/{}", command.name)),
-                    desc: self
-                        .locale
-                        .plugin_command_desc(&command.name, &command.description)
-                        .to_string(),
-                    skill: false,
-                    plugin: true,
-                    section: None,
-                    completion: None,
-                });
-            }
+        let mut plugins: Vec<_> = self
+            .plugin_commands
+            .iter()
+            .filter(|command| {
+                command.name.starts_with(prefix)
+                    && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
+            })
+            .collect();
+        plugins.sort_by(|a, b| a.name.cmp(&b.name));
+        for command in plugins {
+            out.push(SlashEntry {
+                name: command.name.clone(),
+                usage: command
+                    .input
+                    .as_ref()
+                    .map(|input| format!("/{} [{}]", command.name, input.hint))
+                    .unwrap_or_else(|| format!("/{}", command.name)),
+                desc: self
+                    .locale
+                    .plugin_command_desc(&command.name, &command.description)
+                    .to_string(),
+                skill: false,
+                plugin: true,
+                section: None,
+                completion: None,
+            });
         }
         // Host skills share the '/' namespace. Builtins win first, then an
         // active client command, because the latter never enters a prompt.
-        for s in &self.skills {
-            if s.name.eq_ignore_ascii_case("logout") {
-                continue;
-            }
-            if s.name.starts_with(prefix)
-                && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
-                && !self.plugin_command_active(&s.name)
-            {
-                out.push(SlashEntry {
-                    name: s.name.clone(),
-                    usage: s
-                        .input_hint
-                        .as_ref()
-                        .map(|hint| format!("/{} {}", s.name, hint))
-                        .unwrap_or_else(|| format!("/{}", s.name)),
-                    desc: s.description.clone(),
-                    skill: !s.client_command,
-                    plugin: s.client_command,
-                    section: None,
-                    completion: None,
-                });
-            }
+        // Each group stays alphabetical so the menu reads in name order.
+        let mut skills: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|s| {
+                !s.name.eq_ignore_ascii_case("logout")
+                    && s.name.starts_with(prefix)
+                    && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
+                    && !self.plugin_command_active(&s.name)
+            })
+            .collect();
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        for s in skills {
+            out.push(SlashEntry {
+                name: s.name.clone(),
+                usage: s
+                    .input_hint
+                    .as_ref()
+                    .map(|hint| format!("/{} {}", s.name, hint))
+                    .unwrap_or_else(|| format!("/{}", s.name)),
+                desc: s.description.clone(),
+                skill: !s.client_command,
+                plugin: s.client_command,
+                section: None,
+                completion: None,
+            });
         }
         // An exact command must win over a longer name sharing its prefix.
         out.sort_by_key(|entry| entry.name != prefix);

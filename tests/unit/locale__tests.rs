@@ -13,6 +13,17 @@ fn every_builtin_command_has_an_explicit_zh_desc() {
 }
 
 #[test]
+fn builtin_slash_commands_are_sorted_by_name() {
+    let names: Vec<&str> = crate::app::SLASH_COMMANDS
+        .iter()
+        .map(|command| command.name)
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted, "SLASH_COMMANDS must stay in name order");
+}
+
+#[test]
 fn trf_fills_holes_left_to_right_per_language() {
     let out = Locale::En.trf("closed {} · {}", "已关闭 {} · {}", &[
         "tab".to_string(),
