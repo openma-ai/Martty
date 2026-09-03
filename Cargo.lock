@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-harness-tui"
-version = "0.2.31"
+version = "0.2.32"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
