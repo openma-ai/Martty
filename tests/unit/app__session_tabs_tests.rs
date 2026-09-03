@@ -609,3 +609,424 @@ fn plugin_null_ack_after_a_tab_switch_keeps_the_restored_painter_popup() {
         "the null ack only closes compositor-owned overlays"
     );
 }
+
+#[test]
+fn close_removes_the_viewed_tab_and_views_a_neighbor() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    app.open_new_session("s-three".into(), true); // live s-three (rightmost)
+    while commands.try_recv().is_ok() {}
+
+    // Close the rightmost tab: the left neighbor (s-two) takes its place.
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_id, "s-two");
+    assert_eq!(app.session_tab_count(), 2);
+    assert_eq!(
+        app.parked.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        ["dsh-test"]
+    );
+    match commands.try_recv() {
+        Ok(crate::bus::Cmd::ForgetSession { session_id }) => {
+            assert_eq!(session_id, "s-three", "acp forgets the closed session");
+        }
+        other => panic!("expected ForgetSession, got {other:?}"),
+    }
+}
+
+#[test]
+fn close_leftmost_tab_keeps_the_same_slot_index() {
+    let (mut app, _ctl, _rx) = test_app();
+    // Live dsh-test is the leftmost tab; s-two parked to its right.
+    app.open_new_session("s-two".into(), true);
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    app.transcript.push_user("left prompt".into(), false);
+
+    app.run_slash("close", "", &_ctl);
+    assert_eq!(app.session_id, "s-two", "right neighbor takes slot 0");
+    assert_eq!(app.session_tab_count(), 1);
+    let text = transcript_text(&mut app.transcript);
+    assert!(
+        !text.contains("left prompt"),
+        "closed tab's transcript is gone:\n{text}"
+    );
+}
+
+#[test]
+fn close_refuses_the_last_tab() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_id, "dsh-test");
+    assert_eq!(app.session_tab_count(), 1);
+    assert!(
+        commands.try_recv().is_err(),
+        "closing the last tab must not emit ForgetSession"
+    );
+}
+
+#[test]
+fn close_discards_draft_queue_and_cancels_the_parked_ask() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true); // live s-two
+    // A draft + queued prompts + a pending ask on the doomed live tab.
+    app.input.insert_str("half-typed");
+    app.state = RunState::Running;
+    app.send_agent_text("queued one".into(), &ctl);
+    assert_eq!(app.queued, 1);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.handle(
+        AppEvent::PermissionAsk {
+            session_id: "s-two".into(),
+            title: "rm".into(),
+            options: ask_options(),
+            reply: tx,
+        },
+        &ctl,
+    );
+    assert!(app.permission_ask.is_some());
+
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_id, "dsh-test", "back on the parked tab");
+    assert_eq!(
+        rx.blocking_recv().expect("ask reply"),
+        PermissionAskReply::Cancelled,
+        "closing a tab cancels its pending ACP ask (Drop)"
+    );
+    assert!(app.input.is_empty(), "doomed draft did not leak");
+    assert_eq!(app.queued, 0, "doomed queue did not leak");
+    assert!(!app.session_tabs().iter().any(|t| t.ask_pending));
+}
+
+#[test]
+fn close_of_an_unbound_tab_discards_its_coming_bind() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.run_slash("new", "", &ctl);
+    while commands.try_recv().is_ok() {} // drain /new's NewSession + FetchSkills
+    let placeholder = app.session_id.clone();
+    assert!(placeholder.starts_with("dsh-") && !app.session_bound);
+
+    // Close the placeholder before session/new resolves.
+    app.run_slash("close", "", &ctl);
+    while commands.try_recv().is_ok() {} // drain close's ForgetSession
+    assert_eq!(app.session_id, "dsh-test", "back on the bound tab");
+
+    // The bind resolves after the close: it must be discarded (and its
+    // session forgotten), never rebind the viewed tab.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-late".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(
+        app.session_id, "dsh-test",
+        "a dead bind must not hijack the viewed tab"
+    );
+    assert!(!app.session_bound || app.session_id == "dsh-test");
+    match commands.try_recv() {
+        Ok(crate::bus::Cmd::ForgetSession { session_id }) => {
+            assert_eq!(session_id, "acp-late");
+        }
+        other => panic!("expected ForgetSession for the late bind, got {other:?}"),
+    }
+
+    // A later /new still binds normally — the tombstone kept the FIFO clean.
+    app.run_slash("new", "", &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-next".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "acp-next", "the next bind lands normally");
+}
+
+#[test]
+fn composer_draft_scroll_model_and_banner_are_bound_to_the_tab() {
+    let (mut app, ctl, _rx) = test_app();
+    app.input.insert_str("draft for dsh-test");
+    app.scroll_up = 42;
+    app.selected_model = Some("deepseek-v3".into());
+    app.show_banner = false; // this tab already prompted
+
+    // A fresh tab starts clean — no draft, no scroll, no model pick.
+    app.run_slash("new", "", &ctl);
+    assert!(app.input.is_empty(), "fresh tab has an empty composer");
+    assert_eq!(app.scroll_up, 0);
+    assert_eq!(app.selected_model, None);
+    assert!(app.show_banner, "a fresh tab still shows the welcome");
+
+    // Round trip restores everything as left.
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    assert_eq!(app.input.lines().join(""), "draft for dsh-test");
+    assert_eq!(app.scroll_up, 42);
+    assert_eq!(app.selected_model.as_deref(), Some("deepseek-v3"));
+    assert!(!app.show_banner);
+}
+
+#[test]
+fn shell_output_lands_in_the_session_that_ran_it() {
+    let (mut app, ctl, _rx) = test_app();
+    app.run_local_shell("echo hello".into());
+    let (shell_id, session, _cell) = app.shell_pending[0].clone();
+    assert_eq!(session, "dsh-test");
+
+    // Switch away while the command is still running.
+    app.open_new_session("s-two".into(), true);
+    assert!(app.shell_pending[0].1 == "dsh-test");
+
+    app.handle(
+        AppEvent::ShellDone {
+            id: shell_id,
+            code: Some(0),
+            output: "hello".into(),
+        },
+        &ctl,
+    );
+    assert!(app.shell_pending.is_empty());
+    let text = transcript_text(&mut app.transcript);
+    assert!(
+        !text.contains("hello"),
+        "result must not land on the tab in view"
+    );
+    app.switch_to_session(0);
+    let text = transcript_text(&mut app.transcript);
+    assert!(text.contains("hello"), "result landed in its own session:\n{text}");
+}
+
+#[test]
+fn deferred_steer_settles_into_the_owning_parked_slot() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true); // live s-two
+    app.switch_to_session(0); // back on dsh-test
+    // A Send Now is in flight for the viewed session; the user then leaves.
+    app.pending_steer_cells.insert(
+        77,
+        PendingSteer {
+            cells: Vec::new(),
+            blocks: vec![StagedBlock::Text("steer me".into())],
+            requeue_front: true,
+        },
+    );
+    app.switch_to_session(1); // away again: entry parked with dsh-test
+    assert_eq!(app.session_id, "s-two");
+
+    // The agent defers the steer while its owner is parked: the follow-up
+    // must return to that session's own queue, not vanish.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SteerSettled {
+            message_id: 77,
+            deferred: true,
+        }),
+        &ctl,
+    );
+    let slot = app
+        .parked
+        .iter()
+        .find(|slot| slot.id == "dsh-test")
+        .expect("dsh-test parked");
+    assert!(
+        slot.pending_steer_cells.is_empty(),
+        "settled entry removed from its slot"
+    );
+    assert_eq!(slot.prompt_queue.len(), 1, "deferred steer requeued");
+    assert!(matches!(
+        slot.prompt_queue[0].blocks.as_slice(),
+        [StagedBlock::Text(text)] if text == "steer me"
+    ));
+    assert!(app.prompt_queue.is_empty(), "never leaks onto the viewed tab");
+
+    // A non-deferred settle for a parked owner just releases the entry.
+    app.switch_to_session(0);
+    app.pending_steer_cells.insert(78, PendingSteer {
+        cells: Vec::new(),
+        blocks: vec![StagedBlock::Text("ok".into())],
+        requeue_front: true,
+    });
+    app.switch_to_session(1);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SteerSettled {
+            message_id: 78,
+            deferred: false,
+        }),
+        &ctl,
+    );
+    let slot = app.parked.iter().find(|s| s.id == "dsh-test").unwrap();
+    assert!(slot.pending_steer_cells.is_empty());
+    assert_eq!(slot.prompt_queue.len(), 1, "accepted steer stays sent");
+}
+
+#[test]
+fn error_on_an_unbound_tab_does_not_burn_the_queued_prompts() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.run_slash("new", "", &ctl);
+    while commands.try_recv().is_ok() {}
+    app.send_agent_text("first".into(), &ctl);
+    app.send_agent_text("second".into(), &ctl);
+    assert_eq!(app.queued, 2);
+
+    // A rejection for the placeholder id + a generic connection error must
+    // not pop the queue head and burn the whole FIFO through repeated
+    // rejections — the prompts wait for the real bind.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionError {
+            session_id: app.session_id.clone(),
+            message: "prompt: unknown session dsh-x".into(),
+        }),
+        &ctl,
+    );
+    app.handle(AppEvent::Ctl(CtlEvent::Error("boom".into())), &ctl);
+    assert_eq!(app.queued, 2, "queue intact while the tab is unbound");
+    assert!(
+        commands.try_recv().is_err(),
+        "no prompt may leave with a placeholder id"
+    );
+
+    // The bind dispatches the head normally.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-real".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(app.queued, 1);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(crate::bus::Cmd::Prompt { session_id, text })
+            if session_id == "acp-real" && text == "first"
+    ));
+}
+
+#[test]
+fn bind_failure_clears_the_awaiting_entry_without_poisoning_the_next_bind() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.run_slash("new", "", &ctl);
+    while commands.try_recv().is_ok() {}
+    let placeholder = app.session_id.clone();
+
+    app.handle(AppEvent::Ctl(CtlEvent::BindFailed), &ctl);
+    assert_eq!(
+        app.awaiting_binds.len(),
+        0,
+        "the dead request no longer owns a FIFO slot"
+    );
+    assert_eq!(app.session_id, placeholder, "tab stays open");
+    assert!(!app.session_bound);
+
+    // A later /new binds normally: the failed request cannot shadow it.
+    app.run_slash("new", "", &ctl);
+    while commands.try_recv().is_ok() {}
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-2".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "acp-2", "next bind lands on its own tab");
+}
+
+#[test]
+fn startup_bind_while_a_new_is_in_flight_lands_on_the_parked_startup_tab() {
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let mut app = App::new(Some(Theme::dark()), cfg, "dsh-start".into(), false, false, tx);
+    // The user /new's before the startup session/new resolved: the startup
+    // tab (dsh-start) is parked and unbound; the placeholder is live.
+    app.run_slash("new", "", &ctl);
+    let placeholder = app.session_id.clone();
+    assert_eq!(app.parked[0].id, "dsh-start");
+
+    // The unrequested startup bind arrives first. It must rebind the
+    // parked startup tab — never consume the /new placeholder's FIFO slot.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-s0".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(
+        app.session_id, placeholder,
+        "the /new placeholder keeps its own pending bind"
+    );
+    assert_eq!(app.parked[0].id, "acp-s0", "startup session found its tab");
+    assert!(app.parked[0].session_bound);
+
+    // The /new bind then lands on its own tab, in order.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-s1".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "acp-s1");
+    assert_eq!(app.session_tab_count(), 2);
+}
+
+#[test]
+fn session_errors_land_in_the_owning_parked_transcript() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true); // live s-two
+    for slot in &mut app.parked {
+        if slot.id == "dsh-test" {
+            slot.prompt_pending = true;
+        }
+    }
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionError {
+            session_id: "dsh-test".into(),
+            message: "prompt: boom".into(),
+        }),
+        &ctl,
+    );
+    let live_text = transcript_text(&mut app.transcript);
+    assert!(
+        !live_text.contains("boom"),
+        "a parked session's failure must not spill onto the viewed tab"
+    );
+    let slot = app.parked.iter_mut().find(|s| s.id == "dsh-test").unwrap();
+    assert!(!slot.prompt_pending, "the failed session's delivery settles");
+    let parked_text = transcript_text(&mut slot.transcript);
+    assert!(parked_text.contains("boom"), "notice lands in its own tab");
+}
+
+#[test]
+fn alt_digit_jumps_to_a_session_tab() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true);
+    app.open_new_session("s-three".into(), true);
+    assert_eq!(app.session_id, "s-three");
+
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "dsh-test", "alt+1 jumps to the first tab");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "s-three", "alt+3 jumps to the third tab");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('9'), KeyModifiers::ALT),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "s-three", "out-of-range tab is a no-op");
+}

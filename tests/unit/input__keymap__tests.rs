@@ -298,6 +298,15 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::SelectLineEnd,
         Action::CopySelection,
         Action::CutSelection,
+        Action::SessionTab(1),
+        Action::SessionTab(2),
+        Action::SessionTab(3),
+        Action::SessionTab(4),
+        Action::SessionTab(5),
+        Action::SessionTab(6),
+        Action::SessionTab(7),
+        Action::SessionTab(8),
+        Action::SessionTab(9),
     ];
     let documented: Vec<Action> = KEY_ROWS.iter().map(|row| row.action).collect();
     assert_eq!(

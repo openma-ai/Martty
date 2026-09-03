@@ -149,10 +149,10 @@ fn prompt_response_usage_reaches_the_ui() {
     let finish = PromptFinish {
         session_id: "s".into(),
         result: Ok(response),
-        parked_on_auth: ParkedPrompt::Text("hello".into()),
+        payload: ParkedPromptKind::Text("hello".into()),
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut parked = Some(ParkedPrompt::Text("hello".into()));
+    let mut parked = VecDeque::new();
 
     apply_prompt_finish(finish, &mut parked, &tx, &[], None);
 
@@ -183,10 +183,10 @@ fn prompt_error_ends_the_ui_turn_before_reporting_the_error() {
     let finish = PromptFinish {
         session_id: "s".into(),
         result: Err(AcpError::new(-32603, "boom")),
-        parked_on_auth: ParkedPrompt::Text("hello".into()),
+        payload: ParkedPromptKind::Text("hello".into()),
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut parked = None;
+    let mut parked = VecDeque::new();
 
     apply_prompt_finish(finish, &mut parked, &tx, &[], None);
 
@@ -197,7 +197,8 @@ fn prompt_error_ends_the_ui_turn_before_reporting_the_error() {
     ));
     assert!(matches!(
         rx.try_recv(),
-        Ok(AppEvent::Ctl(CtlEvent::Error(_)))
+        Ok(AppEvent::Ctl(CtlEvent::SessionError { session_id, .. }))
+            if session_id == "s"
     ));
 }
 
@@ -1118,6 +1119,7 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
     }
     cmd_tx
         .send(Cmd::SetConfigOption {
+            session_id: String::new(), // legacy: address the fallback session
             config_id: "collaboration_mode".into(),
             value: "plan".into(),
         })
@@ -3086,15 +3088,20 @@ async fn prompt_for_an_unbound_session_is_rejected_not_rerouted() {
     let mut rejection = None;
     while Instant::now() < deadline && rejection.is_none() {
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(AppEvent::Ctl(CtlEvent::Error(err))) if err.contains("unknown session") => {
-                rejection = Some(err);
+            Ok(AppEvent::Ctl(CtlEvent::SessionError { session_id, message }))
+                if message.contains("unknown session") =>
+            {
+                rejection = Some((session_id, message));
             }
             Ok(_) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(err) => panic!("{err}"),
         }
     }
-    assert_eq!(rejection.as_deref(), Some("prompt: unknown session ghost"));
+    assert_eq!(
+        rejection,
+        Some(("ghost".to_string(), "prompt: unknown session ghost".to_string()))
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(200), prompt_rx.recv())
             .await

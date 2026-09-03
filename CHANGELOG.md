@@ -5,7 +5,69 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- `/close` closes the current session tab (issue #94): everything bound to
+  the tab — transcript, composer draft, staged images, prompt queue, ACP
+  asks, subagents — is discarded, and the ACP controller forgets the
+  session's turn state so no queued follow-up is sent into the void.
+  Local only: ACP has no session/close, so the server-side session
+  survives and a running turn keeps settling (its result drops at the
+  router); the session can be re-entered later with `/resume`. The last
+  remaining tab cannot close. Closing a tab that is still awaiting its
+  `session/new`·`resume` bind keeps the FIFO slot but marks it dead, so
+  the late bind is forgotten instead of rebinding whatever tab is on
+  screen.
+
+- Everything the frame paints between the session tab strip and the
+  composer stats dock is now bound to the viewed tab, not shared: the
+  composer draft and its staged `[image n]` chips (plus the `@file`
+  browser and the pinned/expanded composer height) park with their
+  session like the queue already did, chat scroll position, the `/model`
+  pick, the welcome banner, and the running-state meta row (elapsed
+  timer + state note) survive a tab switch exactly as left, and a `!`
+  shell command started on one session lands its result in that session's
+  transcript even if the user switched tabs while it ran.
+
+- `alt+1` … `alt+9` jump straight to a session tab (issue #94) — the tab
+  strip no longer needs the mouse. Both routes (click and key) share one
+  path that dismisses transient interactions and releases compositor
+  overlays with their cancel events before parking the session.
+
 ### Fixed
+
+- `/plan` (and host skill config actions that map onto ACP
+  `session/set_config_option`) now addresses the **viewed** session: the
+  command carries the session id, so toggling plan mode on an older tab
+  no longer silently flips the most recently bound session's plan.
+
+- Failures are now routed to the session they concern instead of always
+  printing on the viewed tab: prompt/steer/config rejections and errors
+  arrive as session-scoped events and land in the owning tab's own
+  transcript (including parked tabs), while a parked session's
+  `Send Now` settlement (`SteerSettled`) requeues into that session's
+  FIFO even if the user switched away meanwhile.
+
+- Auth stalls no longer misroute retries or lose payloads: a prompt that
+  hits an auth error is parked **with its owning session** (a queue, so
+  concurrent stalls on several sessions cannot overwrite each other), its
+  tab settles like a finished turn, and the next successful sign-in (or
+  any succeeding prompt) retries every stalled prompt into its own
+  session — never into the fallback session. A stalled prompt whose tab
+  was closed meanwhile is dropped instead of leaking into another
+  conversation.
+
+- Failed or auth-stalled `session/new`·`resume` requests no longer poison
+  the bind FIFO: they emit a bind-failure event that drops the awaiting
+  entry and tells its tab (which stays open), so the next successful bind
+  lands on the tab that actually asked — including the startup race where
+  the client's own `/new` overtakes the unrequested startup bind (the
+  startup session now finds its original parked tab instead of hijacking
+  the viewed one).
+
+- An unbound tab's queued prompts are never burned: queue dispatch is
+  gated on the session bind, so a rejection error cannot cascade-pop the
+  whole FIFO through repeated unknown-session errors.
 
 - `/resume` over ACP (`session/load`) no longer leaves the welcome banner
   covering the replayed transcript: the banner was only dismissed by the

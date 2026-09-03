@@ -160,6 +160,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "resume a durable session from this workspace",
     },
     SlashCommand {
+        name: "close",
+        usage: "/close",
+        desc: "close the current session tab (last tab cannot close)",
+    },
+    SlashCommand {
         name: "clear",
         usage: "/clear",
         desc: "clear the scrollback",
@@ -739,10 +744,40 @@ pub struct SubagentView {
 /// One non-live session's full state while another tab is viewed (issue
 /// #94). The App's own fields always describe the viewed session; a tab
 /// switch moves them into a slot and loads the target slot in their place.
+///
+/// Everything the frame paints between the session tab strip and the
+/// composer stats dock is session state: the transcript and its scroll
+/// position, the composer draft + staged images + `@file` browser, the
+/// queue shelf, subagents, ACP asks, painter popups — a tab switch must
+/// never show another session's chrome on this session's tab.
 pub struct SessionSlot {
     pub id: String,
     pub title: Option<String>,
     pub transcript: Transcript,
+    /// Composer draft (text, cursor, per-tab recall history) rides with
+    /// its session like the queue does — the composer area is bound to
+    /// the viewed tab.
+    pub input: ComposerEditor,
+    /// Images staged in the draft as `[image n]` chips (draft-bound).
+    pub pending_images: crate::attachments::Staged,
+    /// Composer well pinned to the amplified height (issue #92).
+    pub input_expanded: bool,
+    /// Open `@file` browser + its Esc-dismissed `@` token tag. Both are
+    /// draft-bound: the menu filters the draft's token, so it follows the
+    /// draft to its tab.
+    pub file_menu: Option<crate::file_ref::FileMenu>,
+    pub file_menu_dismissed: Option<String>,
+    /// Chat scroll offset in lines above the bottom (0 = follow).
+    pub scroll_up: usize,
+    /// Model explicitly picked on this session (`/model`); wins over
+    /// `transcript.last_model` in the chip until a turn realizes it.
+    pub selected_model: Option<String>,
+    /// Welcome banner: shown until this session sends its first prompt.
+    pub show_banner: bool,
+    /// Meta-row chrome while the session runs: state note text and the
+    /// elapsed-timer anchor.
+    pub state_note: String,
+    pub run_started: Option<Instant>,
     /// Authoritative per-session running bit (folded from `SessionStatus`
     /// and turn lifecycle events).
     pub running: bool,
@@ -784,6 +819,18 @@ impl SessionSlot {
             transcript: Transcript::new(id.clone()),
             id,
             title: None,
+            input: ComposerEditor::new(),
+            pending_images: crate::attachments::Staged::default(),
+            input_expanded: false,
+            file_menu: None,
+            file_menu_dismissed: None,
+            scroll_up: 0,
+            selected_model: None,
+            // A fresh tab has not prompted yet — the welcome banner paints
+            // until its first send (resume paths force it off).
+            show_banner: true,
+            state_note: String::new(),
+            run_started: None,
             running: false,
             completed_unseen: false,
             prompt_queue: VecDeque::new(),
@@ -802,6 +849,13 @@ impl SessionSlot {
             plugin_tree: None,
         }
     }
+}
+
+/// One FIFO entry for a tab awaiting its `SessionBound` (see the App
+/// field `awaiting_binds`).
+struct AwaitingBind {
+    id: String,
+    open: bool,
 }
 
 /// One row of the session tab strip (native chrome, `ui::draw_session_tabs`).
@@ -1195,10 +1249,14 @@ pub struct App {
     parked: Vec<SessionSlot>,
     /// Tab index of the live session (`0..=parked.len()`).
     current: usize,
-    /// Ids of tabs awaiting their `SessionBound`, FIFO: `/new` placeholders
-    /// and `session/load` targets. The bind lands on the tab that asked,
-    /// even if the user switched away while it resolved.
-    awaiting_binds: VecDeque<String>,
+    /// One FIFO entry for a tab awaiting its `SessionBound`: `/new`
+    /// placeholders and `session/load` targets. The bind lands on the tab
+    /// that asked, even if the user switched away while it resolved.
+    /// Closing the tab before the bind resolves keeps the entry (its FIFO
+    /// position still owns the in-flight request) but marks it dead — the
+    /// bind is discarded when it arrives instead of rebinding some other
+    /// tab.
+    awaiting_binds: VecDeque<AwaitingBind>,
     /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
     pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
     pub cfg: RuntimeConfig,
@@ -1211,6 +1269,13 @@ pub struct App {
     /// A real `session/new`, `session/resume`, or `session/load` supplied this id.
     /// Cached session options stay hidden until this becomes true.
     pub session_bound: bool,
+    /// The unrequested startup/reconnect bind has been seen. Before it,
+    /// any `SessionBound` is the acp-side `session/new` this client did not
+    /// ask for — so when one arrives while tabs are awaiting their own
+    /// binds it must land on the parked tab that is not awaiting anything,
+    /// not on the FIFO head (issue #94 startup race). Seeded bound
+    /// sessions (demo, tests) have no pending unrequested bind.
+    startup_bound: bool,
     /// ACP initialize / authenticate status (live ACP only).
     pub auth: crate::acp_auth::AuthSnapshot,
     /// Leave the TUI and run this agent login, then `authenticate`.
@@ -1232,7 +1297,7 @@ pub struct App {
     /// ACP request task yet. Runtime startup alone does not make a turn busy.
     prompt_pending: bool,
     shell_seq: u64,
-    shell_pending: Vec<(u64, usize)>, // (id, cell idx)
+    shell_pending: Vec<(u64, String, usize)>, // (id, session id, cell idx)
     shell_worker: Option<ShellWorker>,
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
@@ -1594,6 +1659,9 @@ impl App {
             demo,
             attached,
             session_bound: demo,
+            // Seeded-bound sessions (demo, tests, local resume) have no
+            // unrequested bind coming; a live ACP start does.
+            startup_bound: demo,
             auth: crate::acp_auth::AuthSnapshot::none(),
             pending_terminal_auth: None,
             quit: false,
@@ -1645,6 +1713,17 @@ impl App {
             id: std::mem::take(&mut self.session_id),
             title: self.session_title.take(),
             transcript: std::mem::replace(&mut self.transcript, Transcript::new(String::new())),
+            // Composer + chat chrome bound to the tab (see `put_live_slot`).
+            input: std::mem::take(&mut self.input),
+            pending_images: std::mem::take(&mut self.pending_images),
+            input_expanded: std::mem::take(&mut self.input_expanded),
+            file_menu: self.file_menu.take(),
+            file_menu_dismissed: self.file_menu_dismissed.take(),
+            scroll_up: std::mem::take(&mut self.scroll_up),
+            selected_model: std::mem::take(&mut self.selected_model),
+            show_banner: std::mem::take(&mut self.show_banner),
+            state_note: std::mem::take(&mut self.state_note),
+            run_started: self.run_started.take(),
             running: self.state != RunState::Idle || self.prompt_pending,
             completed_unseen: false,
             prompt_queue: std::mem::take(&mut self.prompt_queue),
@@ -1670,7 +1749,8 @@ impl App {
 
     /// Load a slot's state into the App fields — the inverse of
     /// [`Self::take_live_slot`]. RunState is recomputed from the slot's
-    /// authoritative `running` bit; the elapsed timer restarts.
+    /// authoritative `running` bit; an in-flight turn keeps its elapsed
+    /// timer and state note.
     fn put_live_slot(&mut self, slot: SessionSlot) {
         self.session_id = slot.id;
         self.session_title = slot.title;
@@ -1694,19 +1774,39 @@ impl App {
         // Painter popups and the /plugins tree resurface the same way.
         self.view_overlay = slot.view_overlay;
         self.plugin_tree = slot.plugin_tree;
-        self.state = if slot.running || slot.prompt_pending {
+        // Composer + chat chrome bound to the tab: draft, staged images,
+        // @file browser, scroll, banner, model pick, running note.
+        self.input = slot.input;
+        self.pending_images = slot.pending_images;
+        self.input_expanded = slot.input_expanded;
+        self.file_menu = slot.file_menu;
+        self.file_menu_dismissed = slot.file_menu_dismissed;
+        self.scroll_up = slot.scroll_up;
+        self.selected_model = slot.selected_model;
+        self.show_banner = slot.show_banner;
+        let running = slot.running || slot.prompt_pending;
+        self.state = if running {
             RunState::Running
         } else {
             RunState::Idle
         };
-        self.run_started = None;
-        self.state_note.clear();
+        // Restore the meta-row chrome as left: an in-flight turn keeps its
+        // elapsed timer and note; a session that settled while parked
+        // shows the idle meta row.
+        self.run_started = if running { slot.run_started } else { None };
+        self.state_note = if running {
+            slot.state_note
+        } else {
+            String::new()
+        };
     }
 
-    /// Per-view caches that must not leak across a tab switch.
+    /// Per-view caches that must not leak across a tab switch. Draft,
+    /// staged images, scroll and model pick come back from the slot via
+    /// [`Self::put_live_slot`]; everything here is transient interaction
+    /// state that must never resurface on the incoming tab.
     fn after_switch(&mut self) {
         self.chat_view = ChatView::default();
-        self.scroll_up = 0;
         self.sel = None;
         self.selecting = false;
         self.last_click = None;
@@ -1715,8 +1815,6 @@ impl App {
         self.picker = None;
         self.queue_selection = None;
         self.queue_edit = None;
-        // The incoming transcript's own model is the truth for the chip.
-        self.selected_model = None;
         self.needs_redraw = true;
     }
 
@@ -1740,6 +1838,24 @@ impl App {
         self.current = tab;
         self.put_live_slot(target);
         self.after_switch();
+    }
+
+    /// Leave the viewed session for another tab — mouse click and keyboard
+    /// (alt+1…9) take the same path: transient interactions are dismissed
+    /// and compositor-owned overlays are released with their cancel events
+    /// (the plugin owns a single-overlay slot; Esc would send the same).
+    /// Painter popups and ACP asks park with their session instead and
+    /// resurface on return.
+    pub fn switch_view_to_tab(&mut self, tab: usize, ctl: &Controller) {
+        self.sel = None;
+        self.selecting = false;
+        self.last_click = None;
+        self.input_sel = None;
+        self.input_selecting = false;
+        if tab != self.current {
+            self.cancel_plugin_overlays(ctl);
+        }
+        self.switch_to_session(tab);
     }
 
     /// Park the live session and open a fresh tab for `id` at the end.
@@ -1867,7 +1983,12 @@ impl App {
                     slot.prompt_pending = false;
                 }
             }
-            E::TurnStart { .. } => slot.running = true,
+            E::TurnStart { .. } => {
+                // A new turn on this session starts a fresh subagent batch
+                // (mirror of the live path in `apply_ui`).
+                slot.next_subagent_starts_batch = true;
+                slot.running = true;
+            }
             E::TurnEnd { .. } => {
                 if slot.running {
                     slot.completed_unseen = true;
@@ -1919,6 +2040,51 @@ impl App {
                 blocks: prompt_blocks_from_staged(prompt.blocks),
             }),
         }
+    }
+
+    /// Settle one Send Now (steer) outcome. The steer's session may have
+    /// been parked or even closed while the agent decided, so the pending
+    /// entry is looked up on the viewed tab first and then in every parked
+    /// slot (`next_prompt_id` is a single counter, so ids are unique app-
+    /// wide). A deferred steer is requeued into its own session's FIFO and
+    /// its echo bubble hidden there.
+    fn settle_steer(&mut self, message_id: u64, deferred: bool) {
+        if let Some(pending) = self.pending_steer_cells.remove(&message_id) {
+            if deferred {
+                self.transcript.hide_cells(&pending.cells);
+                let queued = ClientQueuedPrompt {
+                    id: message_id,
+                    blocks: pending.blocks,
+                };
+                if pending.requeue_front {
+                    self.prompt_queue.push_front(queued);
+                } else {
+                    self.prompt_queue.push_back(queued);
+                }
+                self.queued = self.prompt_queue.len();
+                self.show_tip("agent deferred Send Now — queued after the active turn");
+            }
+            return;
+        }
+        // The owning tab is not the one in view — settle inside its slot.
+        for slot in &mut self.parked {
+            if let Some(pending) = slot.pending_steer_cells.remove(&message_id) {
+                if deferred {
+                    slot.transcript.hide_cells(&pending.cells);
+                    let queued = ClientQueuedPrompt {
+                        id: message_id,
+                        blocks: pending.blocks,
+                    };
+                    if pending.requeue_front {
+                        slot.prompt_queue.push_front(queued);
+                    } else {
+                        slot.prompt_queue.push_back(queued);
+                    }
+                }
+                return;
+            }
+        }
+        // The session was closed before the settle: nothing to do.
     }
 
     /// Re-detect the workspace git branch for the composer cap label. One
@@ -2944,6 +3110,9 @@ impl App {
                 // kept in proto's tail buffer for diagnostics; stay quiet here
             }
             AppEvent::RuntimeExited(code) => {
+                // A next prompt restarts the runtime; its fresh startup
+                // bind is again an unrequested one (see `startup_bound`).
+                self.startup_bound = false;
                 self.prompt_pending = false;
                 self.queued = 0;
                 self.prompt_queue.clear();
@@ -2998,31 +3167,73 @@ impl App {
                         message_id,
                         deferred,
                     } => {
-                        if let Some(pending) = self.pending_steer_cells.remove(&message_id) {
-                            if deferred {
-                                self.transcript.hide_cells(&pending.cells);
-                                let queued = ClientQueuedPrompt {
-                                    id: message_id,
-                                    blocks: pending.blocks,
-                                };
-                                if pending.requeue_front {
-                                    self.prompt_queue.push_front(queued);
-                                } else {
-                                    self.prompt_queue.push_back(queued);
-                                }
-                                self.queued = self.prompt_queue.len();
-                                self.show_tip(
-                                    "agent deferred Send Now — queued after the active turn",
-                                );
-                            }
-                        }
+                        self.settle_steer(message_id, deferred);
                     }
                     CtlEvent::Error(err) => {
+                        // Connection-level failure (no session context): the
+                        // notice belongs to the viewed tab. Session-scoped
+                        // failures arrive as `SessionError` instead.
                         self.prompt_pending = false;
                         self.state = RunState::Idle;
                         self.run_started = None;
                         self.transcript.push_notice(NoticeLevel::Error, err);
                         self.dispatch_next_queued(ctl);
+                    }
+                    CtlEvent::SessionError {
+                        session_id,
+                        message,
+                    } => {
+                        // A failure for one specific session (prompt,
+                        // steer, config select, …): the notice lands in that
+                        // session's own transcript — a parked tab must not
+                        // spill errors onto the viewed one. The session's
+                        // delivery state settles (its prompt, if any, is not
+                        // coming back) but its queue is left alone: an
+                        // unbound/forgotten tab must not burn queued
+                        // prompts through repeated rejections.
+                        if session_id == self.session_id {
+                            self.prompt_pending = false;
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.transcript
+                                .push_notice(NoticeLevel::Error, message);
+                        } else if let Some(slot) = self
+                            .parked
+                            .iter_mut()
+                            .find(|slot| slot.id == session_id)
+                        {
+                            slot.prompt_pending = false;
+                            slot.running = false;
+                            slot.transcript
+                                .push_notice(NoticeLevel::Error, message);
+                        }
+                    }
+                    CtlEvent::BindFailed => {
+                        // session/new·resume failed outright. acp completes
+                        // bind requests in order, so the FIFO head owns the
+                        // failure: drop its entry so a later bind cannot
+                        // land on the dead request, and tell the tab that
+                        // asked (it stays open and unbound — /close or
+                        // retry /new·resume).
+                        if let Some(awaiting) = self.awaiting_binds.pop_front() {
+                            if awaiting.open {
+                                let msg: String = self.locale.tr(
+                                    "session bind failed — this tab stays open; /close it or retry /new",
+                                    "会话绑定失败 —— 本标签页保持打开;/close 关闭或重试 /new",
+                                ).into();
+                                if self.session_id == awaiting.id {
+                                    self.transcript.push_notice(NoticeLevel::Warn, msg);
+                                } else if let Some(slot) = self
+                                    .parked
+                                    .iter_mut()
+                                    .find(|slot| slot.id == awaiting.id)
+                                {
+                                    slot.transcript.push_notice(NoticeLevel::Warn, msg);
+                                }
+                            }
+                        }
+                        self.show_tip("session bind failed");
+                        self.needs_redraw = true;
                     }
                     CtlEvent::CancelRequested => {
                         self.state_note = "cancelling".into();
@@ -3211,13 +3422,68 @@ impl App {
                         // below (prompts submitted while the tab was unbound
                         // are held in its queue — acp.rs rejects unbound ids).
                         let mut just_bound: Option<String> = None;
-                        if let Some(awaiting) = self.awaiting_binds.pop_front() {
+                        if !self.startup_bound && !self.awaiting_binds.is_empty() {
+                            // The unrequested startup/reconnect session/new
+                            // resolved while the user's own /new·resume is
+                            // still in flight — acp completes the startup
+                            // bind before any UI request, so this bind owns
+                            // no awaiting entry. Its tab is the parked
+                            // session that is unbound and not itself
+                            // awaiting anything; never steal the FIFO head
+                            // from the request that really owns it.
+                            self.startup_bound = true;
+                            let owner = self.parked.iter().position(|slot| {
+                                !slot.session_bound
+                                    && !self.awaiting_binds.iter().any(|e| e.id == slot.id)
+                            });
+                            match owner {
+                                Some(pidx) => {
+                                    let slot = &mut self.parked[pidx];
+                                    slot.id = session_id.clone();
+                                    slot.transcript.set_root_session(session_id.clone());
+                                    slot.session_bound = true;
+                                    if let Some(notice) = notice {
+                                        slot.transcript
+                                            .push_notice(NoticeLevel::Info, notice);
+                                    }
+                                    just_bound = Some(slot.id.clone());
+                                }
+                                None => {
+                                    // Every parked tab is bound (reconnect
+                                    // after a long outage): adopt the fresh
+                                    // session on the viewed tab, the
+                                    // pre-multi-session semantic.
+                                    if self.session_id != session_id {
+                                        self.reset_subagent_views();
+                                    }
+                                    self.session_id = session_id.clone();
+                                    self.transcript.set_root_session(session_id);
+                                    self.session_bound = true;
+                                    if let Some(notice) = notice {
+                                        self.transcript
+                                            .push_notice(NoticeLevel::Info, notice);
+                                    }
+                                    just_bound = Some(self.session_id.clone());
+                                }
+                            }
+                        } else if let Some(awaiting) = self.awaiting_binds.pop_front() {
                             // The tab that asked for session/new (placeholder
                             // id) or session/resume·load (target id) owns
                             // this bind — the user may have switched away
                             // while it resolved, so rebind by the awaiting
                             // id, not by which tab happens to be live.
-                            if self.session_id == awaiting {
+                            if !awaiting.open {
+                                // The requesting tab was closed (/close)
+                                // before the bind resolved. acp already
+                                // registered the new session server-side, so
+                                // forget it and never hijack the viewed tab.
+                                ctl.send(Cmd::ForgetSession {
+                                    session_id: session_id.clone(),
+                                });
+                                self.show_tip(format!(
+                                    "session {session_id} bound after its tab was closed"
+                                ));
+                            } else if self.session_id == awaiting.id {
                                 self.session_id = session_id.clone();
                                 self.transcript.set_root_session(session_id.clone());
                                 self.session_bound = true;
@@ -3226,7 +3492,7 @@ impl App {
                                 }
                                 just_bound = Some(self.session_id.clone());
                             } else if let Some(slot) =
-                                self.parked.iter_mut().find(|slot| slot.id == awaiting)
+                                self.parked.iter_mut().find(|slot| slot.id == awaiting.id)
                             {
                                 slot.id = session_id.clone();
                                 slot.transcript.set_root_session(session_id.clone());
@@ -3251,6 +3517,7 @@ impl App {
                             just_bound = Some(slot.id.clone());
                         } else {
                             // Startup / reconnect: rebind the viewed session.
+                            self.startup_bound = true;
                             if self.session_id != session_id {
                                 self.reset_subagent_views();
                             }
@@ -3292,9 +3559,22 @@ impl App {
                 self.open_elicitation_ask(session_id.as_deref(), form, reply);
             }
             AppEvent::ShellDone { id, code, output } => {
-                if let Some(pos) = self.shell_pending.iter().position(|(sid, _)| *sid == id) {
-                    let (_, cell) = self.shell_pending.remove(pos);
-                    self.transcript.finish_shell(cell, code, output);
+                if let Some(pos) = self
+                    .shell_pending
+                    .iter()
+                    .position(|(sid, _, _)| *sid == id)
+                {
+                    let (_, session, cell) = self.shell_pending.remove(pos);
+                    // The shell is workspace-wide but its cell lives in the
+                    // transcript of the session that ran it — the user may
+                    // have switched tabs while the command ran.
+                    if session == self.session_id {
+                        self.transcript.finish_shell(cell, code, output);
+                    } else if let Some(slot) =
+                        self.parked.iter_mut().find(|slot| slot.id == session)
+                    {
+                        slot.transcript.finish_shell(cell, code, output);
+                    }
                     self.needs_redraw = true;
                 }
                 // `!git checkout …` in the session shell moves the branch —
@@ -3321,14 +3601,23 @@ impl App {
                 // A parked session's subagent tree: register the child in
                 // its slot and fold the event into the slot's transcripts.
                 for slot in &mut self.parked {
-                    if slot.id == *parent {
+                    if slot.id == *parent || slot.subagents.iter().any(|v| v.id == *parent) {
+                        // A fresh turn starts a new batch, exactly like the
+                        // live path below — background sessions must keep
+                        // their current/history grouping current.
+                        if slot.next_subagent_starts_batch {
+                            slot.current_subagents.clear();
+                            slot.next_subagent_starts_batch = false;
+                        }
+                        slot.current_subagents.insert(child.clone());
                         upsert_subagent_view(&mut slot.subagents, parent, child);
-                        slot.transcript.apply(ui);
-                        self.needs_redraw = true;
-                        return;
-                    }
-                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == *parent) {
-                        view.transcript.apply(ui);
+                        if slot.id == *parent {
+                            slot.transcript.apply(ui);
+                        } else if let Some(view) =
+                            slot.subagents.iter_mut().find(|view| view.id == *parent)
+                        {
+                            view.transcript.apply(ui);
+                        }
                         self.needs_redraw = true;
                         return;
                     }
@@ -3366,6 +3655,13 @@ impl App {
                             slot.subagents.iter_mut().find(|view| view.id == parent)
                         {
                             pview.transcript.apply(ui);
+                        }
+                        // Issue #80 parity: a parked session's rail also
+                        // auto-closes once every subagent task has ended.
+                        if slot.agent_selection.is_some()
+                            && !slot.subagents.iter().any(|view| view.running || view.failed)
+                        {
+                            slot.agent_selection = None;
                         }
                         self.needs_redraw = true;
                         return;
@@ -3585,22 +3881,7 @@ impl App {
                 self.needs_redraw = true;
                 // Session tab strip (issue #94): left-click a tab switches.
                 if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
-                    self.sel = None;
-                    self.selecting = false;
-                    self.last_click = None;
-                    self.input_sel = None;
-                    self.input_selecting = false;
-                    if tab != self.current {
-                        // Compositor-owned modals (plugin view/select/
-                        // slider, e.g. live /status) cannot ride along to
-                        // another tab: leaving cancels them exactly like
-                        // Esc so the plugin releases its single-overlay
-                        // slot. Painter popups (/help, /keys, /session,
-                        // painter /status) park with the session inside
-                        // `switch_to_session`.
-                        self.cancel_plugin_overlays(ctl);
-                    }
-                    self.switch_to_session(tab);
+                    self.switch_view_to_tab(tab, ctl);
                     return;
                 }
                 if let Some(action) = self
@@ -4816,6 +5097,13 @@ impl App {
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
             Action::CyclePermission => self.cycle_permission(ctl),
+            Action::SessionTab(n) => {
+                // alt+1…9: jump to session tab N (no-op beyond the strip).
+                let tab = n.saturating_sub(1) as usize;
+                if tab <= self.parked.len() {
+                    self.switch_view_to_tab(tab, ctl);
+                }
+            }
             Action::HistoryPrev => self.history_prev(),
             Action::HistoryNext => self.history_next(),
             Action::ScrollHalfUp => self.scroll_by(10),
@@ -5617,9 +5905,92 @@ impl App {
             // real id lands on this tab via `awaiting_binds` at SessionBound.
             let placeholder = format!("dsh-{}", timestamp());
             self.open_new_session(placeholder.clone(), false);
-            self.awaiting_binds.push_back(placeholder);
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: placeholder,
+                open: true,
+            });
             ctl.send(Cmd::NewSession);
             self.show_tip("session/new …");
+        }
+    }
+
+    /// The `/close` flow (issue #94): stop viewing the current session tab
+    /// and drop everything bound to it (transcript, composer draft, queue,
+    /// asks, subagents). Local only — ACP has no session/close, so the
+    /// server-side session keeps existing; acp.rs forgets its turn state
+    /// and queued prompts so nothing more is sent into the void, and the
+    /// session's later updates drop at the router. An in-flight turn keeps
+    /// running and is dropped when it settles. Never closes the last tab.
+    fn close_session_flow(&mut self, ctl: &Controller) {
+        let total = self.session_tab_count();
+        if total < 2 {
+            self.show_tip(self.locale.tr(
+                "cannot close the last session — /new opens another first",
+                "不能关闭最后一个会话 —— 先用 /new 开一个新的",
+            ));
+            return;
+        }
+        let doomed = self.session_id.clone();
+        let running = self.state != RunState::Idle || self.prompt_pending;
+        // Compositor-owned overlays (plugin view/select/slider) must be
+        // released with a cancel event before the tab dies — the same path
+        // a tab click takes. Painter popups, asks and the composer draft
+        // die with the slot (ask overlays auto-cancel through Drop).
+        self.cancel_plugin_overlays(ctl);
+        let doomed_slot = self.take_live_slot();
+        let discarded = doomed_slot.prompt_queue.len();
+        let had_draft = !doomed_slot.input.is_empty()
+            || !doomed_slot.pending_images.is_empty();
+        let had_ask =
+            doomed_slot.permission_ask.is_some() || doomed_slot.elicitation_ask.is_some();
+        drop(doomed_slot);
+
+        // The bind this tab may still be awaiting keeps its FIFO position
+        // (the in-flight session/new·resume owns it) but is now dead: when
+        // it resolves the session is forgotten, never bound onto a
+        // neighboring tab.
+        if let Some(entry) = self.awaiting_binds.iter_mut().find(|entry| entry.id == doomed) {
+            entry.open = false;
+        }
+        // Forget the session on the ACP side too: drop its turn state and
+        // queued prompts (no-op for an unbound placeholder id).
+        ctl.send(Cmd::ForgetSession {
+            session_id: doomed.clone(),
+        });
+
+        // View a neighbor first, keeping the closed tab's conceptual slot:
+        // the right neighbor when one exists, else the tab on the left.
+        let right = self.current + 1 < total;
+        let pidx = if right { self.current } else { self.current - 1 };
+        let mut target = self.parked.remove(pidx);
+        target.completed_unseen = false;
+        self.current = if right {
+            self.current
+        } else {
+            self.current.saturating_sub(1)
+        };
+        self.put_live_slot(target);
+        self.after_switch();
+        self.needs_redraw = true;
+
+        let label = short_id(&doomed);
+        let mut bits: Vec<String> = Vec::new();
+        if running {
+            bits.push("its running turn keeps settling".into());
+        }
+        if discarded > 0 {
+            bits.push(format!("{discarded} queued dropped"));
+        }
+        if had_draft {
+            bits.push("draft dropped".into());
+        }
+        if had_ask {
+            bits.push("pending ask cancelled".into());
+        }
+        if bits.is_empty() {
+            self.show_tip(format!("closed {label}"));
+        } else {
+            self.show_tip(format!("closed {label} · {}", bits.join(", ")));
         }
     }
 
@@ -5658,7 +6029,9 @@ impl App {
         // any path that (re)loads real history must dismiss it — the local
         // `resume_session` does the same. Without this, a /resume before the
         // first prompt left the banner covering the whole replayed chat.
-        self.show_banner = false;
+        // Dismissed *after* the branch: a fresh tab starts with the banner
+        // (composer chrome is tab-bound), and the same-session branch resets
+        // its own fields.
         if self.session_id == id {
             // Resuming the viewed session: reset its UI and re-stream.
             self.reset_session_ui();
@@ -5674,8 +6047,12 @@ impl App {
             // transcript; the legacy `session/load` fallback streams it via
             // session/update tagged with this id.
             self.open_new_session(id.to_string(), false);
-            self.awaiting_binds.push_back(id.to_string());
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: id.to_string(),
+                open: true,
+            });
         }
+        self.show_banner = false;
         ctl.send(Cmd::ResumeSession {
             session_id: id.to_string(),
         });
@@ -6316,6 +6693,7 @@ impl App {
                 }
             }
             "new" => self.new_session_flow(arg, ctl),
+            "close" => self.close_session_flow(ctl),
             "session" => self.push_session_info(),
             "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
@@ -6380,6 +6758,7 @@ impl App {
                     };
                     if let Some(value) = value {
                         ctl.send(Cmd::SetConfigOption {
+                            session_id: self.session_id.clone(),
                             config_id: action.config_id,
                             value,
                         });
@@ -7010,6 +7389,13 @@ impl App {
             self.show_tip("queue paused · finish or close the queue editor");
             return;
         }
+        if !self.session_bound {
+            // The tab still awaits (or lost) its session bind: an unbound
+            // id would be rejected by acp, and every rejection error would
+            // re-enter this function and burn the whole queue. The prompt
+            // stays queued for the SessionBound handler (issue #94).
+            return;
+        }
         let Some(prompt) = self.prompt_queue.pop_front() else {
             return;
         };
@@ -7506,7 +7892,9 @@ impl App {
         self.shell_seq += 1;
         let id = self.shell_seq;
         let cell = self.transcript.push_shell(cmd.clone());
-        self.shell_pending.push((id, cell));
+        // Tag the pending cell with its session: the worker is shared and
+        // the user may switch tabs before the command settles.
+        self.shell_pending.push((id, self.session_id.clone(), cell));
         let request = ShellRequest { id, command: cmd };
         let worker = self.shell_worker.get_or_insert_with(|| {
             ShellWorker::spawn(self.cfg.workspace.clone(), self.bus_tx.clone())

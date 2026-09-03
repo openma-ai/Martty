@@ -219,17 +219,26 @@ fn emit_auth(bus: &Sender<AppEvent>, snap: AuthSnapshot) {
     let _ = bus.send(AppEvent::Ctl(CtlEvent::Auth(snap)));
 }
 
-/// Parked composer payload retried after a later `authenticate` succeeds.
+/// The composer payload of one prompt stalled on auth.
 #[derive(Clone)]
-enum ParkedPrompt {
+enum ParkedPromptKind {
     Text(String),
     Images(Vec<crate::bus::PromptBlock>),
+}
+
+/// One stalled prompt with the session that owned it (`None` = it was
+/// submitted before the first session existed and adopts the current
+/// fallback on retry). A stall can hit several sessions' in-flight prompts
+/// at once, so parked is a queue — never an overwriting slot (issue #94).
+struct ParkedPrompt {
+    session: Option<String>,
+    kind: ParkedPromptKind,
 }
 
 struct PromptFinish {
     session_id: String,
     result: Result<agent_client_protocol::schema::v1::PromptResponse, AcpError>,
-    parked_on_auth: ParkedPrompt,
+    payload: ParkedPromptKind,
 }
 
 /// Per-session turn state on one shared ACP connection. The server allows one
@@ -319,7 +328,7 @@ fn spawn_session_prompt(
     bus: Sender<AppEvent>,
     sid: SessionId,
     content: Vec<ContentBlock>,
-    parked_on_auth: ParkedPrompt,
+    payload: ParkedPromptKind,
     done: tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -341,7 +350,7 @@ fn spawn_session_prompt(
         let _ = done.send(PromptFinish {
             session_id: sid.to_string(),
             result,
-            parked_on_auth,
+            payload,
         });
     })
 }
@@ -371,7 +380,7 @@ fn begin_prompt(
     cx: &ConnectionTo<Agent>,
     bus: &Sender<AppEvent>,
     session_id: &Option<SessionId>,
-    parked: &mut Option<ParkedPrompt>,
+    parked: &mut VecDeque<ParkedPrompt>,
     methods: &[AuthMethodInfo],
     selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
@@ -381,7 +390,10 @@ fn begin_prompt(
     match cmd {
         Cmd::Prompt { text, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Text(text));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Text(text),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -395,13 +407,16 @@ fn begin_prompt(
                 bus.clone(),
                 sid,
                 vec![text.clone().into()],
-                ParkedPrompt::Text(text),
+                ParkedPromptKind::Text(text),
                 done.clone(),
             ))
         }
         Cmd::Steer { text, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Text(text));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Text(text),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -415,13 +430,16 @@ fn begin_prompt(
                 bus.clone(),
                 sid,
                 vec![text.clone().into()],
-                ParkedPrompt::Text(text),
+                ParkedPromptKind::Text(text),
                 done.clone(),
             ))
         }
         Cmd::PromptImages { blocks, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Images(blocks));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Images(blocks),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -430,7 +448,7 @@ fn begin_prompt(
                 );
                 return None;
             };
-            let parked_on_auth = ParkedPrompt::Images(blocks.clone());
+            let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -441,7 +459,7 @@ fn begin_prompt(
                     bus.clone(),
                     sid,
                     content,
-                    parked_on_auth,
+                    payload,
                     done.clone(),
                 )),
                 Ok(_) => {
@@ -456,7 +474,10 @@ fn begin_prompt(
         }
         Cmd::SteerImages { blocks, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Images(blocks));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Images(blocks),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -465,7 +486,7 @@ fn begin_prompt(
                 );
                 return None;
             };
-            let parked_on_auth = ParkedPrompt::Images(blocks.clone());
+            let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -476,7 +497,7 @@ fn begin_prompt(
                     bus.clone(),
                     sid,
                     content,
-                    parked_on_auth,
+                    payload,
                     done.clone(),
                 )),
                 Ok(_) => {
@@ -500,14 +521,17 @@ fn drain_ready_sessions(
     sessions: &mut HashMap<String, SessionHandle>,
     cx: &ConnectionTo<Agent>,
     bus: &Sender<AppEvent>,
-    parked: &mut Option<ParkedPrompt>,
+    parked: &mut VecDeque<ParkedPrompt>,
     methods: &[AuthMethodInfo],
     selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
     done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) {
-    if parked.is_some() {
+    // While any prompt is stalled on auth, new prompts are not started:
+    // they would only fail the same way (and the stall release drains
+    // everything in order).
+    if !parked.is_empty() {
         return;
     }
     let keys: Vec<String> = sessions.keys().cloned().collect();
@@ -533,15 +557,60 @@ fn drain_ready_sessions(
             workspace,
             done,
         );
-        if parked.is_some() {
+        // If the begin parked a prompt (only possible without a session,
+        // which drain never passes) stop starting more.
+        if !parked.is_empty() {
             return;
         }
     }
 }
 
+/// Send stalled prompts back to the sessions that owned them — an
+/// `authenticate` just succeeded, or another prompt succeeded, either of
+/// which proves the stall is over. Entries whose session was closed while
+/// stalled (`/close` → ForgetSession) are dropped: nobody views them, and
+/// retrying into the fallback session would leak the message into a
+/// conversation it never belonged to. Pre-session entries (no owner yet)
+/// adopt the current fallback session; with no session at all they stay
+/// parked for the next release. Returns how many prompts were requeued.
+fn requeue_parked_prompts(
+    sessions: &mut HashMap<String, SessionHandle>,
+    current: &Option<SessionId>,
+    parked: &mut VecDeque<ParkedPrompt>,
+) -> usize {
+    let mut retried = 0;
+    let mut still_parked: VecDeque<ParkedPrompt> = VecDeque::new();
+    while let Some(p) = parked.pop_front() {
+        let target = match p.session {
+            Some(sid) if sessions.contains_key(&sid) => Some(sid),
+            Some(_) => None, // closed while stalled — drop
+            None => current.as_ref().map(|c| c.to_string()),
+        };
+        match (target, p.kind) {
+            (Some(sid), kind) => {
+                let cmd = match kind {
+                    ParkedPromptKind::Text(text) => Cmd::Prompt {
+                        session_id: sid.clone(),
+                        text,
+                    },
+                    ParkedPromptKind::Images(blocks) => Cmd::PromptImages {
+                        session_id: sid.clone(),
+                        blocks,
+                    },
+                };
+                sessions.entry(sid).or_default().queue.push_front(cmd);
+                retried += 1;
+            }
+            (None, kind) => still_parked.push_back(ParkedPrompt { session: None, kind }),
+        }
+    }
+    *parked = still_parked;
+    retried
+}
+
 fn apply_prompt_finish(
     finish: PromptFinish,
-    parked: &mut Option<ParkedPrompt>,
+    parked: &mut VecDeque<ParkedPrompt>,
     bus: &Sender<AppEvent>,
     methods: &[AuthMethodInfo],
     selected: Option<&AuthMethodInfo>,
@@ -572,10 +641,23 @@ fn apply_prompt_finish(
                 session: finish.session_id,
                 kind: finish_kind.into(),
             }));
-            *parked = None;
+            // A success proves the stall is over — the release happens in
+            // the caller (it owns the session map); nothing parks here.
         }
         Err(err) if is_auth_required_error(&err) => {
-            *parked = Some(finish.parked_on_auth);
+            // Park the payload with its owning session so the retry (after
+            // `authenticate`) lands on the right tab. The turn itself is
+            // over for the UI: settle the session's transcript and badge
+            // like any other turn end — but never start a new prompt while
+            // the stall stands.
+            parked.push_back(ParkedPrompt {
+                session: Some(finish.session_id.clone()),
+                kind: finish.payload,
+            });
+            let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
+                session: finish.session_id,
+                kind: "interrupted".into(),
+            }));
             emit_needs_auth_open(
                 bus,
                 methods.to_vec(),
@@ -585,10 +667,13 @@ fn apply_prompt_finish(
         }
         Err(err) => {
             let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
-                session: finish.session_id,
+                session: finish.session_id.clone(),
                 kind: "error".into(),
             }));
-            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!("prompt: {err}"))));
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                session_id: finish.session_id,
+                message: format!("prompt: {err}"),
+            }));
         }
     }
 }
@@ -609,13 +694,13 @@ fn emit_open_auth_if_needed(bus: &Sender<AppEvent>, status: AuthStatus) {
     }
 }
 
-fn parked_prompt(cmd: &Cmd) -> Option<ParkedPrompt> {
+fn parked_prompt(cmd: &Cmd) -> Option<ParkedPromptKind> {
     match cmd {
         Cmd::Prompt { text, .. } | Cmd::Steer { text, .. } => {
-            Some(ParkedPrompt::Text(text.clone()))
+            Some(ParkedPromptKind::Text(text.clone()))
         }
         Cmd::PromptImages { blocks, .. } | Cmd::SteerImages { blocks, .. } => {
-            Some(ParkedPrompt::Images(blocks.clone()))
+            Some(ParkedPromptKind::Images(blocks.clone()))
         }
         _ => None,
     }
@@ -1639,7 +1724,7 @@ where
                     }
                 }
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
-                let mut parked: Option<ParkedPrompt> = None;
+                let mut parked: VecDeque<ParkedPrompt> = VecDeque::new();
 
                 let (fwd_tx, mut fwd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
                 std::thread::Builder::new()
@@ -1661,42 +1746,49 @@ where
                     tokio::select! {
                         cmd = fwd_rx.recv() => {
                             let Some(mut cmd) = cmd else { break };
-                            if current.is_none()
-                                && parked.is_none()
-                                && parked_prompt(&cmd).is_some()
-                            {
-                                if session_auth_pending {
-                                    parked = parked_prompt(&cmd);
-                                    continue;
-                                }
-                                match create_prompt_session(
-                                    &cx,
-                                    &cwd,
-                                    &surface,
-                                    &bus,
-                                    &methods,
-                                    selected.as_ref(),
-                                ).await {
-                                    Ok(Some(sid)) => {
-                                        retarget_session(&mut cmd, &sid);
-                                        bind_session(
-                                            &mut sessions,
-                                            &mut current,
-                                            &mut pending,
-                                            sid,
-                                        );
-                                        session_auth_pending = false;
-                                    }
-                                    Ok(None) => {
-                                        session_auth_pending = true;
-                                        parked = parked_prompt(&cmd);
+                            if current.is_none() && parked.is_empty() {
+                                if let Some(kind) = parked_prompt(&cmd) {
+                                    if session_auth_pending {
+                                        parked.push_back(ParkedPrompt {
+                                            session: None,
+                                            kind,
+                                        });
                                         continue;
                                     }
-                                    Err(err) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                            "session/new: {err}"
-                                        ))));
-                                        continue;
+                                    match create_prompt_session(
+                                        &cx,
+                                        &cwd,
+                                        &surface,
+                                        &bus,
+                                        &methods,
+                                        selected.as_ref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(sid)) => {
+                                            retarget_session(&mut cmd, &sid);
+                                            bind_session(
+                                                &mut sessions,
+                                                &mut current,
+                                                &mut pending,
+                                                sid,
+                                            );
+                                            session_auth_pending = false;
+                                        }
+                                        Ok(None) => {
+                                            session_auth_pending = true;
+                                            parked.push_back(ParkedPrompt {
+                                                session: None,
+                                                kind,
+                                            });
+                                            continue;
+                                        }
+                                        Err(err) => {
+                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                                format!("session/new: {err}"),
+                                            )));
+                                            continue;
+                                        }
                                     }
                                 }
                             }
@@ -1709,7 +1801,7 @@ where
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt") {
                                 Ok(Some(sid)) => {
                                     let handle = sessions.entry(sid.to_string()).or_default();
-                                    if handle.inflight.is_some() || parked.is_some() {
+                                    if handle.inflight.is_some() || !parked.is_empty() {
                                         handle.queue.push_back(next);
                                     } else {
                                         handle.inflight = begin_prompt(
@@ -1728,7 +1820,10 @@ where
                                 }
                                 Ok(None) => pending.push_back(next),
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                 }
                             }
                         }
@@ -1746,7 +1841,7 @@ where
                                             message_id,
                                             steer_done_tx.clone(),
                                         );
-                                    } else if parked.is_some() {
+                                    } else if !parked.is_empty() {
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                             message_id,
                                             deferred: true,
@@ -1782,7 +1877,10 @@ where
                                     }));
                                 }
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                 }
                             }
                         }
@@ -1794,7 +1892,7 @@ where
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt_images") {
                                 Ok(Some(sid)) => {
                                     let handle = sessions.entry(sid.to_string()).or_default();
-                                    if handle.inflight.is_some() || parked.is_some() {
+                                    if handle.inflight.is_some() || !parked.is_empty() {
                                         handle.queue.push_back(next);
                                     } else {
                                         handle.inflight = begin_prompt(
@@ -1813,7 +1911,10 @@ where
                                 }
                                 Ok(None) => pending.push_back(next),
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                 }
                             }
                         }
@@ -1842,10 +1943,13 @@ where
                                                 )));
                                             }
                                             Err(err) => {
-                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                                session_id: cmd_session.clone(),
+                                                message: err,
+                                            }));
                                             }
                                         }
-                                    } else if parked.is_some() {
+                                    } else if !parked.is_empty() {
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                             message_id,
                                             deferred: true,
@@ -1881,7 +1985,10 @@ where
                                     }));
                                 }
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                        session_id: cmd_session.clone(),
+                                        message: err,
+                                    }));
                                 }
                             }
                         }
@@ -1902,7 +2009,10 @@ where
                                 }
                                 Ok(None) => {}
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                 }
                             }
                         }
@@ -1911,7 +2021,10 @@ where
                                 Ok(Some(sid)) => sid,
                                 Ok(None) => continue,
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                     continue;
                                 }
                             };
@@ -2189,7 +2302,10 @@ where
                                 Ok(Some(sid)) => sid,
                                 Ok(None) => continue,
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                     continue;
                                 }
                             };
@@ -2231,7 +2347,10 @@ where
                                 Ok(Some(sid)) => sid,
                                 Ok(None) => continue,
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
                                     continue;
                                 }
                             };
@@ -2279,11 +2398,25 @@ where
                             }
                         }
                         Cmd::SetConfigOption {
-                            config_id, value, ..
+                            session_id: cmd_session,
+                            config_id,
+                            value,
                         } => {
-                            // Carries no session id; address the fallback session.
-                            let Some(sid) = current.clone() else {
-                                continue;
+                            let sid = match resolve_cmd_session(
+                                &sessions,
+                                &current,
+                                &cmd_session,
+                                "config_option",
+                            ) {
+                                Ok(Some(sid)) => sid,
+                                Ok(None) => continue,
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                        session_id: cmd_session.clone(),
+                                        message: err,
+                                    }));
+                                    continue;
+                                }
                             };
                             match cx
                                 .send_request(SetSessionConfigOptionRequest::new(
@@ -2313,9 +2446,10 @@ where
                                     );
                                 }
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                        format!("config option switch failed: {err}"),
-                                    )));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                        session_id: sid.to_string(),
+                                        message: format!("config option switch failed: {err}"),
+                                    }));
                                 }
                             }
                         }
@@ -2407,40 +2541,22 @@ where
                                         &bus,
                                         configured_snapshot(methods.clone(), Some(&method)),
                                     );
-                                            match parked.take() {
-                                        None => {
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                                "signed in".into(),
-                                            )));
-                                        }
-                                        Some(prompt) => {
-                                            let Some(sid) = current.clone() else {
-                                                parked = Some(prompt);
-                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                                    "signed in — resend from the composer".into(),
-                                                )));
-                                                continue;
-                                            };
-                                            let retry = match prompt {
-                                                ParkedPrompt::Text(text) => Cmd::Prompt {
-                                                    session_id: sid.to_string(),
-                                                    text,
-                                                },
-                                                ParkedPrompt::Images(blocks) => Cmd::PromptImages {
-                                                    session_id: sid.to_string(),
-                                                    blocks,
-                                                },
-                                            };
-                                            sessions
-                                                .entry(sid.to_string())
-                                                .or_default()
-                                                .queue
-                                                .push_front(retry);
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                                "signed in — retried the parked prompt".into(),
-                                            )));
-                                        }
-                                    }
+                                    // Release every stalled prompt into its
+                                    // own session's queue (entries whose
+                                    // session was closed meanwhile are
+                                    // dropped by the helper).
+                                    let retried = requeue_parked_prompts(
+                                        &mut sessions,
+                                        &current,
+                                        &mut parked,
+                                    );
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(if retried
+                                        > 0
+                                    {
+                                        format!("signed in — retried {retried} parked prompt{s}", s = if retried == 1 { "" } else { "s" })
+                                    } else {
+                                        "signed in".into()
+                                    })));
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
                                     emit_auth(
@@ -2484,6 +2600,12 @@ where
                                     );
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
+                                    // The bind request is dead for now: pop
+                                    // its awaiting entry so a later bind can
+                                    // never land on it. The tab stays open
+                                    // (BindFailed notice) — /new again after
+                                    // signing in.
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
                                     emit_needs_auth_open(
                                         &bus,
                                         methods.clone(),
@@ -2491,10 +2613,11 @@ where
                                         Some(acp_error_message(&err)),
                                     );
                                 }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "session/new: {err}"
-                                    ))));
+                                Err(_) => {
+                                    // The request the UI is awaiting died;
+                                    // the tab that asked stays open but the
+                                    // bind is never coming.
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
                                 }
                             }
                         }
@@ -2614,6 +2737,10 @@ where
                                     apply_setup(&setup, Some(&session), &surface, &bus);
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
+                                    // Same dead-request rule as /new: the
+                                    // awaiting entry pops now; retry /resume
+                                    // after signing in.
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
                                     emit_needs_auth_open(
                                         &bus,
                                         methods.clone(),
@@ -2621,10 +2748,10 @@ where
                                         Some(acp_error_message(&err)),
                                     );
                                 }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "session/resume: {err}"
-                                    ))));
+                                Err(_) => {
+                                    // session/resume failed outright: the
+                                    // awaiting tab's bind is never coming.
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
                                 }
                             }
                         }
@@ -2685,6 +2812,28 @@ where
                             )
                             .await;
                         }
+                        Cmd::ForgetSession { session_id } => {
+                            // `/close`: this client stopped viewing the
+                            // session. Drop its turn state and queued
+                            // prompts so nothing more is sent agent-side;
+                            // an in-flight prompt (if any) keeps running
+                            // and its finish is dropped by the prompt_done
+                            // guard. ACP has no session/close — the
+                            // server-side session survives and can be
+                            // re-entered later via session/resume.
+                            if sessions.remove(&session_id).is_some()
+                                && current
+                                    .as_ref()
+                                    .is_some_and(|c| c.to_string() == session_id)
+                            {
+                                // Repoint the id-less fallback at any
+                                // remaining session.
+                                current = sessions
+                                    .keys()
+                                    .next()
+                                    .map(|id| SessionId::new(id.clone()));
+                            }
+                        }
                         Cmd::Shutdown => break,
                     }
                             drain_ready_sessions(
@@ -2722,11 +2871,16 @@ where
                         finish = prompt_done_rx.recv() => {
                             let Some(done) = finish else { continue };
                             let key = done.session_id.clone();
-                            let mut aborted = false;
-                            if let Some(handle) = sessions.get_mut(&key) {
-                                handle.inflight = None;
-                                aborted = std::mem::take(&mut handle.turn_aborted);
-                            }
+                            // A session closed with `/close` (ForgetSession)
+                            // while its prompt was in flight: the turn ends
+                            // here — its UI events would be foreign on every
+                            // tab, and an auth error must not park a retry
+                            // for a session nobody views. Drop the finish.
+                            let Some(handle) = sessions.get_mut(&key) else {
+                                continue;
+                            };
+                            handle.inflight = None;
+                            let aborted = std::mem::take(&mut handle.turn_aborted);
                             if aborted {
                                 let _ = bus.send(AppEvent::Ui(
                                     crate::events::UiEvent::TurnEnd {
@@ -2738,6 +2892,7 @@ where
                                     session_id: key.clone(),
                                 }));
                             } else {
+                                let ok = matches!(done.result, Ok(_));
                                 apply_prompt_finish(
                                     done,
                                     &mut parked,
@@ -2745,8 +2900,18 @@ where
                                     &methods,
                                     selected.as_ref(),
                                 );
+                                if ok && !parked.is_empty() {
+                                    // A success proves the auth stall is
+                                    // over: requeue every stalled prompt
+                                    // into its owning session.
+                                    requeue_parked_prompts(
+                                        &mut sessions,
+                                        &current,
+                                        &mut parked,
+                                    );
+                                }
                             }
-                            if parked.is_none() {
+                            if parked.is_empty() {
                                 let queued = sessions
                                     .get(&key)
                                     .is_some_and(|handle| !handle.queue.is_empty());
