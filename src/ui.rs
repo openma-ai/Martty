@@ -376,6 +376,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         // Hover/cursor preview for inline [image n] chips sits above the
         // composer (drawn last so it tops the menu-free chat area).
         draw_attachment_preview(f, app, composer, area);
+        // Mouse tooltips for the cap-row composer buttons (⛶ / ⌕) ride the
+        // same late pass — above the composer, under the modal overlays.
+        draw_composer_button_tooltip(f, app, area);
     }
     draw_model_picker(f, app, area);
     draw_plugin_tree(f, app, area);
@@ -2799,6 +2802,81 @@ fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
         theme.caption
     };
     b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
+}
+
+/// Mouse tooltip for the composer cap-row buttons (⛶ expand of issue #92,
+/// ⌕ prompt jump of issue #103): while the pointer rests on a glyph, a
+/// small rounded card above it explains the click action — the only
+/// discoverability affordance for these mouse-only buttons. Drawn after
+/// the composer and chat, but before the modal overlays, so a popup that
+/// overlaps the card simply tops it.
+fn draw_composer_button_tooltip(f: &mut Frame, app: &App, screen: Rect) {
+    let theme = app.theme;
+    let (glyph, rect, desc) = if app.hover_prompt_jump_btn {
+        let Some(rect) = app.prompt_jump_btn else {
+            return;
+        };
+        (
+            "⌕",
+            rect,
+            app.locale
+                .tr(
+                    "jump to the previous user prompt",
+                    "跳转到上一条用户输入",
+                )
+                .to_string(),
+        )
+    } else if app.hover_expand_btn {
+        let Some(rect) = app.expand_btn else {
+            return;
+        };
+        let (en, zh) = if app.input_expanded {
+            ("collapse the input well", "收起输入区")
+        } else {
+            ("expand the input well", "展开输入区")
+        };
+        ("⛶", rect, app.locale.tr(en, zh).to_string())
+    } else {
+        return;
+    };
+    let content = format!(" {glyph} {desc} ");
+    // The card hugs the glyph column: centered on it, one rounded border
+    // row of padding on each side, capped by the screen.
+    let inner_w = content.width().min(screen.width.saturating_sub(4).max(4) as usize);
+    let w = (inner_w + 2) as u16;
+    let h: u16 = 3;
+    if screen.width < w + 2 || rect.y < h {
+        return;
+    }
+    let cx = rect.x + 1; // both glyphs sit one cell in from their rect
+    let x = cx
+        .saturating_sub(w / 2)
+        .clamp(screen.x + 1, screen.right().saturating_sub(w + 1));
+    let y = rect.y - h;
+    let area = Rect::new(x, y, w, h);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .style(Style::default().bg(theme.panel));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {glyph} "),
+                Style::default()
+                    .fg(theme.brand)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                ellipsize_to(&desc, inner.width.saturating_sub(3) as usize),
+                Style::default().fg(theme.fg_secondary),
+            ),
+        ])),
+        inner,
+    );
 }
 
 /// The input well. Long prompts wrap across the (now taller) well, and the
