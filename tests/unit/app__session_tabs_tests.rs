@@ -304,7 +304,86 @@ fn tab_strip_renders_only_with_multiple_sessions() {
     let row0 = frame.lines().next().unwrap_or_default();
     assert!(row0.contains("dsh-test"), "parked tab label:\n{frame}");
     assert!(row0.contains("s-two"), "live tab label:\n{frame}");
-    assert!(row0.contains('│'), "tab separator:\n{frame}");
+    assert!(
+        row0.contains("dsh-test \u{e0b0}") && row0.contains("s-two \u{e0b0}"),
+        "each tab ends in a Powerline arrow:\n{frame}"
+    );
+    assert!(!row0.contains('│'), "plain dividers are replaced:\n{frame}");
+
+    let first_arrow_byte = row0.find('\u{e0b0}').expect("first arrow");
+    let first_arrow_col =
+        unicode_width::UnicodeWidthStr::width(&row0[..first_arrow_byte]) as u16;
+    assert_eq!(
+        app.tab_rects[0].0.right(),
+        first_arrow_col + 1,
+        "the visible arrow belongs to the tab's mouse target"
+    );
+}
+
+#[test]
+fn powerline_tabs_use_a_brand_active_segment_and_seamless_arrows() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut app, ctl, _rx) = test_app();
+    app.run_slash("new", "s-two", &ctl);
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|f| crate::ui::draw(f, &mut app))
+        .expect("draw frame");
+
+    let theme = app.theme;
+    let parked = app.tab_rects[0].0;
+    let active = app.tab_rects[1].0;
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(buf[(parked.x, parked.y)].bg, theme.panel);
+    assert_eq!(buf[(active.x, active.y)].bg, theme.brand);
+
+    let into_active = &buf[(parked.right() - 1, parked.y)];
+    assert_eq!(into_active.symbol(), "\u{e0b0}");
+    assert_eq!(into_active.fg, theme.panel, "arrow keeps the left fill");
+    assert_eq!(into_active.bg, theme.brand, "arrow meets the active fill");
+
+    let into_canvas = &buf[(active.right() - 1, active.y)];
+    assert_eq!(into_canvas.symbol(), "\u{e0b0}");
+    assert_eq!(into_canvas.fg, theme.brand);
+    assert_eq!(into_canvas.bg, theme.bg);
+}
+
+#[test]
+fn adjacent_inactive_powerline_tabs_alternate_neutral_fills() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut app, ctl, _rx) = test_app();
+    app.run_slash("new", "s-two", &ctl);
+    app.run_slash("new", "s-three", &ctl);
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|f| crate::ui::draw(f, &mut app))
+        .expect("draw frame");
+
+    let theme = app.theme;
+    let first = app.tab_rects[0].0;
+    let second = app.tab_rects[1].0;
+    let active = app.tab_rects[2].0;
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(buf[(first.x, first.y)].bg, theme.panel);
+    assert_eq!(buf[(second.x, second.y)].bg, theme.bg);
+    assert_eq!(buf[(active.x, active.y)].bg, theme.brand);
+
+    let separator = &buf[(first.right() - 1, first.y)];
+    assert_eq!(separator.symbol(), "\u{e0b0}");
+    assert_eq!(separator.fg, theme.panel);
+    assert_eq!(separator.bg, theme.bg);
+    assert_ne!(
+        separator.fg, separator.bg,
+        "adjacent inactive tabs must keep a visible arrow edge"
+    );
 }
 
 #[test]
