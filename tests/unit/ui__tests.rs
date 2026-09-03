@@ -3233,3 +3233,53 @@ fn expand_button_survives_a_full_draft() {
     // The well rows themselves carry no button glyph.
     assert_ne!(buf[(btn.x + 2, app.input_area.y)].symbol(), "⛶");
 }
+
+/// The ⌕ user-prompt jump button (issue #103) renders between the project
+/// path and the ⛶ expand glyph — spaces on both sides — and hovers the
+/// same way: quiet caption tone idle, brightest foreground on hover.
+#[test]
+fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    let expand = app.expand_btn.expect("expand rect");
+    let jump = app.prompt_jump_btn.expect("jump rect");
+
+    // Geometry: ⌕ (space) ⛶ (space) ╮ — the jump glyph one cell left of
+    // the expand glyph with a space in between, and a space before it.
+    assert_eq!(jump.y, expand.y, "both buttons share the cap row");
+    assert_eq!(jump.x + jump.width, expand.x, "jump rect tucked left of expand");
+    assert_eq!(buf[(jump.x + 1, jump.y)].symbol(), "⌕");
+    assert_eq!(buf[(expand.x - 2, expand.y)].symbol(), " ", "space before ⌕");
+    assert_eq!(buf[(expand.x, expand.y)].symbol(), " ", "space between ⌕ and ⛶");
+    assert_eq!(buf[(expand.x + 1, expand.y)].symbol(), "⛶");
+    assert_eq!(buf[(jump.x + 1, jump.y)].fg, theme.caption, "idle tone");
+
+    // Hover brightens the ⌕ glyph.
+    app.handle_mouse(mouse(MouseEventKind::Moved, jump.x + 1, jump.y), &ctl);
+    assert!(app.hover_prompt_jump_btn);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(jump.x + 1, jump.y)].fg,
+        theme.fg,
+        "hover brightens the ⌕ glyph"
+    );
+    // Leaving restores the quiet glyph.
+    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
+    assert!(!app.hover_prompt_jump_btn);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(jump.x + 1, jump.y)].fg,
+        theme.caption,
+        "idle tone restored when the pointer leaves"
+    );
+}

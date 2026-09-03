@@ -1135,6 +1135,17 @@ pub struct App {
     /// True while the pointer rests on the expand button; only then does
     /// the frame painter show it (`needs_redraw` on change).
     pub(crate) hover_expand_btn: bool,
+    /// Screen rect of the mouse-only `⌕` user-prompt jump button (issue
+    /// #103) from the latest frame — one cell left of the expand glyph on
+    /// the composer card's top-right.
+    pub(crate) prompt_jump_btn: Option<ratatui::layout::Rect>,
+    /// True while the pointer rests on the `⌕` button (`needs_redraw` on
+    /// change, same hover policy as the expand button).
+    pub(crate) hover_prompt_jump_btn: bool,
+    /// Transcript cell of the user prompt the last `⌕` click jumped to
+    /// (issue #103). The next click walks one prompt back; the oldest
+    /// wraps to the newest. In-memory only — never persisted.
+    pub(crate) prompt_jump_cell: Option<usize>,
     pub state: RunState,
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
@@ -1615,6 +1626,9 @@ impl App {
             input_expanded: false,
             expand_btn: None,
             hover_expand_btn: false,
+            prompt_jump_btn: None,
+            hover_prompt_jump_btn: false,
+            prompt_jump_cell: None,
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
@@ -1841,6 +1855,8 @@ impl App {
         self.queue_selection = None;
         self.queue_edit = None;
         self.vim.reset_pending();
+        // The ⌕ jump cursor indexes this session's transcript cells.
+        self.prompt_jump_cell = None;
         self.needs_redraw = true;
     }
 
@@ -4225,6 +4241,21 @@ impl App {
                     self.toggle_tool(ci);
                     return;
                 }
+                // The ⌕ prompt-jump button (issue #103) wins over caret
+                // placement: each click walks the chat view to the previous
+                // user prompt (newest first, wrapping at the oldest).
+                if self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.prompt_jump_btn_hit(mouse.column, mouse.row)
+                {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.input_selecting = false;
+                    self.input_sel = None;
+                    self.jump_to_user_prompt();
+                    return;
+                }
                 // The mouse-only expand button (issue #92) wins over caret
                 // placement inside the well: clicking toggles the input
                 // height instead of moving the caret. It lives inside the
@@ -4331,6 +4362,11 @@ impl App {
                     self.hover_expand_btn = over_btn;
                     self.needs_redraw = true;
                 }
+                let over_jump = self.prompt_jump_btn_hit(mouse.column, mouse.row);
+                if over_jump != self.hover_prompt_jump_btn {
+                    self.hover_prompt_jump_btn = over_jump;
+                    self.needs_redraw = true;
+                }
                 let hover = self.chip_at(mouse.column, mouse.row);
                 if hover != self.hover_att {
                     self.hover_att = hover;
@@ -4413,6 +4449,77 @@ impl App {
                 && row >= r.y
                 && row < r.y.saturating_add(r.height)
         })
+    }
+
+    /// Hit-test the mouse-only `⌕` user-prompt jump button (issue #103).
+    fn prompt_jump_btn_hit(&self, col: u16, row: u16) -> bool {
+        self.prompt_jump_btn.is_some_and(|r| {
+            col >= r.x
+                && col < r.x.saturating_add(r.width)
+                && row >= r.y
+                && row < r.y.saturating_add(r.height)
+        })
+    }
+
+    /// `⌕` click (issue #103): jump the chat view to a user prompt. The
+    /// first click goes to the newest prompt, each further click walks one
+    /// prompt back, and the oldest wraps to the newest again. The last
+    /// target is remembered in memory only (never persisted) and rides
+    /// across clicks, so jumping resumes where the previous jump stopped.
+    fn jump_to_user_prompt(&mut self) {
+        let area = self.chat_view.area;
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.theme;
+        let spinner = self.spinner();
+        let layout = self
+            .transcript
+            .layout(&theme, area.width, spinner, crate::pet::kitty_supported());
+        if layout.users.is_empty() {
+            self.show_tip(self.locale.tr(
+                "no user prompts yet — ⌕ finds them once you send one",
+                "还没有用户输入 —— 发送后 ⌕ 即可跳转",
+            ));
+            return;
+        }
+        // The running indicator rides as one extra tail line in draw_chat;
+        // include it so the anchored viewport matches the next frame.
+        let total = layout.lines.len()
+            + usize::from(matches!(self.state, RunState::Starting | RunState::Running));
+        let h = area.height as usize;
+        let max_scroll = total.saturating_sub(h);
+        let target = match self
+            .prompt_jump_cell
+            .and_then(|cell| layout.users.iter().position(|p| p.cell == cell))
+        {
+            // A previous jump: continue walking backward from it…
+            Some(rank) if rank > 0 => layout.users[rank - 1],
+            // …and the oldest prompt wraps back to the newest.
+            Some(_) => layout.users[layout.users.len() - 1],
+            // No previous jump (fresh session, tab switch, or the target
+            // cell is gone): start at the newest prompt.
+            None => layout.users[layout.users.len() - 1],
+        };
+        let from_newest = layout
+            .users
+            .iter()
+            .rposition(|p| p.cell == target.cell)
+            .map(|rank| layout.users.len() - rank)
+            .unwrap_or(1);
+        self.prompt_jump_cell = Some(target.cell);
+        // Anchor the prompt's first line to the top of the chat pane.
+        let start = target.line.min(max_scroll);
+        let end = start.saturating_add(h).min(total);
+        let scroll_up = total.saturating_sub(end);
+        self.chat_view.manual_top = (scroll_up > 0).then_some(start);
+        self.scroll_up = scroll_up;
+        self.needs_redraw = true;
+        self.show_tip(self.locale.trf(
+            "⌕ user prompt {k}/{n} · newest first",
+            "⌕ 用户输入 {k}/{n} · 从最新往前",
+            &[from_newest.to_string(), layout.users.len().to_string()],
+        ));
     }
 
     /// Hit-test a screen cell against the inline chips drawn this frame.

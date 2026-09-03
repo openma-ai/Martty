@@ -1292,6 +1292,105 @@ fn live_acp_new_parks_the_current_session_and_binds_the_new_tab() {
     assert_eq!(app.parked[0].id, before, "the parked session keeps its id");
 }
 
+/// Seed `n` user prompts, each followed by enough filler so the transcript
+/// outgrows any test viewport; returns the transcript cell index of each
+/// user prompt (oldest first).
+fn seed_prompt_history(app: &mut App, n: usize) -> Vec<usize> {
+    for i in 1..=n {
+        app.transcript.push_user(format!("user prompt {i}"), false);
+        for j in 0..30 {
+            app.transcript.push_notice(
+                crate::transcript::NoticeLevel::Info,
+                format!("filler {i}-{j} {}", "x".repeat(160)),
+            );
+        }
+    }
+    app.transcript
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| matches!(cell.kind, crate::transcript::CellKind::User { .. }))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// The first line the `⌕` jump anchors for `cell`, mirroring
+/// `App::jump_to_user_prompt` (layout at the recorded chat width).
+fn prompt_jump_anchor(app: &mut App, cell: usize) -> usize {
+    let area = app.chat_view.area;
+    let theme = app.theme;
+    let spinner = app.spinner();
+    let layout = app.transcript.layout(
+        &theme,
+        area.width,
+        spinner,
+        crate::pet::kitty_supported(),
+    );
+    let line = layout
+        .users
+        .iter()
+        .find(|prompt| prompt.cell == cell)
+        .expect("seeded prompt laid out")
+        .line;
+    line.min(layout.lines.len().saturating_sub(area.height as usize))
+}
+
+/// Left-click the `⌕` button recorded by the last frame.
+fn click_prompt_jump(app: &mut App, ctl: &Controller) {
+    let jump = app.prompt_jump_btn.expect("⌕ button rect recorded");
+    app.handle_mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(
+                crossterm::event::MouseButton::Left,
+            ),
+            column: jump.x + 1,
+            row: jump.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        ctl,
+    );
+}
+
+#[test]
+fn prompt_jump_walks_user_prompts_newest_first_and_wraps() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    let users = seed_prompt_history(&mut app, 4);
+    let _ = crate::ui::dump_frame(&mut app, 100, 30);
+    assert!(
+        app.chat_view.area.height > 0 && app.chat_view.area.width > 0,
+        "first frame records the chat area"
+    );
+
+    // First click → newest prompt; each next click walks one prompt back;
+    // the oldest wraps to the newest again. Every jump scrolls the chat so
+    // the prompt's first line anchors the viewport.
+    for expected in [users[3], users[2], users[1], users[0], users[3]] {
+        click_prompt_jump(&mut app, &ctl);
+        assert_eq!(app.prompt_jump_cell, Some(expected), "jump cursor");
+        let anchor = prompt_jump_anchor(&mut app, expected);
+        let _ = crate::ui::dump_frame(&mut app, 100, 30);
+        assert_eq!(
+            app.chat_view.top, anchor,
+            "view anchors the first line of the jumped prompt"
+        );
+        assert!(app.scroll_up > 0, "the jump leaves the tail");
+    }
+}
+
+#[test]
+fn prompt_jump_without_user_prompts_tips_instead_of_jumping() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    let _ = crate::ui::dump_frame(&mut app, 100, 30);
+
+    click_prompt_jump(&mut app, &ctl);
+
+    assert!(app.prompt_jump_cell.is_none());
+    assert!(app.tip.is_some(), "no prompts → a tip explains ⌕");
+    assert_eq!(app.chat_view.top, 0, "no jump happened");
+}
+
 #[test]
 fn agent_preset_event_updates_chrome_without_adding_a_transcript_row() {
     let (mut app, _ctl, _rx) = test_app();
