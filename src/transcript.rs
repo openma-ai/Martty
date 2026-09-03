@@ -355,13 +355,15 @@ pub struct ImageShot {
 }
 
 /// One user prompt in a rendered transcript: the transcript cell index and
-/// the index of its first text line (the leading blank separator row is not
-/// counted). The ⌕ composer button walks these from the newest one back
-/// (issue #103).
+/// the half-open line span `[line, end)` its bubble occupies (the leading
+/// blank separator row is not counted; `end` covers wrapped text lines and,
+/// for image prompts, the thumbnail rows). The ⌕ composer button walks
+/// these from the newest one back and flashes the jumped span (issue #103).
 #[derive(Clone, Copy, Debug)]
 pub struct UserPromptLine {
     pub cell: usize,
     pub line: usize,
+    pub end: usize,
 }
 
 /// A rendered transcript: styled lines plus, for each line, the index of the
@@ -1107,6 +1109,7 @@ impl Transcript {
                     users.push(UserPromptLine {
                         cell: ci,
                         line: first,
+                        end: out.len(),
                     });
                 }
                 CellKind::Image {
@@ -1191,6 +1194,7 @@ impl Transcript {
                     users.push(UserPromptLine {
                         cell: ci,
                         line: first,
+                        end: out.len(),
                     });
                 }
                 CellKind::Reasoning {

@@ -167,6 +167,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // prompt-jump button rect rides the same layout pass.
     app.expand_btn = None;
     app.prompt_jump_btn = None;
+    app.prompt_flash_lines = None;
     f.render_widget(
         Block::default().style(
             Style::default()
@@ -2252,6 +2253,15 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
     app.chat_view.owners = owners;
+    // The ⌕ jump flash (issue #103): resolve the flashing transcript cell
+    // to its current line span every frame — streaming can move the prompt
+    // — and drop it once the 5 s window expired.
+    app.prompt_flash_lines = app
+        .prompt_flash
+        .as_ref()
+        .filter(|(_, until)| std::time::Instant::now() < *until)
+        .and_then(|(cell, _)| layout.users.iter().find(|p| p.cell == *cell))
+        .map(|prompt| (prompt.line, prompt.end));
 
     // Visible image thumbnails → screen rects (banner lines shift transcript
     // line indices; partially visible thumbnails clip to the pane).
@@ -2278,10 +2288,44 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     f.render_widget(Paragraph::new(visible), inner);
+    // The transient ⌕ jump wash paints under an active copy-selection so
+    // the user's own highlight always wins.
+    draw_prompt_flash(f, app, inner, start);
     draw_selection_overlay(f, app, inner, start);
     // Last: the selection overlay above also writes these cells, so the
     // full-rewrite marker must run after it (issue #38).
     force_full_rewrite(f, inner);
+}
+
+/// The transient `⌕` jump highlight (issue #103): right after a jump the
+/// jumped prompt's rows carry a soft background wash — the same chip tone
+/// the pickers use for the selected row — for ~5 seconds, then the
+/// ordinary bubble look returns (the expiry lives in `App::tick`, which
+/// clears the state and requests a repaint).
+fn draw_prompt_flash(f: &mut Frame, app: &App, inner: Rect, start: usize) {
+    let Some((s, e)) = app.prompt_flash_lines else {
+        return;
+    };
+    let theme = app.theme;
+    let buf = f.buffer_mut();
+    for r in 0..inner.height {
+        let li = start + r as usize;
+        if li < s || li >= e {
+            continue;
+        }
+        let Some(text) = app.chat_view.lines.get(li) else {
+            continue;
+        };
+        let lw = text.trim_end().width();
+        if lw == 0 {
+            continue;
+        }
+        for c in 0..lw.min(inner.width as usize) {
+            if let Some(cell) = buf.cell_mut((inner.x + c as u16, inner.y + r)) {
+                cell.set_bg(theme.chip_bg);
+            }
+        }
+    }
 }
 
 /// Paint the in-app mouse selection as reversed cells — the live highlight

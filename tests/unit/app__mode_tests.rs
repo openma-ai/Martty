@@ -1364,10 +1364,19 @@ fn prompt_jump_walks_user_prompts_newest_first_and_wraps() {
 
     // First click → newest prompt; each next click walks one prompt back;
     // the oldest wraps to the newest again. Every jump scrolls the chat so
-    // the prompt's first line anchors the viewport.
+    // the prompt's first line anchors the viewport, and flashes the
+    // jumped prompt for a few seconds (issue #103).
     for expected in [users[3], users[2], users[1], users[0], users[3]] {
         click_prompt_jump(&mut app, &ctl);
         assert_eq!(app.prompt_jump_cell, Some(expected), "jump cursor");
+        let (flash_cell, until) = app
+            .prompt_flash
+            .expect("the jumped prompt flashes");
+        assert_eq!(flash_cell, expected, "flash follows the jump");
+        assert!(
+            until > std::time::Instant::now(),
+            "flash expires in the future"
+        );
         let anchor = prompt_jump_anchor(&mut app, expected);
         let _ = crate::ui::dump_frame(&mut app, 100, 30);
         assert_eq!(
@@ -1376,6 +1385,17 @@ fn prompt_jump_walks_user_prompts_newest_first_and_wraps() {
         );
         assert!(app.scroll_up > 0, "the jump leaves the tail");
     }
+
+    // The flash restores to normal on its own: after the 5 s window the
+    // next tick clears it and requests a repaint.
+    let (cell, _) = app.prompt_flash.expect("flash still armed");
+    app.prompt_flash = Some((
+        cell,
+        std::time::Instant::now() - crate::app::PROMPT_FLASH_TTL,
+    ));
+    app.tick();
+    assert!(app.prompt_flash.is_none(), "expired flash clears on tick");
+    assert!(app.needs_redraw, "expiry requests a repaint");
 }
 
 #[test]

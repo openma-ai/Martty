@@ -40,6 +40,9 @@ struct CtrlCQuitChord {
     required: u8,
 }
 const TIP_TTL: Duration = Duration::from_secs(4);
+/// How long the `⌕` jump flash keeps the jumped user prompt background-
+/// washed before it restores to normal (issue #103).
+pub(crate) const PROMPT_FLASH_TTL: Duration = Duration::from_secs(5);
 /// How often the composer cap re-checks the workspace git branch (tick
 /// cadence). Catches checkouts done by the agent or in another terminal;
 /// `!git checkout` in the session shell refreshes immediately instead.
@@ -1146,6 +1149,16 @@ pub struct App {
     /// (issue #103). The next click walks one prompt back; the oldest
     /// wraps to the newest. In-memory only — never persisted.
     pub(crate) prompt_jump_cell: Option<usize>,
+    /// The `⌕` jump flash (issue #103): the transcript cell of the prompt
+    /// that was just jumped to, with the instant the background wash
+    /// expires (5 s after the click). `App::tick` clears it on expiry; the
+    /// painter resolves the cell to lines per frame.
+    pub(crate) prompt_flash: Option<(usize, std::time::Instant)>,
+    /// Per-frame absolute line span `[start, end)` of the flashing prompt,
+    /// resolved by `draw_chat` from `prompt_flash` against the current
+    /// layout (streaming can move the prompt's lines). `None` when nothing
+    /// flashes this frame.
+    pub(crate) prompt_flash_lines: Option<(usize, usize)>,
     pub state: RunState,
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
@@ -1629,6 +1642,8 @@ impl App {
             prompt_jump_btn: None,
             hover_prompt_jump_btn: false,
             prompt_jump_cell: None,
+            prompt_flash: None,
+            prompt_flash_lines: None,
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
@@ -1855,8 +1870,11 @@ impl App {
         self.queue_selection = None;
         self.queue_edit = None;
         self.vim.reset_pending();
-        // The ⌕ jump cursor indexes this session's transcript cells.
+        // The ⌕ jump cursor indexes this session's transcript cells, and
+        // the flash must not carry over to another session's view.
         self.prompt_jump_cell = None;
+        self.prompt_flash = None;
+        self.prompt_flash_lines = None;
         self.needs_redraw = true;
     }
 
@@ -2177,6 +2195,14 @@ impl App {
         if let Some((_, at)) = &self.tip {
             if at.elapsed() > TIP_TTL {
                 self.tip = None;
+                self.needs_redraw = true;
+            }
+        }
+        // The ⌕ jump flash restores the prompt to normal after its 5 s.
+        if let Some((_, until)) = &self.prompt_flash {
+            if Instant::now() >= *until {
+                self.prompt_flash = None;
+                self.prompt_flash_lines = None;
                 self.needs_redraw = true;
             }
         }
@@ -4508,12 +4534,14 @@ impl App {
             .map(|rank| layout.users.len() - rank)
             .unwrap_or(1);
         self.prompt_jump_cell = Some(target.cell);
-        // Anchor the prompt's first line to the top of the chat pane.
+        // Anchor the prompt's first line to the top of the chat pane and
+        // flash its rows for a few seconds (issue #103).
         let start = target.line.min(max_scroll);
         let end = start.saturating_add(h).min(total);
         let scroll_up = total.saturating_sub(end);
         self.chat_view.manual_top = (scroll_up > 0).then_some(start);
         self.scroll_up = scroll_up;
+        self.prompt_flash = Some((target.cell, Instant::now() + PROMPT_FLASH_TTL));
         self.needs_redraw = true;
         self.show_tip(self.locale.trf(
             "⌕ user prompt {k}/{n} · newest first",

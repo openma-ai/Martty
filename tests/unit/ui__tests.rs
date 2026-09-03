@@ -2069,6 +2069,84 @@ fn model_picker_marks_only_the_current_provider_model_pair() {
     );
 }
 
+/// The ⌕ jump flash (issue #103): for ~5 s after a jump the jumped
+/// prompt's bubble rows carry the chip background wash; after the window
+/// the next tick clears it and the next frame restores the normal bubble.
+#[test]
+fn prompt_jump_flash_washes_the_jumped_prompt_then_restores() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.transcript.push_user("alpha prompt".into(), false);
+    app.transcript.push_notice(
+        crate::transcript::NoticeLevel::Info,
+        "filler row".into(),
+    );
+    app.transcript.push_user("beta prompt".into(), false);
+    let beta_cell = app
+        .transcript
+        .cells
+        .iter()
+        .rposition(|cell| matches!(cell.kind, crate::transcript::CellKind::User { .. }))
+        .expect("second user prompt");
+
+    // Locate the first cell of an ASCII needle in the rendered buffer.
+    let text_cell = |buf: &ratatui::buffer::Buffer, needle: &str| -> Option<(u16, u16)> {
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+            if let Some(x) = row.find(needle) {
+                return Some((x as u16, y as u16));
+            }
+        }
+        None
+    };
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = app.theme;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let (bx, by) = text_cell(terminal.backend().buffer(), "beta prompt")
+        .expect("beta prompt rendered");
+
+    // Frame 1, no flash: the bubble keeps its normal background.
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(bx, by)].bg, theme.bubble_bg, "idle bubble background");
+
+    // Arm the flash for the second prompt and redraw: its rows wash with
+    // the chip tone while other rows stay untouched.
+    app.prompt_flash = Some((
+        beta_cell,
+        std::time::Instant::now() + crate::app::PROMPT_FLASH_TTL,
+    ));
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(bx, by)].bg, theme.chip_bg, "jumped prompt washed");
+    let (ax, ay) = text_cell(terminal.backend().buffer(), "alpha prompt")
+        .expect("alpha prompt rendered");
+    assert_ne!(
+        buf[(ax, ay)].bg, theme.chip_bg,
+        "the other prompt keeps its background"
+    );
+
+    // Expire the flash: the tick clears it and the next frame restores the
+    // ordinary bubble look.
+    app.prompt_flash = Some((
+        beta_cell,
+        std::time::Instant::now() - crate::app::PROMPT_FLASH_TTL,
+    ));
+    app.tick();
+    assert!(app.prompt_flash.is_none(), "tick cleared the expired flash");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(bx, by)].bg, theme.bubble_bg,
+        "flash restored the normal bubble"
+    );
+}
+
 #[test]
 fn model_picker_marks_the_streamed_model_when_it_differs_from_config() {
     use crate::app::{Picker, PickerItem, PickerKind};
