@@ -3141,8 +3141,6 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(title, Style::default().fg(theme.caption)))
         .style(Style::default().bg(theme.panel));
-    // TableState follows the selection into view (the viewport stays pinned
-    // to the ends), matching the old ListView behavior.
     let table = Table::new(
         rows,
         [
@@ -3160,12 +3158,50 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             .bg(theme.chip_bg)
             .add_modifier(Modifier::BOLD),
     );
-    let mut table_state =
-        TableState::new().with_selected(Some(sel.min(items.len().saturating_sub(1))));
+    // The picker owns its viewport window (`offset`, persisted across
+    // frames): keys and the wheel only move the selection, and this draw
+    // pass scrolls the window by the minimum needed to keep the selection
+    // visible. A selection that stays inside the window therefore leaves
+    // the window alone — ↑/↓ and the wheel sweep the highlight through a
+    // static list, and only scroll the content once the highlight reaches
+    // an edge. Rebuilding the window from the selection every frame (the
+    // ratatui auto-reveal default) would instead re-pin the highlight to
+    // the window edge and slide the whole list on every key press.
+    let viewport_rows = h.saturating_sub(2) as usize;
+    let last = items.len().saturating_sub(1);
+    let sel = sel.min(last);
+    let mut offset = picker.offset;
+    if items.len() > viewport_rows {
+        if sel < offset {
+            // Selection crossed the top edge: pin it to the first row.
+            offset = sel;
+        } else if sel >= offset + viewport_rows {
+            // Selection crossed the bottom edge: pin it to the last row.
+            offset = sel + 1 - viewport_rows;
+        }
+    } else {
+        offset = 0;
+    }
+    let mut table_state = TableState::new()
+        .with_selected(Some(sel))
+        .with_offset(offset);
     f.render_stateful_widget(table, area, &mut table_state);
     if overflow {
         let inner = area.inner(Margin::new(1, 1));
-        let mut sb_state = ScrollbarState::new(item_count).position(table_state.offset());
+        // ratatui's scrollbar treats `content_length - 1` as the bottom of
+        // the track, while the window offset tops out at
+        // `items - visible rows`. Rescale so the thumb really reaches the
+        // bottom at the deepest scroll instead of stalling a third of the
+        // way down the track.
+        let max_offset = items.len().saturating_sub(viewport_rows);
+        let position = if max_offset == 0 {
+            0
+        } else {
+            offset.saturating_mul(items.len().saturating_sub(1)) / max_offset
+        };
+        let mut sb_state = ScrollbarState::new(item_count)
+            .position(position)
+            .viewport_content_length(viewport_rows);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -3175,14 +3211,17 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             &mut sb_state,
         );
     }
-    // The viewport is the source of truth for what is visible; selection
-    // moves (mouse later, programmatic now) land back in the picker.
+    // The draw pass is the source of truth for the window: the selection
+    // it actually rendered (clamped to the rows) and the offset ratatui
+    // kept (unchanged when our pre-clamping already satisfied the window
+    // invariants) land back in the picker.
     if let Some(picker) = &mut app.picker {
         if let Some(selected) = table_state.selected() {
             picker.sel = selected;
         }
+        picker.offset = table_state.offset();
         // Page keys jump a screenful: the rows the popup actually shows.
-        app.picker_page_rows = h.saturating_sub(2) as usize;
+        app.picker_page_rows = viewport_rows;
     }
 }
 

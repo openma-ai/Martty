@@ -38,6 +38,22 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The mouse wheel now scrolls an open picker dialog (the `/resume` session
+  list, `/model`, `/mode`, …) instead of falling through to the chat
+  behind it: one notch moves the selection exactly like one ↑/↓ press,
+  clamping at the list ends. Permission asks floating above a picker take
+  the wheel first, matching their keyboard priority.
+
+- Picker dialogs own a stable viewport window now: ↑/↓ and the wheel
+  sweep the highlight through the visible rows, and the window only
+  scrolls once the selection leaves it — previously the window was
+  re-pinned to the selection every frame, so keys after a wheel-scroll
+  slid the whole list instead of moving the highlight, and the highlight
+  stuck to a window edge instead of tracking the wheel. The scrollbar
+  thumb also tracks the real scroll offset (rescaled onto the track), so
+  it reaches the bottom at the deepest scroll instead of stalling a
+  third of the way down.
+
 - Background session subagents now receive their transcript updates and
   streamed deltas cleanly, rather than having non-root session facts dropped
   at the UI event router while parked.

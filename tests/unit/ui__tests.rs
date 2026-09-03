@@ -1819,6 +1819,7 @@ fn mode_picker_renders_modes_and_marks_the_current_one() {
     app.show_banner = false;
     app.modes.agent_preset = Some("minimal".into());
     app.picker = Some(Picker {
+        offset: 0,
         kind: PickerKind::Mode,
         title: " agent mode · enter select · esc close ".into(),
         sel: 2,
@@ -1860,6 +1861,7 @@ fn session_picker_rows_align_label_and_meta_columns() {
     let mut app = test_app();
     app.show_banner = false;
     app.picker = Some(Picker {
+        offset: 0,
         kind: PickerKind::Session,
         title: " resume session · 2 sessions · enter select · esc close ".into(),
         sel: 0,
@@ -1920,6 +1922,7 @@ fn picker_window_follows_the_selection_and_shows_a_scrollbar() {
         })
         .collect();
     app.picker = Some(Picker {
+        offset: 0,
         kind: PickerKind::Session,
         title: " resume session · 40 sessions · enter select · esc close ".into(),
         sel: 0,
@@ -1959,6 +1962,7 @@ fn picker_selection_highlights_the_whole_row() {
     let mut app = test_app();
     app.show_banner = false;
     app.picker = Some(Picker {
+        offset: 0,
         kind: PickerKind::Session,
         title: " resume session · 2 sessions ".into(),
         sel: 0,
@@ -2031,6 +2035,7 @@ fn model_picker_marks_only_the_current_provider_model_pair() {
     app.cfg.provider = "coding-plan-b".into();
     app.cfg.model = "deepseek-v4".into();
     app.picker = Some(Picker {
+        offset: 0,
         kind: PickerKind::Model,
         title: " model ".into(),
         sel: 1,

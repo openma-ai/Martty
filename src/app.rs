@@ -700,6 +700,12 @@ pub struct Picker {
     pub title: String,
     pub sel: usize,
     pub items: Vec<PickerItem>,
+    /// First row of the popup's viewport. Unlike `sel` (which keys and the
+    /// wheel move freely), the window only scrolls when the selection
+    /// leaves it — the draw pass adjusts this by the minimum needed, so a
+    /// static window lets ↑/↓ and wheel sweep the highlight row by row
+    /// instead of re-pinning the window edge under it every frame.
+    pub offset: usize,
 }
 
 /// The `/plugins` static inventory as a two-level tree (provider → plugin),
@@ -2277,6 +2283,7 @@ impl App {
             .position(|item| item.id == self.active_palette_id)
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Theme,
             title: self
                 .locale
@@ -2307,6 +2314,7 @@ impl App {
             .position(|plugin| plugin.status == "active")
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::UiPlugin,
             title: self
                 .locale
@@ -2366,6 +2374,7 @@ impl App {
             })
             .collect();
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::CordisPlugin,
             title: self
                 .locale
@@ -2381,6 +2390,7 @@ impl App {
 
     fn open_cordis_approval_picker(&mut self, request_id: String) {
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::CordisApproval,
             title: self
                 .locale
@@ -3941,10 +3951,14 @@ impl App {
             MouseEventKind::ScrollUp => {
                 if self.elicitation_ask.is_some() {
                     self.elicitation_scroll_by(-3);
+                } else if self.permission_ask.is_some() {
+                    self.permission_ask_scroll_by(-1);
                 } else if let Some(tree) = &mut self.plugin_tree {
                     tree.state.scroll_up(3);
                 } else if self.view_overlay.is_some() {
                     self.view_scroll_by(-3);
+                } else if self.picker.is_some() {
+                    self.picker_scroll_by(-1);
                 } else {
                     self.mouse_scroll(3, mouse.column, mouse.row);
                 }
@@ -3952,10 +3966,14 @@ impl App {
             MouseEventKind::ScrollDown => {
                 if self.elicitation_ask.is_some() {
                     self.elicitation_scroll_by(3);
+                } else if self.permission_ask.is_some() {
+                    self.permission_ask_scroll_by(1);
                 } else if let Some(tree) = &mut self.plugin_tree {
                     tree.state.scroll_down(3);
                 } else if self.view_overlay.is_some() {
                     self.view_scroll_by(3);
+                } else if self.picker.is_some() {
+                    self.picker_scroll_by(1);
                 } else {
                     self.mouse_scroll(-3, mouse.column, mouse.row);
                 }
@@ -4266,6 +4284,44 @@ impl App {
             }
             self.needs_redraw = true;
         }
+    }
+
+    /// Wheel-scroll the open picker — the `/resume` session list, `/model`,
+    /// `/mode`, … One notch moves the selection exactly like one ↑/↓ press
+    /// (the highlight sweeps through a static window; the window itself only
+    /// scrolls once the selection leaves it — see `draw_model_picker`).
+    /// Steps clamp at both ends; only the arrows wrap, so an overscrolled
+    /// notch never teleports the highlight to the list tail.
+    fn picker_scroll_by(&mut self, delta: i64) {
+        let Some(picker) = &mut self.picker else { return };
+        let last = picker.items.len().saturating_sub(1);
+        if delta < 0 {
+            picker.sel = picker
+                .sel
+                .saturating_sub(delta.unsigned_abs() as usize)
+                .min(last);
+        } else {
+            picker.sel = picker.sel.saturating_add(delta as usize).min(last);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Wheel over an ACP permission ask (which floats above host pickers)
+    /// moves its highlight, mirroring the ↑/↓ keys and the modal priority
+    /// of `handle_key` — an ask on top of the `/resume` picker must not
+    /// scroll the picker underneath it.
+    fn permission_ask_scroll_by(&mut self, delta: i64) {
+        let Some(ask) = &mut self.permission_ask else { return };
+        let last = ask.options.len().saturating_sub(1);
+        if delta < 0 {
+            ask.sel = ask
+                .sel
+                .saturating_sub(delta.unsigned_abs() as usize)
+                .min(last);
+        } else {
+            ask.sel = ask.sel.saturating_add(delta as usize).min(last);
+        }
+        self.needs_redraw = true;
     }
 
     /// Toggle a tool between its collapsed viewport and full expansion.
@@ -5733,6 +5789,7 @@ impl App {
             return;
         }
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::AgentHistory,
             title: "Agent history".into(),
             sel: 0,
@@ -5771,6 +5828,7 @@ impl App {
             .position(|i| i.id == self.cfg.model)
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Model,
             title: self
                 .locale
@@ -5813,6 +5871,7 @@ impl App {
                 .collect();
         }
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Effort,
             title: self
                 .locale
@@ -5861,6 +5920,7 @@ impl App {
             .collect();
         self.resume_candidates = sessions;
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Session,
             title: self
                 .locale
@@ -6224,6 +6284,7 @@ impl App {
             .collect();
         self.resume_via_acp = true;
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Session,
             title: self
                 .locale
@@ -6291,6 +6352,7 @@ impl App {
         let current = self.current_mode();
         let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Mode,
             title: self
                 .locale
@@ -6500,6 +6562,7 @@ impl App {
         };
         let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Permission,
             title: self
                 .locale
@@ -6942,6 +7005,7 @@ impl App {
             .and_then(|id| items.iter().position(|item| item.id == *id))
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Auth,
             title: self
                 .locale
