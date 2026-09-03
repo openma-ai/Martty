@@ -1221,13 +1221,153 @@ fn next_and_prev_session_tab_cycles_tabs() {
 
 #[test]
 fn tab_strip_renders_overflow_indicator_when_narrow() {
-    let (mut app, _ctl, _rx) = test_app();
+    let (mut app, ctl, _rx) = test_app();
     app.open_new_session("s-two".into(), true);
     app.open_new_session("s-three".into(), true);
     app.open_new_session("s-four".into(), true);
 
-    // On width 30, not all tabs fit; +N indicator should render
+    // On width 30, not all tabs fit. The live session is the newest one
+    // (s-four), so the window parks at the tail without an indicator —
+    // everything from the window to the end fits.
+    let frame = crate::ui::dump_frame(&mut app, 30, 15);
+    let row0 = frame.lines().next().unwrap_or_default();
+    assert!(row0.contains("s-four"), "live tab on screen:\n{row0}");
+
+    // Jumping back to the head hides the tail behind the window: the +N
+    // indicator must render again.
+    app.switch_view_to_tab(0, &ctl);
     let frame = crate::ui::dump_frame(&mut app, 30, 15);
     let row0 = frame.lines().next().unwrap_or_default();
     assert!(row0.contains('+'), "overflow indicator rendered in:\n{row0}");
+    assert!(row0.contains("dsh-test"), "head tab on screen:\n{row0}");
+}
+
+/// 8 sessions (dsh-test + sess-01..sess-07). Tab 0 is 13 display cols
+/// (`dsh-test` + padding/arrow), the rest 12 (`sess-0X` + padding/arrow),
+/// so a 64-col row shows a window of five tabs and overflows.
+fn open_eight_tabs() -> (App, Controller, Receiver<AppEvent>) {
+    let (mut app, ctl, rx) = test_app();
+    for i in 1..8 {
+        app.open_new_session(format!("sess-{i:02}"), true);
+    }
+    (app, ctl, rx)
+}
+
+fn strip_window(app: &mut App) -> Vec<usize> {
+    let _ = crate::ui::dump_frame(app, 64, 30);
+    app.tab_rects.iter().map(|(_, idx)| *idx).collect()
+}
+
+/// The drawn rect of one tab (fresh draw happens inside `strip_window`).
+fn drawn_rect(app: &App, tab: usize) -> ratatui::layout::Rect {
+    app.tab_rects
+        .iter()
+        .find(|(_, idx)| *idx == tab)
+        .expect("tab is on screen")
+        .0
+}
+
+fn click_tab(app: &mut App, ctl: &Controller, tab: usize) {
+    let rect = drawn_rect(app, tab);
+    app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x + rect.width / 2,
+            0,
+        ),
+        ctl,
+    );
+}
+
+fn id_of(tab: usize) -> String {
+    if tab == 0 {
+        "dsh-test".into()
+    } else {
+        format!("sess-{tab:02}")
+    }
+}
+
+#[test]
+fn mouse_edge_clicks_walk_the_strip_to_every_tab_and_back() {
+    let (mut app, ctl, _rx) = open_eight_tabs();
+    // The live session is the newest (tab 7), so the first draw parks the
+    // window at the tail with it at the right edge.
+    let window = strip_window(&mut app);
+    assert_eq!(window, vec![3, 4, 5, 6, 7], "live tab revealed on open");
+    assert_eq!(app.tab_strip_offset, 3);
+
+    // Walk left to the head: clicking the leftmost visible tab switches
+    // to it and reveals its left neighbor.
+    for step in (0..3).rev() {
+        let first = *strip_window(&mut app).first().expect("window");
+        assert!(first > 0, "still tabs to reveal on the left");
+        click_tab(&mut app, &ctl, first);
+        assert_eq!(app.session_id, id_of(first), "edge click switches");
+        assert_eq!(app.tab_strip_offset, step, "strip walked one tab left");
+        let window = strip_window(&mut app);
+        assert!(
+            window.contains(&first) && window.contains(&(first - 1)),
+            "clicked tab stays visible and its left neighbor appears: {window:?}"
+        );
+    }
+    click_tab(&mut app, &ctl, 0);
+    assert_eq!(app.session_id, "dsh-test", "back on the first session");
+    assert_eq!(app.tab_strip_offset, 0, "tab 0 cannot nudge left");
+    assert_eq!(strip_window(&mut app), vec![0, 1, 2, 3, 4], "head window");
+
+    // Walk right to the tail: clicking the rightmost visible tab switches
+    // to it and reveals its right neighbor.
+    for step in 1..=3 {
+        let last = *strip_window(&mut app).last().expect("window");
+        assert!(last < 7, "still tabs to reveal");
+        click_tab(&mut app, &ctl, last);
+        assert_eq!(app.session_id, id_of(last), "edge click switches");
+        assert_eq!(app.tab_strip_offset, step, "strip walked one tab right");
+        let window = strip_window(&mut app);
+        assert!(
+            window.contains(&last) && window.contains(&(last + 1)),
+            "clicked tab stays visible and its neighbor appears: {window:?}"
+        );
+    }
+
+    // The final tab is on screen now; clicking it switches but cannot
+    // nudge further right.
+    let before = app.tab_strip_offset;
+    click_tab(&mut app, &ctl, 7);
+    assert_eq!(app.session_id, "sess-07");
+    assert_eq!(app.tab_strip_offset, before, "no nudge past the last tab");
+}
+
+#[test]
+fn middle_tab_clicks_do_not_nudge_and_switches_out_of_view_reanchor() {
+    let (mut app, ctl, _rx) = open_eight_tabs();
+    assert_eq!(strip_window(&mut app), vec![3, 4, 5, 6, 7]);
+    assert_eq!(app.tab_strip_offset, 3);
+
+    // A middle click switches but leaves the strip where it is.
+    click_tab(&mut app, &ctl, 5);
+    assert_eq!(app.session_id, "sess-05", "switched to the middle tab");
+    assert_eq!(app.tab_strip_offset, 3, "middle click does not nudge");
+    assert_eq!(strip_window(&mut app), vec![3, 4, 5, 6, 7]);
+
+    // Keyboard-style jump far out of the window (back to the head): the
+    // draw re-anchors so the live tab is visible again.
+    app.switch_view_to_tab(0, &ctl);
+    assert_eq!(strip_window(&mut app), vec![0, 1, 2, 3, 4]);
+    assert_eq!(app.tab_strip_offset, 0, "live tab 0 pins the head");
+
+    // And a jump to the far tail parks the live tab at the right edge.
+    app.switch_view_to_tab(7, &ctl);
+    let window = strip_window(&mut app);
+    assert_eq!(window, vec![3, 4, 5, 6, 7], "live tab at the right edge");
+    assert_eq!(app.tab_strip_offset, 3);
+}
+
+#[test]
+fn strip_offset_snaps_to_the_head_once_everything_fits_again() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true); // 2 tabs: fits on a 64-col row
+    app.tab_strip_offset = 3; // stale offset from a wider strip
+    assert_eq!(strip_window(&mut app), vec![0, 1]);
+    assert_eq!(app.tab_strip_offset, 0, "no scroll state when nothing overflows");
 }

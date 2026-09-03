@@ -1265,6 +1265,13 @@ pub struct App {
     awaiting_binds: VecDeque<AwaitingBind>,
     /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
     pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
+    /// First tab index rendered in the session tab strip (the strip's
+    /// scroll window). Mouse clicks on the window's edge tabs nudge it by
+    /// one so the neighboring tab appears — a mouse can walk through every
+    /// session tab without ever hitting a dead end. The draw pass keeps the
+    /// window sane (never past the tail, head-anchored when there is no
+    /// overflow, live tab always in view).
+    pub(crate) tab_strip_offset: usize,
     pub cfg: RuntimeConfig,
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
@@ -1660,6 +1667,7 @@ impl App {
             current: 0,
             awaiting_binds: VecDeque::new(),
             tab_rects: Vec::new(),
+            tab_strip_offset: 0,
             cfg,
             selected_model: None,
             demo,
@@ -1928,6 +1936,13 @@ impl App {
     /// Number of session tabs (parked + live).
     pub fn session_tab_count(&self) -> usize {
         self.parked.len() + 1
+    }
+
+    /// Tab index of the live session — the position where `session_tabs`
+    /// splices it into the parked list. The painter uses it to keep the
+    /// strip's scroll window anchored on the tab being viewed.
+    pub(crate) fn live_tab_index(&self) -> usize {
+        self.current
     }
 
     /// Hit-test a screen cell against the tab rects recorded by the painter.
@@ -3983,6 +3998,30 @@ impl App {
                 // Session tab strip (issue #94): left-click a tab switches.
                 if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
                     self.switch_view_to_tab(tab, ctl);
+                    // Clicking the strip's outermost visible tab also
+                    // nudges the strip so its neighbor appears — repeated
+                    // edge clicks walk the mouse through every session
+                    // tab, left or right. `switch_view_to_tab` already
+                    // released overlays etc.; only the strip moves here.
+                    let first = self
+                        .tab_rects
+                        .iter()
+                        .map(|(_, idx)| *idx)
+                        .min()
+                        .unwrap_or(tab);
+                    let last = self
+                        .tab_rects
+                        .iter()
+                        .map(|(_, idx)| *idx)
+                        .max()
+                        .unwrap_or(tab);
+                    if tab == first && tab > 0 {
+                        self.tab_strip_offset = self.tab_strip_offset.saturating_sub(1);
+                        self.needs_redraw = true;
+                    } else if tab == last && tab + 1 < self.session_tab_count() {
+                        self.tab_strip_offset = self.tab_strip_offset.saturating_add(1);
+                        self.needs_redraw = true;
+                    }
                     return;
                 }
                 if let Some(action) = self

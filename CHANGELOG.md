@@ -38,6 +38,14 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The session tab strip now scrolls instead of cutting off: clicking the
+  leftmost or rightmost visible tab switches to it **and** nudges the
+  strip by one, so the adjacent tab appears — repeated edge clicks walk
+  the mouse through every session tab in either direction. The window
+  always keeps the live tab on screen: opening or switching to a session
+  outside the window re-anchors the strip with it at the right edge, and
+  once the tabs all fit again the strip snaps back to the head.
+
 - The mouse wheel now scrolls an open picker dialog (the `/resume` session
   list, `/model`, `/mode`, …) instead of falling through to the chat
   behind it: one notch moves the selection exactly like one ↑/↓ press,

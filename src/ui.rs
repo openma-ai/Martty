@@ -1004,6 +1004,13 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
 /// whose session has an unanswered ACP ask (permission or elicitation) — the
 /// agent is waiting on that tab. Tab rects include their trailing arrow for
 /// `App::tab_at` mouse hit-testing.
+///
+/// The strip scrolls: only the tabs in its window (`App::tab_strip_offset`)
+/// are drawn. Clicking the window's edge tab in `App::handle_mouse` nudges
+/// the window by one so the neighbor appears, which lets a mouse walk
+/// through every tab; the window is re-anchored here whenever the live tab
+/// leaves it (keyboard jumps, tab closes) and snaps to the head when the
+/// suffix fits on one row.
 fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     const ARROW: &str = "\u{e0b0}";
 
@@ -1025,10 +1032,60 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     let tabs = app.session_tabs();
     let spinner = app.spinner();
     let right = area.right() as usize;
+    let total = tabs.len();
+    if total == 0 || area.width < 4 {
+        return;
+    }
+    // Per-tab display width: `" {indicator} {label} "` plus the trailing
+    // arrow. Every indicator — Braille spinner included — is one cell, so
+    // the widths only depend on the clamped label.
+    let widths: Vec<usize> = tabs
+        .iter()
+        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 5)
+        .collect();
+    let avail = right.saturating_sub(area.x as usize);
+
+    // The strip's scroll window. The draw pass owns its normalization so a
+    // stale offset (labels grew, tabs closed) can never draw garbage.
+    let mut start = app.tab_strip_offset.min(total.saturating_sub(1));
+    if widths.iter().sum::<usize>() <= avail {
+        // The whole strip fits on one row: there is nothing to scroll, so
+        // a stale offset (tabs closed since the last walk) snaps to 0.
+        // Note this only fires when *everything* fits — once a walk has
+        // started, a window whose suffix fits but whose head does not
+        // stays where the mouse put it, or the walk could never reveal the
+        // final tab.
+        start = 0;
+    }
+    // Greedy end of the window from `start` — mirrors the render loop's
+    // `x + width > right` cut exactly.
+    let window_end = |start: usize| -> usize {
+        let mut x = area.x as usize;
+        let mut end = start;
+        while end < total && x + widths[end] <= right {
+            x += widths[end];
+            end += 1;
+        }
+        end
+    };
+    let live = app.live_tab_index().min(total - 1);
+    if live < start || live >= window_end(start) {
+        // The live tab left the window (keyboard jump, /close): re-anchor
+        // with the live tab at the right edge and as many predecessors as
+        // fit, so the tab being viewed is always on screen.
+        let mut anchor = live;
+        let mut width = widths[live];
+        while anchor > 0 && width + widths[anchor - 1] <= avail {
+            anchor -= 1;
+            width += widths[anchor];
+        }
+        start = anchor;
+    }
+    app.tab_strip_offset = start;
+
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x as usize;
-    let total = tabs.len();
-    for (idx, tab) in tabs.iter().enumerate() {
+    for (idx, tab) in tabs.iter().enumerate().skip(start) {
         let label = crate::transcript::clamp_str(&tab.label, 16);
         let tab_bg = background_for(idx, tab.current);
         let (indicator, indicator_style) = if tab.ask_pending {
