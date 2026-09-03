@@ -3737,8 +3737,12 @@ impl App {
                         }
                         ctl.send(Cmd::FetchSkills);
                     }
-                    CtlEvent::SessionList { sessions, prefix } => {
-                        self.on_acp_session_list(sessions, prefix, ctl);
+                    CtlEvent::SessionList {
+                        sessions,
+                        prefix,
+                        limit,
+                    } => {
+                        self.on_acp_session_list(sessions, prefix, limit, ctl);
                     }
                     CtlEvent::SessionListUnavailable {
                         prefix,
@@ -6486,11 +6490,17 @@ impl App {
         &mut self,
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
+        limit: usize,
         ctl: &Controller,
     ) {
         let skip = self.session_id.clone();
-        let sessions: Vec<SessionListItem> =
-            sessions.into_iter().filter(|s| s.id != skip).collect();
+        // The `/resume n` cap counts resumable sessions only: the current
+        // session is dropped first, then the list truncates to the limit.
+        let mut sessions: Vec<SessionListItem> = sessions
+            .into_iter()
+            .filter(|s| s.id != skip)
+            .collect();
+        sessions.truncate(limit);
         if let Some(prefix) = prefix.as_deref().filter(|p| !p.is_empty()) {
             match unique_session_list_match(&sessions, prefix) {
                 Ok(id) => {

@@ -156,9 +156,12 @@ pub enum CtlEvent {
     /// dead request (issue #94 bind poisoning).
     BindFailed,
     /// `session/list` rows (`prefix` is the `/resume` argument, if any).
+    /// Rows from ACP `session/list`, plus the `/resume n` limit carried by
+    /// the request (applied after the current session is filtered out).
     SessionList {
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
+        limit: usize,
     },
     /// `session/list` missing or failed; UI falls back to local JSONL with
     /// the same `limit` the request carried.

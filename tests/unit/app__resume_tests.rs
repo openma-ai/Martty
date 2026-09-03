@@ -521,3 +521,32 @@ fn picker_scrollbar_thumb_reaches_both_ends_of_the_track() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn acp_session_list_limit_skips_the_current_session_before_truncating() {
+    let root = tmp_root("limit");
+    let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+    // The agent lists the current session first (most recent), then 10
+    // older ones: `/resume 10` must still yield 10 resumable rows — the
+    // filtered-out current session must not consume a limit slot.
+    let mut sessions = vec![SessionListItem {
+        id: app.session_id.clone(),
+        title: None,
+        updated_at: None,
+    }];
+    for i in 1..=10 {
+        sessions.push(SessionListItem {
+            id: format!("dsh-sess-{i:02}"),
+            title: Some(format!("session {i}")),
+            updated_at: None,
+        });
+    }
+    app.on_acp_session_list(sessions, None, 10, &ctl);
+    let picker = app.picker.as_ref().expect("/resume 10 opens the picker");
+    assert_eq!(picker.items.len(), 10, "limit counts resumable rows only");
+    assert!(
+        picker.items.iter().all(|item| item.id != app.session_id),
+        "the current session stays out of the resume list"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
