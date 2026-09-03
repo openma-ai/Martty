@@ -5,79 +5,50 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
-### Added
-
-- Fast local build profile `devlocal` (debug codegen, incremental) for
-  `scripts/devlocalinstall.sh`: the local install/build loop no longer
-  pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
-  restores the shipped config). The npm bundles keep the fat-LTO release
-  config untouched.
-
-- Standalone harness registry and discovery: `martty harness list` shows saved
-  entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
-  on `PATH`; `harness add` saves a named command and repeated arguments, while
-  `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
-  The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
-  entry point, using the native TUI single-select overlay and the same registry.
-  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
-  `activeHarness` → the bundled default. Selection applies on the next launch,
-  which creates a fresh ACP session; sessions never carry across Harnesses and
-  profile-owned Host runtimes and sessions are unchanged.
-- The `@file` mention browser now follows the typed query across the
-  tree: the listing is live-filtered to matching names (exact > prefix >
-  contains > subsequence, `../` always kept so a filtered view can back
-  out), and when the filter leaves nothing in the current directory a
-  bounded search (max 3 levels, skipping `.git`/`node_modules`/`target`-
-  style trees) hops the browser to the closest entry and selects it —
-  typing `@abc` jumps to `docs/abc_ref.md` without a path prefix, and
-  continuing to type keeps the browser there. An empty match leaves the
-  frame up with a no-match hint instead of hiding the menu.
-- A mouse-only expand affordance now sits on the composer card's
-  top-right frame border (issue #92): an always-visible `⛶` glyph that
-  highlights on hover and pins the input to the amplified height (about
-  5/8 of the main area) on click; clicking again restores the
-  draft-following auto height. The glyph lives on the cap row, outside
-  the text well, so a full draft never hides it. It has no key binding
-  and never moves the caret.
-- New gallery palette pack `tomorrow` (dark from Tomorrow Night
-  Bright, light from Tomorrow), sourced from
-  terminalcolors.com/themes/tomorrow. It registers at Client boot as a
-  sibling `inject = ['tuiTheme']` row and `/theme tomorrow` covers it.
-  Both terminalcolors variants export bright black as `#000000`
-  (equal to the dark background, darker than the light foreground), so
-  secondary text/border take the Tomorrow family's canonical comment
-  tones (`#969896` dark / `#8e908c` light) and panel/chip take the
-  selection background (`#424242` / `#d6d6d6`), following the
-  solarized/everforest readability precedent.
-- New gallery palette pack `one` (dark from One Dark, light from One
-  Light), sourced from terminalcolors.com/themes/one. It registers at
-  Client boot as a sibling `inject = ['tuiTheme']` row and `/theme one`
-  covers it; dark/light follows the existing packs. Three adaptations
-  in light mode, all sourced from the One family's canonical syntax
-  tones because One Light's terminal export lacks them: secondary
-  text/border take the comment gray (`#5c6370`) instead of collapsing
-  onto `panel`'s `#bbbbbb` (which made picker dialog text unreadable),
-  `warn` takes the orange constant tone (`#c18401`) instead of the
-  export's pale tan (invisible as the approval dialog border on the
-  panel), and `hint` takes the aqua tone (`#0184bc`) because the export
-  maps cyan and green to the same swatch, colliding with `ok`. One
-  Dark's inverted selection also makes the user bubble light-on-dark in
-  dark mode and dark-on-light in light mode, straight from the source
-  selection swatches.
-- `@file` mentions in the composer (issue #62): typing `@` at a word
-  boundary opens a workspace file browser (ratatui-explorer) above the
-  input. The query's directory prefix descends as you type (`@src/m` opens
-  `src/` and jumps to the first `ma*` entry), `↑/↓` move, `Tab`/`→` drill
-  into a directory (rewriting the token to `@dir/`), `←` goes up, `Enter`
-  picks (`@path`, `@"path with spaces"` quoted automatically, directories
-  keep their trailing `/`), `Esc` dismisses the token until its text
-  changes, and `ctrl+h` toggles hidden files and directories. Emails and
-  URL hosts never trigger; the `@"…"` form allows
-  spaces and keeps the quote open while drilling. The browser colors from
-  the active theme tokens (panel/border/fg/brand/chip_bg), so palette
-  packs and both UI presets apply.
-
 ### Fixed
+
+- `/resume` over ACP (`session/load`) no longer leaves the welcome banner
+  covering the replayed transcript: the banner was only dismissed by the
+  first prompt send (and by the local JSONL resume path), so resuming
+  before ever sending a prompt hid every loaded message until the user
+  typed and sent something. `resume_acp_session` (session/resume and the
+  legacy session/load fallback) now dismisses the banner before the
+  transcript streams in, like `resume_session` already did.
+
+- Painter info popups (`/help`, `/keys`, `/session`, and the painter
+  `/status` fallback) and the `/plugins` / `/cordis-plugins` inventory tree
+  now follow their session across tabs like the ACP asks do: opening one,
+  clicking another tab, and returning restores the popup exactly as left
+  (scroll and tree selection included), instead of floating over the newly
+  viewed session. Compositor-owned plugin overlays (the live `/status`
+  view, plan views, select/slider modals) cannot ride along — they belong
+  to the client Plugin runtime's single-overlay slot — so a tab switch
+  cancels them with the same event Esc would send (the plugin releases its
+  slot; shipped plugins have no cancel side effects). A plugin's later
+  "overlay closed" ack no longer eats a painter popup restored by that
+  switch.
+
+- Session-bound ACP asks (permission and elicitation popups) now follow
+  their session across tabs instead of floating over whatever session is on
+  screen: an ask that arrives for a background session waits in that
+  session's tab (marked with a `?` in the tab strip) and only shows when
+  its own tab is viewed; switching away never cancels or answers it, and
+  answering or Esc-ing it works from its own tab only. Two asks on
+  different sessions no longer clobber each other (the displaced ask used
+  to auto-cancel, silently denying the agent's tool call).
+
+- The UI no longer freezes for minutes when an agent floods the connection
+  with session updates — reproduced with dsh-acp's `session/load` replay of
+  a long session, which re-emits every historical delta (a 10k-event log
+  arrived as ~258k notifications / 1.4 GB and saturated the event loop.
+  Two defenses: drained bursts of `session/update` notifications are now
+  coalesced before application (adjacent text deltas of one message are
+  concatenated; superseded bare `tool_call_update`s keep only the latest
+  state — lossless for the final transcript), and the per-event
+  queue/agents projection comparisons now use cheap fingerprints instead of
+  full snapshot clones. The composer stays responsive while such a storm
+  drains in the background.
+
 
 - `/resume` now uses ACP `session/resume` when the agent advertises it, so long
   sessions can continue without replaying their full transcript into the TUI.
@@ -194,7 +165,124 @@ All notable changes to this project are documented here. The project follows
   in-body `## …` headings were dropped from `/plan-view`, `/keys`, `/help`,
   `/session` and `/status` — the popup border already names the window.
 
+
+- The composer input now supports the mouse: left-click places the caret at
+  the clicked character (blank space past the text snaps to the end), and
+  left-drag selects a text span that is copied to the clipboard on release,
+  with the highlight persisting until the next click or Esc. CJK/emoji
+  double-width characters are handled cell-accurately: the caret splits a
+  wide char at its midpoint and a drag covers it whole. Mouse actions never
+  trigger submit, history recall or slash-completion selection.
+- `Ctrl+U`, `Ctrl+K`, and the corresponding macOS line-kill shortcut now
+  delete only to the current rendered line boundary instead of truncating the
+  entire multiline composer draft.
+- The composer caret no longer flickers while the transcript scrolls (agent
+  streaming auto-follow, or scrolling yourself). The caret is now painted as
+  a buffer cell — a steady reversed block that rides the frame diff — and
+  the terminal's hardware cursor stays hidden for the whole session, instead
+  of being hidden for the entire frame write (long during scroll redraws)
+  and re-shown at frame end. Elicitation form fields use the same cell
+  caret; the old hardware-cursor position and the redundant `▏` insert mark
+  are gone. Frames still apply as one synchronized update (DECSET 2026).
+- Image thumbnails and the pixel pet no longer re-send their whole PNG to
+  the terminal on every move: each kitty image is transmitted once under its
+  image id, and viewport scrolls (thumbnails) or composer-height changes and
+  idle↔working toggles (pet) re-place it with a small `a=p` placement
+  command, dropping the previous placement only after the new one exists so
+  nothing blinks out mid-scroll. The pet's ~43KB sprite retransmit on every
+  long-draft wrap boundary is gone. All kitty writers now share one set of
+  protocol primitives, and the pet's screen anchor is recorded by the frame
+  draw itself instead of being recomputed in main.
+
 ### Added
+
+- Multi-session parallel management (issue #94): one ACP connection now
+  drives several sessions concurrently. Once a second session exists, a
+  native tab strip appears at the top — one tab per session with a running
+  indicator (spinner on the viewed tab, `●` in the background) and a `✓`
+  completion badge for sessions that finished while in the background;
+  left-click a tab to switch. `/new` and `/resume` now park the current
+  session instead of discarding it: switching back restores its transcript,
+  prompt queue, modes, and subagent panels exactly as left, while background
+  sessions keep folding their `session/update` events into their own
+  transcripts (the event router also no longer lets foreign-session events
+  leak into the viewed transcript). Prompts, steers, interrupts, and
+  per-session queues are addressed by session id, so turns on different
+  sessions run truly concurrently.
+- `scripts/acp-multi-session.smoke.mjs`: opt-in smoke check that the
+  spawned dsh-acp agent drives concurrent sessions over one ACP connection
+  (consumes a small amount of model tokens; not part of `npm test`).
+
+- Fast local build profile `devlocal` (debug codegen, incremental) for
+  `scripts/devlocalinstall.sh`: the local install/build loop no longer
+  pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
+  restores the shipped config). The npm bundles keep the fat-LTO release
+  config untouched.
+
+- Standalone harness registry and discovery: `martty harness list` shows saved
+  entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
+  on `PATH`; `harness add` saves a named command and repeated arguments, while
+  `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
+  The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
+  entry point, using the native TUI single-select overlay and the same registry.
+  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
+  `activeHarness` → the bundled default. Selection applies on the next launch,
+  which creates a fresh ACP session; sessions never carry across Harnesses and
+  profile-owned Host runtimes and sessions are unchanged.
+- The `@file` mention browser now follows the typed query across the
+  tree: the listing is live-filtered to matching names (exact > prefix >
+  contains > subsequence, `../` always kept so a filtered view can back
+  out), and when the filter leaves nothing in the current directory a
+  bounded search (max 3 levels, skipping `.git`/`node_modules`/`target`-
+  style trees) hops the browser to the closest entry and selects it —
+  typing `@abc` jumps to `docs/abc_ref.md` without a path prefix, and
+  continuing to type keeps the browser there. An empty match leaves the
+  frame up with a no-match hint instead of hiding the menu.
+- A mouse-only expand affordance now sits on the composer card's
+  top-right frame border (issue #92): an always-visible `⛶` glyph that
+  highlights on hover and pins the input to the amplified height (about
+  5/8 of the main area) on click; clicking again restores the
+  draft-following auto height. The glyph lives on the cap row, outside
+  the text well, so a full draft never hides it. It has no key binding
+  and never moves the caret.
+- New gallery palette pack `tomorrow` (dark from Tomorrow Night
+  Bright, light from Tomorrow), sourced from
+  terminalcolors.com/themes/tomorrow. It registers at Client boot as a
+  sibling `inject = ['tuiTheme']` row and `/theme tomorrow` covers it.
+  Both terminalcolors variants export bright black as `#000000`
+  (equal to the dark background, darker than the light foreground), so
+  secondary text/border take the Tomorrow family's canonical comment
+  tones (`#969896` dark / `#8e908c` light) and panel/chip take the
+  selection background (`#424242` / `#d6d6d6`), following the
+  solarized/everforest readability precedent.
+- New gallery palette pack `one` (dark from One Dark, light from One
+  Light), sourced from terminalcolors.com/themes/one. It registers at
+  Client boot as a sibling `inject = ['tuiTheme']` row and `/theme one`
+  covers it; dark/light follows the existing packs. Three adaptations
+  in light mode, all sourced from the One family's canonical syntax
+  tones because One Light's terminal export lacks them: secondary
+  text/border take the comment gray (`#5c6370`) instead of collapsing
+  onto `panel`'s `#bbbbbb` (which made picker dialog text unreadable),
+  `warn` takes the orange constant tone (`#c18401`) instead of the
+  export's pale tan (invisible as the approval dialog border on the
+  panel), and `hint` takes the aqua tone (`#0184bc`) because the export
+  maps cyan and green to the same swatch, colliding with `ok`. One
+  Dark's inverted selection also makes the user bubble light-on-dark in
+  dark mode and dark-on-light in light mode, straight from the source
+  selection swatches.
+- `@file` mentions in the composer (issue #62): typing `@` at a word
+  boundary opens a workspace file browser (ratatui-explorer) above the
+  input. The query's directory prefix descends as you type (`@src/m` opens
+  `src/` and jumps to the first `ma*` entry), `↑/↓` move, `Tab`/`→` drill
+  into a directory (rewriting the token to `@dir/`), `←` goes up, `Enter`
+  picks (`@path`, `@"path with spaces"` quoted automatically, directories
+  keep their trailing `/`), `Esc` dismisses the token until its text
+  changes, and `ctrl+h` toggles hidden files and directories. Emails and
+  URL hosts never trigger; the `@"…"` form allows
+  spaces and keeps the quote open while drilling. The browser colors from
+  the active theme tokens (panel/border/fg/brand/chip_bg), so palette
+  packs and both UI presets apply.
+
 
 - The light/dark theme mode (`ctrl+t`, `/theme toggle`) now persists to
   `settings.json` (`themeMode`) and is restored on the next launch; an
@@ -232,36 +320,6 @@ All notable changes to this project are documented here. The project follows
 - Popup dialog bodies (keys/plan-view/status and friends) are indented one
   level from the border, and markdown wraps one level narrower so
   continuation lines stay aligned (issue #49).
-
-### Fixed
-
-- The composer input now supports the mouse: left-click places the caret at
-  the clicked character (blank space past the text snaps to the end), and
-  left-drag selects a text span that is copied to the clipboard on release,
-  with the highlight persisting until the next click or Esc. CJK/emoji
-  double-width characters are handled cell-accurately: the caret splits a
-  wide char at its midpoint and a drag covers it whole. Mouse actions never
-  trigger submit, history recall or slash-completion selection.
-- `Ctrl+U`, `Ctrl+K`, and the corresponding macOS line-kill shortcut now
-  delete only to the current rendered line boundary instead of truncating the
-  entire multiline composer draft.
-- The composer caret no longer flickers while the transcript scrolls (agent
-  streaming auto-follow, or scrolling yourself). The caret is now painted as
-  a buffer cell — a steady reversed block that rides the frame diff — and
-  the terminal's hardware cursor stays hidden for the whole session, instead
-  of being hidden for the entire frame write (long during scroll redraws)
-  and re-shown at frame end. Elicitation form fields use the same cell
-  caret; the old hardware-cursor position and the redundant `▏` insert mark
-  are gone. Frames still apply as one synchronized update (DECSET 2026).
-- Image thumbnails and the pixel pet no longer re-send their whole PNG to
-  the terminal on every move: each kitty image is transmitted once under its
-  image id, and viewport scrolls (thumbnails) or composer-height changes and
-  idle↔working toggles (pet) re-place it with a small `a=p` placement
-  command, dropping the previous placement only after the new one exists so
-  nothing blinks out mid-scroll. The pet's ~43KB sprite retransmit on every
-  long-draft wrap boundary is gone. All kitty writers now share one set of
-  protocol primitives, and the pet's screen anchor is recorded by the frame
-  draw itself instead of being recomputed in main.
 
 ## [0.2.24] - 2026-08-24
 

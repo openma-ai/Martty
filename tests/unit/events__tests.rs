@@ -922,3 +922,151 @@ fn malformed_payloads_yield_empty_vec() {
     )
     .is_empty());
 }
+
+fn update_ev(session: &str, update: serde_json::Value) -> crate::bus::AppEvent {
+    crate::bus::AppEvent::Rpc {
+        method: "session/update".into(),
+        params: json!({ "sessionId": session, "update": update }),
+    }
+}
+
+fn text_chunk(session: &str, kind: &str, message: &str, text: &str) -> crate::bus::AppEvent {
+    update_ev(
+        session,
+        json!({
+            "sessionUpdate": kind,
+            "content": { "type": "text", "text": text },
+            "messageId": message,
+        }),
+    )
+}
+
+#[test]
+fn adjacent_text_chunks_for_one_message_merge() {
+    let mut events = vec![
+        text_chunk("s1", "agent_message_chunk", "1:1", "hello "),
+        text_chunk("s1", "agent_message_chunk", "1:1", "world"),
+        text_chunk("s1", "agent_thought_chunk", "1:1", "thinking "),
+        text_chunk("s1", "agent_thought_chunk", "1:1", "aloud"),
+    ];
+    coalesce_session_updates(&mut events);
+    assert_eq!(events.len(), 2);
+    let crate::bus::AppEvent::Rpc { params, .. } = &events[0] else {
+        panic!("rpc")
+    };
+    assert_eq!(params["update"]["content"]["text"], "hello world");
+    let crate::bus::AppEvent::Rpc { params, .. } = &events[1] else {
+        panic!("rpc")
+    };
+    assert_eq!(params["update"]["content"]["text"], "thinking aloud");
+}
+
+#[test]
+fn text_chunks_do_not_merge_across_messages_sessions_or_kinds() {
+    let mut events = vec![
+        text_chunk("s1", "agent_message_chunk", "1:1", "a"),
+        text_chunk("s1", "agent_message_chunk", "1:2", "b"),
+        text_chunk("s2", "agent_message_chunk", "1:2", "c"),
+        text_chunk("s2", "agent_thought_chunk", "1:2", "d"),
+    ];
+    coalesce_session_updates(&mut events);
+    assert_eq!(events.len(), 4);
+}
+
+#[test]
+fn the_final_chunks_meta_survives_a_merge() {
+    let mut events = vec![
+        text_chunk("s1", "agent_message_chunk", "1:1", "body"),
+        update_ev(
+            "s1",
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "" },
+                "messageId": "1:1",
+                "_meta": { "dsh": { "event": "assistant_message", "model": "deepseek-v4-flash" } },
+            }),
+        ),
+    ];
+    coalesce_session_updates(&mut events);
+    assert_eq!(events.len(), 1);
+    let crate::bus::AppEvent::Rpc { params, .. } = &events[0] else {
+        panic!("rpc")
+    };
+    assert_eq!(params["update"]["content"]["text"], "body");
+    assert_eq!(params["update"]["_meta"]["dsh"]["model"], "deepseek-v4-flash");
+}
+
+fn bare_tool_update(session: &str, call: &str, status: &str) -> crate::bus::AppEvent {
+    update_ev(
+        session,
+        json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": call,
+            "title": "bash ls",
+            "status": status,
+        }),
+    )
+}
+
+#[test]
+fn bare_tool_call_updates_keep_only_the_latest() {
+    let mut events = vec![
+        bare_tool_update("s1", "c1", "pending"),
+        bare_tool_update("s1", "c1", "pending"),
+        bare_tool_update("s1", "c1", "in_progress"),
+        bare_tool_update("s1", "c2", "pending"),
+    ];
+    coalesce_session_updates(&mut events);
+    assert_eq!(events.len(), 2);
+    let crate::bus::AppEvent::Rpc { params, .. } = &events[0] else {
+        panic!("rpc")
+    };
+    assert_eq!(params["update"]["status"], "in_progress");
+    let crate::bus::AppEvent::Rpc { params, .. } = &events[1] else {
+        panic!("rpc")
+    };
+    assert_eq!(params["update"]["toolCallId"], "c2");
+}
+
+#[test]
+fn rich_tool_call_updates_are_never_dropped() {
+    let mut events = vec![
+        bare_tool_update("s1", "c1", "pending"),
+        update_ev(
+            "s1",
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "c1",
+                "status": "completed",
+                "rawOutput": { "output": "ok", "isError": false },
+            }),
+        ),
+        update_ev(
+            "s1",
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "c1",
+                "_meta": { "terminal_output": { "terminal_id": "c1", "data": "chunk" } },
+            }),
+        ),
+    ];
+    coalesce_session_updates(&mut events);
+    assert_eq!(events.len(), 3);
+}
+
+#[test]
+fn non_update_events_pass_through_untouched() {
+    let mut events = vec![
+        text_chunk("s1", "agent_message_chunk", "1:1", "a"),
+        update_ev("s1", json!({ "sessionUpdate": "tool_call", "toolCallId": "c1" })),
+        text_chunk("s1", "agent_message_chunk", "1:1", "b"),
+        crate::bus::AppEvent::Ui(UiEvent::TurnEnd {
+            session: "s1".into(),
+            kind: "end_turn".into(),
+        }),
+        text_chunk("s1", "agent_message_chunk", "1:1", "c"),
+    ];
+    coalesce_session_updates(&mut events);
+    // The tool_call start and the TurnEnd break every run: nothing merges.
+    assert_eq!(events.len(), 5);
+}

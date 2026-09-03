@@ -736,6 +736,85 @@ pub struct SubagentView {
     pub transcript: Transcript,
 }
 
+/// One non-live session's full state while another tab is viewed (issue
+/// #94). The App's own fields always describe the viewed session; a tab
+/// switch moves them into a slot and loads the target slot in their place.
+pub struct SessionSlot {
+    pub id: String,
+    pub title: Option<String>,
+    pub transcript: Transcript,
+    /// Authoritative per-session running bit (folded from `SessionStatus`
+    /// and turn lifecycle events).
+    pub running: bool,
+    /// Finished while parked → tab badge until the user views the tab.
+    pub completed_unseen: bool,
+    pub prompt_queue: VecDeque<ClientQueuedPrompt>,
+    pub prompt_pending: bool,
+    pub modes: Modes,
+    pub session_bound: bool,
+    pub pending_steer_cells: HashMap<u64, PendingSteer>,
+    pub subagents: Vec<SubagentView>,
+    pub current_subagents: HashSet<String>,
+    pub next_subagent_starts_batch: bool,
+    pub active_subagent: Option<String>,
+    pub agent_selection: Option<String>,
+    /// A session-bound ACP ask (permission or elicitation) that arrived
+    /// while this session was out of view — or that was on screen when the
+    /// user switched away. Asks follow their session: only the live tab
+    /// renders and answers them, switching never cancels one, and the tab
+    /// strip marks a tab with a pending ask.
+    pub permission_ask: Option<PermissionAskOverlay>,
+    pub elicitation_ask: Option<ElicitationAskOverlay>,
+    /// Painter-owned info popup (`/help`, `/keys`, `/session`, painter
+    /// `/status` — `notify_plugin == false`) parked with its session: it
+    /// leaves the screen on a switch and resurfaces, scroll and all, when
+    /// the user returns. Compositor-owned plugin views never park — the
+    /// tab-click path cancels them instead (see `cancel_plugin_overlays`).
+    pub view_overlay: Option<ViewOverlay>,
+    /// `/plugins` / `/cordis-plugins` inventory tree (selection state
+    /// included) parked with its session like the info popups.
+    pub plugin_tree: Option<PluginTree>,
+}
+
+impl SessionSlot {
+    /// A fresh, empty session tab. `bound` is true only when the id is
+    /// already a real session id (demo, local JSONL resume).
+    fn fresh(id: String, bound: bool) -> Self {
+        SessionSlot {
+            transcript: Transcript::new(id.clone()),
+            id,
+            title: None,
+            running: false,
+            completed_unseen: false,
+            prompt_queue: VecDeque::new(),
+            prompt_pending: false,
+            modes: Modes::default(),
+            session_bound: bound,
+            pending_steer_cells: HashMap::new(),
+            subagents: Vec::new(),
+            current_subagents: HashSet::new(),
+            next_subagent_starts_batch: true,
+            active_subagent: None,
+            agent_selection: None,
+            permission_ask: None,
+            elicitation_ask: None,
+            view_overlay: None,
+            plugin_tree: None,
+        }
+    }
+}
+
+/// One row of the session tab strip (native chrome, `ui::draw_session_tabs`).
+pub struct SessionTab {
+    pub label: String,
+    pub running: bool,
+    pub completed_unseen: bool,
+    /// A session-bound ACP ask (permission/elicitation) is pending on this
+    /// tab — the agent is waiting for an answer only this tab can give.
+    pub ask_pending: bool,
+    pub current: bool,
+}
+
 pub(crate) const AGENT_HISTORY_ID: &str = "__martty_internal__:agent-history";
 
 /// Overlay for one ACP `session/request_permission` ask.
@@ -1110,6 +1189,18 @@ pub struct App {
     pub ambient_tip_at: Instant,
     ctrl_c_armed: Option<CtrlCQuitChord>,
     pub session_id: String,
+    /// Parked sessions — every session except the viewed one (issue #94).
+    /// Conceptual tab order is this list with the live session spliced in
+    /// at `current`; the App's own fields above always mirror the live tab.
+    parked: Vec<SessionSlot>,
+    /// Tab index of the live session (`0..=parked.len()`).
+    current: usize,
+    /// Ids of tabs awaiting their `SessionBound`, FIFO: `/new` placeholders
+    /// and `session/load` targets. The bind lands on the tab that asked,
+    /// even if the user switched away while it resolved.
+    awaiting_binds: VecDeque<String>,
+    /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
+    pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
     pub cfg: RuntimeConfig,
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
@@ -1179,6 +1270,23 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
     }
 }
 
+/// Register (or revive) the view for a started subagent in `views`.
+fn upsert_subagent_view(views: &mut Vec<SubagentView>, parent: &str, child: &str) {
+    if let Some(view) = views.iter_mut().find(|view| view.id == child) {
+        view.running = true;
+        view.failed = false;
+    } else {
+        views.push(SubagentView {
+            id: child.to_string(),
+            parent: parent.to_string(),
+            label: format!("subagent {}", views.len() + 1),
+            running: true,
+            failed: false,
+            transcript: Transcript::new(child.to_string()),
+        });
+    }
+}
+
 /// Draft pieces after stripping `[image n]` chips, still in reading order.
 #[derive(Clone)]
 enum StagedBlock {
@@ -1186,7 +1294,7 @@ enum StagedBlock {
     Image(crate::attachments::Attachment),
 }
 
-struct ClientQueuedPrompt {
+pub(crate) struct ClientQueuedPrompt {
     id: u64,
     blocks: Vec<StagedBlock>,
 }
@@ -1204,7 +1312,7 @@ pub(crate) struct QueuePreview {
     pub(crate) editing: bool,
 }
 
-struct PendingSteer {
+pub(crate) struct PendingSteer {
     cells: Vec<usize>,
     blocks: Vec<StagedBlock>,
     /// Queue-head retries keep their original FIFO position when deferred.
@@ -1477,6 +1585,10 @@ impl App {
             ambient_tip_at: Instant::now(),
             ctrl_c_armed: None,
             session_id,
+            parked: Vec::new(),
+            current: 0,
+            awaiting_binds: VecDeque::new(),
+            tab_rects: Vec::new(),
             cfg,
             selected_model: None,
             demo,
@@ -1523,6 +1635,290 @@ impl App {
             return &mut self.subagents[index].transcript;
         }
         &mut self.transcript
+    }
+
+    /// Move the live session's per-session state out of the App fields into
+    /// a parking slot, leaving cheap placeholders behind. Always paired with
+    /// [`Self::put_live_slot`] before anything reads the fields again.
+    fn take_live_slot(&mut self) -> SessionSlot {
+        SessionSlot {
+            id: std::mem::take(&mut self.session_id),
+            title: self.session_title.take(),
+            transcript: std::mem::replace(&mut self.transcript, Transcript::new(String::new())),
+            running: self.state != RunState::Idle || self.prompt_pending,
+            completed_unseen: false,
+            prompt_queue: std::mem::take(&mut self.prompt_queue),
+            prompt_pending: std::mem::take(&mut self.prompt_pending),
+            modes: std::mem::take(&mut self.modes),
+            session_bound: std::mem::take(&mut self.session_bound),
+            pending_steer_cells: std::mem::take(&mut self.pending_steer_cells),
+            subagents: std::mem::take(&mut self.subagents),
+            current_subagents: std::mem::take(&mut self.current_subagents),
+            next_subagent_starts_batch: std::mem::replace(&mut self.next_subagent_starts_batch, true),
+            active_subagent: self.active_subagent.take(),
+            agent_selection: self.agent_selection.take(),
+            permission_ask: self.permission_ask.take(),
+            elicitation_ask: self.elicitation_ask.take(),
+            // Painter info popups ride along with their session; plugin
+            // views are filtered out (a compositor overlay must never be
+            // resurrected stale on another tab — the tab-click path
+            // cancels it before the switch, anything left here is dropped).
+            view_overlay: self.view_overlay.take().filter(|view| !view.notify_plugin),
+            plugin_tree: self.plugin_tree.take(),
+        }
+    }
+
+    /// Load a slot's state into the App fields — the inverse of
+    /// [`Self::take_live_slot`]. RunState is recomputed from the slot's
+    /// authoritative `running` bit; the elapsed timer restarts.
+    fn put_live_slot(&mut self, slot: SessionSlot) {
+        self.session_id = slot.id;
+        self.session_title = slot.title;
+        self.transcript = slot.transcript;
+        self.queued = slot.prompt_queue.len();
+        self.prompt_queue = slot.prompt_queue;
+        self.prompt_pending = slot.prompt_pending;
+        self.modes = slot.modes;
+        self.session_bound = slot.session_bound;
+        self.pending_steer_cells = slot.pending_steer_cells;
+        self.subagents = slot.subagents;
+        self.current_subagents = slot.current_subagents;
+        self.next_subagent_starts_batch = slot.next_subagent_starts_batch;
+        self.active_subagent = slot.active_subagent;
+        self.agent_selection = slot.agent_selection;
+        // A session-bound ask rides along with its session: an ask that was
+        // open when the user left this tab (or that arrived while parked)
+        // resurfaces here, untouched, ready to answer or Esc away.
+        self.permission_ask = slot.permission_ask;
+        self.elicitation_ask = slot.elicitation_ask;
+        // Painter popups and the /plugins tree resurface the same way.
+        self.view_overlay = slot.view_overlay;
+        self.plugin_tree = slot.plugin_tree;
+        self.state = if slot.running || slot.prompt_pending {
+            RunState::Running
+        } else {
+            RunState::Idle
+        };
+        self.run_started = None;
+        self.state_note.clear();
+    }
+
+    /// Per-view caches that must not leak across a tab switch.
+    fn after_switch(&mut self) {
+        self.chat_view = ChatView::default();
+        self.scroll_up = 0;
+        self.sel = None;
+        self.selecting = false;
+        self.last_click = None;
+        self.input_sel = None;
+        self.input_selecting = false;
+        self.picker = None;
+        self.queue_selection = None;
+        self.queue_edit = None;
+        // The incoming transcript's own model is the truth for the chip.
+        self.selected_model = None;
+        self.needs_redraw = true;
+    }
+
+    /// Switch the view to tab `tab` (conceptual index, live spliced in at
+    /// `current`): park the live state into its slot, load the target.
+    pub fn switch_to_session(&mut self, tab: usize) {
+        if tab == self.current || tab > self.parked.len() {
+            return;
+        }
+        let pidx = if tab < self.current { tab } else { tab - 1 };
+        let live = self.take_live_slot();
+        let mut target = self.parked.remove(pidx);
+        target.completed_unseen = false;
+        // The parked copy takes the live tab's conceptual position.
+        let park_at = if self.current < tab {
+            self.current
+        } else {
+            self.current - 1
+        };
+        self.parked.insert(park_at, live);
+        self.current = tab;
+        self.put_live_slot(target);
+        self.after_switch();
+    }
+
+    /// Park the live session and open a fresh tab for `id` at the end.
+    /// `bound` is true only when the id is already a real session id.
+    fn open_new_session(&mut self, id: String, bound: bool) {
+        let live = self.take_live_slot();
+        self.parked.insert(self.current, live);
+        self.current = self.parked.len();
+        self.put_live_slot(SessionSlot::fresh(id, bound));
+        self.after_switch();
+    }
+
+    /// Conceptual tab index of the session with this id (live or parked).
+    fn tab_index_of(&self, id: &str) -> Option<usize> {
+        if self.session_id == id {
+            return Some(self.current);
+        }
+        self.parked.iter().position(|slot| slot.id == id).map(|pidx| {
+            if pidx < self.current {
+                pidx
+            } else {
+                pidx + 1
+            }
+        })
+    }
+
+    /// Tab strip model: every session in tab order with the live tab
+    /// spliced in at `current`. Native status chrome fed by session status
+    /// facts (same source as `state_line`, never the palette/slot systems).
+    pub fn session_tabs(&self) -> Vec<SessionTab> {
+        let mut tabs: Vec<SessionTab> = self
+            .parked
+            .iter()
+            .map(|slot| SessionTab {
+                label: slot
+                    .title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| short_id(&slot.id)),
+                running: slot.running || slot.prompt_pending,
+                completed_unseen: slot.completed_unseen,
+                ask_pending: slot.permission_ask.is_some() || slot.elicitation_ask.is_some(),
+                current: false,
+            })
+            .collect();
+        tabs.insert(
+            self.current,
+            SessionTab {
+                label: self
+                    .session_title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| short_id(&self.session_id)),
+                running: self.state != RunState::Idle || self.prompt_pending,
+                completed_unseen: false,
+                ask_pending: self.permission_ask.is_some() || self.elicitation_ask.is_some(),
+                current: true,
+            },
+        );
+        tabs
+    }
+
+    /// Number of session tabs (parked + live).
+    pub fn session_tab_count(&self) -> usize {
+        self.parked.len() + 1
+    }
+
+    /// Hit-test a screen cell against the tab rects recorded by the painter.
+    fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_rects
+            .iter()
+            .find(|(rect, _)| {
+                col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+            })
+            .map(|(_, idx)| *idx)
+    }
+
+    /// Was this session mid-turn (live RunState, or a parked slot's running
+    /// bit)? Read just before folding a `SessionStatus` event.
+    fn session_was_running(&self, session: &str) -> bool {
+        if session == self.session_id {
+            matches!(self.state, RunState::Running)
+        } else {
+            self.parked
+                .iter()
+                .any(|slot| slot.id == session && slot.running)
+        }
+    }
+
+    /// Fold an event addressed to a parked session into its slot: the same
+    /// mode/status facts the live path folds, plus the running → idle edge
+    /// that raises the tab's completion badge. Live UI state is untouched.
+    fn apply_to_slot(slot: &mut SessionSlot, ui: crate::events::UiEvent) {
+        use crate::events::UiEvent as E;
+        let mut apply_to_transcript = true;
+        match &ui {
+            E::PlanMode { active, .. } => {
+                if slot.modes.plan == *active {
+                    apply_to_transcript = false;
+                } else {
+                    slot.modes.plan = *active;
+                }
+            }
+            E::SandboxMode { mode, .. } => slot.modes.sandbox = Some(mode.clone()),
+            E::ApprovalPolicy { policy, .. } => slot.modes.approval = Some(policy.clone()),
+            E::PermissionPreset { preset, .. } => slot.modes.permission = Some(preset.clone()),
+            E::AgentPreset { preset, .. } => {
+                slot.modes.agent_preset = Some(preset.clone());
+                apply_to_transcript = false;
+            }
+            E::ReasoningEffort { effort, .. } => {
+                slot.modes.effort = Some(effort.clone());
+                apply_to_transcript = false;
+            }
+            E::SessionTitle { title, .. } => slot.title = Some(title.clone()),
+            _ => {}
+        }
+        match &ui {
+            E::SessionStatus { running, .. } => {
+                if slot.running && !running {
+                    slot.completed_unseen = true;
+                }
+                slot.running = *running;
+                if !running {
+                    slot.prompt_pending = false;
+                }
+            }
+            E::TurnStart { .. } => slot.running = true,
+            E::TurnEnd { .. } => {
+                if slot.running {
+                    slot.completed_unseen = true;
+                }
+                slot.running = false;
+                slot.prompt_pending = false;
+            }
+            _ => {}
+        }
+        if apply_to_transcript {
+            slot.transcript.apply(ui);
+        }
+    }
+
+    /// Dispatch the head of one session's queue — the live session takes
+    /// the existing path; a parked session echoes into its own transcript
+    /// and sends addressed by its own id (acp.rs fans in per session).
+    fn dispatch_session_queue(&mut self, session: &str, ctl: &Controller) {
+        if session == self.session_id {
+            self.dispatch_next_queued(ctl);
+            return;
+        }
+        let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) else {
+            return;
+        };
+        let Some(prompt) = slot.prompt_queue.pop_front() else {
+            return;
+        };
+        for block in &prompt.blocks {
+            match block {
+                StagedBlock::Text(text) => slot.transcript.push_user(text.clone(), false),
+                StagedBlock::Image(att) => slot.transcript.push_image(
+                    att.name.clone(),
+                    String::new(),
+                    att.path.clone(),
+                    att.data.clone(),
+                    false,
+                ),
+            }
+        }
+        slot.prompt_pending = true;
+        match prompt.blocks.as_slice() {
+            [StagedBlock::Text(text)] => ctl.send(Cmd::Prompt {
+                session_id: session.to_string(),
+                text: text.clone(),
+            }),
+            _ => ctl.send(Cmd::PromptImages {
+                session_id: session.to_string(),
+                blocks: prompt_blocks_from_staged(prompt.blocks),
+            }),
+        }
     }
 
     /// Re-detect the workspace git branch for the composer cap label. One
@@ -2174,8 +2570,12 @@ impl App {
     }
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
-        let queue_before = (!self.demo).then(|| self.queue_snapshot());
-        let agents_before = (!self.demo).then(|| self.agents_snapshot());
+        // Cheap fingerprints instead of full snapshot clones: chatty agents
+        // can stream hundreds of thousands of session updates (issue #94 —
+        // a session/load replay storm), and cloning every queue/agents
+        // snapshot per event multiplies that into a UI-melting alloc storm.
+        let queue_before = (!self.demo).then(|| self.queue_fingerprint());
+        let agents_before = (!self.demo).then(|| self.agents_fingerprint());
         self.handle_inner(ev, ctl);
         // A turn ran on the picked model → the stream is the truth again.
         if self.selected_model.is_some()
@@ -2184,17 +2584,77 @@ impl App {
             self.selected_model = None;
         }
         if let Some(before) = queue_before {
-            let after = self.queue_snapshot();
-            if after != before {
-                ctl.send(Cmd::QueueSnapshot { snapshot: after });
+            if self.queue_fingerprint() != before {
+                ctl.send(Cmd::QueueSnapshot {
+                    snapshot: self.queue_snapshot(),
+                });
             }
         }
         if let Some(before) = agents_before {
-            let after = self.agents_snapshot();
-            if after != before {
-                ctl.send(Cmd::AgentsSnapshot { snapshot: after });
+            if self.agents_fingerprint() != before {
+                ctl.send(Cmd::AgentsSnapshot {
+                    snapshot: self.agents_snapshot(),
+                });
             }
         }
+    }
+
+    /// Identity of everything `queue_snapshot` projects, without the summary
+    /// strings: ordered prompt ids (order captures reordering) plus the
+    /// selection/edit/confirm flags. A summary edit always passes through an
+    /// `editing_id` transition, so text changes are covered too.
+    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool) {
+        (
+            self.prompt_queue.iter().map(|prompt| prompt.id).collect(),
+            self.queue_selection
+                .and_then(|index| self.prompt_queue.get(index))
+                .map(|prompt| prompt.id),
+            self.queue_edit.as_ref().map(|edit| edit.prompt_id),
+            self.queue_delete_confirming(),
+        )
+    }
+
+    /// Identity of everything `agents_snapshot` projects, without label
+    /// strings: root running bit, per-view id/status/current, the history
+    /// count, and the active/selected ids. Labels are assigned at view
+    /// creation, so they cannot change without the id set changing.
+    fn agents_fingerprint(&self) -> (String, Option<String>, bool, Vec<(String, u8, bool)>, usize) {
+        let active_id = match self.active_subagent.as_deref() {
+            Some(id) if !self.subagent_in_current_batch(id) => AGENT_HISTORY_ID.into(),
+            Some(id) => id.into(),
+            None => self.session_id.clone(),
+        };
+        let root_running = !matches!(self.state, RunState::Idle) || self.prompt_pending;
+        let views: Vec<(String, u8, bool)> = self
+            .subagents
+            .iter()
+            .map(|view| {
+                let status = if view.running {
+                    0
+                } else if view.failed {
+                    1
+                } else {
+                    2
+                };
+                (
+                    view.id.clone(),
+                    status,
+                    self.subagent_in_current_batch(&view.id),
+                )
+            })
+            .collect();
+        let history_count = self
+            .subagents
+            .iter()
+            .filter(|view| !self.subagent_in_current_batch(&view.id))
+            .count();
+        let selected_id = self.agent_selection.as_ref().and_then(|selected| {
+            (self.subagents.iter().any(|view| view.id == *selected)
+                || *selected == self.session_id
+                || (history_count > 0 && selected == AGENT_HISTORY_ID))
+                .then(|| selected.clone())
+        });
+        (active_id, selected_id, root_running, views, history_count)
     }
 
     fn queue_snapshot(&self) -> crate::bus::QueueSnapshot {
@@ -2288,14 +2748,16 @@ impl App {
             }
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Ui(ui) => {
-                let became_idle = matches!(
-                    &ui,
-                    crate::events::UiEvent::SessionStatus { session, running: false }
-                        if session == &self.session_id
-                ) && matches!(self.state, RunState::Running);
+                let idle_session = match &ui {
+                    crate::events::UiEvent::SessionStatus {
+                        session,
+                        running: false,
+                    } if self.session_was_running(session) => Some(session.clone()),
+                    _ => None,
+                };
                 self.apply_ui(ui);
-                if became_idle {
-                    self.dispatch_next_queued(ctl);
+                if let Some(session) = idle_session {
+                    self.dispatch_session_queue(&session, ctl);
                 }
             }
             AppEvent::Rpc { method, params } => {
@@ -2425,9 +2887,20 @@ impl App {
                                 self.view_overlay = None;
                             }
                             None => {
+                                // The plugin's overlay closed (dispatch ack
+                                // or plugin-side close). Only compositor
+                                // surfaces go with it: a painter popup that
+                                // was parked/restored by a tab switch in the
+                                // meantime must survive the ack.
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
-                                self.view_overlay = None;
+                                if self
+                                    .view_overlay
+                                    .as_ref()
+                                    .is_some_and(|view| view.notify_plugin)
+                                {
+                                    self.view_overlay = None;
+                                }
                             }
                         },
                         Ok(_) => {}
@@ -2453,14 +2926,16 @@ impl App {
                     return;
                 }
                 for ui in parse_notification(&method, &params) {
-                    let became_idle = matches!(
-                        &ui,
-                        crate::events::UiEvent::SessionStatus { session, running: false }
-                            if session == &self.session_id
-                    ) && matches!(self.state, RunState::Running);
+                    let idle_session = match &ui {
+                        crate::events::UiEvent::SessionStatus {
+                            session,
+                            running: false,
+                        } if self.session_was_running(session) => Some(session.clone()),
+                        _ => None,
+                    };
                     self.apply_ui(ui);
-                    if became_idle {
-                        self.dispatch_next_queued(ctl);
+                    if let Some(session) = idle_session {
+                        self.dispatch_session_queue(&session, ctl);
                     }
                 }
                 self.needs_redraw = true;
@@ -2475,6 +2950,14 @@ impl App {
                 self.queue_selection = None;
                 self.queue_edit = None;
                 self.pending_steer_cells.clear();
+                for slot in &mut self.parked {
+                    // The dead runtime owned every session's delivery state,
+                    // not just the viewed one.
+                    slot.running = false;
+                    slot.prompt_pending = false;
+                    slot.prompt_queue.clear();
+                    slot.pending_steer_cells.clear();
+                }
                 if self.state != RunState::Idle {
                     self.state = RunState::Idle;
                     self.run_started = None;
@@ -2545,15 +3028,28 @@ impl App {
                         self.state_note = "cancelling".into();
                         self.transcript.cancel_open_work();
                     }
-                    CtlEvent::Interrupted => {
-                        self.prompt_pending = false;
-                        self.state = RunState::Idle;
-                        self.run_started = None;
-                        self.state_note.clear();
-                        self.transcript.cancel_open_work();
-                        self.transcript
-                            .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
-                        self.dispatch_next_queued(ctl);
+                    CtlEvent::Interrupted { session_id } => {
+                        // One connection can run turns for several sessions;
+                        // settle whichever session the interruption names —
+                        // the viewed one, or a parked slot.
+                        if session_id == self.session_id {
+                            self.prompt_pending = false;
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.state_note.clear();
+                            self.transcript.cancel_open_work();
+                            self.transcript
+                                .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            slot.prompt_pending = false;
+                            slot.running = false;
+                            slot.transcript.cancel_open_work();
+                            slot.transcript
+                                .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                        }
+                        self.dispatch_session_queue(&session_id, ctl);
                     }
                     CtlEvent::Skills { skills } => {
                         self.skills = skills;
@@ -2711,14 +3207,63 @@ impl App {
                         self.resume_session_cap = resume_session;
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
-                        if self.session_id != session_id {
-                            self.reset_subagent_views();
+                        // The session that just bound, for the queue dispatch
+                        // below (prompts submitted while the tab was unbound
+                        // are held in its queue — acp.rs rejects unbound ids).
+                        let mut just_bound: Option<String> = None;
+                        if let Some(awaiting) = self.awaiting_binds.pop_front() {
+                            // The tab that asked for session/new (placeholder
+                            // id) or session/resume·load (target id) owns
+                            // this bind — the user may have switched away
+                            // while it resolved, so rebind by the awaiting
+                            // id, not by which tab happens to be live.
+                            if self.session_id == awaiting {
+                                self.session_id = session_id.clone();
+                                self.transcript.set_root_session(session_id.clone());
+                                self.session_bound = true;
+                                if let Some(notice) = notice {
+                                    self.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                just_bound = Some(self.session_id.clone());
+                            } else if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == awaiting)
+                            {
+                                slot.id = session_id.clone();
+                                slot.transcript.set_root_session(session_id.clone());
+                                slot.session_bound = true;
+                                if let Some(notice) = notice {
+                                    slot.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                just_bound = Some(slot.id.clone());
+                            } else {
+                                self.show_tip(format!(
+                                    "session {session_id} bound after its tab was closed"
+                                ));
+                            }
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            // A session/load for a parked tab resolved.
+                            slot.session_bound = true;
+                            if let Some(notice) = notice {
+                                slot.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            just_bound = Some(slot.id.clone());
+                        } else {
+                            // Startup / reconnect: rebind the viewed session.
+                            if self.session_id != session_id {
+                                self.reset_subagent_views();
+                            }
+                            self.session_id = session_id.clone();
+                            self.transcript.set_root_session(session_id);
+                            self.session_bound = true;
+                            if let Some(notice) = notice {
+                                self.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            just_bound = Some(self.session_id.clone());
                         }
-                        self.session_id = session_id.clone();
-                        self.transcript.set_root_session(session_id);
-                        self.session_bound = true;
-                        if let Some(notice) = notice {
-                            self.transcript.push_notice(NoticeLevel::Info, notice);
+                        if let Some(bound) = just_bound {
+                            self.dispatch_session_queue(&bound, ctl);
                         }
                         ctl.send(Cmd::FetchSkills);
                     }
@@ -2732,19 +3277,19 @@ impl App {
                 self.needs_redraw = true;
             }
             AppEvent::PermissionAsk {
+                session_id,
                 title,
                 options,
                 reply,
             } => {
-                self.open_permission_ask(title, options, reply);
+                self.open_permission_ask(&session_id, title, options, reply);
             }
-            AppEvent::ElicitationAsk { form, reply } => {
-                self.elicitation_ask = Some(ElicitationAskOverlay {
-                    form: crate::elicitation::ElicitationFormState::new(form),
-                    scroll: 0,
-                    reply: Some(reply),
-                });
-                self.needs_redraw = true;
+            AppEvent::ElicitationAsk {
+                session_id,
+                form,
+                reply,
+            } => {
+                self.open_elicitation_ask(session_id.as_deref(), form, reply);
             }
             AppEvent::ShellDone { id, code, output } => {
                 if let Some(pos) = self.shell_pending.iter().position(|(sid, _)| *sid == id) {
@@ -2771,24 +3316,33 @@ impl App {
         }
 
         if let E::SubagentStarted { parent, child } = &ui {
+            if parent != &self.session_id && !self.subagents.iter().any(|view| view.id == *parent)
+            {
+                // A parked session's subagent tree: register the child in
+                // its slot and fold the event into the slot's transcripts.
+                for slot in &mut self.parked {
+                    if slot.id == *parent {
+                        upsert_subagent_view(&mut slot.subagents, parent, child);
+                        slot.transcript.apply(ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == *parent) {
+                        view.transcript.apply(ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // Unknown parent: a session this client never opened (or
+                // already closed) — drop it, never leak it into live state.
+                return;
+            }
             if self.next_subagent_starts_batch {
                 self.current_subagents.clear();
                 self.next_subagent_starts_batch = false;
             }
             self.current_subagents.insert(child.clone());
-            if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *child) {
-                view.running = true;
-                view.failed = false;
-            } else {
-                self.subagents.push(SubagentView {
-                    id: child.clone(),
-                    parent: parent.clone(),
-                    label: format!("subagent {}", self.subagents.len() + 1),
-                    running: true,
-                    failed: false,
-                    transcript: Transcript::new(child.clone()),
-                });
-            }
+            upsert_subagent_view(&mut self.subagents, parent, child);
             if parent == &self.session_id {
                 self.transcript.apply(ui);
             } else if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *parent) {
@@ -2799,6 +3353,27 @@ impl App {
         }
 
         if let E::SubagentFinished { child, failed } = &ui {
+            if !self.subagents.iter().any(|view| view.id == *child) {
+                // A parked session's subagent: settle it inside its slot.
+                for slot in &mut self.parked {
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == *child) {
+                        view.running = false;
+                        view.failed = *failed;
+                        let parent = view.parent.clone();
+                        if parent == slot.id {
+                            slot.transcript.apply(ui);
+                        } else if let Some(pview) =
+                            slot.subagents.iter_mut().find(|view| view.id == parent)
+                        {
+                            pview.transcript.apply(ui);
+                        }
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // Unknown child — drop (same guard as SubagentStarted).
+                return;
+            }
             let parent = self
                 .subagents
                 .iter_mut()
@@ -2835,6 +3410,15 @@ impl App {
                     self.needs_redraw = true;
                     return;
                 }
+                if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) {
+                    Self::apply_to_slot(slot, ui);
+                    self.needs_redraw = true;
+                    return;
+                }
+                // A session this client never opened (or already closed):
+                // drop the event. Foreign-session facts must never fall
+                // through into the live transcript (issue #94 leak guard).
+                return;
             }
         }
 
@@ -2933,6 +3517,42 @@ impl App {
         }
     }
 
+    /// Cancel compositor-owned modals before a session switch, mirroring
+    /// the Esc paths of `handle_view_key` / `handle_select_key` /
+    /// `handle_slider_key` so the plugin releases its single-overlay slot
+    /// (its `current` clears and future overlay opens work again).
+    /// Painter-owned views (`notify_plugin == false`, i.e. `/help`, `/keys`,
+    /// `/session`, painter `/status`) are left alone — they park with their
+    /// session inside the switch and resurface on return.
+    fn cancel_plugin_overlays(&mut self, ctl: &Controller) {
+        if let Some(view) = self.view_overlay.take() {
+            if view.notify_plugin {
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: view.id,
+                    event: "cancel".into(),
+                    value: None,
+                });
+            } else {
+                self.view_overlay = Some(view);
+            }
+        }
+        if let Some(slider) = self.slider_overlay.take() {
+            ctl.send(Cmd::PluginOverlayEvent {
+                id: slider.id,
+                event: "cancel".into(),
+                value: Some(serde_json::json!(slider.value)),
+            });
+        }
+        if let Some(select) = self.select_overlay.take() {
+            let value = select.options[select.sel].value.clone();
+            ctl.send(Cmd::PluginOverlayEvent {
+                id: select.id,
+                event: "cancel".into(),
+                value: Some(serde_json::json!(value)),
+            });
+        }
+    }
+
     /// grok-build mouse semantics, scaled down: wheel scrolls; left-drag
     /// selects with a live highlight (auto-scrolling at the pane edges) and
     /// copies on release; double-click selects & copies a word. Shift+drag
@@ -2963,6 +3583,26 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
+                // Session tab strip (issue #94): left-click a tab switches.
+                if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.input_sel = None;
+                    self.input_selecting = false;
+                    if tab != self.current {
+                        // Compositor-owned modals (plugin view/select/
+                        // slider, e.g. live /status) cannot ride along to
+                        // another tab: leaving cancels them exactly like
+                        // Esc so the plugin releases its single-overlay
+                        // slot. Painter popups (/help, /keys, /session,
+                        // painter /status) park with the session inside
+                        // `switch_to_session`.
+                        self.cancel_plugin_overlays(ctl);
+                    }
+                    self.switch_to_session(tab);
+                    return;
+                }
                 if let Some(action) = self
                     .slot_actions
                     .iter()
@@ -4359,19 +4999,69 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Route an incoming ACP permission ask to the session that owns it:
+    /// the live view when the owning tab is on screen, otherwise the
+    /// owning parked slot (the ask waits there and its tab is badged until
+    /// the user returns). An ask whose session the tab model does not know
+    /// falls back to the live view rather than silently cancelling the
+    /// agent's tool call. Dropping an unanswered overlay cancels it.
     fn open_permission_ask(
         &mut self,
+        session_id: &str,
         title: String,
         options: Vec<PermissionAskOption>,
         reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
     ) {
         let sel = permission_ask_default_sel(&options);
-        self.permission_ask = Some(PermissionAskOverlay {
+        let overlay = PermissionAskOverlay {
             title,
             sel,
             options,
             reply: Some(reply),
-        });
+        };
+        if session_id == self.session_id {
+            self.permission_ask = Some(overlay);
+        } else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
+            // A parked session asked while out of view: keep the ask on its
+            // tab — it must not float over the tab on screen.
+            slot.permission_ask = Some(overlay);
+        } else {
+            self.show_tip("permission ask from an unknown session — shown here");
+            self.permission_ask = Some(overlay);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Route an ACP elicitation form like [`Self::open_permission_ask`].
+    /// `None` sessions are request-scoped elicitations (auth/config phase)
+    /// with no tab to belong to — they surface on the live view.
+    fn open_elicitation_ask(
+        &mut self,
+        session_id: Option<&str>,
+        form: crate::elicitation::ElicitationForm,
+        reply: tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>,
+    ) {
+        let overlay = ElicitationAskOverlay {
+            form: crate::elicitation::ElicitationFormState::new(form),
+            scroll: 0,
+            reply: Some(reply),
+        };
+        let for_live = match session_id {
+            None => true,
+            Some(sid) => sid == self.session_id,
+        };
+        if for_live {
+            self.elicitation_ask = Some(overlay);
+        } else if let Some(slot) = self
+            .parked
+            .iter_mut()
+            .find(|slot| Some(slot.id.as_str()) == session_id)
+        {
+            slot.elicitation_ask = Some(overlay);
+        } else {
+            self.show_tip("elicitation from an unknown session — shown here");
+            self.elicitation_ask = Some(overlay);
+        }
         self.needs_redraw = true;
     }
 
@@ -4839,22 +5529,36 @@ impl App {
             }
         };
 
-        self.session_id = session.id.clone();
-        self.reset_subagent_views();
-        self.transcript.clear();
-        self.transcript.set_root_session(session.id.clone());
-        // Replay folds the session's own authoritative mode facts from empty.
-        self.modes = Modes::default();
+        if self.session_id != session.id {
+            if let Some(tab) = self.tab_index_of(&session.id) {
+                // Already open in a tab — switching to it is the resume.
+                self.switch_to_session(tab);
+                self.resume_candidates = Vec::new();
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    format!("⟲ {} is already open — switched to its tab", session.id),
+                );
+                return;
+            }
+            // Park the live session and replay into a fresh tab (issue #94).
+            self.open_new_session(session.id.clone(), true);
+        } else {
+            self.reset_subagent_views();
+            self.transcript.clear();
+            self.transcript.set_root_session(session.id.clone());
+            // Replay folds the session's own authoritative mode facts from empty.
+            self.modes = Modes::default();
+            self.queued = 0;
+            self.prompt_queue.clear();
+            self.queue_selection = None;
+            self.queue_edit = None;
+            self.pending_steer_cells.clear();
+            self.prompt_pending = false;
+            self.sel = None;
+        }
         // The resumed stream's own model is the truth for the chip.
         self.selected_model = None;
         self.show_banner = false;
-        self.queued = 0;
-        self.prompt_queue.clear();
-        self.queue_selection = None;
-        self.queue_edit = None;
-        self.pending_steer_cells.clear();
-        self.prompt_pending = false;
-        self.sel = None;
         let mut replayed = 0usize;
         for ev in &events {
             if ev.get("type").and_then(serde_json::Value::as_str) == Some("session") {
@@ -4892,6 +5596,33 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// The `/new` flow, shared by the slash command and the tab strip `+`
+    /// cell: park the live session and open a fresh tab (issue #94).
+    fn new_session_flow(&mut self, arg: &str, ctl: &Controller) {
+        if self.demo {
+            let id = if arg.is_empty() {
+                format!("dsh-{}", timestamp())
+            } else {
+                arg.to_string()
+            };
+            self.open_new_session(id.clone(), true);
+            ctl.send(Cmd::FetchSkills);
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                format!("new session · {id} — /agent picks its agent preset"),
+            );
+        } else {
+            // A local placeholder ids the tab until session/new resolves —
+            // the same shape main.rs seeds the startup session with. The
+            // real id lands on this tab via `awaiting_binds` at SessionBound.
+            let placeholder = format!("dsh-{}", timestamp());
+            self.open_new_session(placeholder.clone(), false);
+            self.awaiting_binds.push_back(placeholder);
+            ctl.send(Cmd::NewSession);
+            self.show_tip("session/new …");
+        }
+    }
+
     fn reset_session_ui(&mut self) {
         self.reset_subagent_views();
         self.transcript.clear();
@@ -4923,9 +5654,28 @@ impl App {
     }
 
     fn resume_acp_session(&mut self, id: &str, ctl: &Controller) {
-        self.reset_session_ui();
-        self.session_id = id.to_string();
-        self.transcript.set_root_session(id.to_string());
+        // The welcome banner only ever paints instead of the transcript, so
+        // any path that (re)loads real history must dismiss it — the local
+        // `resume_session` does the same. Without this, a /resume before the
+        // first prompt left the banner covering the whole replayed chat.
+        self.show_banner = false;
+        if self.session_id == id {
+            // Resuming the viewed session: reset its UI and re-stream.
+            self.reset_session_ui();
+            self.session_id = id.to_string();
+            self.transcript.set_root_session(id.to_string());
+        } else if let Some(tab) = self.tab_index_of(id) {
+            // Already open in a tab — switching to it is the resume.
+            self.switch_to_session(tab);
+            return;
+        } else {
+            // Park the live session; the resumed session binds this fresh
+            // tab. With ACP `session/resume` the agent does not replay the
+            // transcript; the legacy `session/load` fallback streams it via
+            // session/update tagged with this id.
+            self.open_new_session(id.to_string(), false);
+            self.awaiting_binds.push_back(id.to_string());
+        }
         ctl.send(Cmd::ResumeSession {
             session_id: id.to_string(),
         });
@@ -5565,29 +6315,7 @@ impl App {
                     self.set_mode(arg.to_string(), ctl);
                 }
             }
-            "new" => {
-                if self.demo {
-                    let id = if arg.is_empty() {
-                        format!("dsh-{}", timestamp())
-                    } else {
-                        arg.to_string()
-                    };
-                    self.reset_subagent_views();
-                    self.session_id = id.clone();
-                    self.transcript.set_root_session(id.clone());
-                    self.modes = Modes::default();
-                    self.session_title = None;
-                    ctl.send(Cmd::FetchSkills);
-                    self.transcript.push_notice(
-                        NoticeLevel::Info,
-                        format!("new session · {id} — /agent picks its agent preset"),
-                    );
-                } else {
-                    self.reset_session_ui();
-                    ctl.send(Cmd::NewSession);
-                    self.show_tip("session/new …");
-                }
-            }
+            "new" => self.new_session_flow(arg, ctl),
             "session" => self.push_session_info(),
             "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
@@ -6238,7 +6966,13 @@ impl App {
     /// passthroughs like /plan).
     fn send_agent_text(&mut self, text: String, ctl: &Controller) {
         self.show_banner = false;
-        let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
+        // An unbound tab (placeholder id awaiting session/new·load) must not
+        // send: acp.rs rejects ids it never bound. Hold the prompt in the
+        // queue; the SessionBound handler dispatches it with the real id.
+        let running = self.state == RunState::Running
+            || self.prompt_pending
+            || self.queued > 0
+            || !self.session_bound;
         if running {
             let id = self.next_prompt_id();
             self.prompt_queue.push_back(ClientQueuedPrompt {
@@ -6302,6 +7036,13 @@ impl App {
     /// Empty Enter promotes the FIFO head into the active turn. If the agent
     /// cannot accept the steer, settlement restores the item to the front.
     fn send_queue_head_now(&mut self, ctl: &Controller) {
+        if !self.session_bound {
+            self.show_tip(self.locale.tr(
+                "session still binding — prompt stays queued",
+                "会话仍在绑定中 —— 消息保留在队列里",
+            ));
+            return;
+        }
         if !self.input.is_empty()
             || !self.pending_images.is_empty()
             || self.queue_selection.is_some()
@@ -6878,6 +7619,10 @@ pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize, String)
 #[cfg(test)]
 #[path = "../tests/unit/app__resume_tests.rs"]
 mod resume_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__session_tabs_tests.rs"]
+mod session_tabs_tests;
 
 #[cfg(test)]
 #[path = "../tests/unit/app__selection_tests.rs"]

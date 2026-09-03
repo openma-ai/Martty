@@ -243,7 +243,13 @@ fn plan_review_elicitation_renders_markdown_and_scrolls() {
     let form = crate::elicitation::form_from_request(&request).expect("supported form");
     let (tx, mut rx) = tokio::sync::oneshot::channel();
     app.handle(
-        crate::bus::AppEvent::ElicitationAsk { form, reply: tx },
+        crate::bus::AppEvent::ElicitationAsk {
+            // The probe request is scoped to session s1, which this app
+            // does not know — the fallback surfaces it on the live view.
+            session_id: Some("s1".into()),
+            form,
+            reply: tx,
+        },
         &ctl,
     );
     assert!(app.elicitation_ask.is_some(), "elicitation opened");

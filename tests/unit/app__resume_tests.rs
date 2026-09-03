@@ -146,6 +146,9 @@ fn acp_resume_usage_snapshot_reaches_the_footer_once() {
     let root = tmp_root("acp-usage");
     let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
 
+    // Multi-session routing (issue #94): updates only reach the footer of
+    // the session they are tagged with, so load the session first.
+    app.resume_acp_session("dsh-loaded", &ctl);
     app.handle(
         AppEvent::Rpc {
             method: "session/update".into(),
@@ -272,5 +275,26 @@ fn picker_page_keys_jump_a_screenful_and_home_end_pin_the_ends() {
     );
     key(&mut app, KeyCode::Up);
     assert_eq!(app.picker.as_ref().unwrap().sel, 39, "↑ still wraps");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn acp_resume_dismisses_the_welcome_banner_before_the_replay_streams() {
+    let root = tmp_root("banner");
+    let (mut app, ctl) = test_app_with_root(root.to_str().unwrap(), "/w");
+
+    // A fresh app starts on the welcome banner; a /resume that loads real
+    // history must dismiss it — draw_chat only ever paints the banner or
+    // the transcript, never both (the local JSONL path already did this;
+    // the ACP session/load path did not, hiding every replayed message
+    // until the first prompt+send cleared the banner).
+    assert!(app.show_banner, "fresh app shows the welcome banner");
+    app.resume_acp_session("acp-old", &ctl);
+
+    assert!(
+        !app.show_banner,
+        "ACP resume hides the banner so the loaded transcript paints"
+    );
+    assert_eq!(app.session_id, "acp-old", "switched to the loaded session");
     let _ = std::fs::remove_dir_all(&root);
 }

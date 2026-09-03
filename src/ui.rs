@@ -158,6 +158,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme;
     app.slot_actions.clear();
+    app.tab_rects.clear();
     app.pet_want = None;
     app.caret_cell = None;
     // The mouse-only expand button's frame rect is rebuilt by
@@ -181,7 +182,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let (main, right) = shell_areas(area, app);
+    // Session tab strip (issue #94): one native chrome row at the very top,
+    // only when more than one session is open — a single session keeps the
+    // frame layout byte-identical to before.
+    let tabs_h = if app.session_tab_count() > 1 { 1 } else { 0 };
+    let body = Rect::new(
+        area.x,
+        area.y + tabs_h,
+        area.width,
+        area.height - tabs_h,
+    );
+    if tabs_h > 0 {
+        draw_session_tabs(f, app, Rect::new(area.x, area.y, area.width, 1));
+    }
+
+    let (main, right) = shell_areas(body, app);
 
     // Composer card: one rounded box wrapping the cap row (dock / tip /
     // · workspace title) and the native input surface (input well on top,
@@ -980,6 +995,70 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
         ))
         .style(Style::default().bg(theme.surface).fg(theme.fg));
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The session tab strip (issue #94) — native status chrome fed by
+/// per-session running facts, the same source as `state_line`. Per tab: a
+/// status indicator, a ✓ completion badge for a session that finished
+/// while parked, and a title/short-id label. A `?` indicator (warn color)
+/// marks a tab whose session has an unanswered ACP ask (permission or
+/// elicitation) — the agent is waiting on that tab. Tab rects are recorded
+/// for `App::tab_at` mouse hit-testing.
+fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let tabs = app.session_tabs();
+    let spinner = app.spinner();
+    let right = area.right() as usize;
+    let mut spans: Vec<Span> = Vec::new();
+    let mut x = area.x as usize;
+    for (idx, tab) in tabs.iter().enumerate() {
+        if idx > 0 {
+            if x + 3 > right {
+                break;
+            }
+            spans.push(Span::styled(" │ ", Style::default().fg(theme.border)));
+            x += 3;
+        }
+        let label = crate::transcript::clamp_str(&tab.label, 16);
+        let (indicator, indicator_style) = if tab.ask_pending {
+            // A session-bound ask outranks every other badge: the agent is
+            // blocked until this tab answers.
+            ("?".to_string(), Style::default().fg(theme.warn))
+        } else if tab.running {
+            (
+                if tab.current {
+                    spinner.to_string()
+                } else {
+                    "●".to_string()
+                },
+                Style::default().fg(theme.brand),
+            )
+        } else if tab.completed_unseen {
+            ("✓".to_string(), Style::default().fg(theme.warn_soft()))
+        } else {
+            ("·".to_string(), Style::default().fg(theme.caption))
+        };
+        let label_style = if tab.current {
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_tertiary)
+        };
+        let width = indicator.width() + label.width() + 3;
+        if x + width > right {
+            break;
+        }
+        app.tab_rects.push((
+            Rect::new(x as u16, area.y, width as u16, 1),
+            idx,
+        ));
+        spans.push(Span::styled(
+            format!(" {indicator} ",),
+            indicator_style,
+        ));
+        spans.push(Span::styled(format!("{label} "), label_style));
+        x += width;
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {

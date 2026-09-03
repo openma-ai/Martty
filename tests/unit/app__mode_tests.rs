@@ -1174,12 +1174,17 @@ fn preset_ack_folds_the_chip_and_new_session_waits_for_the_host_mode() {
 }
 
 #[test]
-fn live_acp_new_does_not_invent_a_local_id() {
+fn live_acp_new_parks_the_current_session_and_binds_the_new_tab() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;
     let before = app.session_id.clone();
     app.run_slash("new", "fresh", &ctl);
-    assert_eq!(app.session_id, before, "ACP /new waits for session/new");
+    assert_ne!(
+        app.session_id, before,
+        "ACP /new switches to a fresh placeholder tab"
+    );
+    assert_eq!(app.parked.len(), 1, "previous session parked, not dropped");
+    assert_eq!(app.parked[0].id, before);
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionBound {
             session_id: "acp-9".into(),
@@ -1187,7 +1192,8 @@ fn live_acp_new_does_not_invent_a_local_id() {
         }),
         &ctl,
     );
-    assert_eq!(app.session_id, "acp-9");
+    assert_eq!(app.session_id, "acp-9", "the new tab gets the real id");
+    assert_eq!(app.parked[0].id, before, "the parked session keeps its id");
 }
 
 #[test]
@@ -1770,7 +1776,9 @@ fn terminal_lifecycle_events_release_a_pending_first_prompt() {
     let events = vec![
         AppEvent::RuntimeExited(None),
         AppEvent::Ctl(CtlEvent::Error("failed".into())),
-        AppEvent::Ctl(CtlEvent::Interrupted),
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
         AppEvent::Ui(crate::events::UiEvent::SessionStatus {
             session: "dsh-test".into(),
             running: false,
@@ -1933,7 +1941,12 @@ fn interrupted_advances_one_client_followup_and_queues_later_input_behind_it() {
     app.state = RunState::Running;
     app.state_note = "cancelling".into();
     app.send_agent_text("first followup".into(), &ctl);
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
     assert!(matches!(app.state, RunState::Starting));
     assert_eq!(app.queued, 0);
     assert!(matches!(
@@ -1962,7 +1975,12 @@ fn interrupted_turn_renders_one_specific_terminal_notice() {
         }),
         &ctl,
     );
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
 
     let notices = app
         .transcript
@@ -1983,7 +2001,12 @@ fn staged_input_joins_a_surviving_fifo_after_interrupt() {
     let (mut app, ctl, _rx) = test_app();
     app.state = RunState::Running;
     app.send_agent_text("first followup".into(), &ctl);
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
 
     app.send_staged(
         vec![StagedBlock::Image(crate::attachments::Attachment {
@@ -2011,7 +2034,12 @@ fn send_now_can_steer_while_a_surviving_fifo_is_advancing() {
     let (mut app, ctl, _rx) = test_app();
     app.state = RunState::Running;
     app.send_agent_text("ordinary followup".into(), &ctl);
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
     app.input.set("urgent correction".into());
 
     app.send_now(&ctl);
@@ -2139,7 +2167,12 @@ fn interrupted_turn_releases_one_client_queued_prompt() {
     app.send_agent_text("first followup".into(), &ctl);
     app.send_agent_text("second followup".into(), &ctl);
 
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
 
     assert!(matches!(
         commands.recv_timeout(std::time::Duration::from_secs(1)),
@@ -3974,6 +4007,7 @@ fn acp_permission_ask_enter_selects_option_id() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
             title: "bash".into(),
             options: ask_options(),
             reply: tx,
@@ -3998,6 +4032,7 @@ fn acp_permission_ask_esc_cancels() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
             title: "bash".into(),
             options: ask_options(),
             reply: tx,
@@ -4024,6 +4059,7 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::ElicitationAsk {
+            session_id: Some("dsh-test".into()),
             form: ElicitationForm {
                 message: "The agent needs your input.".into(),
                 fields: vec![ElicitationField {
