@@ -354,6 +354,18 @@ pub struct ImageShot {
     pub data: Arc<[u8]>,
 }
 
+/// One user prompt in a rendered transcript: the transcript cell index and
+/// the half-open line span `[line, end)` its bubble occupies (the leading
+/// blank separator row is not counted; `end` covers wrapped text lines and,
+/// for image prompts, the thumbnail rows). The ⌕ composer button walks
+/// these from the newest one back and flashes the jumped span (issue #103).
+#[derive(Clone, Copy, Debug)]
+pub struct UserPromptLine {
+    pub cell: usize,
+    pub line: usize,
+    pub end: usize,
+}
+
 /// A rendered transcript: styled lines plus, for each line, the index of the
 /// transcript cell that owns it (only tool cells report ownership, so mouse
 /// clicks can toggle a specific tool preview).
@@ -361,6 +373,8 @@ pub struct TranscriptLayout {
     pub lines: Vec<Line<'static>>,
     pub owners: Vec<Option<usize>>,
     pub images: Vec<ImageShot>,
+    /// Every laid-out user prompt with the index of its first text line.
+    pub users: Vec<UserPromptLine>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -1042,6 +1056,7 @@ impl Transcript {
         let mut out: Vec<Line> = Vec::new();
         let mut owners: Vec<Option<usize>> = Vec::new();
         let mut images: Vec<ImageShot> = Vec::new();
+        let mut users: Vec<UserPromptLine> = Vec::new();
         for (ci, cell) in self.cells.iter_mut().enumerate() {
             if cell.hidden {
                 continue;
@@ -1066,6 +1081,7 @@ impl Transcript {
                     // Budget = width - 4: the "❯ "/"  " prefix takes 2 cells
                     // and the " {l} " padding takes 2 more, so a wider wrap
                     // budget would clip the last text cells of full lines.
+                    let first = out.len();
                     for (i, l) in wrap(text, width.saturating_sub(4)).into_iter().enumerate() {
                         let mut spans = vec![
                             Span::styled(
@@ -1090,6 +1106,11 @@ impl Transcript {
                         }
                         emit(&mut out, &mut owners, Line::from(spans), None);
                     }
+                    users.push(UserPromptLine {
+                        cell: ci,
+                        line: first,
+                        end: out.len(),
+                    });
                 }
                 CellKind::Image {
                     name,
@@ -1101,6 +1122,7 @@ impl Transcript {
                     ..
                 } => {
                     emit(&mut out, &mut owners, Line::default(), None);
+                    let first = out.len();
                     let label = if caption.is_empty() {
                         format!("🖼 {name}")
                     } else {
@@ -1169,6 +1191,11 @@ impl Transcript {
                             None,
                         );
                     }
+                    users.push(UserPromptLine {
+                        cell: ci,
+                        line: first,
+                        end: out.len(),
+                    });
                 }
                 CellKind::Reasoning {
                     done,
@@ -1408,6 +1435,7 @@ impl Transcript {
             lines: out,
             owners,
             images,
+            users,
         }
     }
 }

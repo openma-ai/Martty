@@ -2069,6 +2069,96 @@ fn model_picker_marks_only_the_current_provider_model_pair() {
     );
 }
 
+/// The ⌕ jump flash (issue #103): for ~5 s after a jump the jumped
+/// prompt's bubble rows are highlighted like a picker's selected row —
+/// chip background wash and the text in the brand tone; after the window
+/// the next tick clears it and the next frame restores the normal bubble.
+#[test]
+fn prompt_jump_flash_washes_the_jumped_prompt_then_restores() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.transcript.push_user("alpha prompt".into(), false);
+    app.transcript.push_notice(
+        crate::transcript::NoticeLevel::Info,
+        "filler row".into(),
+    );
+    app.transcript.push_user("beta prompt".into(), false);
+    let beta_cell = app
+        .transcript
+        .cells
+        .iter()
+        .rposition(|cell| matches!(cell.kind, crate::transcript::CellKind::User { .. }))
+        .expect("second user prompt");
+
+    // Locate the first cell of an ASCII needle in the rendered buffer.
+    let text_cell = |buf: &ratatui::buffer::Buffer, needle: &str| -> Option<(u16, u16)> {
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+            if let Some(x) = row.find(needle) {
+                return Some((x as u16, y as u16));
+            }
+        }
+        None
+    };
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = app.theme;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let (bx, by) = text_cell(terminal.backend().buffer(), "beta prompt")
+        .expect("beta prompt rendered");
+
+    // Frame 1, no flash: the bubble keeps its normal colors.
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(bx, by)].bg, theme.bubble_bg, "idle bubble background");
+    assert_eq!(buf[(bx, by)].fg, theme.bubble_fg, "idle bubble text");
+
+    // Arm the flash for the second prompt and redraw: its rows carry the
+    // chip wash with the text in the brand tone, while the other prompt
+    // stays untouched.
+    app.prompt_flash = Some((
+        beta_cell,
+        std::time::Instant::now() + crate::app::PROMPT_FLASH_TTL,
+    ));
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(bx, by)].bg, theme.chip_bg, "jumped prompt washed");
+    assert_eq!(buf[(bx, by)].fg, theme.brand, "jumped prompt text brand");
+    let (ax, ay) = text_cell(terminal.backend().buffer(), "alpha prompt")
+        .expect("alpha prompt rendered");
+    assert_ne!(
+        buf[(ax, ay)].bg, theme.chip_bg,
+        "the other prompt keeps its background"
+    );
+    assert_ne!(
+        buf[(ax, ay)].fg, theme.brand,
+        "the other prompt keeps its text color"
+    );
+
+    // Expire the flash: the tick clears it and the next frame restores the
+    // ordinary bubble look.
+    app.prompt_flash = Some((
+        beta_cell,
+        std::time::Instant::now() - crate::app::PROMPT_FLASH_TTL,
+    ));
+    app.tick();
+    assert!(app.prompt_flash.is_none(), "tick cleared the expired flash");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(bx, by)].bg, theme.bubble_bg,
+        "flash restored the normal bubble background"
+    );
+    assert_eq!(
+        buf[(bx, by)].fg, theme.bubble_fg,
+        "flash restored the normal bubble text"
+    );
+}
+
 #[test]
 fn model_picker_marks_the_streamed_model_when_it_differs_from_config() {
     use crate::app::{Picker, PickerItem, PickerKind};
@@ -3232,4 +3322,125 @@ fn expand_button_survives_a_full_draft() {
     assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
     // The well rows themselves carry no button glyph.
     assert_ne!(buf[(btn.x + 2, app.input_area.y)].symbol(), "⛶");
+}
+
+/// The ⌕ user-prompt jump button (issue #103) renders between the project
+/// path and the ⛶ expand glyph — spaces on both sides — and hovers the
+/// same way: quiet caption tone idle, brightest foreground on hover.
+#[test]
+fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    let expand = app.expand_btn.expect("expand rect");
+    let jump = app.prompt_jump_btn.expect("jump rect");
+
+    // Geometry: ⌕ (space) ⛶ (space) ╮ — the jump glyph one cell left of
+    // the expand glyph with a space in between, and a space before it.
+    assert_eq!(jump.y, expand.y, "both buttons share the cap row");
+    assert_eq!(jump.x + jump.width, expand.x, "jump rect tucked left of expand");
+    assert_eq!(buf[(jump.x + 1, jump.y)].symbol(), "⌕");
+    assert_eq!(buf[(expand.x - 2, expand.y)].symbol(), " ", "space before ⌕");
+    assert_eq!(buf[(expand.x, expand.y)].symbol(), " ", "space between ⌕ and ⛶");
+    assert_eq!(buf[(expand.x + 1, expand.y)].symbol(), "⛶");
+    assert_eq!(buf[(jump.x + 1, jump.y)].fg, theme.caption, "idle tone");
+
+    // Hover brightens the ⌕ glyph.
+    app.handle_mouse(mouse(MouseEventKind::Moved, jump.x + 1, jump.y), &ctl);
+    assert!(app.hover_prompt_jump_btn);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(jump.x + 1, jump.y)].fg,
+        theme.fg,
+        "hover brightens the ⌕ glyph"
+    );
+    // Leaving restores the quiet glyph.
+    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
+    assert!(!app.hover_prompt_jump_btn);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(
+        buf[(jump.x + 1, jump.y)].fg,
+        theme.caption,
+        "idle tone restored when the pointer leaves"
+    );
+}
+
+/// Hovering the composer cap-row buttons (⛶ of issue #92, ⌕ of issue #103)
+/// pops a tooltip card above the glyph explaining the click — the only
+/// discoverability affordance for these mouse-only buttons; leaving the
+/// button removes the card.
+#[test]
+fn composer_button_hover_pops_a_tooltip_card() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let expand = app.expand_btn.expect("expand rect");
+    let jump = app.prompt_jump_btn.expect("jump rect");
+
+    let rows = |buf: &ratatui::buffer::Buffer| -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect()
+    };
+
+    // No hover: no tooltip text anywhere on screen.
+    let buf = terminal.backend().buffer().clone();
+    let idle = rows(&buf);
+    assert!(
+        idle.iter().all(|r| !r.contains("user prompt") && !r.contains("input well")),
+        "no tooltip without hover"
+    );
+
+    // Hover ⌕: the card appears above the glyph with the jump description.
+    app.handle_mouse(mouse(MouseEventKind::Moved, jump.x + 1, jump.y), &ctl);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let rs = rows(&buf);
+    let jump_tip = rs
+        .iter()
+        .position(|r| r.contains("previous user prompt"))
+        .expect("⌕ tooltip shown");
+    assert!(jump_tip < jump.y as usize, "tooltip card sits above the ⌕ glyph");
+    assert!(rs[jump_tip].contains('⌕'), "card leads with the ⌕ glyph");
+
+    // Hover ⛶: the card switches to the expand/collapse description.
+    app.handle_mouse(mouse(MouseEventKind::Moved, expand.x + 1, expand.y), &ctl);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let rs = rows(&buf);
+    let expand_tip = rs
+        .iter()
+        .position(|r| r.contains("expand the input well"))
+        .expect("⛶ tooltip shown");
+    assert!(expand_tip < expand.y as usize, "tooltip card sits above the ⛶ glyph");
+    assert!(rs[expand_tip].contains('⛶'), "card leads with the ⛶ glyph");
+
+    // Leaving the button removes the card again.
+    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert!(
+        rows(&buf)
+            .iter()
+            .all(|r| !r.contains("user prompt") && !r.contains("input well")),
+        "tooltip gone once the pointer leaves"
+    );
 }

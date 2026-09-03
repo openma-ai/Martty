@@ -17,6 +17,20 @@ All notable changes to this project are documented here. The project follows
   same way: they open on the effective model/effort, ✓-mark it, and list
   the effective model even when it is not in the host catalog.
 
+- `⌕` user-prompt jump button on the composer cap row, between the project
+  path and the `⛶` expand glyph (issue #103): hovering highlights it and
+  clicking scrolls the chat to the newest user prompt; each further click
+  walks one prompt back, and the oldest prompt wraps to the newest again.
+  The last-jumped position is remembered in memory only (never persisted),
+  so the walk resumes where the previous click stopped; the cap row tip
+  shows the current position (`user prompt k/n · newest first`). Text and
+  image prompts both count as jump targets. Right after a jump the jumped
+  prompt's rows are highlighted for 5 seconds like a picker's selected row
+  (chip background wash with the text in the brand tone) and then restore
+  to the ordinary bubble look. Hovering either cap-row glyph pops a small
+  tooltip card above it explaining the click (⛶ expand/collapse, ⌕ jump).
+
+
 - `/resume [n|id]` — a bare number lists the `n` most recent durable
   sessions in the resume picker (`/resume 10` → latest 10). Without a
   number the default is 50 (`/resume` ≡ `/resume 50`); anything that is
