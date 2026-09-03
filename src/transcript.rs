@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::events::UiEvent;
+use crate::locale::Locale;
 use crate::theme::Theme;
 
 /// Collapsed tool preview height; click toggles full expansion. Mouse wheel
@@ -110,6 +111,7 @@ struct CellRender {
     theme: Theme,
     expanded: bool,
     thumbs: bool,
+    locale: Locale,
     /// Lines below the cell header, in paint order, fully styled.
     body: Vec<Line<'static>>,
     /// Kind-specific count needed by the per-frame header: Tool cells carry
@@ -134,10 +136,17 @@ impl Cell {
     }
 
     /// Return the cached body render, rebuilding it when the cell content
-    /// version or any layout input (width/theme/expanded/thumbs) drifted.
-    /// `expanded` is the *effective* value including the transcript-wide
-    /// `expand_all`; it decides Tool/Shell/Reasoning body layout.
-    fn ensure_render(&mut self, theme: &Theme, width: u16, expanded: bool, thumbs: bool) -> &CellRender {
+    /// version or any layout input (width/theme/expanded/thumbs/locale)
+    /// drifted. `expanded` is the *effective* value including the
+    /// transcript-wide `expand_all`; it decides Tool/Shell/Reasoning layout.
+    fn ensure_render(
+        &mut self,
+        theme: &Theme,
+        width: u16,
+        expanded: bool,
+        thumbs: bool,
+        locale: Locale,
+    ) -> &CellRender {
         let stale = match &self.render {
             Some(r) => {
                 r.version != self.version
@@ -145,17 +154,20 @@ impl Cell {
                     || r.theme != *theme
                     || r.expanded != expanded
                     || r.thumbs != thumbs
+                    || r.locale != locale
             }
             None => true,
         };
         if stale {
-            let (body, meta) = build_body(&self.kind, theme, width as usize, expanded, thumbs);
+            let (body, meta) =
+                build_body(&self.kind, theme, width as usize, expanded, thumbs, locale);
             self.render = Some(CellRender {
                 version: self.version,
                 width,
                 theme: *theme,
                 expanded,
                 thumbs,
+                locale,
                 body,
                 meta,
             });
@@ -174,6 +186,7 @@ fn build_body(
     width: usize,
     expanded: bool,
     _thumbs: bool,
+    locale: Locale,
 ) -> (Vec<Line<'static>>, usize) {
     match kind {
         CellKind::Reasoning { text, .. } => {
@@ -214,7 +227,8 @@ fn build_body(
             let mut lines: Vec<Line> = Vec::new();
             let request = if ok.is_none() { request.trim() } else { "" };
             if !request.is_empty() {
-                let label = "request  ";
+                let label = locale.tr("request  ", "请求  ").to_string();
+                let pad = " ".repeat(label.width());
                 let request_width = width.saturating_sub(2 + label.width());
                 for (index, line) in
                     wrap(request, request_width.max(1)).into_iter().take(TOOL_VIEWPORT).enumerate()
@@ -222,7 +236,7 @@ fn build_body(
                     lines.push(Line::from(vec![
                         Span::styled("│ ".to_string(), Style::default().fg(theme.border)),
                         Span::styled(
-                            if index == 0 { label } else { "         " }.to_string(),
+                            if index == 0 { label.clone() } else { pad.clone() },
                             Style::default().fg(theme.caption),
                         ),
                         Span::styled(line, Style::default().fg(theme.fg_tertiary)),
@@ -260,7 +274,11 @@ fn build_body(
                     lines.push(Line::from(vec![
                         Span::styled("│ ".to_string(), Style::default().fg(bar_color)),
                         Span::styled(
-                            format!("last {}/{} lines · click to expand", TOOL_VIEWPORT, total),
+                            locale.trf(
+                                "last {}/{} lines · click to expand",
+                                "末尾 {}/{} 行 · 点击展开",
+                                &[TOOL_VIEWPORT.to_string(), total.to_string()],
+                            ),
                             Style::default().fg(theme.caption),
                         ),
                     ]));
@@ -302,13 +320,20 @@ fn build_body(
                 }
                 if total > shown_len {
                     lines.push(card_row(
-                        &format!("… +{} lines (ctrl+o expands)", total - shown_len),
+                        &locale.trf(
+                            "… +{} lines (ctrl+o expands)",
+                            "… +{} 行（ctrl+o 展开）",
+                            &[(total - shown_len).to_string()],
+                        ),
                         theme.caption,
                     ));
                 }
                 if let Some(c) = code {
                     if *c != 0 {
-                        lines.push(card_row(&format!("exit {c}"), theme.err));
+                        lines.push(card_row(
+                            &locale.trf("exit {}", "退出码 {}", &[c.to_string()]),
+                            theme.err,
+                        ));
                     }
                 }
             }
@@ -382,6 +407,9 @@ pub struct Transcript {
     /// the ground truth of what actually answered.
     pub last_model: Option<String>,
     pub expand_all: bool,
+    /// UI language for the notices this transcript renders (set by the App
+    /// that owns it; cells already pushed keep the language they had).
+    pub locale: Locale,
 }
 
 impl Transcript {
@@ -404,6 +432,7 @@ impl Transcript {
             last_finish: None,
             last_model: None,
             expand_all: false,
+            locale: Locale::default(),
         }
     }
 
@@ -516,7 +545,7 @@ impl Transcript {
                     true
                 }
                 CellKind::Shell { output, .. } if output.is_none() => {
-                    *output = Some((None, "cancelled".into()));
+                    *output = Some((None, self.locale.tr("cancelled", "已取消").to_string()));
                     true
                 }
                 _ => false,
@@ -534,6 +563,12 @@ impl Transcript {
     /// without a terminal ACP tool update. This is deliberately not a wire
     /// `failed` event: the adapter's last reported status remains unchanged.
     fn settle_open_tools(&mut self, reason: &str) {
+        let text = match reason {
+            "cancelled" => self.locale.tr("cancelled", "已取消").to_string(),
+            "interrupted" => self.locale.tr("interrupted", "已中断").to_string(),
+            "turn ended" => self.locale.tr("turn ended", "本轮结束").to_string(),
+            other => other.to_string(),
+        };
         for idx in self.tools.values().copied().collect::<Vec<_>>() {
             if let Some(cell) = self.cells.get_mut(idx) {
                 if let CellKind::Tool {
@@ -542,9 +577,9 @@ impl Transcript {
                 {
                     if ok.is_none() {
                         *ok = Some(false);
-                        *error = Some(reason.into());
+                        *error = Some(text.clone());
                         if result.is_empty() {
-                            *result = reason.into();
+                            *result = text.clone();
                         }
                     }
                 }
@@ -641,7 +676,11 @@ impl Transcript {
                         } else {
                             NoticeLevel::Warn
                         };
-                        self.push_notice(level, format!("turn ended: {kind}"));
+                        self.push_notice(
+                            level,
+                            self.locale
+                                .trf("turn ended: {}", "本轮结束：{}", &[kind.clone()]),
+                        );
                     }
                 }
             }
@@ -863,7 +902,11 @@ impl Transcript {
                 self.push_user(text, false);
             }
             UiEvent::SessionTitle { title, .. } => {
-                self.push_notice(NoticeLevel::Info, format!("session · {title}"));
+                self.push_notice(
+                    NoticeLevel::Info,
+                    self.locale
+                        .trf("session · {}", "会话 · {}", &[title.clone()]),
+                );
             }
             UiEvent::Plan { summary, .. } => {
                 if let Some(idx) = self.plan_cell {
@@ -883,34 +926,71 @@ impl Transcript {
             }
             UiEvent::SubagentStarted { child, .. } => {
                 self.agent_seq += 1;
-                let label = format!("subagent {}", self.agent_seq);
+                let label = self
+                    .locale
+                    .trf("subagent {}", "子代理 {}", &[self.agent_seq.to_string()]);
                 self.agents.insert(child, label);
             }
             UiEvent::SubagentFinished { .. } => {}
             UiEvent::PlanMode { active, .. } => {
+                let state = if active {
+                    self.locale.tr("on", "开")
+                } else {
+                    self.locale.tr("off", "关")
+                };
                 self.push_notice(
                     NoticeLevel::Info,
-                    format!("⌁ plan mode {}", if active { "on" } else { "off" }),
+                    self.locale
+                        .trf("⌁ plan mode {}", "⌁ 计划模式 {}", &[state.to_string()]),
                 );
             }
             UiEvent::SandboxMode { mode, .. } => {
-                self.push_notice(NoticeLevel::Info, format!("⛨ file policy · {mode}"));
+                self.push_notice(
+                    NoticeLevel::Info,
+                    self.locale
+                        .trf("⛨ file policy · {}", "⛨ 文件策略 · {}", &[mode.clone()]),
+                );
             }
             UiEvent::ApprovalPolicy { policy, .. } => {
-                self.push_notice(NoticeLevel::Info, format!("⚖ approval policy · {policy}"));
+                self.push_notice(
+                    NoticeLevel::Info,
+                    self.locale.trf(
+                        "⚖ approval policy · {}",
+                        "⚖ 审批策略 · {}",
+                        &[policy.clone()],
+                    ),
+                );
             }
             UiEvent::PermissionPreset { preset, .. } => {
-                self.push_notice(NoticeLevel::Info, format!("⛨ permission · {preset}"));
+                self.push_notice(
+                    NoticeLevel::Info,
+                    self.locale.trf(
+                        "⛨ permission · {}",
+                        "⛨ 权限 · {}",
+                        &[preset.clone()],
+                    ),
+                );
             }
             UiEvent::AgentPreset { preset, .. } => {
-                self.push_notice(NoticeLevel::Info, format!("⚙ agent preset · {preset}"));
+                self.push_notice(
+                    NoticeLevel::Info,
+                    self.locale.trf(
+                        "⚙ agent preset · {}",
+                        "⚙ Agent 预设 · {}",
+                        &[preset.clone()],
+                    ),
+                );
             }
             UiEvent::ReasoningEffort { .. } => {}
             UiEvent::ApprovalAsked { tool, reason, .. } => {
                 let why = reason.map(|r| format!(" · {r}")).unwrap_or_default();
                 self.push_notice(
                     NoticeLevel::Warn,
-                    format!("⚖ approval requested · {tool}{why}"),
+                    self.locale.trf(
+                        "⚖ approval requested · {}{}",
+                        "⚖ 请求审批 · {}{}",
+                        &[tool.clone(), why],
+                    ),
                 );
             }
             UiEvent::ApprovalDecided { outcome, .. } => {
@@ -919,7 +999,11 @@ impl Transcript {
                 } else {
                     NoticeLevel::Info
                 };
-                self.push_notice(level, format!("⚖ approval · {outcome}"));
+                self.push_notice(
+                    level,
+                    self.locale
+                        .trf("⚖ approval · {}", "⚖ 审批 · {}", &[outcome.clone()]),
+                );
             }
             UiEvent::Palette { .. } => {}
         }
@@ -973,7 +1057,7 @@ impl Transcript {
                     | CellKind::Tool { .. }
                     | CellKind::Shell { .. }
             ) {
-                cell.ensure_render(theme, width as u16, expanded, thumbs);
+                cell.ensure_render(theme, width as u16, expanded, thumbs, self.locale);
             }
             match &cell.kind {
                 CellKind::User { text, queued } => {
@@ -1283,7 +1367,12 @@ impl Transcript {
                     if summary.is_empty() {
                         continue;
                     }
-                    for l in wrap(&format!("plan · {summary}"), width.saturating_sub(2)) {
+                    for l in wrap(
+                        &self
+                            .locale
+                            .trf("plan · {}", "计划 · {}", &[summary.clone()]),
+                        width.saturating_sub(2),
+                    ) {
                         emit(
                             &mut out,
                             &mut owners,

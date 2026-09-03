@@ -175,8 +175,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
     if area.height < 6 || area.width < 24 {
         f.render_widget(
-            Paragraph::new("terminal too small — need ≥ 24x6")
-                .style(Style::default().fg(theme.warn)),
+            Paragraph::new(app.locale.tr(
+                "terminal too small — need ≥ 24x6",
+                "终端太小 —— 至少需要 24x6",
+            ))
+            .style(Style::default().fg(theme.warn)),
             area,
         );
         return;
@@ -1166,16 +1169,19 @@ fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {
         .active_subagent
         .as_deref()
         .and_then(|id| app.subagents.iter().find(|view| view.id == id))
-        .map(|view| view.label.as_str())
-        .unwrap_or("subagent");
+        .map(|view| view.label.clone())
+        .unwrap_or_else(|| app.locale.tr("subagent", "子代理").to_string());
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!(" {label} · read-only"),
+                format!(" {label} · {}", app.locale.tr("read-only", "只读")),
                 Style::default().fg(theme.fg_secondary),
             ),
             Span::styled(
-                "   esc back · ↓ switch agents",
+                app.locale.tr(
+                    "   esc back · ↓ switch agents",
+                    "   esc 返回 · ↓ 切换子代理",
+                ),
                 Style::default().fg(theme.caption),
             ),
         ]))

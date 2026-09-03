@@ -93,6 +93,9 @@ pub struct ElicitationFormState {
     pub index: usize,
     pub fields: Vec<ElicitationFieldState>,
     pub error: Option<String>,
+    /// UI language for the validation errors the form renders. The App sets
+    /// it right after construction; it defaults to the builtin `En`.
+    pub locale: crate::locale::Locale,
 }
 
 impl ElicitationFormState {
@@ -168,6 +171,7 @@ impl ElicitationFormState {
             index: 0,
             fields,
             error: None,
+            locale: crate::locale::Locale::default(),
         }
     }
 
@@ -197,13 +201,25 @@ impl ElicitationFormState {
     }
 
     fn validate_current(&self) -> Result<(), String> {
+        use crate::locale::Locale::En;
+        let tr = |en: &'static str, zh: &'static str| {
+            if self.locale == En {
+                en
+            } else {
+                zh
+            }
+        };
         let Some(state) = self.fields.get(self.index) else {
-            return Err("form has no current field".into());
+            return Err(tr("form has no current field", "表单没有当前字段").into());
         };
         match &state.field.kind {
             ElicitationFieldKind::Text { .. } => {
                 if state.field.required && state.input.buf.trim().is_empty() {
-                    return Err("Enter a value or use Tab to skip an optional field.".into());
+                    return Err(tr(
+                        "Enter a value or use Tab to skip an optional field.",
+                        "输入内容，可选字段可用 Tab 跳过。",
+                    )
+                    .into());
                 }
             }
             ElicitationFieldKind::Integer { min, max, .. } => {
@@ -215,9 +231,13 @@ impl ElicitationFormState {
                     .buf
                     .trim()
                     .parse()
-                    .map_err(|_| "Enter a whole number.".to_string())?;
+                    .map_err(|_| tr("Enter a whole number.", "请输入整数。").to_string())?;
                 if min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max) {
-                    return Err("The number is outside the allowed range.".into());
+                    return Err(tr(
+                        "The number is outside the allowed range.",
+                        "数字超出允许范围。",
+                    )
+                    .into());
                 }
             }
             ElicitationFieldKind::Number { min, max, .. } => {
@@ -229,17 +249,25 @@ impl ElicitationFormState {
                     .buf
                     .trim()
                     .parse()
-                    .map_err(|_| "Enter a number.".to_string())?;
+                    .map_err(|_| tr("Enter a number.", "请输入数字。").to_string())?;
                 if min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max) {
-                    return Err("The number is outside the allowed range.".into());
+                    return Err(tr(
+                        "The number is outside the allowed range.",
+                        "数字超出允许范围。",
+                    )
+                    .into());
                 }
             }
             ElicitationFieldKind::Single { options, .. } => {
                 let Some(option) = options.get(state.cursor) else {
-                    return Err("Choose an option.".into());
+                    return Err(tr("Choose an option.", "请选择一个选项。").into());
                 };
                 if option.custom && state.input.buf.trim().is_empty() {
-                    return Err("Type the Other answer, then press Enter.".into());
+                    return Err(tr(
+                        "Type the Other answer, then press Enter.",
+                        "输入「其他」答案后按 Enter。",
+                    )
+                    .into());
                 }
             }
             ElicitationFieldKind::Multi {
@@ -248,10 +276,18 @@ impl ElicitationFormState {
                 let count = state.selected.iter().filter(|selected| **selected).count();
                 let minimum = (*min).max(usize::from(state.field.required));
                 if count < minimum {
-                    return Err(format!("Select at least {minimum} option(s)."));
+                    return Err(self.locale.trf(
+                        "Select at least {} option(s).",
+                        "至少选择 {} 个选项。",
+                        &[minimum.to_string()],
+                    ));
                 }
                 if max.is_some_and(|max| count > max) {
-                    return Err(format!("Select at most {} option(s).", max.unwrap_or(0)));
+                    return Err(self.locale.trf(
+                        "Select at most {} option(s).",
+                        "最多选择 {} 个选项。",
+                        &[max.unwrap_or(0).to_string()],
+                    ));
                 }
                 if options
                     .iter()
@@ -259,7 +295,11 @@ impl ElicitationFormState {
                     .any(|(index, option)| option.custom && state.selected[index])
                     && state.input.buf.trim().is_empty()
                 {
-                    return Err("Type the Other answer, then press Enter.".into());
+                    return Err(tr(
+                        "Type the Other answer, then press Enter.",
+                        "输入「其他」答案后按 Enter。",
+                    )
+                    .into());
                 }
             }
             ElicitationFieldKind::Boolean { .. } => {}
@@ -368,7 +408,11 @@ impl ElicitationFormState {
             return None;
         };
         if state.field.required {
-            self.error = Some("This field is required.".into());
+            self.error = Some(
+                self.locale
+                    .tr("This field is required.", "此字段为必填项。")
+                    .into(),
+            );
             return None;
         }
         state.skipped = true;
