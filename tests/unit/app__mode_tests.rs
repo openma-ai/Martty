@@ -1159,6 +1159,7 @@ fn preset_ack_folds_the_chip_and_new_session_waits_for_the_host_mode() {
     let (mut app, ctl, _rx) = test_app();
     app.handle(
         AppEvent::Ctl(CtlEvent::PresetSet {
+            session_id: String::new(),
             preset: "cordis".into(),
         }),
         &ctl,

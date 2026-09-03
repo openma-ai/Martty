@@ -1011,9 +1011,15 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     let right = area.right() as usize;
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x as usize;
+    let total = tabs.len();
     for (idx, tab) in tabs.iter().enumerate() {
         if idx > 0 {
             if x + 3 > right {
+                let remaining = total - idx;
+                let note = format!(" +{remaining}");
+                if x + note.len() <= right {
+                    spans.push(Span::styled(note, Style::default().fg(theme.caption)));
+                }
                 break;
             }
             spans.push(Span::styled(" │ ", Style::default().fg(theme.border)));
@@ -1045,6 +1051,11 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let width = indicator.width() + label.width() + 3;
         if x + width > right {
+            let remaining = total - idx;
+            let note = format!(" +{remaining}");
+            if x + note.len() <= right {
+                spans.push(Span::styled(note, Style::default().fg(theme.caption)));
+            }
             break;
         }
         app.tab_rects.push((

@@ -1070,3 +1070,27 @@ fn non_update_events_pass_through_untouched() {
     // The tool_call start and the TurnEnd break every run: nothing merges.
     assert_eq!(events.len(), 5);
 }
+
+#[test]
+fn text_chunks_do_not_merge_across_subagents() {
+    let mut events = vec![
+        update_ev(
+            "s1",
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "sub1 " },
+                "_meta": { "dsh": { "subagent": { "childSessionId": "child-1" } } },
+            }),
+        ),
+        update_ev(
+            "s1",
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "sub2 " },
+                "_meta": { "dsh": { "subagent": { "childSessionId": "child-2" } } },
+            }),
+        ),
+    ];
+    coalesce_session_updates(&mut events);
+    assert_eq!(events.len(), 2, "chunks for distinct subagents stay separate");
+}

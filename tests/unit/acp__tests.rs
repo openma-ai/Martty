@@ -12,10 +12,15 @@ fn session_setup_keeps_current_mode_when_the_mode_catalog_is_empty() {
             "availableModes": []
         }),
         &bus,
+        None,
     );
 
     match events.try_recv() {
-        Ok(AppEvent::Ctl(CtlEvent::SessionModes { modes, current })) => {
+        Ok(AppEvent::Ctl(CtlEvent::SessionModes {
+            modes,
+            current,
+            ..
+        })) => {
             assert!(modes.is_empty());
             assert_eq!(current.as_deref(), Some("danger-full-access"));
         }

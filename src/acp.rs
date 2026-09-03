@@ -75,7 +75,12 @@ struct Surface {
 }
 
 impl Surface {
-    fn apply_config_options(&mut self, options: &Value, bus: &Sender<AppEvent>) {
+    fn apply_config_options(
+        &mut self,
+        options: &Value,
+        bus: &Sender<AppEvent>,
+        session_id: Option<&str>,
+    ) {
         let (models, presets, composition_id) = catalog_from_config_options(options);
         self.models = models.clone();
         self.presets = presets.clone();
@@ -110,6 +115,7 @@ impl Surface {
                             .collect();
                     if !self.modes.is_empty() {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+                            session_id: session_id.map(str::to_string),
                             modes: self.modes.clone(),
                             current: mode
                                 .get("currentValue")
@@ -124,7 +130,12 @@ impl Surface {
         let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models, presets }));
     }
 
-    fn apply_session_modes(&mut self, modes: &Value, bus: &Sender<AppEvent>) {
+    fn apply_session_modes(
+        &mut self,
+        modes: &Value,
+        bus: &Sender<AppEvent>,
+        session_id: Option<&str>,
+    ) {
         let (list, current) = session_modes_from_value(modes);
         if list.is_empty() && current.is_none() {
             return;
@@ -133,6 +144,7 @@ impl Surface {
             self.modes = list.clone();
         }
         let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+            session_id: session_id.map(str::to_string),
             modes: list,
             current,
         }));
@@ -748,24 +760,24 @@ fn apply_setup(
 ) {
     if let Ok(mut surface) = surface.lock() {
         surface.modes.clear();
+        let session = value
+            .get("sessionId")
+            .or_else(|| value.get("session_id"))
+            .and_then(Value::as_str)
+            .or(session_hint);
         if let Some(options) = value
             .get("configOptions")
             .or_else(|| value.get("config_options"))
         {
-            surface.apply_config_options(options, bus);
-            if let Some(session) = value
-                .get("sessionId")
-                .or_else(|| value.get("session_id"))
-                .and_then(Value::as_str)
-                .or(session_hint)
-            {
-                for event in config_option_events(session.to_string(), options) {
+            surface.apply_config_options(options, bus, session);
+            if let Some(s) = session {
+                for event in config_option_events(s.to_string(), options) {
                     let _ = bus.send(AppEvent::Ui(event));
                 }
             }
         }
         if let Some(modes) = value.get("modes") {
-            surface.apply_session_modes(modes, bus);
+            surface.apply_session_modes(modes, bus, session);
         }
     }
 }
@@ -797,7 +809,7 @@ fn apply_config_response(
         .or_else(|| value.get("config_options"))?
         .clone();
     if let Ok(mut surface) = surface.lock() {
-        surface.apply_config_options(&options, bus);
+        surface.apply_config_options(&options, bus, Some(&session.0));
     }
     for event in config_option_events(session.to_string(), &options) {
         let _ = bus.send(AppEvent::Ui(event));
@@ -1214,8 +1226,9 @@ where
                             .get("configOptions")
                             .or_else(|| update.get("config_options"))
                         {
+                            let session = params.get("sessionId").and_then(Value::as_str);
                             if let Ok(mut surface) = surface_n.lock() {
-                                surface.apply_config_options(options, &bus_n);
+                                surface.apply_config_options(options, &bus_n, session);
                             }
                         }
                         if let Some(commands) = update
@@ -2086,6 +2099,7 @@ where
                             }));
                             if !surface.modes.is_empty() {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+                                    session_id: None,
                                     modes: surface.modes.clone(),
                                     current: None,
                                 }));
@@ -2370,17 +2384,24 @@ where
                                 .await
                             {
                                 Ok(response) => {
-                                    if let Ok(value) = serde_json::to_value(&response) {
+                                     if let Ok(value) = serde_json::to_value(&response) {
                                         if let Some(options) = value
                                             .get("configOptions")
                                             .or_else(|| value.get("config_options"))
                                         {
                                             if let Ok(mut surface) = surface.lock() {
-                                                surface.apply_config_options(options, &bus);
+                                                surface.apply_config_options(
+                                                    options,
+                                                    &bus,
+                                                    Some(&sid.0),
+                                                );
                                             }
                                         }
                                     }
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet { preset }));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet {
+                                        session_id: sid.to_string(),
+                                        preset,
+                                    }));
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
                                     emit_needs_auth_open(
@@ -2821,6 +2842,7 @@ where
                             // guard. ACP has no session/close — the
                             // server-side session survives and can be
                             // re-entered later via session/resume.
+                            parked.retain(|p| p.session.as_deref() != Some(&session_id));
                             if sessions.remove(&session_id).is_some()
                                 && current
                                     .as_ref()
@@ -2911,31 +2933,30 @@ where
                                     );
                                 }
                             }
-                            if parked.is_empty() {
-                                let queued = sessions
+                            let queued = parked.is_empty()
+                                && sessions
                                     .get(&key)
                                     .is_some_and(|handle| !handle.queue.is_empty());
-                                if queued {
-                                    drain_ready_sessions(
-                                        &mut sessions,
-                                        &cx,
-                                        &bus,
-                                        &mut parked,
-                                        &methods,
-                                        selected.as_ref(),
-                                        &surface,
-                                        &cfg.workspace,
-                                        &prompt_done_tx,
-                                    );
-                                } else {
-                                    let _ = bus.send(AppEvent::Rpc {
-                                        method: "session.status".into(),
-                                        params: json!({
-                                            "sessionId": key,
-                                            "status": "idle"
-                                        }),
-                                    });
-                                }
+                            if queued {
+                                drain_ready_sessions(
+                                    &mut sessions,
+                                    &cx,
+                                    &bus,
+                                    &mut parked,
+                                    &methods,
+                                    selected.as_ref(),
+                                    &surface,
+                                    &cfg.workspace,
+                                    &prompt_done_tx,
+                                );
+                            } else {
+                                let _ = bus.send(AppEvent::Rpc {
+                                    method: "session.status".into(),
+                                    params: json!({
+                                        "sessionId": key,
+                                        "status": "idle"
+                                    }),
+                                });
                             }
                         }
                     }

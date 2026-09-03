@@ -71,6 +71,10 @@ pub enum Action {
     CutSelection,
     /// Jump to session tab `n` (alt+1 … alt+9; 1-based, issue #94).
     SessionTab(u8),
+    /// Cycle to next session tab (alt+] / ctrl+pagedown).
+    NextSessionTab,
+    /// Cycle to previous session tab (alt+[ / ctrl+pageup).
+    PrevSessionTab,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -156,6 +160,8 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('f') if alt => WordRight,
 
         // --- scrolling ----------------------------------------------------
+        KeyCode::PageUp if ctrl => PrevSessionTab,
+        KeyCode::PageDown if ctrl => NextSessionTab,
         KeyCode::PageUp => PageUp,
         KeyCode::PageDown => PageDown,
 
@@ -195,6 +201,8 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // alt+1…alt+9 jump straight to a session tab (browser-style). Plain
         // digits keep typing; the chord stays readable on legacy terminals.
         KeyCode::Char(ch @ '1'..='9') if alt => SessionTab(ch as u8 - b'0'),
+        KeyCode::Char(']') if alt => NextSessionTab,
+        KeyCode::Char('[') if alt => PrevSessionTab,
 
         // --- deletion ------------------------------------------------------
         // ⌘⌫ kills to line start; ⌥⌫ (macOS) / ctrl+⌫ (linux/windows)
@@ -590,6 +598,32 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_en: "page down",
         desc_zh: "下一页",
         probes: &[p(KeyCode::PageDown, NONE, false)],
+    },
+    KeyRow {
+        action: NextSessionTab,
+        group: KeyGroup::Navigate,
+        chords_mac: &["⌥]", "^⇟"],
+        chords_other: &["alt+]", "ctrl+pagedown"],
+        ctx: CtxNote::Always,
+        desc_en: "next session tab",
+        desc_zh: "下一个会话标签",
+        probes: &[
+            p(KeyCode::Char(']'), ALT, false),
+            p(KeyCode::PageDown, CTRL, false),
+        ],
+    },
+    KeyRow {
+        action: PrevSessionTab,
+        group: KeyGroup::Navigate,
+        chords_mac: &["⌥[", "^⇞"],
+        chords_other: &["alt+[", "ctrl+pageup"],
+        ctx: CtxNote::Always,
+        desc_en: "previous session tab",
+        desc_zh: "上一个会话标签",
+        probes: &[
+            p(KeyCode::Char('['), ALT, false),
+            p(KeyCode::PageUp, CTRL, false),
+        ],
     },
     // --- composer textarea -------------------------------------------------
     KeyRow {

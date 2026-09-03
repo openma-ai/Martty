@@ -108,11 +108,15 @@ pub enum CtlEvent {
     CordisPlugins { plugins: Vec<CordisPluginItem> },
     /// ACP session modes (permission / `session/set_mode`).
     SessionModes {
+        session_id: Option<String>,
         modes: Vec<CatalogPreset>,
         current: Option<String>,
     },
     /// The agent accepted a composition switch (`session/set_config_option`).
-    PresetSet { preset: String },
+    PresetSet {
+        session_id: String,
+        preset: String,
+    },
     /// Selectable reasoning efforts for the current model.
     Efforts {
         efforts: Vec<String>,

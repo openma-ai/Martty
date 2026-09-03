@@ -88,6 +88,79 @@ fn unknown_session_events_never_reach_any_transcript() {
 }
 
 #[test]
+fn parked_subagent_events_land_in_parked_subagent_transcript() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "sub-1".into(),
+    });
+    assert_eq!(app.subagents.len(), 1);
+
+    app.open_new_session("s-two".into(), true);
+    assert_eq!(app.session_id, "s-two");
+    assert_eq!(app.parked[0].id, "dsh-test");
+    assert_eq!(app.parked[0].subagents.len(), 1);
+
+    app.apply_ui(final_event("sub-1", "subagent answer in background"));
+
+    let sub_text = transcript_text(&mut app.parked[0].subagents[0].transcript);
+    assert!(
+        sub_text.contains("subagent answer in background"),
+        "subagent event reached parked subagent transcript:\n{sub_text}"
+    );
+    assert!(!transcript_text(&mut app.transcript).contains("subagent answer"));
+}
+
+#[test]
+fn parked_subagent_permission_ask_does_not_clobber_live_tab() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.apply_ui(crate::events::UiEvent::SubagentStarted {
+        parent: "dsh-test".into(),
+        child: "sub-1".into(),
+    });
+    app.open_new_session("s-two".into(), true);
+
+    let (live_tx, _live_rx) = tokio::sync::oneshot::channel();
+    app.open_permission_ask("s-two", "live prompt ask".into(), Vec::new(), live_tx);
+    assert!(app.permission_ask.is_some());
+
+    let (sub_tx, _sub_rx) = tokio::sync::oneshot::channel();
+    app.open_permission_ask("sub-1", "subagent ask".into(), Vec::new(), sub_tx);
+
+    assert_eq!(app.permission_ask.as_ref().unwrap().title, "live prompt ask");
+    assert!(app.parked[0].permission_ask.is_some());
+    assert_eq!(
+        app.parked[0].permission_ask.as_ref().unwrap().title,
+        "subagent ask"
+    );
+}
+
+#[test]
+fn shell_pending_updated_on_session_bound() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.run_slash("new", "", &ctl);
+    let placeholder = app.session_id.clone();
+    assert!(placeholder.starts_with("dsh-"));
+
+    app.run_local_shell("echo hi".into());
+    assert_eq!(app.shell_pending[0].1, placeholder);
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "acp-real".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "acp-real");
+    assert_eq!(
+        app.shell_pending[0].1, "acp-real",
+        "shell pending updated to bound id"
+    );
+}
+
+#[test]
 fn parked_completion_edge_badges_the_tab_and_switching_clears_it() {
     let (mut app, _ctl, _rx) = test_app();
     app.open_new_session("s-two".into(), true);
@@ -1029,4 +1102,53 @@ fn alt_digit_jumps_to_a_session_tab() {
         &ctl,
     );
     assert_eq!(app.session_id, "s-three", "out-of-range tab is a no-op");
+}
+
+#[test]
+fn next_and_prev_session_tab_cycles_tabs() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true);
+    app.open_new_session("s-three".into(), true);
+    assert_eq!(app.session_id, "s-three"); // index 2
+
+    // Next from last wraps to first (0)
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "dsh-test");
+
+    // Next moves to index 1
+    app.handle_key(
+        KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "s-two");
+
+    // Prev moves back to index 0
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('['), KeyModifiers::ALT),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "dsh-test");
+
+    // Prev from 0 wraps to last (2)
+    app.handle_key(
+        KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL),
+        &ctl,
+    );
+    assert_eq!(app.session_id, "s-three");
+}
+
+#[test]
+fn tab_strip_renders_overflow_indicator_when_narrow() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.open_new_session("s-two".into(), true);
+    app.open_new_session("s-three".into(), true);
+    app.open_new_session("s-four".into(), true);
+
+    // On width 30, not all tabs fit; +N indicator should render
+    let frame = crate::ui::dump_frame(&mut app, 30, 15);
+    let row0 = frame.lines().next().unwrap_or_default();
+    assert!(row0.contains('+'), "overflow indicator rendered in:\n{row0}");
 }

@@ -51,6 +51,11 @@ impl VimState {
         self.mode != VimMode::Off
     }
 
+    /// Clear any half-entered two-key chords (`dd`, `gg`) on mode/tab switches.
+    pub fn reset_pending(&mut self) {
+        self.pending = None;
+    }
+
     /// Handle one key while vim is active. Returns `true` when the key was
     /// consumed (must not reach the app keymap).
     pub fn handle_key(&mut self, key: &KeyEvent, editor: &mut ComposerEditor) -> bool {

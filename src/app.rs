@@ -1815,6 +1815,7 @@ impl App {
         self.picker = None;
         self.queue_selection = None;
         self.queue_edit = None;
+        self.vim.reset_pending();
         self.needs_redraw = true;
     }
 
@@ -1993,7 +1994,6 @@ impl App {
                 if slot.running {
                     slot.completed_unseen = true;
                 }
-                slot.running = false;
                 slot.prompt_pending = false;
             }
             _ => {}
@@ -2030,6 +2030,10 @@ impl App {
             }
         }
         slot.prompt_pending = true;
+        slot.running = true;
+        slot.run_started = Some(Instant::now());
+        slot.state_note = self.locale.tr("sending queued followup", "正在发送排队消息").into();
+        slot.scroll_up = 0;
         match prompt.blocks.as_slice() {
             [StagedBlock::Text(text)] => ctl.send(Cmd::Prompt {
                 session_id: session.to_string(),
@@ -3334,29 +3338,45 @@ impl App {
                             }
                         }
                     }
-                    CtlEvent::SessionModes { modes, current } => {
+                    CtlEvent::SessionModes {
+                        session_id,
+                        modes,
+                        current,
+                    } => {
+                        let is_live = match &session_id {
+                            Some(sid) => sid == &self.session_id,
+                            None => true,
+                        };
                         if !modes.is_empty() {
                             self.permission_choices = modes.clone();
                         }
-                        if let Some(id) = current {
-                            self.modes.permission = Some(id);
-                        }
-                        let reported = self.modes.permission.clone();
-                        let current_id = self.current_permission().to_string();
-                        let choices = self.permission_choices.clone();
-                        if let Some(picker) = &mut self.picker {
-                            if matches!(picker.kind, PickerKind::Permission) && !choices.is_empty()
-                            {
-                                picker.items = permission_picker_items(
-                                    &choices,
-                                    reported.as_deref(),
-                                    &current_id,
-                                );
-                                picker.sel = picker
-                                    .items
-                                    .iter()
-                                    .position(|i| i.id == current_id)
-                                    .unwrap_or(0);
+                        if is_live {
+                            if let Some(id) = &current {
+                                self.modes.permission = Some(id.clone());
+                            }
+                            let reported = self.modes.permission.clone();
+                            let current_id = self.current_permission().to_string();
+                            let choices = self.permission_choices.clone();
+                            if let Some(picker) = &mut self.picker {
+                                if matches!(picker.kind, PickerKind::Permission) && !choices.is_empty()
+                                {
+                                    picker.items = permission_picker_items(
+                                        &choices,
+                                        reported.as_deref(),
+                                        &current_id,
+                                    );
+                                    picker.sel = picker
+                                        .items
+                                        .iter()
+                                        .position(|i| i.id == current_id)
+                                        .unwrap_or(0);
+                                }
+                            }
+                        } else if let Some(sid) = session_id.as_deref() {
+                            if let Some(slot) = self.parked.iter_mut().find(|s| s.id == sid) {
+                                if let Some(id) = current {
+                                    slot.modes.permission = Some(id);
+                                }
                             }
                         }
                     }
@@ -3366,16 +3386,33 @@ impl App {
                         }
                         self.open_effort_picker(efforts, default);
                     }
-                    CtlEvent::PresetSet { preset } => {
+                    CtlEvent::PresetSet {
+                        session_id,
+                        preset,
+                    } => {
+                        let is_live = session_id.is_empty() || session_id == self.session_id;
                         let label = self.agent_label(&preset);
-                        self.modes.agent_preset = Some(preset.clone());
-                        self.transcript.push_notice(
-                            NoticeLevel::Info,
-                            format!(
-                                "⚙ agent → {} · composes on this session's first prompt",
-                                label
-                            ),
-                        );
+                        if is_live {
+                            self.modes.agent_preset = Some(preset.clone());
+                            self.transcript.push_notice(
+                                NoticeLevel::Info,
+                                format!(
+                                    "⚙ agent → {} · composes on this session's first prompt",
+                                    label
+                                ),
+                            );
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|s| s.id == session_id)
+                        {
+                            slot.modes.agent_preset = Some(preset.clone());
+                            slot.transcript.push_notice(
+                                NoticeLevel::Info,
+                                format!(
+                                    "⚙ agent → {} · composes on this session's first prompt",
+                                    label
+                                ),
+                            );
+                        }
                     }
                     CtlEvent::TuiOpDone(desc) => {
                         self.transcript.push_notice(NoticeLevel::Info, desc);
@@ -3439,6 +3476,7 @@ impl App {
                             match owner {
                                 Some(pidx) => {
                                     let slot = &mut self.parked[pidx];
+                                    let old_id = slot.id.clone();
                                     slot.id = session_id.clone();
                                     slot.transcript.set_root_session(session_id.clone());
                                     slot.session_bound = true;
@@ -3446,24 +3484,44 @@ impl App {
                                         slot.transcript
                                             .push_notice(NoticeLevel::Info, notice);
                                     }
+                                    for (_, sid, _) in &mut self.shell_pending {
+                                        if sid == &old_id {
+                                            *sid = session_id.clone();
+                                        }
+                                    }
                                     just_bound = Some(slot.id.clone());
                                 }
                                 None => {
-                                    // Every parked tab is bound (reconnect
-                                    // after a long outage): adopt the fresh
-                                    // session on the viewed tab, the
-                                    // pre-multi-session semantic.
-                                    if self.session_id != session_id {
-                                        self.reset_subagent_views();
+                                    if !self.session_bound
+                                        && !self.awaiting_binds.iter().any(|e| e.id == self.session_id)
+                                    {
+                                        if self.session_id != session_id {
+                                            self.reset_subagent_views();
+                                        }
+                                        let old_id = self.session_id.clone();
+                                        self.session_id = session_id.clone();
+                                        self.transcript.set_root_session(session_id.clone());
+                                        self.session_bound = true;
+                                        if let Some(notice) = notice {
+                                            self.transcript
+                                                .push_notice(NoticeLevel::Info, notice);
+                                        }
+                                        for (_, sid, _) in &mut self.shell_pending {
+                                            if sid == &old_id {
+                                                *sid = session_id.clone();
+                                            }
+                                        }
+                                        just_bound = Some(self.session_id.clone());
+                                    } else {
+                                        // The viewed tab is bound or awaiting its own bind:
+                                        // park this startup session as a fresh slot.
+                                        let mut slot = SessionSlot::fresh(session_id.clone(), true);
+                                        if let Some(notice) = notice {
+                                            slot.transcript.push_notice(NoticeLevel::Info, notice);
+                                        }
+                                        just_bound = Some(session_id.clone());
+                                        self.parked.push(slot);
                                     }
-                                    self.session_id = session_id.clone();
-                                    self.transcript.set_root_session(session_id);
-                                    self.session_bound = true;
-                                    if let Some(notice) = notice {
-                                        self.transcript
-                                            .push_notice(NoticeLevel::Info, notice);
-                                    }
-                                    just_bound = Some(self.session_id.clone());
                                 }
                             }
                         } else if let Some(awaiting) = self.awaiting_binds.pop_front() {
@@ -3484,21 +3542,33 @@ impl App {
                                     "session {session_id} bound after its tab was closed"
                                 ));
                             } else if self.session_id == awaiting.id {
+                                let old_id = self.session_id.clone();
                                 self.session_id = session_id.clone();
                                 self.transcript.set_root_session(session_id.clone());
                                 self.session_bound = true;
                                 if let Some(notice) = notice {
                                     self.transcript.push_notice(NoticeLevel::Info, notice);
                                 }
+                                for (_, sid, _) in &mut self.shell_pending {
+                                    if sid == &old_id || sid == &awaiting.id {
+                                        *sid = session_id.clone();
+                                    }
+                                }
                                 just_bound = Some(self.session_id.clone());
                             } else if let Some(slot) =
                                 self.parked.iter_mut().find(|slot| slot.id == awaiting.id)
                             {
+                                let old_id = slot.id.clone();
                                 slot.id = session_id.clone();
                                 slot.transcript.set_root_session(session_id.clone());
                                 slot.session_bound = true;
                                 if let Some(notice) = notice {
                                     slot.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                for (_, sid, _) in &mut self.shell_pending {
+                                    if sid == &old_id || sid == &awaiting.id {
+                                        *sid = session_id.clone();
+                                    }
                                 }
                                 just_bound = Some(slot.id.clone());
                             } else {
@@ -3521,11 +3591,17 @@ impl App {
                             if self.session_id != session_id {
                                 self.reset_subagent_views();
                             }
+                            let old_id = self.session_id.clone();
                             self.session_id = session_id.clone();
-                            self.transcript.set_root_session(session_id);
+                            self.transcript.set_root_session(session_id.clone());
                             self.session_bound = true;
                             if let Some(notice) = notice {
                                 self.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            for (_, sid, _) in &mut self.shell_pending {
+                                if sid == &old_id {
+                                    *sid = session_id.clone();
+                                }
                             }
                             just_bound = Some(self.session_id.clone());
                         }
@@ -3706,10 +3782,17 @@ impl App {
                     self.needs_redraw = true;
                     return;
                 }
-                if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) {
-                    Self::apply_to_slot(slot, ui);
-                    self.needs_redraw = true;
-                    return;
+                for slot in &mut self.parked {
+                    if slot.id == session {
+                        Self::apply_to_slot(slot, ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == session) {
+                        view.transcript.apply(ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
                 }
                 // A session this client never opened (or already closed):
                 // drop the event. Foreign-session facts must never fall
@@ -5104,6 +5187,24 @@ impl App {
                     self.switch_view_to_tab(tab, ctl);
                 }
             }
+            Action::NextSessionTab => {
+                let count = self.session_tab_count();
+                if count > 1 {
+                    let next = (self.current + 1) % count;
+                    self.switch_view_to_tab(next, ctl);
+                }
+            }
+            Action::PrevSessionTab => {
+                let count = self.session_tab_count();
+                if count > 1 {
+                    let prev = if self.current == 0 {
+                        count - 1
+                    } else {
+                        self.current - 1
+                    };
+                    self.switch_view_to_tab(prev, ctl);
+                }
+            }
             Action::HistoryPrev => self.history_prev(),
             Action::HistoryNext => self.history_next(),
             Action::ScrollHalfUp => self.scroll_by(10),
@@ -5307,9 +5408,15 @@ impl App {
             options,
             reply: Some(reply),
         };
-        if session_id == self.session_id {
+        let belongs_to_live = session_id == self.session_id
+            || self.subagents.iter().any(|v| v.id == session_id);
+        if belongs_to_live {
             self.permission_ask = Some(overlay);
-        } else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
+        } else if let Some(slot) = self
+            .parked
+            .iter_mut()
+            .find(|slot| slot.id == session_id || slot.subagents.iter().any(|v| v.id == session_id))
+        {
             // A parked session asked while out of view: keep the ask on its
             // tab — it must not float over the tab on screen.
             slot.permission_ask = Some(overlay);
@@ -5336,14 +5443,16 @@ impl App {
         };
         let for_live = match session_id {
             None => true,
-            Some(sid) => sid == self.session_id,
+            Some(sid) => sid == self.session_id || self.subagents.iter().any(|v| v.id == sid),
         };
         if for_live {
             self.elicitation_ask = Some(overlay);
         } else if let Some(slot) = self
             .parked
             .iter_mut()
-            .find(|slot| Some(slot.id.as_str()) == session_id)
+            .find(|slot| {
+                session_id.is_some_and(|sid| slot.id == sid || slot.subagents.iter().any(|v| v.id == sid))
+            })
         {
             slot.elicitation_ask = Some(overlay);
         } else {
@@ -7918,12 +8027,15 @@ impl App {
 mod persistent_shell_tests;
 
 pub fn timestamp() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_micros())
         .unwrap_or(0);
-    format!("{secs:x}")
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{micros:x}-{seq:x}")
 }
 
 /// Model ids from the host catalog snapshot: either inline JSON in

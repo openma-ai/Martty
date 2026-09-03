@@ -74,7 +74,7 @@ fn session_file(dir: &Path) -> Option<PathBuf> {
 /// foreign files are skipped, never an error.
 pub fn list_sessions(cfg_root: &str, workspace: &str, skip_id: &str) -> Vec<SessionSummary> {
     let slug = workspace_slug(workspace);
-    let mut out: Vec<SessionSummary> = Vec::new();
+    let mut candidate_files: Vec<(PathBuf, SystemTime)> = Vec::new();
     for root in session_roots(cfg_root) {
         // <root>/<slug>/<id>/session.jsonl[.zstd]
         let mut dirs: Vec<PathBuf> = Vec::new();
@@ -86,20 +86,33 @@ pub fn list_sessions(cfg_root: &str, workspace: &str, skip_id: &str) -> Vec<Sess
             dirs.extend(entries.flatten().map(|e| e.path()));
         }
         for dir in dirs {
-            let Some(file) = session_file(&dir) else {
-                continue;
-            };
-            let Some(summary) = summarize(&file) else {
-                continue;
-            };
-            if summary.id == skip_id || out.iter().any(|s| s.id == summary.id) {
+            if dir.file_name().and_then(|n| n.to_str()) == Some(skip_id) {
                 continue;
             }
-            out.push(summary);
+            if let Some(file) = session_file(&dir) {
+                let mtime = std::fs::metadata(&file)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                candidate_files.push((file, mtime));
+            }
         }
     }
-    out.sort_by_key(|s| std::cmp::Reverse(s.modified));
-    out.truncate(50);
+    candidate_files.sort_by(|(f1, m1), (f2, m2)| m2.cmp(m1).then_with(|| f1.cmp(f2)));
+    candidate_files.dedup_by(|(f1, _), (f2, _)| f1 == f2);
+
+    let mut out: Vec<SessionSummary> = Vec::new();
+    for (file, _) in candidate_files {
+        let Some(summary) = summarize(&file) else {
+            continue;
+        };
+        if summary.id == skip_id || out.iter().any(|s| s.id == summary.id) {
+            continue;
+        }
+        out.push(summary);
+        if out.len() >= 50 {
+            break;
+        }
+    }
     out
 }
 

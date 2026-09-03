@@ -33,8 +33,29 @@ All notable changes to this project are documented here. The project follows
   strip no longer needs the mouse. Both routes (click and key) share one
   path that dismisses transient interactions and releases compositor
   overlays with their cancel events before parking the session.
+  `alt+]` / `ctrl+pagedown` and `alt+[` / `ctrl+pageup` cycle through
+  tabs, and overflowing tab bars show an overflow counter (`+N`).
 
 ### Fixed
+
+- Background session subagents now receive their transcript updates and
+  streamed deltas cleanly, rather than having non-root session facts dropped
+  at the UI event router while parked.
+
+- Permission and elicitation asks from subagents are routed to their owning
+  session tab (badging the tab when parked) instead of defaulting to the
+  live tab and cancelling any foreground ask already on screen.
+
+- Closing a session (`/close`) now purges any auth-stalled prompts parked
+  for that session, and prompt settlement always reports session idle state
+  so a stall on one session never freezes queue dispatch on others.
+
+- Local shell commands (`!cmd`) started on an unbound tab update their
+  pending tracker when `SessionBound` arrives, ensuring command completion
+  never hangs indefinitely.
+
+- `list_sessions` now pre-sorts files by modified time before loading and
+  parsing JSONL logs, bounding decompression work to the top 50 sessions.
 
 - `/plan` (and host skill config actions that map onto ACP
   `session/set_config_option`) now addresses the **viewed** session: the
