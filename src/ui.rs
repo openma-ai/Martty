@@ -2946,10 +2946,22 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
     // Follow-window: selection stays visible, window pinned to the ends.
     let start = if sel < vis { 0 } else { sel + 1 - vis }.min(n - vis);
 
-    // Name column sized to what's listed (padded, never glued to the desc).
+    // The option currently in effect (builtin option menus only): its row
+    // gets a ✓ pinned to the label, like the pickers (issue #102).
+    let current_value = app.builtin_option_current(&matches);
+    let row_is_current = |entry: &crate::app::SlashEntry| {
+        current_value.as_deref().is_some_and(|value| {
+            entry.completion.as_deref().and_then(|completion| {
+                completion.strip_prefix(&format!("/{} ", entry.name))
+            }) == Some(value)
+        })
+    };
+
+    // Name column sized to what's listed (padded, never glued to the desc);
+    // the current row reserves two cells for its ✓.
     let name_w = matches
         .iter()
-        .map(|m| m.usage.width())
+        .map(|m| m.usage.width() + if row_is_current(m) { 2 } else { 0 })
         .max()
         .unwrap_or(14)
         .clamp(14, 26);
@@ -2993,9 +3005,14 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
             0
         };
         let desc_cells = (w as usize).saturating_sub(name_w + 5 + section_cells);
+        let usage_text = if row_is_current(cmd) {
+            format!("{} ✓", cmd.usage)
+        } else {
+            cmd.usage.clone()
+        };
         let mut spans = vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(pad_or_ellipsize(&cmd.usage, name_w), name_style),
+            Span::styled(pad_or_ellipsize(&usage_text, name_w), name_style),
         ];
         if begins_section {
             spans.push(Span::styled(
@@ -3148,11 +3165,12 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
     let items = picker.items.clone();
     // Current-identity ids, precomputed so the row builder below never
     // borrows `app` (the ListView render needs a mutable picker).
-    let current_model = app.cfg.model.clone();
+    let current_model = app.current_model();
     let current_provider = app.cfg.provider.clone();
     let current_mode = app.current_mode();
     let current_palette = app.active_palette_id.clone();
     let current_permission = app.current_permission().to_string();
+    let current_effort = app.modes.effort.clone();
     let is_current = move |item: &crate::app::PickerItem| match kind {
         crate::app::PickerKind::Model => {
             item.id == current_model
@@ -3165,8 +3183,10 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         crate::app::PickerKind::Theme => item.id == current_palette,
         crate::app::PickerKind::UiPlugin => false,
         crate::app::PickerKind::Permission => item.id == current_permission,
-        crate::app::PickerKind::Effort
-        | crate::app::PickerKind::Session
+        crate::app::PickerKind::Effort => {
+            current_effort.as_deref() == Some(item.id.as_str())
+        }
+        crate::app::PickerKind::Session
         | crate::app::PickerKind::Auth
         | crate::app::PickerKind::CordisPlugin
         | crate::app::PickerKind::CordisApproval

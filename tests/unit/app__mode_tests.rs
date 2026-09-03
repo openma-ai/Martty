@@ -1118,6 +1118,101 @@ fn host_catalog_model_picker_distinguishes_duplicate_ids_by_provider() {
 }
 
 #[test]
+fn model_picker_highlights_the_streamed_model_not_the_config_default() {
+    let (mut app, ctl, _rx) = test_app();
+    // The config default is only a fallback: once a turn streamed on a
+    // different model, the picker must mark the running one (issue #102).
+    app.cfg.model = "deepseek-v4-flash".into();
+    app.transcript.last_model = Some("deepseek-v4-pro".into());
+
+    app.open_model_picker(&ctl);
+
+    let picker = app.picker.as_ref().expect("model picker opens");
+    assert_eq!(picker.items[0].id, "deepseek-v4-pro", "current row seeded");
+    assert_eq!(picker.sel, 0, "highlight lands on the running model");
+}
+
+#[test]
+fn effort_picker_highlights_the_effort_in_effect() {
+    let (mut app, _ctl, _rx) = test_app();
+    // The host-echoed effort (config_option_update / last /effort) is the
+    // truth; the model default is only a fallback (issue #102).
+    app.modes.effort = Some("max".into());
+    app.open_effort_picker(
+        vec!["off".into(), "high".into(), "max".into()],
+        Some("high".into()),
+    );
+    let picker = app.picker.as_ref().expect("effort picker opens");
+    assert_eq!(picker.sel, 2, "highlight lands on the active effort");
+    assert!(
+        picker.items[1].meta.contains("default"),
+        "the model default stays marked: {}",
+        picker.items[1].meta
+    );
+}
+
+#[test]
+fn effort_picker_falls_back_to_the_advertised_default() {
+    let (mut app, _ctl, _rx) = test_app();
+    assert!(app.modes.effort.is_none());
+    app.open_effort_picker(
+        vec!["off".into(), "high".into(), "max".into()],
+        Some("high".into()),
+    );
+    let picker = app.picker.as_ref().expect("effort picker opens");
+    assert_eq!(picker.sel, 1, "highlight follows the advertised default");
+}
+
+#[test]
+fn slash_model_menu_preselects_the_running_model() {
+    let (mut app, ctl, _rx) = test_app();
+    // The inline option menu (typed `/model `) follows the same effective
+    // model as the picker: streamed model, not the config default (#102).
+    app.cfg.model = "deepseek-v4-flash".into();
+    app.transcript.last_model = Some("deepseek-v4-pro".into());
+    app.input.set("/model".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);
+
+    let menu = app.slash_matches();
+    assert_eq!(menu[0].completion.as_deref(), Some("/model deepseek-v4-pro"));
+    assert_eq!(app.slash_sel, 0, "highlight lands on the running model");
+
+    // Enter on the opened menu picks the running model (no accidental
+    // switch back to the config default).
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.cfg.model, "deepseek-v4-pro");
+}
+
+#[test]
+fn slash_effort_menu_preselects_the_effort_in_effect() {
+    let (mut app, ctl, _rx) = test_app();
+    app.modes.effort = Some("max".into());
+    app.input.set("/effort".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);
+
+    let menu = app.slash_matches();
+    let completions: Vec<&str> = menu
+        .iter()
+        .filter_map(|entry| entry.completion.as_deref())
+        .collect();
+    assert_eq!(
+        completions,
+        ["/effort off", "/effort high", "/effort max"]
+    );
+    assert_eq!(app.slash_sel, 2, "highlight lands on the active effort");
+
+    // A typed prefix that excludes the current restarts at the head.
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.slash_sel, 0, "filtered menu restarts at its head");
+
+    // Enter on the opened menu keeps the effort in effect.
+    app.input.set("/effort".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.modes.effort.as_deref(), Some("max"));
+}
+
+#[test]
 fn selecting_same_model_id_from_another_provider_switches_provider() {
     let (mut app, ctl, _rx) = test_app();
     app.cfg.provider = "coding-plan-a".into();

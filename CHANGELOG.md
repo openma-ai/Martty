@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- The `/agent`, `/effort`, `/model`, `/theme` and `/permission` pickers now
+  open with the row that is actually in effect preselected and ✓-marked
+  (issue #102): the effort picker follows the host-echoed effort (falling
+  back to the model's advertised default), and the model picker follows
+  the running model (explicit `/model` pick → last streamed model →
+  configured default) instead of the config default. The inline
+  argument-option lists typed next to `/model` and `/effort` behave the
+  same way: they open on the effective model/effort, ✓-mark it, and list
+  the effective model even when it is not in the host catalog.
+
 - `/resume [n|id]` — a bare number lists the `n` most recent durable
   sessions in the resume picker (`/resume 10` → latest 10). Without a
   number the default is 50 (`/resume` ≡ `/resume 50`); anything that is
