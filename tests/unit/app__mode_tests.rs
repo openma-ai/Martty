@@ -2493,6 +2493,7 @@ fn saving_a_selected_queue_edit_preserves_fifo_position() {
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "first".into(),
+            session_id: Some("dsh-test".into()),
         }),
         &ctl,
     );
@@ -3786,6 +3787,7 @@ fn direct_ui_turn_facts_update_client_lifecycle() {
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "dsh-test".into(),
+            session_id: Some("dsh-test".into()),
         }),
         &ctl,
     );
@@ -4053,6 +4055,7 @@ fn auth_retry_does_not_consume_the_followup_fifo_marker() {
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "dsh-test".into(),
+            session_id: Some("dsh-test".into()),
         }),
         &ctl,
     );

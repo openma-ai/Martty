@@ -54,10 +54,13 @@ fn native_copy(text: &str) -> bool {
     false
 }
 
-/// Spawn `cmd` with `text` on stdin. These tools exit immediately after
-/// reading stdin, so a plain wait is fine at this project's scale (grok
-/// bounds the wait with a 2s deadline for wedged tmux servers).
+/// Spawn `cmd` with `text` on stdin. Both the write and the wait are
+/// bounded: wedged tmux servers or blocked `xclip` forks must never
+/// freeze the UI thread (grok bounds the same wait with a 2s deadline).
+const PIPE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn pipe_cmd(cmd: &str, args: &[&str], text: &str) -> bool {
+    use std::time::Instant;
     let Ok(mut child) = Command::new(cmd)
         .args(args)
         .stdin(Stdio::piped())
@@ -67,14 +70,33 @@ fn pipe_cmd(cmd: &str, args: &[&str], text: &str) -> bool {
     else {
         return false;
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin.write_all(text.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return false;
+    // Write on its own thread: a child that never reads must not block us
+    // on a full pipe. Killing the child below unblocks the writer with
+    // EPIPE; dropping `stdin` at thread end delivers EOF.
+    let writer = child.stdin.take().map(|mut stdin| {
+        let text = text.to_string();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(text.as_bytes());
+            let _ = stdin.flush();
+        })
+    });
+    let deadline = Instant::now() + PIPE_DEADLINE;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= deadline => break None,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(_) => break None,
         }
+    };
+    if status.is_none() {
+        let _ = child.kill();
     }
-    matches!(child.wait(), Ok(status) if status.success())
+    let _ = child.wait();
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    matches!(status, Some(status) if status.success())
 }
 
 fn osc52_copy(text: &str) -> bool {

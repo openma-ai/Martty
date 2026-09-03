@@ -6,8 +6,10 @@
 //! compositor state arrives as `_dsh/cordis/tui/*` extension notifications.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -33,7 +35,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, AcpAgent, Agent, ByteStreams, Client, ConnectTo,
-    ConnectionTo, Error as AcpError, Handled, UntypedMessage,
+    ConnectionTo, Error as AcpError, Handled, SentRequest, UntypedMessage,
 };
 
 use crate::acp_auth::{
@@ -98,32 +100,39 @@ impl Surface {
                         .map(|(id, _, _)| id)
                         .collect();
             }
-            if self.modes.is_empty() {
-                if let Some(mode) = arr
-                    .iter()
-                    .find(|o| o.get("id").and_then(Value::as_str) == Some("mode"))
-                {
-                    self.modes =
-                        flatten_select_options(mode.get("options").unwrap_or(&Value::Null))
-                            .into_iter()
-                            .map(|(id, name, description)| CatalogPreset {
-                                id,
-                                name,
-                                description,
-                                broken: false,
-                            })
-                            .collect();
-                    if !self.modes.is_empty() {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
-                            session_id: session_id.map(str::to_string),
-                            modes: self.modes.clone(),
-                            current: mode
-                                .get("currentValue")
-                                .or_else(|| mode.get("current_value"))
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                        }));
-                    }
+            // ACP config options are per-session: refresh whenever an
+            // actual mode list shows up, even after an earlier session
+            // filled the catalog — later sessions may carry a different
+            // (or changed) set. The event still carries each session's
+            // own currentValue, so per-session state is not lost.
+            if let Some(mode) = arr
+                .iter()
+                .find(|o| o.get("id").and_then(Value::as_str) == Some("mode"))
+            {
+                let list: Vec<CatalogPreset> =
+                    flatten_select_options(mode.get("options").unwrap_or(&Value::Null))
+                        .into_iter()
+                        .map(|(id, name, description)| CatalogPreset {
+                            id,
+                            name,
+                            description,
+                            broken: false,
+                        })
+                        .collect();
+                let changed = !list.is_empty() && list != self.modes;
+                if changed {
+                    self.modes = list;
+                }
+                if !self.modes.is_empty() {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+                        session_id: session_id.map(str::to_string),
+                        modes: self.modes.clone(),
+                        current: mode
+                            .get("currentValue")
+                            .or_else(|| mode.get("current_value"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    }));
                 }
             }
         }
@@ -187,7 +196,7 @@ pub fn check_blocking(argv: Vec<String>) -> Result<String> {
             .builder()
             .name("martty")
             .connect_with(agent, |cx: ConnectionTo<Agent>| async move {
-                let init = cx.send_request(initialize_request()).block_task().await?;
+                let init = cx.send_request(initialize_request()).block_task_deadline().await?;
                 Ok(init
                     .agent_info
                     .map(|info| info.name)
@@ -251,6 +260,9 @@ struct PromptFinish {
     session_id: String,
     result: Result<agent_client_protocol::schema::v1::PromptResponse, AcpError>,
     payload: ParkedPromptKind,
+    /// Turn generation: matches the `inflight` tag when this finish is the
+    /// one that currently owns the session handle.
+    gen: u64,
 }
 
 /// Per-session turn state on one shared ACP connection. The server allows one
@@ -258,10 +270,13 @@ struct PromptFinish {
 /// handle; completions are demultiplexed by the id inside `PromptFinish`.
 #[derive(Default)]
 struct SessionHandle {
-    /// Occupancy marker for the in-flight `session/prompt` task. The task
-    /// reports through the prompt-done channel, so the handle is only ever
-    /// cleared, never awaited.
-    inflight: Option<tokio::task::JoinHandle<()>>,
+    /// Occupancy marker for the in-flight `session/prompt` task, tagged
+    /// with the turn's generation. The task reports through the prompt-done
+    /// channel, so the handle is only ever cleared, never awaited. The
+    /// generation lets a stale finish (its session was forgotten and
+    /// re-bound while the old task was still unwinding) be recognized and
+    /// dropped instead of clearing the *new* turn's marker.
+    inflight: Option<(u64, tokio::task::JoinHandle<()>)>,
     /// Follow-ups waiting for this session's active turn to settle.
     queue: VecDeque<Cmd>,
     /// `session/cancel` was sent for the in-flight prompt; its finish is
@@ -341,6 +356,7 @@ fn spawn_session_prompt(
     sid: SessionId,
     content: Vec<ContentBlock>,
     payload: ParkedPromptKind,
+    gen: u64,
     done: tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -354,15 +370,17 @@ fn spawn_session_prompt(
         });
         let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: sid.to_string(),
+            session_id: Some(sid.to_string()),
         }));
         let result = cx
             .send_request(PromptRequest::new(sid.clone(), content))
-            .block_task()
+            .block_task_deadline()
             .await;
         let _ = done.send(PromptFinish {
             session_id: sid.to_string(),
             result,
             payload,
+            gen,
         });
     })
 }
@@ -380,12 +398,13 @@ fn spawn_steer_prompt(
     tokio::spawn(async move {
         let result = cx
             .send_request(PromptRequest::new(sid, content))
-            .block_task()
+            .block_task_deadline()
             .await;
         let _ = done.send(SteerFinish { message_id, result });
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn begin_prompt(
     cmd: Cmd,
@@ -397,6 +416,7 @@ fn begin_prompt(
     selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
+    gen: u64,
     done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     match cmd {
@@ -420,6 +440,7 @@ fn begin_prompt(
                 sid,
                 vec![text.clone().into()],
                 ParkedPromptKind::Text(text),
+                gen,
                 done.clone(),
             ))
         }
@@ -443,6 +464,7 @@ fn begin_prompt(
                 sid,
                 vec![text.clone().into()],
                 ParkedPromptKind::Text(text),
+                gen,
                 done.clone(),
             ))
         }
@@ -472,14 +494,23 @@ fn begin_prompt(
                     sid,
                     content,
                     payload,
+                    gen,
                     done.clone(),
                 )),
                 Ok(_) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error("empty image prompt".into())));
+                    // Session-scoped: the failure belongs to the requesting
+                    // tab (possibly parked), never to the viewed one.
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: "empty image prompt".into(),
+                    }));
                     None
                 }
                 Err(err) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: err,
+                    }));
                     None
                 }
             }
@@ -510,14 +541,21 @@ fn begin_prompt(
                     sid,
                     content,
                     payload,
+                    gen,
                     done.clone(),
                 )),
                 Ok(_) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error("empty image prompt".into())));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: "empty image prompt".into(),
+                    }));
                     None
                 }
                 Err(err) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: err,
+                    }));
                     None
                 }
             }
@@ -538,6 +576,7 @@ fn drain_ready_sessions(
     selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
+    next_gen: &mut u64,
     done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) {
     // While any prompt is stalled on auth, new prompts are not started:
@@ -557,6 +596,7 @@ fn drain_ready_sessions(
         let Some(next) = handle.queue.pop_front() else {
             continue;
         };
+        *next_gen += 1;
         handle.inflight = begin_prompt(
             next,
             cx,
@@ -567,8 +607,10 @@ fn drain_ready_sessions(
             selected,
             surface,
             workspace,
+            *next_gen,
             done,
-        );
+        )
+        .map(|task| (*next_gen, task));
         // If the begin parked a prompt (only possible without a session,
         // which drain never passes) stop starting more.
         if !parked.is_empty() {
@@ -728,7 +770,7 @@ async fn create_prompt_session(
 ) -> std::result::Result<Option<SessionId>, AcpError> {
     match cx
         .send_request(NewSessionRequest::new(cwd.to_path_buf()))
-        .block_task()
+        .block_task_deadline()
         .await
     {
         Ok(created) => {
@@ -914,9 +956,24 @@ fn abs_fs_path(path: &str, workspace: &str) -> Option<std::path::PathBuf> {
     Some(normalize_abs(abs))
 }
 
-/// Unix `file://` + absolute path (`file:///tmp/a.png`).
+/// Unix `file://` + absolute path with percent-encoding (`file:///tmp/a%20b.png`).
+/// `#`, `?`, `%`, spaces and non-ASCII bytes are encoded so agents parsing
+/// the URI (RFC 8089) recover the original path instead of treating `#` as
+/// a fragment or `?` as a query.
 fn unix_file_uri(path: &std::path::Path) -> String {
-    format!("file://{}", path.display())
+    let raw = path.to_string_lossy();
+    let mut encoded = String::with_capacity(raw.len());
+    for byte in raw.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'!' | b'$'
+            | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' | b'@' | b':' => {
+                encoded.push(*byte as char)
+            }
+            b'/' => encoded.push('/'),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    format!("file://{encoded}")
 }
 
 fn resolve_image_uri(path: &str, workspace: &str) -> Option<String> {
@@ -1131,13 +1188,38 @@ fn static_plugins_from_value(value: &Value) -> std::result::Result<Vec<StaticPlu
         .collect()
 }
 
+/// Deadline for one ACP request round-trip. Generous on purpose — it only
+/// exists so a hung agent (half-open stdio, dead process) cannot freeze
+/// the command loop: Interrupt and Shutdown are unreachable while an arm
+/// awaits forever.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(120);
+
+/// [`SentRequest::block_task`] with [`REQUEST_DEADLINE`] applied. Every
+/// request the command loop awaits directly goes through this.
+trait BlockTaskDeadline {
+    type Output;
+    fn block_task_deadline(self) -> impl Future<Output = Result<Self::Output, AcpError>>;
+}
+
+impl<T> BlockTaskDeadline for SentRequest<T> {
+    type Output = T;
+    fn block_task_deadline(self) -> impl Future<Output = Result<T, AcpError>> {
+        async move {
+            match tokio::time::timeout(REQUEST_DEADLINE, self.block_task()).await {
+                Ok(result) => result,
+                Err(_) => Err(AcpError::new(-32001, "agent request timed out")),
+            }
+        }
+    }
+}
+
 async fn call_tui_extension(
     cx: &ConnectionTo<Agent>,
     method: &str,
     params: Value,
 ) -> std::result::Result<Value, AcpError> {
     let request = UntypedMessage::new(method, params)?;
-    cx.send_request(request).block_task().await
+    cx.send_request(request).block_task_deadline().await
 }
 
 async fn fetch_dynamic_plugins(
@@ -1180,6 +1262,16 @@ fn ensure_agent_cordis(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent>) ->
     advertised
 }
 
+/// Silent check for high-frequency projection traffic: snapshots must
+/// never ping an un-negotiated agent (protocol 0 requires the
+/// `initialize._meta.dsh.cordis` handshake first) nor spam the transcript.
+fn agent_cordis_negotiated(surface: &Arc<Mutex<Surface>>) -> bool {
+    surface
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .cordis
+}
+
 async fn connect<T>(
     transport: T,
     cfg: RuntimeConfig,
@@ -1203,6 +1295,8 @@ where
     let workspace_write = workspace.clone();
     let terms = Arc::new(crate::acp_term::TerminalBroker::new(workspace.clone()));
     let terms_create = Arc::clone(&terms);
+    let bus_create = bus.clone();
+    let workspace_create = workspace.clone();
     let terms_output = Arc::clone(&terms);
     let terms_wait = Arc::clone(&terms);
     let terms_kill = Arc::clone(&terms);
@@ -1479,22 +1573,60 @@ where
         .on_receive_request(
             {
                 let terms = terms_create;
+                let bus = bus_create;
                 async move |req: CreateTerminalRequest, responder, _cx| {
+                    // Asking the user takes an async round-trip through the
+                    // permission overlay — the handler offloads like the
+                    // fs/write handler does. Everything the spawned task
+                    // needs is cloned per call: the handler itself must
+                    // stay callable.
+                    let terms = Arc::clone(&terms);
                     let env: Vec<(String, String)> = req
                         .env
                         .iter()
                         .map(|e| (e.name.clone(), e.value.clone()))
                         .collect();
-                    match terms.create(
-                        &req.command,
-                        &req.args,
-                        req.cwd,
-                        &env,
-                        req.output_byte_limit,
-                    ) {
-                        Ok(id) => responder.respond(CreateTerminalResponse::new(id)),
-                        Err(err) => responder.respond_with_error(AcpError::new(-32603, err)),
-                    }
+                    let session_id = req.session_id.to_string();
+                    let command = req.command;
+                    let args = req.args;
+                    let cwd = req.cwd;
+                    let output_byte_limit = req.output_byte_limit;
+                    let bus = bus.clone();
+                    let workspace = workspace_create.clone();
+                    tokio::spawn(async move {
+                        let resolved_cwd = cwd
+                            .map(|c| {
+                                crate::acp_fs::resolve_with_cwd(
+                                    &c,
+                                    std::path::Path::new(&workspace),
+                                )
+                            })
+                            .unwrap_or_else(|| workspace.clone().into());
+                        let allowed = crate::acp_fs::confirm_terminal_spawn(
+                            &bus,
+                            &session_id,
+                            &command,
+                            &args,
+                            &resolved_cwd,
+                        )
+                        .await;
+                        let result = if allowed {
+                            terms.create(
+                                &command,
+                                &args,
+                                Some(resolved_cwd),
+                                &env,
+                                output_byte_limit,
+                            )
+                        } else {
+                            Err("user denied createTerminal".to_string())
+                        };
+                        match result {
+                            Ok(id) => responder.respond(CreateTerminalResponse::new(id)),
+                            Err(err) => responder.respond_with_error(AcpError::new(-32603, err)),
+                        }
+                    });
+                    Ok(())
                 }
             },
             on_receive_request!(),
@@ -1503,12 +1635,16 @@ where
             {
                 let terms = terms_output;
                 async move |req: TerminalOutputRequest, responder, _cx| {
-                    let (output, truncated, exit) = terms.output(&req.terminal_id.to_string());
-                    let mut resp = TerminalOutputResponse::new(output, truncated);
-                    if let Some(exit) = exit {
-                        resp = resp.exit_status(exit);
+                    match terms.output(&req.terminal_id.to_string()) {
+                        Ok((output, truncated, exit)) => {
+                            let mut resp = TerminalOutputResponse::new(output, truncated);
+                            if let Some(exit) = exit {
+                                resp = resp.exit_status(exit);
+                            }
+                            responder.respond(resp)
+                        }
+                        Err(err) => responder.respond_with_error(AcpError::new(-32602, err)),
                     }
-                    responder.respond(resp)
                 }
             },
             on_receive_request!(),
@@ -1518,9 +1654,16 @@ where
                 let terms = terms_wait;
                 async move |req: WaitForTerminalExitRequest, responder, _cx| {
                     let terms = Arc::clone(&terms);
+                    let terminal_id = req.terminal_id.to_string();
                     tokio::spawn(async move {
-                        let status = terms.wait(&req.terminal_id.to_string()).await;
-                        let _ = responder.respond(WaitForTerminalExitResponse::new(status));
+                        match terms.wait(&terminal_id).await {
+                            Ok(status) => {
+                                let _ = responder.respond(WaitForTerminalExitResponse::new(status));
+                            }
+                            Err(err) => {
+                                let _ = responder.respond_with_error(AcpError::new(-32602, err));
+                            }
+                        }
                     });
                     Ok(())
                 }
@@ -1531,8 +1674,10 @@ where
             {
                 let terms = terms_kill;
                 async move |req: KillTerminalRequest, responder, _cx| {
-                    terms.kill(&req.terminal_id.to_string());
-                    responder.respond(KillTerminalResponse::new())
+                    match terms.kill(&req.terminal_id.to_string()) {
+                        Ok(()) => responder.respond(KillTerminalResponse::new()),
+                        Err(err) => responder.respond_with_error(AcpError::new(-32602, err)),
+                    }
                 }
             },
             on_receive_request!(),
@@ -1541,8 +1686,10 @@ where
             {
                 let terms = terms_release;
                 async move |req: ReleaseTerminalRequest, responder, _cx| {
-                    terms.release(&req.terminal_id.to_string());
-                    responder.respond(ReleaseTerminalResponse::new())
+                    match terms.release(&req.terminal_id.to_string()) {
+                        Ok(()) => responder.respond(ReleaseTerminalResponse::new()),
+                        Err(err) => responder.respond_with_error(AcpError::new(-32602, err)),
+                    }
                 }
             },
             on_receive_request!(),
@@ -1608,7 +1755,7 @@ where
                                 config_id,
                                 config_value,
                             ))
-                            .block_task()
+                            .block_task_deadline()
                             .await
                         {
                             Ok(response) => match serde_json::to_value(&response) {
@@ -1651,7 +1798,7 @@ where
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
                 }));
-                let init = cx.send_request(initialize_request()).block_task().await?;
+                let init = cx.send_request(initialize_request()).block_task_deadline().await?;
                 let agent_name = init
                     .agent_info
                     .as_ref()
@@ -1755,6 +1902,10 @@ where
                     tokio::sync::mpsc::unbounded_channel::<PromptFinish>();
                 let (steer_done_tx, mut steer_done_rx) =
                     tokio::sync::mpsc::unbounded_channel::<SteerFinish>();
+                // Monotonic turn generation: every started prompt task is
+                // tagged, finishes carry the tag back, and a stale finish
+                // can never clear a newer turn's occupancy marker.
+                let mut prompt_gen: u64 = 0;
                 loop {
                     tokio::select! {
                         cmd = fwd_rx.recv() => {
@@ -1827,8 +1978,10 @@ where
                                             selected.as_ref(),
                                             &surface,
                                             &cfg.workspace,
+                                            prompt_gen,
                                             &prompt_done_tx,
-                                        );
+                                        )
+                                        .map(|task| (prompt_gen, task));
                                     }
                                 }
                                 Ok(None) => pending.push_back(next),
@@ -1861,6 +2014,7 @@ where
                                         }));
                                     } else {
                                         let handle = sessions.entry(sid.to_string()).or_default();
+                                        prompt_gen += 1;
                                         handle.inflight = begin_prompt(
                                             Cmd::Steer {
                                                 session_id: cmd_session,
@@ -1875,8 +2029,10 @@ where
                                             selected.as_ref(),
                                             &surface,
                                             &cfg.workspace,
+                                            prompt_gen,
                                             &prompt_done_tx,
-                                        );
+                                        )
+                                        .map(|task| (prompt_gen, task));
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                             message_id,
                                             deferred: false,
@@ -1908,6 +2064,7 @@ where
                                     if handle.inflight.is_some() || !parked.is_empty() {
                                         handle.queue.push_back(next);
                                     } else {
+                                        prompt_gen += 1;
                                         handle.inflight = begin_prompt(
                                             next,
                                             &cx,
@@ -1918,8 +2075,10 @@ where
                                             selected.as_ref(),
                                             &surface,
                                             &cfg.workspace,
+                                            prompt_gen,
                                             &prompt_done_tx,
-                                        );
+                                        )
+                                        .map(|task| (prompt_gen, task));
                                     }
                                 }
                                 Ok(None) => pending.push_back(next),
@@ -1969,6 +2128,7 @@ where
                                         }));
                                     } else {
                                         let handle = sessions.entry(sid.to_string()).or_default();
+                                        prompt_gen += 1;
                                         handle.inflight = begin_prompt(
                                             Cmd::SteerImages {
                                                 session_id: cmd_session,
@@ -1983,8 +2143,10 @@ where
                                             selected.as_ref(),
                                             &surface,
                                             &cfg.workspace,
+                                            prompt_gen,
                                             &prompt_done_tx,
-                                        );
+                                        )
+                                        .map(|task| (prompt_gen, task));
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                             message_id,
                                             deferred: false,
@@ -2057,7 +2219,7 @@ where
                                         "model",
                                         SessionConfigOptionValue::value_id(value),
                                     ))
-                                    .block_task()
+                                    .block_task_deadline()
                                     .await
                                     .map_err(|err| {
                                         if is_auth_required_error(&err) {
@@ -2077,7 +2239,7 @@ where
                                         "effort",
                                         SessionConfigOptionValue::value_id(effort),
                                     ))
-                                    .block_task()
+                                    .block_task_deadline()
                                     .await
                                     .map_err(|err| {
                                         if is_auth_required_error(&err) {
@@ -2325,7 +2487,7 @@ where
                             };
                             match cx
                                 .send_request(SetSessionModeRequest::new(sid.clone(), preset.clone()))
-                                .block_task()
+                                .block_task_deadline()
                                 .await
                             {
                                 Ok(_) => {
@@ -2348,7 +2510,7 @@ where
                                             "mode",
                                             SessionConfigOptionValue::value_id(preset.clone()),
                                         ))
-                                        .block_task()
+                                        .block_task_deadline()
                                         .await;
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
                                         "permission → {preset} ({err})"
@@ -2380,7 +2542,7 @@ where
                                     config_id,
                                     SessionConfigOptionValue::value_id(preset.clone()),
                                 ))
-                                .block_task()
+                                .block_task_deadline()
                                 .await
                             {
                                 Ok(response) => {
@@ -2445,7 +2607,7 @@ where
                                     config_id,
                                     SessionConfigOptionValue::value_id(value),
                                 ))
-                                .block_task()
+                                .block_task_deadline()
                                 .await
                             {
                                 Ok(response) => {
@@ -2524,7 +2686,7 @@ where
                             if let Some(meta) = authenticate_meta_from_method(&method, &values) {
                                 req = req.meta(meta);
                             }
-                            match cx.send_request(req).block_task().await {
+                            match cx.send_request(req).block_task_deadline().await {
                                 Ok(_) => {
                                     if current.is_none() {
                                         match create_prompt_session(
@@ -2599,7 +2761,7 @@ where
                         Cmd::NewSession => {
                             match cx
                                 .send_request(NewSessionRequest::new(cwd.clone()))
-                                .block_task()
+                                .block_task_deadline()
                                 .await
                             {
                                 Ok(created) => {
@@ -2654,7 +2816,7 @@ where
                             }
                             match cx
                                 .send_request(ListSessionsRequest::new().cwd(cwd.clone()))
-                                .block_task()
+                                .block_task_deadline()
                                 .await
                             {
                                 Ok(listed) => {
@@ -2701,7 +2863,7 @@ where
                                         sid.clone(),
                                         cwd.clone(),
                                     ))
-                                    .block_task()
+                                    .block_task_deadline()
                                     .await
                                 {
                                     Ok(resumed) => Ok((
@@ -2715,7 +2877,7 @@ where
                                             sid.clone(),
                                             cwd.clone(),
                                         ))
-                                        .block_task()
+                                        .block_task_deadline()
                                         .await
                                         .map(|loaded| {
                                             (
@@ -2729,7 +2891,7 @@ where
                                 }
                             } else {
                                 cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
-                                    .block_task()
+                                    .block_task_deadline()
                                     .await
                                     .map(|loaded| {
                                         (
@@ -2797,7 +2959,11 @@ where
                             // This method belongs to the local Client compositor.
                             // Direct native launches may not have one, so absence is
                             // intentionally silent and never affects prompt flow.
-                            let _ = call_tui_extension(
+                            // Guarded by the initialize negotiation: an
+                            // un-negotiated agent gets no `_dsh/cordis`
+                            // traffic at all (protocol 0 rule).
+                            if agent_cordis_negotiated(&surface) {
+                                let _ = call_tui_extension(
                                 &cx,
                                 crate::cordis::QUEUE_UPDATE,
                                 serde_json::json!({
@@ -2808,8 +2974,9 @@ where
                                     "editingId": snapshot.editing_id,
                                     "deleteConfirm": snapshot.delete_confirm,
                                 }),
-                            )
-                            .await;
+                                )
+                                .await;
+                            }
                         }
                         Cmd::AgentsSnapshot { snapshot } => {
                             let items = snapshot
@@ -2827,7 +2994,9 @@ where
                                 .collect::<Vec<_>>();
                             // Agent transcript navigation is Client chrome;
                             // it never becomes an ACP prompt or timeline cell.
-                            let _ = call_tui_extension(
+                            // Same negotiation guard as the queue snapshot.
+                            if agent_cordis_negotiated(&surface) {
+                                let _ = call_tui_extension(
                                 &cx,
                                 crate::cordis::AGENTS_UPDATE,
                                 serde_json::json!({
@@ -2836,8 +3005,9 @@ where
                                     "selectedId": snapshot.selected_id,
                                     "items": items,
                                 }),
-                            )
-                            .await;
+                                )
+                                .await;
+                            }
                         }
                         Cmd::ForgetSession { session_id } => {
                             // `/close`: this client stopped viewing the
@@ -2873,6 +3043,7 @@ where
                                 selected.as_ref(),
                                 &surface,
                                 &cfg.workspace,
+                                &mut prompt_gen,
                                 &prompt_done_tx,
                             );
                         }
@@ -2893,6 +3064,7 @@ where
                                 selected.as_ref(),
                                 &surface,
                                 &cfg.workspace,
+                                &mut prompt_gen,
                                 &prompt_done_tx,
                             );
                         }
@@ -2907,9 +3079,28 @@ where
                             let Some(handle) = sessions.get_mut(&key) else {
                                 continue;
                             };
+                            // Stale finish (the session was forgotten and
+                            // re-bound; a new turn owns the handle now):
+                            // clear nothing — the new turn's occupancy
+                            // marker must survive a late old finish.
+                            if handle.inflight.as_ref().map(|(gen, _)| *gen) != Some(done.gen) {
+                                continue;
+                            }
                             handle.inflight = None;
                             let aborted = std::mem::take(&mut handle.turn_aborted);
-                            if aborted {
+                            // `session/cancel` can race an already-settling
+                            // turn: trust the agent's stop reason. A real
+                            // interruption surfaces as `Cancelled` (or an
+                            // error); a turn that completed despite the
+                            // cancel still reports its own result.
+                            let agent_cancelled = matches!(
+                                &done.result,
+                                Ok(response) if matches!(
+                                    response.stop_reason,
+                                    agent_client_protocol::schema::v1::StopReason::Cancelled
+                                )
+                            );
+                            if aborted && (done.result.is_err() || agent_cancelled) {
                                 let _ = bus.send(AppEvent::Ui(
                                     crate::events::UiEvent::TurnEnd {
                                         session: key.clone(),
@@ -2953,6 +3144,7 @@ where
                                     selected.as_ref(),
                                     &surface,
                                     &cfg.workspace,
+                                    &mut prompt_gen,
                                     &prompt_done_tx,
                                 );
                             } else {

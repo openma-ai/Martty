@@ -28,6 +28,14 @@ fn wait_for_shell(rx: &Receiver<AppEvent>) -> (Option<i32>, String) {
     }
 }
 
+fn transcript_text(transcript: &mut crate::transcript::Transcript) -> String {
+    transcript
+        .lines(&Theme::dark(), 80, ' ')
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect()
+}
+
 #[test]
 fn local_shell_state_persists_between_invocations() {
     let workspace = std::env::temp_dir().join(format!("martty-shell-state-{}", std::process::id()));
@@ -73,6 +81,52 @@ fn shell_done_refreshes_the_cap_git_branch_label() {
     assert_eq!(
         app.git_branch, None,
         "a session shell command must re-check the workspace branch"
+    );
+
+    drop(app);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn shell_result_after_a_clear_never_lands_in_a_new_cell() {
+    // Regression (review H-sweep): shell_pending holds a transcript cell
+    // index; after /clear a fresh cell can occupy the same index, and the
+    // old command's output must not be written into it.
+    let workspace = std::env::temp_dir().join(format!("martty-shell-clear-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (mut app, _rx) = test_app(&workspace);
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+
+    let old_gen = app.transcript.gen();
+    let old_cell = app.transcript.push_shell("old-cmd".into());
+    app.shell_pending
+        .push((1, app.session_id.clone(), old_cell, old_gen));
+
+    // /clear empties the transcript (bumping the generation); the clear
+    // notice and a fresh `!` command then occupy new cells (the new one
+    // may even reuse a stale index).
+    app.run_slash("clear", "", &ctl);
+    assert_eq!(app.transcript.gen(), old_gen + 1, "clear bumps the gen");
+    let _ = app.transcript.push_shell("new-cmd".into());
+    let text_before = transcript_text(&mut app.transcript);
+
+    app.handle(
+        AppEvent::ShellDone {
+            id: 1,
+            code: Some(0),
+            output: "stale output".into(),
+        },
+        &ctl,
+    );
+    let text_after = transcript_text(&mut app.transcript);
+    assert_eq!(
+        text_before, text_after,
+        "the stale shell result must be dropped"
+    );
+    assert!(
+        !text_after.contains("stale output"),
+        "stale output leaked into a fresh cell"
     );
 
     drop(app);

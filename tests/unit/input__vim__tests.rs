@@ -145,6 +145,31 @@ fn unknown_keys_are_consumed_not_typed() {
 }
 
 #[test]
+#[allow(non_snake_case)]
+fn o_and_O_land_the_cursor_on_the_new_blank_line() {
+    let mut v = VimState::default();
+    v.set(true);
+    v.mode = VimMode::Normal;
+    let mut e = editor("hello");
+
+    // `o` opens below; typing must land on the new empty line.
+    assert!(v.handle_key(&char('o'), &mut e));
+    e.insert_char('X');
+    assert_eq!(e.buf(), "hello\nX", "o: typed text on the new line below");
+    assert!(v.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut e));
+    assert_eq!(v.mode, VimMode::Normal);
+
+    // `O` opens above; typing must land on the new empty line too
+    // (previously the cursor stayed on the shifted original line).
+    let mut e2 = editor("hello");
+    e2.set_cursor_char(3);
+    assert!(v.handle_key(&char('O'), &mut e2));
+    e2.insert_char('X');
+    assert_eq!(e2.buf(), "X\nhello", "O: typed text on the new line above");
+    assert_eq!(e2.cursor_char(), 1);
+}
+
+#[test]
 fn ctrl_chords_fall_through_in_normal_mode() {
     let mut v = VimState::default();
     v.set(true);

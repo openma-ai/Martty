@@ -69,13 +69,18 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         };
         if is_code {
             let text: String = segs.iter().map(|s| s.text.as_str()).collect();
-            if !segs.is_empty() && text.starts_with("```") {
+            // Delimiters are sentinel-prefixed (see `code_block_fence`);
+            // literal ```` ``` ```` content lines — including inside longer
+            // fences — never toggle the frame anymore.
+            if !segs.is_empty() && text.starts_with(CODE_FENCE_SENTINEL) {
                 if in_code {
                     out.push(code_frame_bottom(width, theme));
                     in_code = false;
                 } else {
                     out.push(code_frame_top(
-                        text.trim_start_matches('`').trim(),
+                        text.strip_prefix(CODE_FENCE_SENTINEL)
+                            .unwrap_or("")
+                            .trim(),
                         width,
                         theme,
                     ));
@@ -165,6 +170,11 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// Sentinel prefix that marks fence delimiter lines (see
+/// `DeepSeekStyleSheet::code_block_fence`). Two NUL bytes: never produced
+/// by real markdown content.
+const CODE_FENCE_SENTINEL: &str = "\u{0}\u{0}";
+
 /// tui-markdown style sheet mapping markdown constructs onto the DeepSeek
 /// palette. Only non-default choices are overridden.
 #[derive(Clone)]
@@ -178,6 +188,18 @@ impl StyleSheet for DeepSeekStyleSheet {
     /// Headings read through color alone; the `#` markers are omitted.
     fn heading_marker(&self, _level: u8) -> &str {
         ""
+    }
+
+    /// Fence delimiter lines carry a sentinel prefix instead of bare
+    /// backticks. tui-markdown normalizes every fence delimiter to
+    /// `"```"`, which is indistinguishable from a literal ```` ``` ````
+    /// *content* line inside a 4+ backtick fence (a CommonMark way to
+    /// show fenced examples). The sentinel makes delimiters unambiguous:
+    /// the frame logic only toggles on it, and backtick-looking content
+    /// lines render as code rows. The sentinel is never displayed — the
+    /// frame edges replace the delimiter lines.
+    fn code_block_fence(&self) -> &str {
+        CODE_FENCE_SENTINEL
     }
 
     /// Inline code and fenced blocks share one look: light gray on the
@@ -294,7 +316,7 @@ fn table_row_separator(row: &Line, theme: &Theme) -> Line<'static> {
             if c == '│' {
                 bars.push(w);
             }
-            w += UnicodeWidthChar::width(c).unwrap_or(0).max(1);
+            w += UnicodeWidthChar::width(c).unwrap_or(0);
         }
     }
     let mut sep = String::with_capacity(w);
@@ -486,11 +508,20 @@ fn code_frame_top(lang: &str, width: usize, theme: &Theme) -> Line<'static> {
     let label = if lang.is_empty() {
         String::new()
     } else {
-        // Language names are ASCII in practice; clamp anyway so a hostile
-        // info string can't blow the frame width.
+        // Clamp by display width (not char count) so a hostile CJK info
+        // string can't blow the frame width either.
         let max = width.saturating_sub(8);
-        let lang: String = lang.chars().take(max).collect();
-        format!("─ {lang} ")
+        let mut cut = 0usize;
+        let mut used = 0usize;
+        for c in lang.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + cw > max {
+                break;
+            }
+            used += cw;
+            cut += c.len_utf8();
+        }
+        format!("─ {} ", &lang[..cut])
     };
     let pad = width
         .saturating_sub(2)
@@ -540,7 +571,7 @@ fn wrap_pre(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
     let mut w = 0usize;
     for seg in segs {
         for c in seg.text.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0).max(1);
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
             if w + cw > width && w > 0 {
                 if !buf.is_empty() {
                     spans.push(Span::styled(std::mem::take(&mut buf), style));
@@ -548,8 +579,13 @@ fn wrap_pre(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
                 out.push(Line::from(std::mem::take(&mut spans)));
                 w = 0;
             }
-            if !buf.is_empty() && style != seg.style {
-                spans.push(Span::styled(std::mem::take(&mut buf), style));
+            // Switch style *before* pushing the char: a width flush may
+            // have left `buf` empty, and the first char of the new span
+            // must not inherit the previous span's style.
+            if style != seg.style {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), style));
+                }
                 style = seg.style;
             }
             buf.push(c);
@@ -596,7 +632,7 @@ fn truncate_line(segs: Vec<Seg>, width: usize, theme: &Theme) -> Line<'static> {
     for seg in segs {
         let mut buf = String::new();
         for c in seg.text.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0).max(1);
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
             if w + cw > budget {
                 stopped = true;
                 break;
@@ -777,7 +813,7 @@ fn chunk_str(s: &str, width: usize) -> Vec<&str> {
     let mut start = 0usize;
     let mut w = 0usize;
     for (i, ch) in s.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
         if w + cw > width && w > 0 {
             out.push(&s[start..i]);
             start = i;

@@ -21,6 +21,7 @@ fn view(lines: &[&str]) -> ChatView {
         manual_top: None,
         lines: lines.iter().map(|s| s.to_string()).collect(),
         owners: vec![None; lines.len()],
+        total: lines.len(),
         images: Vec::new(),
     }
 }
@@ -412,4 +413,42 @@ fn ctrl_shift_c_copies_a_mouse_drag_selection_and_keeps_the_highlight() {
 
     assert_eq!(app.input.buf(), "hello world", "copy leaves the draft");
     assert!(app.input_sel.is_some(), "copy keeps the highlight");
+}
+
+#[test]
+fn snapshot_lookups_translate_the_absolute_line_through_top() {
+    // The snapshot is viewport-sized: absolute layout lines resolve through
+    // `top` (L25). Frame: absolute lines 10..14, snapshot = 4 rows.
+    let mut app = test_app();
+    app.chat_view = view(&["ten", "eleven", "twelve", "thirteen"]);
+    app.chat_view.top = 10;
+    app.chat_view.total = 14;
+
+    assert_eq!(app.chat_view.line_text(11), Some("eleven"));
+    assert_eq!(app.chat_view.line_text(10), Some("ten"));
+    assert_eq!(app.chat_view.line_text(9), None, "above the viewport");
+    assert_eq!(app.chat_view.line_text(14), None, "below the viewport");
+
+    // chat_hit: screen row 1 → absolute line 11.
+    let p = app.chat_hit(3, 1).expect("inside pane");
+    assert_eq!(p.line, 11);
+    // Hit below the content but inside the pane clamps to the last line.
+    let p = app.chat_hit(3, 9).expect("inside pane");
+    assert_eq!(p.line, 13);
+}
+
+#[test]
+fn selection_text_extracts_the_visible_part_of_a_scrolled_selection() {
+    // Selection spans absolute lines 1..3 with the frame showing absolute
+    // 2..5: the copy covers only what the frame actually showed (viewport-
+    // sized snapshot) — absolute 2 ("two", whole line) and 3 ("three", cut
+    // at the selection's end column 4 inclusive); the part above the
+    // viewport is gone.
+    let mut app = test_app();
+    app.chat_view = view(&["two", "three", "four", "five"]);
+    app.chat_view.top = 2;
+    app.chat_view.total = 8;
+
+    let text = app.selection_text(sel((1, 2), (3, 4)));
+    assert_eq!(text, "two\nthree");
 }

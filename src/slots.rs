@@ -435,10 +435,13 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
         }
         TuiNode::User { text, queued, .. } => {
             let prefix = if *queued { "› queued · " } else { "› " };
+            // Budget by display width, not byte length — the prefix
+            // contains multi-byte glyphs (`›`/`·`), which made wrapped
+            // CJK text fold early.
             indent(
                 styled_wrapped(
                     text,
-                    width.saturating_sub(prefix.len()),
+                    width.saturating_sub(UnicodeWidthStr::width(prefix)),
                     Style::default().fg(theme.bubble_fg),
                 ),
                 prefix,

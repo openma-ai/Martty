@@ -155,6 +155,7 @@ fn prompt_response_usage_reaches_the_ui() {
         session_id: "s".into(),
         result: Ok(response),
         payload: ParkedPromptKind::Text("hello".into()),
+        gen: 1,
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let mut parked = VecDeque::new();
@@ -189,6 +190,7 @@ fn prompt_error_ends_the_ui_turn_before_reporting_the_error() {
         session_id: "s".into(),
         result: Err(AcpError::new(-32603, "boom")),
         payload: ParkedPromptKind::Text("hello".into()),
+        gen: 1,
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let mut parked = VecDeque::new();
@@ -3131,4 +3133,25 @@ async fn prompt_for_an_unbound_session_is_rejected_not_rerouted() {
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
+}
+
+#[test]
+fn file_uris_are_percent_encoded() {
+    use std::path::Path;
+
+    assert_eq!(
+        super::unix_file_uri(Path::new("/tmp/shot.png")),
+        "file:///tmp/shot.png",
+        "plain ASCII paths stay readable"
+    );
+    assert_eq!(
+        super::unix_file_uri(Path::new("/tmp/a b/c#d?e.png")),
+        "file:///tmp/a%20b/c%23d%3Fe.png",
+        "space, # and ? must not change URI semantics"
+    );
+    assert_eq!(
+        super::unix_file_uri(Path::new("/tmp/截图.png")),
+        "file:///tmp/%E6%88%AA%E5%9B%BE.png",
+        "non-ASCII is encoded byte-wise (RFC 3986)"
+    );
 }

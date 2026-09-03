@@ -180,7 +180,9 @@ export async function applyShell(ctx, options = {}) {
           if (!shouldQuitOnPainterExit(signal)) return
           shellState.refuseRespawn = true
           if (shellState.livePainter?.child === child) shellState.livePainter = null
-          process.exit(code ?? (signal === 'SIGINT' ? 130 : 0))
+          // Signal exits must not read as success: 130/143 match the
+          // bin/martty.js convention; any other signal is a failure.
+          process.exit(code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1))
         })
         child.on('error', (err) => {
           console.error(`dsh-tui: ${err.message}`)

@@ -237,16 +237,30 @@ fn controller_loop(
                 if attached {
                     // Forward to the host runner: agent.cancel({ kind: 'user' })
                     // aborts the active turn; a followup sent after this lands
-                    // as the next turn.
+                    // as the next turn. A failed interrupt must not report
+                    // success — the agent-side turn would keep running and
+                    // stream updates into a UI that already went idle.
                     let guard = runtime.lock().unwrap();
-                    if let Some(rt) = guard.as_ref() {
-                        let params = json!({ "sessionId": session_id });
-                        let _ =
-                            rt.request("session/interrupt", Some(params), Duration::from_secs(10));
+                    let interrupt = guard
+                        .as_ref()
+                        .map(|rt| {
+                            let params = json!({ "sessionId": session_id });
+                            rt.request("session/interrupt", Some(params), Duration::from_secs(10))
+                        });
+                    drop(guard);
+                    match interrupt {
+                        Some(Ok(_)) | None => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                session_id: session_id.clone(),
+                            }));
+                        }
+                        Some(Err(err)) => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                session_id: session_id.clone(),
+                                message: format!("session/interrupt failed: {err:#}"),
+                            }));
+                        }
                     }
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
-                        session_id: session_id.clone(),
-                    }));
                     continue;
                 }
                 // The kill itself happens in interrupt_now(); this is the
@@ -750,7 +764,7 @@ fn send_attached_prompt(rt: &Arc<RuntimeProcess>, bus: &Sender<AppEvent>, params
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued { message_id }));
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued { message_id, session_id: None }));
         }
         Err(err) => {
             let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
@@ -841,7 +855,10 @@ fn handle_prompt(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued { message_id }));
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued {
+                message_id,
+                session_id: Some(session_id.to_string()),
+            }));
         }
         Err(err) => {
             if interrupted.swap(false, Ordering::SeqCst) {

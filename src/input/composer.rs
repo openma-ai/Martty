@@ -320,8 +320,11 @@ impl ComposerEditor {
     }
 
     /// Cut the whole buffer range `[start, end)` (char offsets) —
-    /// deleting into an inline `[image n]` token.
+    /// deleting into an inline `[image n]` token. An active keyboard
+    /// selection is cancelled first: the widget's `delete_str` would
+    /// otherwise delete the selection instead of the requested range.
     pub fn delete_char_range(&mut self, start: usize, end: usize) {
+        self.textarea_mut().cancel_selection();
         let (row, col) = self.char_to_rowcol(start);
         self.move_cursor(CursorMove::Jump(row as u16, col as u16));
         self.textarea_mut().delete_str(end.saturating_sub(start));
@@ -643,6 +646,8 @@ impl ComposerEditor {
     }
 
     /// Kill from the cursor to the end of the current rendered row.
+    /// Cancels an active selection first so the requested range dies
+    /// (the widget's `delete_str` prefers the selection).
     pub fn kill_to_end(&mut self, wrap_width: usize) {
         let end = self
             .cursor_screen_row(wrap_width)
@@ -650,12 +655,15 @@ impl ComposerEditor {
         let Some(end) = end else { return };
         let cur = self.cursor_char();
         if end > cur {
+            self.textarea_mut().cancel_selection();
             self.textarea_mut().delete_str(end - cur);
             self.hist_pos = None;
         }
     }
 
     /// Kill from the start of the current rendered row to the cursor.
+    /// Cancels an active selection first so the requested range dies
+    /// (the widget's `delete_str` prefers the selection).
     pub fn kill_to_start(&mut self, wrap_width: usize) {
         let start = self
             .cursor_screen_row(wrap_width)
@@ -663,6 +671,7 @@ impl ComposerEditor {
         let Some(start) = start else { return };
         let cur = self.cursor_char();
         if start < cur {
+            self.textarea_mut().cancel_selection();
             let (r, c) = self.char_to_rowcol(start);
             self.textarea_mut()
                 .move_cursor(CursorMove::Jump(r as u16, c as u16));

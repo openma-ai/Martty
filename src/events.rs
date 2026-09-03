@@ -151,7 +151,13 @@ pub fn parse_notification(method: &str, params: &Value) -> Vec<UiEvent> {
         }],
         "subagent.finished" => vec![UiEvent::SubagentFinished {
             child: str_field(params, "childSessionId"),
-            failed: false,
+            // Mirror the ACP path: the notification carries the child's
+            // stop status — hardcoding success hid failed tasks.
+            failed: params
+                .get("status")
+                .or_else(|| params.get("stopReason"))
+                .and_then(Value::as_str)
+                == Some("failed"),
         }],
         "session.event" => parse_session_event(params),
         "session/update" => parse_session_update(params),

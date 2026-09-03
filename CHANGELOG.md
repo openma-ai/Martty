@@ -77,6 +77,84 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Code-review sweep (2026-09-03):
+
+  - **Terminal output integrity** — `terminal/output` no longer corrupts
+    multi-byte characters split across 4096-byte reads: partial UTF-8
+    sequences are carried across chunks instead of being decoded per read
+    into U+FFFD. Unknown terminal ids now return protocol errors for
+    `output`/`wait`/`kill`/`release` instead of a fake success.
+  - **Terminal Auth keystrokes** — the crossterm input reader parks during
+    Terminal Auth (and stays parked until the auth subprocess exits), so
+    the login child no longer loses keystrokes to the UI reader.
+  - **Background tab errors** — a failed image prompt (no image support,
+    spill failure, empty payload) now reports through the requesting
+    session, so a parked tab's running badge can no longer stick forever
+    while the error lands on the viewed tab. `PromptQueued` carries the
+    session id and only settles that session.
+  - **Persistent shell** — `!` commands run with stdin from `/dev/null` and
+    a 120-second silence deadline: a command that used to eat the control
+    stream (`!cat`) or hang silently now kills the shell and the next `!`
+    restarts it, instead of wedging the single shell worker forever.
+  - **Cross-tab bind state** — same-session `/resume` keeps a FIFO bind
+    entry (a concurrent `/new` can no longer steal the bind and cross-wire
+    tabs), and both resume paths release plugin overlays with their cancel
+    events like a tab click does, instead of leaking them onto the new
+    tab.
+  - **Modal keys** — vim mode only intercepts keys when no modal is up:
+    one Esc cancels a permission ask / picker / overlay while vim Insert
+    is active, and normal-mode letters no longer land in a hidden composer
+    under a modal.
+  - **ACP turn lifecycle** — in-flight prompts carry a generation tag so a
+    stale finish after `/close` + `/resume` can never clear the new turn's
+    occupancy marker (no more double `session/prompt` per session), and a
+    `session/cancel` racing an already-settling turn trusts the agent's
+    stop reason instead of reporting a successful turn as interrupted.
+  - **ACP robustness** — every request the command loop awaits gets a
+    120s deadline (a hung agent can no longer freeze Interrupt/Shutdown);
+    the queue/agents snapshots stay silent for agents that never
+    negotiated `_dsh/cordis`; second and later sessions now update the
+    mode catalog from their own `configOptions`; `file://` URIs are
+    percent-encoded (spaces, `#`, `?`, CJK paths); and `terminal/create`
+    asks through the permission overlay before running an agent-supplied
+    command.
+  - **Runtime writer deadlock** — the legacy transport's stdin writer is
+    taken out of the shared slot while a write blocks, so a wedged child
+    can no longer deadlock `kill()` or starve the frame reader; the
+    reader's best-effort replies never block on the write path.
+  - **Editing** — vim `O` lands the cursor on the new blank line above;
+    explicit range kills and chip deletion ignore an active shift
+    selection (an image chip can no longer survive as literal
+    `[image n]` text with its attachment removed); the form editor
+    deletes whole grapheme clusters and gives combining marks zero width;
+    plain ctrl+c (not ctrl+shift+c) cancels elicitation forms.
+  - **Transcript rendering** — `/clear` invalidates stale cell-index
+    handles (shell results and steer echoes can no longer leak into a
+    fresh transcript); 4+ backtick fences with literal ```` ``` ````
+    content render as one frame; the composer input dock measures at its
+    real width (pet inset included) so PLAN summaries are not truncated;
+    collapsed shell output keeps the tail like tool output; the
+    navigation rail trims its last section instead of overlapping the
+    trailing actions; user-node and injected-context wrap budgets use
+    display width; zero-width characters are consistent across the
+    markdown paths; and the chat pane's selection snapshot is
+    viewport-sized instead of cloning the whole scrollback every frame
+    (long streaming sessions no longer allocate O(history) text per
+    frame — hit-testing translates through the viewport anchor, and the
+    render window borrows the assembled lines instead of copying them).
+  - **npm packaging** — a corrupt `settings.json` no longer blocks boot
+    (it is moved aside and settings restart fresh) and theme preferences
+    are written atomically; `package-alias.mjs` skips `node_modules` and
+    the lockfile, asserts source/alias version parity, and tells you how
+    to replace a stale alias; `release.mjs` warns when a stale local
+    `npm-martty` checkout would publish an old version; the painter exit
+    path maps signals to 130/143/1 consistently, `MARTTY_BIN` falling
+    back is announced, spawn failures print a diagnostic; shell scripts
+    honor `CARGO_TARGET_DIR` in the local installer, tolerate `du`/`df`
+    failures, clean stale `dist/*.tgz`, and use `mktemp` for diagnostics;
+    the old-ACP install-matrix case skips when the registry is
+    unreachable.
+
 - The session tab strip now scrolls instead of cutting off: clicking the
   leftmost or rightmost visible tab switches to it **and** nudges the
   strip by one, so the adjacent tab appears — repeated edge clicks walk

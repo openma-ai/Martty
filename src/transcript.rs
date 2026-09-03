@@ -309,10 +309,13 @@ fn build_body(
                     .flat_map(|raw| wrap(raw, body_w))
                     .collect();
                 let total = all.len();
+                // Collapsed view keeps the *tail* — errors and results live
+                // at the end of shell output, and the Tool cell collapses
+                // the same direction (last N lines).
                 let shown = if expanded || total <= COLLAPSED_SHELL_LINES {
                     all
                 } else {
-                    all.into_iter().take(COLLAPSED_SHELL_LINES).collect()
+                    all.into_iter().skip(total - COLLAPSED_SHELL_LINES).collect()
                 };
                 let shown_len = shown.len();
                 for l in shown {
@@ -424,6 +427,10 @@ pub struct Transcript {
     /// UI language for the notices this transcript renders (set by the App
     /// that owns it; cells already pushed keep the language they had).
     pub locale: Locale,
+    /// Bumped by `clear()`. Long-lived cell-index handles (shell results,
+    /// steer echoes) carry the generation they were pushed in, so stale
+    /// indexes can never land in a freshly cleared transcript.
+    gen: u64,
 }
 
 impl Transcript {
@@ -447,7 +454,14 @@ impl Transcript {
             last_model: None,
             expand_all: false,
             locale: Locale::default(),
+            gen: 0,
         }
+    }
+
+    /// Transcript generation: changes whenever `clear()` empties the cells,
+    /// invalidating cell-index handles held elsewhere.
+    pub fn gen(&self) -> u64 {
+        self.gen
     }
 
     pub fn set_root_session(&mut self, session: String) {
@@ -471,6 +485,7 @@ impl Transcript {
         self.tools.clear();
         self.plan_cell = None;
         self.last_finish = None;
+        self.gen = self.gen.wrapping_add(1);
     }
 
     fn agent_label(&self, session: &str) -> Option<String> {
@@ -521,7 +536,10 @@ impl Transcript {
         self.cells.len() - 1
     }
 
-    pub fn finish_shell(&mut self, idx: usize, code: Option<i32>, output: String) {
+    pub fn finish_shell(&mut self, idx: usize, code: Option<i32>, output: String, gen: u64) {
+        if gen != self.gen {
+            return; // the cell died with a /clear or resume replay
+        }
         if let Some(cell) = self.cells.get_mut(idx) {
             if let CellKind::Shell { output: slot, .. } = &mut cell.kind {
                 *slot = Some((code, output));
@@ -530,7 +548,10 @@ impl Transcript {
         }
     }
 
-    pub fn hide_cells(&mut self, cells: &[usize]) {
+    pub fn hide_cells(&mut self, cells: &[usize], gen: u64) {
+        if gen != self.gen {
+            return; // stale handles from before a clear
+        }
         for &index in cells {
             if let Some(cell) = self.cells.get_mut(index) {
                 cell.hidden = true;
@@ -1383,7 +1404,12 @@ impl Transcript {
                                 Style::default().fg(theme.caption),
                             ),
                             Span::styled(
-                                clamp_str(preview, width.saturating_sub(source.len() + 14)),
+                                clamp_str(
+                                    preview,
+                                    width.saturating_sub(
+                                        UnicodeWidthStr::width(source.as_str()) + 15,
+                                    ),
+                                ),
                                 Style::default().fg(theme.fg_tertiary),
                             ),
                         ]),

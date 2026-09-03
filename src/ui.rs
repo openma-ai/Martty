@@ -1,5 +1,6 @@
 //! Rendering: banner, scrollback, tips row, status bar, prompt, hints, overlays.
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -7,6 +8,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, FrameExt, HighlightSpacing, Paragraph, Row, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Table, TableState,
 };
+use ratatui::widgets::Widget;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -127,11 +129,20 @@ fn queue_shelf_height(app: &App, main_height: u16, child_view: bool) -> u16 {
 /// Structured input-dock nodes expand inside the composer card. Generic
 /// summaries keep using the one-line cap, so Plan/Goal stay compact while a
 /// selector such as Queue can temporarily reveal its rows above the input.
+/// Measured at the width the dock will actually render at: card border (2)
+/// plus the pet inset (PET_PAD when the pet is perched in the composer) —
+/// measuring at the full card width under-reserved rows and truncated the
+/// content (M12).
 fn input_dock_body_height(app: &App, main_width: u16, main_height: u16, child_view: bool) -> u16 {
     if child_view || main_height < 14 {
         return 0;
     }
-    let lines = input_dock_body_lines(app, main_width.saturating_sub(2) as usize);
+    let pet_pad = if app.pet_visible && main_width >= 60 && main_height >= 10 {
+        PET_PAD
+    } else {
+        0
+    };
+    let lines = input_dock_body_lines(app, main_width.saturating_sub(2 + pet_pad) as usize);
     (lines.len() as u16).min(main_height.saturating_sub(12))
 }
 
@@ -638,7 +649,10 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
         })
         .max()
         .unwrap_or(0) as u16;
-    let width = (needed + 2).min(screen.width.saturating_sub(4)).max(28);
+    // The 28-column floor must not beat the screen cap on narrow
+    // terminals (24-27 columns would render the popup past the right
+    // edge): apply the floor first, then the cap wins.
+    let width = (needed + 2).max(28).min(screen.width.saturating_sub(4));
     let inner = width.saturating_sub(2) as usize;
     let label_cells = inner.saturating_sub(4);
     let desc_cells = inner.saturating_sub(4);
@@ -1257,6 +1271,25 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
             break;
         };
         sections.remove(index);
+    }
+    // The loop above stops at two sections; two long ones can still
+    // overflow into the trailing action area. Trim the *last* drawn
+    // section only when the rail would actually overlap the trailing
+    // block (it starts one column past the budget) — earlier sections
+    // and their text stay intact.
+    if let Some(last_index) = sections.len().checked_sub(1) {
+        let used: usize = sections[..last_index]
+            .iter()
+            .map(|section| span_widths(&section.spans))
+            .sum::<usize>()
+            + last_index * 2;
+        let overlap_limit = left_budget + 1;
+        let last_width = span_widths(&sections[last_index].spans);
+        if used + last_width > overlap_limit {
+            let budget = overlap_limit.saturating_sub(used);
+            let last = &mut sections[last_index];
+            last.spans = truncate_spans(&last.spans, budget.saturating_sub(1));
+        }
     }
 
     let border_style = Style::default().fg(theme.border);
@@ -1929,6 +1962,38 @@ fn span_widths(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
 
+/// Cut a span list to `budget` display columns, ending with an ellipsis
+/// when anything was dropped. Keeps each span's style.
+fn truncate_spans(spans: &[Span<'static>], budget: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let width = span.content.width();
+        if used + width <= budget {
+            out.push(span.clone());
+            used += width;
+            continue;
+        }
+        let remaining = budget.saturating_sub(used);
+        let mut text = String::new();
+        let mut taken = 0usize;
+        for c in span.content.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if taken + cw > remaining {
+                break;
+            }
+            text.push(c);
+            taken += cw;
+        }
+        if budget > 0 {
+            text.push('…');
+        }
+        out.push(Span::styled(text, span.style));
+        break;
+    }
+    out
+}
+
 fn slot_has_nodes(app: &App, name: &str) -> bool {
     app.slot_snapshots
         .get(name)
@@ -2244,18 +2309,20 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         app.chat_view.manual_top = Some(start);
         (start, end)
     };
-    let visible: Vec<Line> = lines[start..end].to_vec();
 
     // Layout snapshot for mouse selection: hit-testing and copy extraction
     // read exactly what this frame showed (grok-build's resolved selection
-    // model, scaled down to plain text per wrapped line).
+    // model, scaled down to plain text per wrapped line). Viewport-sized
+    // only (L25): the absolute→relative seam lives in
+    // `ChatView::line_text`/`line_owner`; `total` keeps scroll math whole.
     app.chat_view.area = inner;
     app.chat_view.top = start;
-    app.chat_view.lines = lines
+    app.chat_view.total = total;
+    app.chat_view.lines = lines[start..end]
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
-    app.chat_view.owners = owners;
+    app.chat_view.owners = owners[start..end].to_vec();
     // The ⌕ jump flash (issue #103): resolve the flashing transcript cell
     // to its current line span every frame — streaming can move the prompt
     // — and drop it once the 5 s window expired.
@@ -2290,7 +2357,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    f.render_widget(Paragraph::new(visible), inner);
+    // Zero-copy render (B): the widget borrows the frame's assembled
+    // window — no per-frame `to_vec` of the viewport on top of the
+    // snapshot above.
+    f.render_widget(LinesWindow { lines: &lines[start..end] }, inner);
     // The transient ⌕ jump wash paints under an active copy-selection so
     // the user's own highlight always wins.
     draw_prompt_flash(f, app, inner, start);
@@ -2298,6 +2368,27 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     // Last: the selection overlay above also writes these cells, so the
     // full-rewrite marker must run after it (issue #38).
     force_full_rewrite(f, inner);
+}
+
+/// Render the viewport's pre-wrapped lines, borrowing the frame's assembled
+/// `lines` — the zero-copy replacement for `Paragraph::new(window.to_vec())`,
+/// which had to clone the window because `Paragraph` consumes its text.
+/// Left-aligned truncation per line, exactly what an unwrapped `Paragraph`
+/// does: `Buffer::set_line` patches `line.style` over each span style and
+/// clips at the pane width.
+struct LinesWindow<'a> {
+    lines: &'a [Line<'static>],
+}
+
+impl Widget for LinesWindow<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for (row, line) in self.lines.iter().enumerate() {
+            if row as u16 >= area.height {
+                break;
+            }
+            buf.set_line(area.x, area.y + row as u16, line, area.width);
+        }
+    }
 }
 
 /// The transient `⌕` jump highlight (issue #103): right after a jump the
@@ -2316,7 +2407,7 @@ fn draw_prompt_flash(f: &mut Frame, app: &App, inner: Rect, start: usize) {
         if li < s || li >= e {
             continue;
         }
-        let Some(text) = app.chat_view.lines.get(li) else {
+        let Some(text) = app.chat_view.line_text(li) else {
             continue;
         };
         let lw = text.trim_end().width();
@@ -2346,7 +2437,7 @@ fn draw_selection_overlay(f: &mut Frame, app: &App, inner: Rect, start: usize) {
         if li < s.line || li > e.line {
             continue;
         }
-        let Some(text) = app.chat_view.lines.get(li) else {
+        let Some(text) = app.chat_view.line_text(li) else {
             continue;
         };
         let lw = text.trim_end().width();
