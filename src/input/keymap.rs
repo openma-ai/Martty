@@ -69,12 +69,6 @@ pub enum Action {
     CopySelection,
     /// Cut the keyboard selection (clipboard + yank + delete).
     CutSelection,
-    /// Jump to session tab `n` (alt+1 … alt+9; 1-based, issue #94).
-    SessionTab(u8),
-    /// Cycle to next session tab (alt+] / ctrl+pagedown).
-    NextSessionTab,
-    /// Cycle to previous session tab (alt+[ / ctrl+pageup).
-    PrevSessionTab,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -160,8 +154,6 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('f') if alt => WordRight,
 
         // --- scrolling ----------------------------------------------------
-        KeyCode::PageUp if ctrl => PrevSessionTab,
-        KeyCode::PageDown if ctrl => NextSessionTab,
         KeyCode::PageUp => PageUp,
         KeyCode::PageDown => PageDown,
 
@@ -196,13 +188,6 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Down => CursorDown,
         KeyCode::Left => CursorLeft,
         KeyCode::Right => CursorRight,
-
-        // --- session tabs (issue #94) -------------------------------------
-        // alt+1…alt+9 jump straight to a session tab (browser-style). Plain
-        // digits keep typing; the chord stays readable on legacy terminals.
-        KeyCode::Char(ch @ '1'..='9') if alt => SessionTab(ch as u8 - b'0'),
-        KeyCode::Char(']') if alt => NextSessionTab,
-        KeyCode::Char('[') if alt => PrevSessionTab,
 
         // --- deletion ------------------------------------------------------
         // ⌘⌫ kills to line start; ⌥⌫ (macOS) / ctrl+⌫ (linux/windows)
@@ -272,7 +257,6 @@ pub enum KeyGroup {
     /// selection, yank) — one dedicated section in `/keys`.
     Composer,
     App,
-    Session,
     Mouse,
 }
 
@@ -287,8 +271,6 @@ impl KeyGroup {
             (KeyGroup::Composer, true) => "输入框 · textarea",
             (KeyGroup::App, false) => "app shortcuts",
             (KeyGroup::App, true) => "应用快捷键",
-            (KeyGroup::Session, false) => "session tabs",
-            (KeyGroup::Session, true) => "会话标签页",
             (KeyGroup::Mouse, false) => "mouse",
             (KeyGroup::Mouse, true) => "鼠标",
         }
@@ -351,96 +333,6 @@ const fn p(code: KeyCode, m: KeyModifiers, empty: bool) -> (KeyCode, KeyModifier
 }
 
 pub const KEY_ROWS: &[KeyRow] = &[
-    KeyRow {
-        action: SessionTab(1),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥1"],
-        chords_other: &["alt+1"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 1",
-        desc_zh: "会话标签 1",
-        probes: &[p(KeyCode::Char('1'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(2),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥2"],
-        chords_other: &["alt+2"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 2",
-        desc_zh: "会话标签 2",
-        probes: &[p(KeyCode::Char('2'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(3),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥3"],
-        chords_other: &["alt+3"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 3",
-        desc_zh: "会话标签 3",
-        probes: &[p(KeyCode::Char('3'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(4),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥4"],
-        chords_other: &["alt+4"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 4",
-        desc_zh: "会话标签 4",
-        probes: &[p(KeyCode::Char('4'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(5),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥5"],
-        chords_other: &["alt+5"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 5",
-        desc_zh: "会话标签 5",
-        probes: &[p(KeyCode::Char('5'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(6),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥6"],
-        chords_other: &["alt+6"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 6",
-        desc_zh: "会话标签 6",
-        probes: &[p(KeyCode::Char('6'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(7),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥7"],
-        chords_other: &["alt+7"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 7",
-        desc_zh: "会话标签 7",
-        probes: &[p(KeyCode::Char('7'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(8),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥8"],
-        chords_other: &["alt+8"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 8",
-        desc_zh: "会话标签 8",
-        probes: &[p(KeyCode::Char('8'), ALT, false)],
-    },
-    KeyRow {
-        action: SessionTab(9),
-        group: KeyGroup::Session,
-        chords_mac: &["⌥9"],
-        chords_other: &["alt+9"],
-        ctx: CtxNote::Always,
-        desc_en: "session tab 9",
-        desc_zh: "会话标签 9",
-        probes: &[p(KeyCode::Char('9'), ALT, false)],
-    },
     // --- send · interrupt -------------------------------------------------
     KeyRow {
         action: Enter,
@@ -598,32 +490,6 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_en: "page down",
         desc_zh: "下一页",
         probes: &[p(KeyCode::PageDown, NONE, false)],
-    },
-    KeyRow {
-        action: NextSessionTab,
-        group: KeyGroup::Navigate,
-        chords_mac: &["⌥]", "^⇟"],
-        chords_other: &["alt+]", "ctrl+pagedown"],
-        ctx: CtxNote::Always,
-        desc_en: "next session tab",
-        desc_zh: "下一个会话标签",
-        probes: &[
-            p(KeyCode::Char(']'), ALT, false),
-            p(KeyCode::PageDown, CTRL, false),
-        ],
-    },
-    KeyRow {
-        action: PrevSessionTab,
-        group: KeyGroup::Navigate,
-        chords_mac: &["⌥[", "^⇞"],
-        chords_other: &["alt+[", "ctrl+pageup"],
-        ctx: CtxNote::Always,
-        desc_en: "previous session tab",
-        desc_zh: "上一个会话标签",
-        probes: &[
-            p(KeyCode::Char('['), ALT, false),
-            p(KeyCode::PageUp, CTRL, false),
-        ],
     },
     // --- composer textarea -------------------------------------------------
     KeyRow {
@@ -1030,8 +896,8 @@ pub const KEY_ROWS: &[KeyRow] = &[
 pub const MOUSE_ROWS: &[MouseRow] = &[
     MouseRow {
         chords: &["click tab"],
-        desc_en: "switch session tab (strip shows 2+ sessions) · /new · /resume · /close",
-        desc_zh: "点击标签页切换会话（≥2 个会话时显示）· /new · /resume · /close",
+        desc_en: "switch session tab (strip shows 2+ sessions) · /session prev · /session next · /new · /resume · /close",
+        desc_zh: "点击标签页切换会话（≥2 个会话时显示）· /session prev · /session next · /new · /resume · /close",
     },
     MouseRow {
         chords: &["click"],

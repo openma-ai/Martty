@@ -1160,63 +1160,38 @@ fn session_errors_land_in_the_owning_parked_transcript() {
 }
 
 #[test]
-fn alt_digit_jumps_to_a_session_tab() {
-    let (mut app, ctl, _rx) = test_app();
-    app.open_new_session("s-two".into(), true);
-    app.open_new_session("s-three".into(), true);
-    assert_eq!(app.session_id, "s-three");
-
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
-        &ctl,
-    );
-    assert_eq!(app.session_id, "dsh-test", "alt+1 jumps to the first tab");
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
-        &ctl,
-    );
-    assert_eq!(app.session_id, "s-three", "alt+3 jumps to the third tab");
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('9'), KeyModifiers::ALT),
-        &ctl,
-    );
-    assert_eq!(app.session_id, "s-three", "out-of-range tab is a no-op");
-}
-
-#[test]
-fn next_and_prev_session_tab_cycles_tabs() {
+fn session_slash_prev_next_cycle_tabs_and_view_shows_info() {
     let (mut app, ctl, _rx) = test_app();
     app.open_new_session("s-two".into(), true);
     app.open_new_session("s-three".into(), true);
     assert_eq!(app.session_id, "s-three"); // index 2
 
-    // Next from last wraps to first (0)
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char(']'), KeyModifiers::ALT),
-        &ctl,
-    );
-    assert_eq!(app.session_id, "dsh-test");
-
-    // Next moves to index 1
-    app.handle_key(
-        KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
-        &ctl,
-    );
+    // Prev from the last tab steps back to the middle one…
+    app.run_slash("session", "prev", &ctl);
     assert_eq!(app.session_id, "s-two");
 
-    // Prev moves back to index 0
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('['), KeyModifiers::ALT),
-        &ctl,
-    );
+    // …and next returns to the last.
+    app.run_slash("session", "next", &ctl);
+    assert_eq!(app.session_id, "s-three");
+
+    // next from the last wraps to the first.
+    app.run_slash("session", "next", &ctl);
     assert_eq!(app.session_id, "dsh-test");
 
-    // Prev from 0 wraps to last (2)
-    app.handle_key(
-        KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL),
-        &ctl,
-    );
+    // prev from the first wraps to the last.
+    app.run_slash("session", "prev", &ctl);
     assert_eq!(app.session_id, "s-three");
+
+    // `view` (and a bare /session) opens the info popup, never switches.
+    app.run_slash("session", "view", &ctl);
+    assert_eq!(app.session_id, "s-three");
+    assert_eq!(
+        app.view_overlay.as_ref().expect("/session view opens a popup").id,
+        "builtin.session"
+    );
+    app.run_slash("session", "", &ctl);
+    assert_eq!(app.session_id, "s-three");
+    assert!(app.view_overlay.is_some(), "bare /session still shows info");
 }
 
 #[test]

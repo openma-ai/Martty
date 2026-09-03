@@ -175,8 +175,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
     if area.height < 6 || area.width < 24 {
         f.render_widget(
-            Paragraph::new("terminal too small — need ≥ 24x6")
-                .style(Style::default().fg(theme.warn)),
+            Paragraph::new(app.locale.tr(
+                "terminal too small — need ≥ 24x6",
+                "终端太小 —— 至少需要 24x6",
+            ))
+            .style(Style::default().fg(theme.warn)),
             area,
         );
         return;
@@ -1166,16 +1169,19 @@ fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {
         .active_subagent
         .as_deref()
         .and_then(|id| app.subagents.iter().find(|view| view.id == id))
-        .map(|view| view.label.as_str())
-        .unwrap_or("subagent");
+        .map(|view| view.label.clone())
+        .unwrap_or_else(|| app.locale.tr("subagent", "子代理").to_string());
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!(" {label} · read-only"),
+                format!(" {label} · {}", app.locale.tr("read-only", "只读")),
                 Style::default().fg(theme.fg_secondary),
             ),
             Span::styled(
-                "   esc back · ↓ switch agents",
+                app.locale.tr(
+                    "   esc back · ↓ switch agents",
+                    "   esc 返回 · ↓ 切换子代理",
+                ),
                 Style::default().fg(theme.caption),
             ),
         ]))
@@ -2687,9 +2693,11 @@ fn layout_expand_btn(app: &mut App, cap: Rect) {
 
 /// Paint the expand glyph. Idle: `⛶` in the quiet caption tone on the
 /// card's top-right (the workspace title leaves this corner free).
-/// Hovered: the glyph brightens to the strongest foreground on a small
-/// frame-less chip block. Called after the card render so it always wins
-/// the pixels.
+/// Hovered: the glyph brightens to the strongest foreground — no BOLD,
+/// which terminals synthesize by widening the glyph and clip at the cell
+/// edge (the right corner would vanish), and no background chip; the
+/// brightness shift alone is the hover affordance. Called after the card
+/// render so it always wins the pixels.
 fn paint_expand_btn(f: &mut Frame, app: &mut App) {
     let Some(rect) = app.expand_btn else {
         return;
@@ -2702,21 +2710,12 @@ fn paint_expand_btn(f: &mut Frame, app: &mut App) {
     // The glyph sits one cell in from the card's corner: rightmost cell of
     // the rect minus one, so the corner `╮` stays visible beside it.
     let x = rect.x + rect.width - 2;
-    if app.hover_expand_btn {
-        let block = Style::default().bg(theme.chip_bg);
-        b.set_string(rect.x, rect.y, "  ", block);
-        b.set_string(
-            x,
-            rect.y,
-            "⛶",
-            Style::default()
-                .fg(theme.fg)
-                .bg(theme.chip_bg)
-                .add_modifier(Modifier::BOLD),
-        );
+    let tone = if app.hover_expand_btn {
+        theme.fg
     } else {
-        b.set_string(x, rect.y, "⛶", Style::default().fg(theme.caption));
-    }
+        theme.caption
+    };
+    b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
 }
 
 /// The input well. Long prompts wrap across the (now taller) well, and the

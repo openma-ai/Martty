@@ -1,6 +1,45 @@
 use crate::locale::Locale;
 
 #[test]
+fn every_builtin_command_has_an_explicit_zh_desc() {
+    for command in crate::app::SLASH_COMMANDS {
+        let zh = Locale::Zh.command_desc(command.name, "");
+        assert!(
+            !zh.is_empty(),
+            "builtin /{} has no zh command_desc — the slash menu falls back to English",
+            command.name
+        );
+    }
+}
+
+#[test]
+fn builtin_slash_commands_are_sorted_by_name() {
+    let names: Vec<&str> = crate::app::SLASH_COMMANDS
+        .iter()
+        .map(|command| command.name)
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted, "SLASH_COMMANDS must stay in name order");
+}
+
+#[test]
+fn trf_fills_holes_left_to_right_per_language() {
+    let out = Locale::En.trf("closed {} · {}", "已关闭 {} · {}", &[
+        "tab".to_string(),
+        "a, b".to_string(),
+    ]);
+    assert_eq!(out, "closed tab · a, b");
+    let zh = Locale::Zh.trf("closed {} · {}", "已关闭 {} · {}", &[
+        "tab".to_string(),
+        "a, b".to_string(),
+    ]);
+    assert_eq!(zh, "已关闭 tab · a, b");
+    // Extra text without holes stays literal; missing args leave the hole.
+    assert_eq!(Locale::En.trf("x {}", "y {}", &[]), "x {}");
+}
+
+#[test]
 fn zh_command_desc_covers_every_builtin_and_plugin_command() {
     let zh = Locale::Zh;
     // Builtin chrome commands advertised in the slash menu.

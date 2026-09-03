@@ -2642,10 +2642,11 @@ where
                                 }
                             }
                         }
-                        Cmd::ListSessions { prefix } => {
+                        Cmd::ListSessions { prefix, limit } => {
                             if !list_session {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
                                     prefix,
+                                    limit,
                                     error: "agent did not advertise sessionCapabilities.list"
                                         .into(),
                                 }));
@@ -2657,7 +2658,7 @@ where
                                 .await
                             {
                                 Ok(listed) => {
-                                    let sessions = listed
+                                    let sessions: Vec<SessionListItem> = listed
                                         .sessions
                                         .into_iter()
                                         .map(|s| SessionListItem {
@@ -2666,9 +2667,13 @@ where
                                             updated_at: s.updated_at,
                                         })
                                         .collect();
+                                    // `/resume n`: the limit is applied on the
+                                    // App side, after the current session is
+                                    // filtered out of the list.
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionList {
                                         sessions,
                                         prefix,
+                                        limit,
                                     }));
                                 }
                                 Err(err) if is_auth_required_error(&err) => {
@@ -2682,6 +2687,7 @@ where
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
                                         prefix,
+                                        limit,
                                         error: err.to_string(),
                                     }));
                                 }

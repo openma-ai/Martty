@@ -1231,6 +1231,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
                 },
             ],
             prefix: None,
+            limit: usize::MAX,
         }),
         &ctl,
     );
@@ -1248,6 +1249,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
                 updated_at: None,
             }],
             prefix: Some("s-old".into()),
+            limit: usize::MAX,
         }),
         &ctl,
     );
@@ -1286,6 +1288,7 @@ fn acp_session_list_enriches_rows_with_local_summaries() {
                 updated_at: None,
             }],
             prefix: None,
+            limit: usize::MAX,
         }),
         &ctl,
     );

@@ -135,34 +135,14 @@ pub struct SlashCommand {
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
-        name: "help",
-        usage: "/help",
-        desc: "show help and tips",
+        name: "agent",
+        usage: "/agent [id]",
+        desc: "switch agent preset · ctrl+shift+a",
     },
     SlashCommand {
-        name: "keys",
-        usage: "/keys",
-        desc: "keyboard shortcuts",
-    },
-    SlashCommand {
-        name: "vim",
-        usage: "/vim [on|off]",
-        desc: "toggle vim modal editing (default off)",
-    },
-    SlashCommand {
-        name: "new",
-        usage: "/new [id]",
-        desc: "start a fresh session",
-    },
-    SlashCommand {
-        name: "resume",
-        usage: "/resume [id]",
-        desc: "resume a durable session from this workspace",
-    },
-    SlashCommand {
-        name: "close",
-        usage: "/close",
-        desc: "close the current session tab (last tab cannot close)",
+        name: "auth",
+        usage: "/auth [method|api-key]",
+        desc: "ACP sign-in (Backchat authenticate)",
     },
     SlashCommand {
         name: "clear",
@@ -170,54 +150,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "clear the scrollback",
     },
     SlashCommand {
-        name: "model",
-        usage: "/model [id]",
-        desc: "switch model · live over ACP",
-    },
-    SlashCommand {
-        name: "agent",
-        usage: "/agent [id]",
-        desc: "switch agent preset · ctrl+shift+a",
-    },
-    SlashCommand {
-        name: "effort",
-        usage: "/effort [off|high|max]",
-        desc: "reasoning effort for this session",
-    },
-    SlashCommand {
-        name: "permission",
-        usage: "/permission [preset]",
-        desc: "permission preset picker · shift+tab cycles",
-    },
-    SlashCommand {
-        name: "plan",
-        usage: "/plan [on|off]",
-        desc: "toggle host plan mode",
-    },
-    SlashCommand {
-        name: "image",
-        usage: "/image <path> [text]",
-        desc: "send a local image (png/jpeg/webp/gif)",
-    },
-    SlashCommand {
         name: "clip",
         usage: "/clip [text]",
         desc: "attach the clipboard image (macOS/Linux)",
     },
     SlashCommand {
-        name: "theme",
-        usage: "/theme [id|toggle]",
-        desc: "switch Theme Plugin or toggle dark/light",
-    },
-    SlashCommand {
-        name: "ui",
-        usage: "/ui [id]",
-        desc: "switch UI Plugin",
-    },
-    SlashCommand {
-        name: "plugins",
-        usage: "/plugins",
-        desc: "show Host plugin status (read-only)",
+        name: "close",
+        usage: "/close",
+        desc: "close the current session tab (last tab cannot close)",
     },
     SlashCommand {
         name: "cordis-plugins",
@@ -225,14 +165,24 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "review or manage dynamic Cordis plugins",
     },
     SlashCommand {
-        name: "session",
-        usage: "/session",
-        desc: "show session + runtime info",
+        name: "effort",
+        usage: "/effort [off|high|max]",
+        desc: "reasoning effort for this session",
     },
     SlashCommand {
-        name: "auth",
-        usage: "/auth [method|api-key]",
-        desc: "ACP sign-in (Backchat authenticate)",
+        name: "help",
+        usage: "/help",
+        desc: "show help and tips",
+    },
+    SlashCommand {
+        name: "image",
+        usage: "/image <path> [text]",
+        desc: "send a local image (png/jpeg/webp/gif)",
+    },
+    SlashCommand {
+        name: "keys",
+        usage: "/keys",
+        desc: "keyboard shortcuts",
     },
     SlashCommand {
         name: "lang",
@@ -245,9 +195,59 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "召唤小难梁 — 🤫 idle · ⌨︎ working",
     },
     SlashCommand {
+        name: "model",
+        usage: "/model [id]",
+        desc: "switch model · live over ACP",
+    },
+    SlashCommand {
+        name: "new",
+        usage: "/new [id]",
+        desc: "start a fresh session",
+    },
+    SlashCommand {
+        name: "permission",
+        usage: "/permission [preset]",
+        desc: "permission preset picker · shift+tab cycles",
+    },
+    SlashCommand {
+        name: "plan",
+        usage: "/plan [on|off]",
+        desc: "toggle host plan mode",
+    },
+    SlashCommand {
+        name: "plugins",
+        usage: "/plugins",
+        desc: "show Host plugin status (read-only)",
+    },
+    SlashCommand {
         name: "quit",
         usage: "/quit",
         desc: "exit martty",
+    },
+    SlashCommand {
+        name: "resume",
+        usage: "/resume [n|id]",
+        desc: "list the n most recent sessions (default 50) · /resume <id> resumes it",
+    },
+    SlashCommand {
+        name: "session",
+        usage: "/session [view|prev|next]",
+        desc: "show session info · prev/next switch session tab",
+    },
+    SlashCommand {
+        name: "theme",
+        usage: "/theme [id|toggle]",
+        desc: "switch Theme Plugin or toggle dark/light",
+    },
+    SlashCommand {
+        name: "ui",
+        usage: "/ui [id]",
+        desc: "switch UI Plugin",
+    },
+    SlashCommand {
+        name: "vim",
+        usage: "/vim [on|off]",
+        desc: "toggle vim modal editing (default off)",
     },
 ];
 
@@ -1349,18 +1349,25 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
 }
 
 /// Register (or revive) the view for a started subagent in `views`.
-fn upsert_subagent_view(views: &mut Vec<SubagentView>, parent: &str, child: &str) {
+fn upsert_subagent_view(
+    views: &mut Vec<SubagentView>,
+    parent: &str,
+    child: &str,
+    locale: Locale,
+) {
     if let Some(view) = views.iter_mut().find(|view| view.id == child) {
         view.running = true;
         view.failed = false;
     } else {
+        let mut transcript = Transcript::new(child.to_string());
+        transcript.locale = locale;
         views.push(SubagentView {
             id: child.to_string(),
             parent: parent.to_string(),
-            label: format!("subagent {}", views.len() + 1),
+            label: locale.trf("subagent {}", "子代理 {}", &[(views.len() + 1).to_string()]),
             running: true,
             failed: false,
-            transcript: Transcript::new(child.to_string()),
+            transcript,
         });
     }
 }
@@ -1583,7 +1590,7 @@ impl App {
             .unwrap_or(crate::theme::Mode::Dark);
         let theme = palettes[0].theme(mode);
         let locale = settings.language;
-        App {
+        let mut app = App {
             theme,
             locale,
             palettes,
@@ -1693,7 +1700,9 @@ impl App {
             bus_tx,
             server_info: None,
             needs_redraw: true,
-        }
+        };
+        app.transcript.locale = locale;
+        app
     }
 
     pub fn spinner(&self) -> char {
@@ -1723,10 +1732,12 @@ impl App {
     /// a parking slot, leaving cheap placeholders behind. Always paired with
     /// [`Self::put_live_slot`] before anything reads the fields again.
     fn take_live_slot(&mut self) -> SessionSlot {
+        let mut placeholder = Transcript::new(String::new());
+        placeholder.locale = self.locale;
         SessionSlot {
             id: std::mem::take(&mut self.session_id),
             title: self.session_title.take(),
-            transcript: std::mem::replace(&mut self.transcript, Transcript::new(String::new())),
+            transcript: std::mem::replace(&mut self.transcript, placeholder),
             // Composer + chat chrome bound to the tab (see `put_live_slot`).
             input: std::mem::take(&mut self.input),
             pending_images: std::mem::take(&mut self.pending_images),
@@ -1855,12 +1866,12 @@ impl App {
         self.after_switch();
     }
 
-    /// Leave the viewed session for another tab — mouse click and keyboard
-    /// (alt+1…9) take the same path: transient interactions are dismissed
-    /// and compositor-owned overlays are released with their cancel events
-    /// (the plugin owns a single-overlay slot; Esc would send the same).
-    /// Painter popups and ACP asks park with their session instead and
-    /// resurface on return.
+    /// Leave the viewed session for another tab — the mouse click and the
+    /// `/session prev|next` commands take the same path: transient
+    /// interactions are dismissed and compositor-owned overlays are
+    /// released with their cancel events (the plugin owns a
+    /// single-overlay slot; Esc would send the same). Painter popups and
+    /// ACP asks park with their session instead and resurface on return.
     pub fn switch_view_to_tab(&mut self, tab: usize, ctl: &Controller) {
         self.sel = None;
         self.selecting = false;
@@ -1879,7 +1890,9 @@ impl App {
         let live = self.take_live_slot();
         self.parked.insert(self.current, live);
         self.current = self.parked.len();
-        self.put_live_slot(SessionSlot::fresh(id, bound));
+        let mut slot = SessionSlot::fresh(id, bound);
+        slot.transcript.locale = self.locale;
+        self.put_live_slot(slot);
         self.after_switch();
     }
 
@@ -2087,7 +2100,10 @@ impl App {
                     self.prompt_queue.push_back(queued);
                 }
                 self.queued = self.prompt_queue.len();
-                self.show_tip("agent deferred Send Now — queued after the active turn");
+                self.show_tip(self.locale.tr(
+                    "agent deferred Send Now — queued after the active turn",
+                    "Agent 暂缓了立即发送 —— 已排在当前轮次之后",
+                ));
             }
             return;
         }
@@ -2172,7 +2188,11 @@ impl App {
         match crate::theme::parse_palette_notification(params) {
             Ok(Some(n)) => self.merge_palette(n.pack, n.activate),
             Ok(None) => {}
-            Err(err) => self.show_tip(format!("palette ignored: {err}")),
+            Err(err) => self.show_tip(self.locale.trf(
+                "palette ignored: {}",
+                "已忽略主题包：{}",
+                &[err.to_string()],
+            )),
         }
         self.needs_redraw = true;
     }
@@ -2217,10 +2237,13 @@ impl App {
         }
         self.active_palette_id = id.to_string();
         self.sync_theme_from_active();
-        self.show_tip(format!(
+        self.show_tip(self.locale.trf(
             "theme: {} {}",
-            self.active_palette_id,
-            self.theme.mode.as_str()
+            "主题：{} {}",
+            &[
+                self.active_palette_id.clone(),
+                self.theme.mode.as_str().to_string(),
+            ],
         ));
     }
 
@@ -2231,7 +2254,11 @@ impl App {
         if palette.loaded {
             self.activate_palette(id);
         } else {
-            self.show_tip(format!("loading theme plugin for {id}…"));
+            self.show_tip(self.locale.trf(
+                "loading theme plugin for {}…",
+                "正在加载主题插件 {}…",
+                &[id.to_string()],
+            ));
         }
         ctl.send(Cmd::PluginThemeSelected {
             agent_id: self.session_id.clone(),
@@ -2258,9 +2285,16 @@ impl App {
                 if self.palettes.iter().any(|p| p.id == id) {
                     self.select_palette(id, ctl);
                 } else {
-                    self.show_tip(format!("unknown palette: {id}"));
-                    self.transcript
-                        .push_notice(NoticeLevel::Warn, format!("unknown palette `{id}`"));
+                    self.show_tip(self.locale.trf(
+                        "unknown palette: {}",
+                        "未知主题包：{}",
+                        &[id.to_string()],
+                    ));
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        self.locale
+                            .trf("unknown palette `{}`", "未知主题包 `{}`", &[id.to_string()]),
+                    );
                 }
             }
         }
@@ -2269,10 +2303,13 @@ impl App {
     fn toggle_theme_mode(&mut self) {
         self.theme = self.theme.toggled();
         self.save_settings();
-        self.show_tip(format!(
+        self.show_tip(self.locale.trf(
             "theme: {} {}",
-            self.active_palette_id,
-            self.theme.mode.as_str()
+            "主题：{} {}",
+            &[
+                self.active_palette_id.clone(),
+                self.theme.mode.as_str().to_string(),
+            ],
         ));
     }
 
@@ -2537,52 +2574,61 @@ impl App {
                 completion: None,
             })
             .collect();
-        for command in &self.plugin_commands {
-            if command.name.starts_with(prefix)
-                && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
-            {
-                out.push(SlashEntry {
-                    name: command.name.clone(),
-                    usage: command
-                        .input
-                        .as_ref()
-                        .map(|input| format!("/{} [{}]", command.name, input.hint))
-                        .unwrap_or_else(|| format!("/{}", command.name)),
-                    desc: self
-                        .locale
-                        .plugin_command_desc(&command.name, &command.description)
-                        .to_string(),
-                    skill: false,
-                    plugin: true,
-                    section: None,
-                    completion: None,
-                });
-            }
+        let mut plugins: Vec<_> = self
+            .plugin_commands
+            .iter()
+            .filter(|command| {
+                command.name.starts_with(prefix)
+                    && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
+            })
+            .collect();
+        plugins.sort_by(|a, b| a.name.cmp(&b.name));
+        for command in plugins {
+            out.push(SlashEntry {
+                name: command.name.clone(),
+                usage: command
+                    .input
+                    .as_ref()
+                    .map(|input| format!("/{} [{}]", command.name, input.hint))
+                    .unwrap_or_else(|| format!("/{}", command.name)),
+                desc: self
+                    .locale
+                    .plugin_command_desc(&command.name, &command.description)
+                    .to_string(),
+                skill: false,
+                plugin: true,
+                section: None,
+                completion: None,
+            });
         }
         // Host skills share the '/' namespace. Builtins win first, then an
         // active client command, because the latter never enters a prompt.
-        for s in &self.skills {
-            if s.name.eq_ignore_ascii_case("logout") {
-                continue;
-            }
-            if s.name.starts_with(prefix)
-                && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
-                && !self.plugin_command_active(&s.name)
-            {
-                out.push(SlashEntry {
-                    name: s.name.clone(),
-                    usage: s
-                        .input_hint
-                        .as_ref()
-                        .map(|hint| format!("/{} {}", s.name, hint))
-                        .unwrap_or_else(|| format!("/{}", s.name)),
-                    desc: s.description.clone(),
-                    skill: !s.client_command,
-                    plugin: s.client_command,
-                    section: None,
-                    completion: None,
-                });
-            }
+        // Each group stays alphabetical so the menu reads in name order.
+        let mut skills: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|s| {
+                !s.name.eq_ignore_ascii_case("logout")
+                    && s.name.starts_with(prefix)
+                    && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
+                    && !self.plugin_command_active(&s.name)
+            })
+            .collect();
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        for s in skills {
+            out.push(SlashEntry {
+                name: s.name.clone(),
+                usage: s
+                    .input_hint
+                    .as_ref()
+                    .map(|hint| format!("/{} {}", s.name, hint))
+                    .unwrap_or_else(|| format!("/{}", s.name)),
+                desc: s.description.clone(),
+                skill: !s.client_command,
+                plugin: s.client_command,
+                section: None,
+                completion: None,
+            });
         }
         // An exact command must win over a longer name sharing its prefix.
         out.sort_by_key(|entry| entry.name != prefix);
@@ -2760,6 +2806,11 @@ impl App {
                 .collect(),
             "lang" => vec![plain("zh", "中文"), plain("en", "English")],
             "liang" => vec![plain("on", "show pet"), plain("off", "hide pet")],
+            "session" => vec![
+                plain("view", "show session + runtime info"),
+                plain("prev", "switch to the previous session tab"),
+                plain("next", "switch to the next session tab"),
+            ],
             _ => Vec::new(),
         }
     }
@@ -2987,7 +3038,11 @@ impl App {
                     match serde_json::from_value::<UiPluginCatalog>(params) {
                         Ok(catalog) if catalog.protocol == 0 => self.ui_plugins = catalog.plugins,
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("UI Plugin catalog ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "UI Plugin catalog ignored: {}",
+                            "已忽略 UI 插件目录：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -2998,7 +3053,11 @@ impl App {
                             self.pending_cordis_approvals = snapshot.approvals;
                         }
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("plugin approvals ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "plugin approvals ignored: {}",
+                            "已忽略插件授权：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -3017,7 +3076,11 @@ impl App {
                             self.plugin_commands = catalog.commands;
                         }
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("commands ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "commands ignored: {}",
+                            "已忽略命令：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -3032,7 +3095,10 @@ impl App {
                                     self.view_overlay = None;
                                     self.select_overlay = Some(select);
                                 } else {
-                                    self.show_tip("overlay ignored: invalid select");
+                                    self.show_tip(self.locale.tr(
+                                        "overlay ignored: invalid select",
+                                        "已忽略 overlay：无效的 select",
+                                    ));
                                     self.slider_overlay = None;
                                     self.select_overlay = None;
                                     self.view_overlay = None;
@@ -3060,7 +3126,10 @@ impl App {
                                 self.slider_overlay = Some(slider);
                             }
                             Some(PluginOverlay::Slider(_)) => {
-                                self.show_tip("overlay ignored: invalid slider");
+                                self.show_tip(self.locale.tr(
+                                    "overlay ignored: invalid slider",
+                                    "已忽略 overlay：无效的 slider",
+                                ));
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
                                 self.view_overlay = None;
@@ -3076,7 +3145,10 @@ impl App {
                                 self.view_overlay = Some(view);
                             }
                             Some(PluginOverlay::View(_)) => {
-                                self.show_tip("overlay ignored: invalid view");
+                                self.show_tip(self.locale.tr(
+                                    "overlay ignored: invalid view",
+                                    "已忽略 overlay：无效的 view",
+                                ));
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
                                 self.view_overlay = None;
@@ -3099,7 +3171,11 @@ impl App {
                             }
                         },
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("overlay ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "overlay ignored: {}",
+                            "已忽略 overlay：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -3115,7 +3191,11 @@ impl App {
                             }
                         }
                         Ok(None) => {}
-                        Err(err) => self.show_tip(format!("slot ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "slot ignored: {}",
+                            "已忽略 slot：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -3162,10 +3242,14 @@ impl App {
                 }
                 if let Some(c) = code {
                     if c != 0 {
-                        self.transcript.push_notice(
-                            NoticeLevel::Warn,
-                            format!("runtime exited with code {c} — next prompt restarts it"),
-                        );
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        self.locale.trf(
+                            "runtime exited with code {} — next prompt restarts it",
+                            "运行时以退出码 {} 结束 —— 下一条提示会重启它",
+                            &[c.to_string()],
+                        ),
+                    );
                     }
                 }
                 self.needs_redraw = true;
@@ -3261,7 +3345,7 @@ impl App {
                                 }
                             }
                         }
-                        self.show_tip("session bind failed");
+                        self.show_tip(self.locale.tr("session bind failed", "会话绑定失败"));
                         self.needs_redraw = true;
                     }
                     CtlEvent::CancelRequested => {
@@ -3279,7 +3363,12 @@ impl App {
                             self.state_note.clear();
                             self.transcript.cancel_open_work();
                             self.transcript
-                                .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                                .push_notice(
+                                    NoticeLevel::Warn,
+                                    self.locale
+                                        .tr("interrupted — turn cancelled", "已中断 —— 本轮已取消")
+                                        .into(),
+                                );
                         } else if let Some(slot) =
                             self.parked.iter_mut().find(|slot| slot.id == session_id)
                         {
@@ -3287,7 +3376,12 @@ impl App {
                             slot.running = false;
                             slot.transcript.cancel_open_work();
                             slot.transcript
-                                .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
+                                .push_notice(
+                                    NoticeLevel::Warn,
+                                    self.locale
+                                        .tr("interrupted — turn cancelled", "已中断 —— 本轮已取消")
+                                        .into(),
+                                );
                         }
                         self.dispatch_session_queue(&session_id, ctl);
                     }
@@ -3421,9 +3515,10 @@ impl App {
                             self.modes.agent_preset = Some(preset.clone());
                             self.transcript.push_notice(
                                 NoticeLevel::Info,
-                                format!(
+                                self.locale.trf(
                                     "⚙ agent → {} · composes on this session's first prompt",
-                                    label
+                                    "⚙ Agent → {} · 在本会话首次输入时生效",
+                                    &[label],
                                 ),
                             );
                         } else if let Some(slot) =
@@ -3432,9 +3527,10 @@ impl App {
                             slot.modes.agent_preset = Some(preset.clone());
                             slot.transcript.push_notice(
                                 NoticeLevel::Info,
-                                format!(
+                                self.locale.trf(
                                     "⚙ agent → {} · composes on this session's first prompt",
-                                    label
+                                    "⚙ Agent → {} · 在本会话首次输入时生效",
+                                    &[label],
                                 ),
                             );
                         }
@@ -3448,7 +3544,7 @@ impl App {
                     CtlEvent::Auth(snap) => {
                         let retrying_prompt =
                             self.state == RunState::Running || self.prompt_pending;
-                        if let Some((level, text)) = snap.notice() {
+                        if let Some((level, text)) = snap.notice(self.locale) {
                             self.transcript.push_notice(level, text);
                         }
                         if snap.status == crate::acp_auth::AuthStatus::Configured {
@@ -3540,7 +3636,9 @@ impl App {
                                     } else {
                                         // The viewed tab is bound or awaiting its own bind:
                                         // park this startup session as a fresh slot.
-                                        let mut slot = SessionSlot::fresh(session_id.clone(), true);
+                                        let mut slot =
+                                            SessionSlot::fresh(session_id.clone(), true);
+                                        slot.transcript.locale = self.locale;
                                         if let Some(notice) = notice {
                                             slot.transcript.push_notice(NoticeLevel::Info, notice);
                                         }
@@ -3563,8 +3661,10 @@ impl App {
                                 ctl.send(Cmd::ForgetSession {
                                     session_id: session_id.clone(),
                                 });
-                                self.show_tip(format!(
-                                    "session {session_id} bound after its tab was closed"
+                                self.show_tip(self.locale.trf(
+                                    "session {} bound after its tab was closed",
+                                    "会话 {} 已绑定，但对应标签页已被关闭",
+                                    &[session_id.clone()],
                                 ));
                             } else if self.session_id == awaiting.id {
                                 let old_id = self.session_id.clone();
@@ -3597,8 +3697,10 @@ impl App {
                                 }
                                 just_bound = Some(slot.id.clone());
                             } else {
-                                self.show_tip(format!(
-                                    "session {session_id} bound after its tab was closed"
+                                self.show_tip(self.locale.trf(
+                                    "session {} bound after its tab was closed",
+                                    "会话 {} 已绑定，但对应标签页已被关闭",
+                                    &[session_id.clone()],
                                 ));
                             }
                         } else if let Some(slot) =
@@ -3635,11 +3737,19 @@ impl App {
                         }
                         ctl.send(Cmd::FetchSkills);
                     }
-                    CtlEvent::SessionList { sessions, prefix } => {
-                        self.on_acp_session_list(sessions, prefix, ctl);
+                    CtlEvent::SessionList {
+                        sessions,
+                        prefix,
+                        limit,
+                    } => {
+                        self.on_acp_session_list(sessions, prefix, limit, ctl);
                     }
-                    CtlEvent::SessionListUnavailable { prefix, error } => {
-                        self.on_acp_session_list_unavailable(prefix, error, ctl);
+                    CtlEvent::SessionListUnavailable {
+                        prefix,
+                        limit,
+                        error,
+                    } => {
+                        self.on_acp_session_list_unavailable(prefix, limit, error, ctl);
                     }
                 }
                 self.needs_redraw = true;
@@ -3711,7 +3821,7 @@ impl App {
                             slot.next_subagent_starts_batch = false;
                         }
                         slot.current_subagents.insert(child.clone());
-                        upsert_subagent_view(&mut slot.subagents, parent, child);
+                        upsert_subagent_view(&mut slot.subagents, parent, child, self.locale);
                         if slot.id == *parent {
                             slot.transcript.apply(ui);
                         } else if let Some(view) =
@@ -3732,7 +3842,7 @@ impl App {
                 self.next_subagent_starts_batch = false;
             }
             self.current_subagents.insert(child.clone());
-            upsert_subagent_view(&mut self.subagents, parent, child);
+            upsert_subagent_view(&mut self.subagents, parent, child, self.locale);
             if parent == &self.session_id {
                 self.transcript.apply(ui);
             } else if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *parent) {
@@ -4208,7 +4318,7 @@ impl App {
         };
         self.input.delete_char_range(start, end);
         if let Some(att) = self.pending_images.remove(idx) {
-            self.show_tip(format!("removed {}", att.name));
+            self.show_tip(self.locale.trf("removed {}", "已移除 {}", &[att.name.clone()]));
         }
         true
     }
@@ -4376,7 +4486,11 @@ impl App {
                 "collapsed"
             }
         };
-        self.show_tip(format!("{label} tool output · click toggles"));
+        self.show_tip(self.locale.trf(
+            "{} tool output · click toggles",
+            "{} 工具输出 · 点击切换展开",
+            &[label.into()],
+        ));
         self.needs_redraw = true;
     }
 
@@ -4401,9 +4515,16 @@ impl App {
     fn copy_text(&mut self, text: &str) {
         let chars = text.chars().count();
         if crate::clipboard::copy(text) {
-            self.show_tip(format!("✓ copied {chars} chars — esc clears the highlight"));
+            self.show_tip(self.locale.trf(
+                "✓ copied {} chars — esc clears the highlight",
+                "✓ 已复制 {} 个字符 —— esc 清除高亮",
+                &[chars.to_string()],
+            ));
         } else {
-            self.show_tip("copy failed — hold shift and drag for the terminal's native selection");
+            self.show_tip(self.locale.tr(
+                "copy failed — hold shift and drag for the terminal's native selection",
+                "复制失败 —— 按住 shift 拖动可使用终端原生选择",
+            ));
         }
     }
 
@@ -4587,6 +4708,18 @@ impl App {
             return;
         };
         self.locale = next;
+        // New notices from every transcript (live, parked, subagent views)
+        // render in the switched language; cells already pushed keep theirs.
+        self.transcript.locale = next;
+        for slot in &mut self.parked {
+            slot.transcript.locale = next;
+            for view in &mut slot.subagents {
+                view.transcript.locale = next;
+            }
+        }
+        for view in &mut self.subagents {
+            view.transcript.locale = next;
+        }
         self.save_settings();
         self.show_tip(match next {
             Locale::En => "Language switched to English",
@@ -4787,7 +4920,14 @@ impl App {
         // DSH_TUI_KEYDEBUG=1: surface exactly what the terminal delivered
         // (after CG rescue) in the tip row — kills keybinding mysteries.
         if self.key_debug {
-            self.show_tip(format!("key: {:?} + {:?}", key.modifiers, key.code));
+            self.show_tip(self.locale.trf(
+                "key: {} + {}",
+                "按键：{} + {}",
+                &[
+                    format!("{:?}", key.modifiers),
+                    format!("{:?}", key.code),
+                ],
+            ));
         }
 
         // Vim mode intercepts plain keys while it is active; overlays and
@@ -4979,7 +5119,7 @@ impl App {
                 }
                 (KeyCode::Esc, KeyModifiers::NONE) => {
                     self.queue_selection = None;
-                    self.show_tip("queue selection closed");
+                    self.show_tip(self.locale.tr("queue selection closed", "队列选择已关闭"));
                     if matches!(self.state, RunState::Idle) {
                         self.dispatch_next_queued(ctl);
                     }
@@ -4997,7 +5137,10 @@ impl App {
                 edit.delete_confirm = true;
             }
             self.slash_completion_dismissed = true;
-            self.show_tip("delete queued prompt? · enter confirm · esc back");
+            self.show_tip(self.locale.tr(
+                "delete queued prompt? · enter confirm · esc back",
+                "删除这条排队消息？· enter 确认 · esc 返回",
+            ));
             return;
         }
 
@@ -5255,8 +5398,10 @@ impl App {
             Action::ClearScrollback => {
                 self.transcript.clear();
                 self.sel = None;
-                self.transcript
-                    .push_notice(NoticeLevel::Info, "scrollback cleared".into());
+                    self.transcript.push_notice(
+                        NoticeLevel::Info,
+                        self.locale.tr("scrollback cleared", "滚动区已清空").into(),
+                    );
             }
             Action::ToggleTheme => {
                 self.toggle_theme_mode();
@@ -5264,9 +5409,11 @@ impl App {
             Action::ToggleExpandAll => {
                 self.transcript.expand_all = !self.transcript.expand_all;
                 self.show_tip(if self.transcript.expand_all {
-                    "expanded all thoughts and tool results"
+                    self.locale
+                        .tr("expanded all thoughts and tool results", "已展开全部思考与工具输出")
                 } else {
-                    "collapsed all thoughts and tool results"
+                    self.locale
+                        .tr("collapsed all thoughts and tool results", "已折叠全部思考与工具输出")
                 });
             }
             Action::SendNow => self.send_now(ctl),
@@ -5275,31 +5422,6 @@ impl App {
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
             Action::CyclePermission => self.cycle_permission(ctl),
-            Action::SessionTab(n) => {
-                // alt+1…9: jump to session tab N (no-op beyond the strip).
-                let tab = n.saturating_sub(1) as usize;
-                if tab <= self.parked.len() {
-                    self.switch_view_to_tab(tab, ctl);
-                }
-            }
-            Action::NextSessionTab => {
-                let count = self.session_tab_count();
-                if count > 1 {
-                    let next = (self.current + 1) % count;
-                    self.switch_view_to_tab(next, ctl);
-                }
-            }
-            Action::PrevSessionTab => {
-                let count = self.session_tab_count();
-                if count > 1 {
-                    let prev = if self.current == 0 {
-                        count - 1
-                    } else {
-                        self.current - 1
-                    };
-                    self.switch_view_to_tab(prev, ctl);
-                }
-            }
             Action::HistoryPrev => self.history_prev(),
             Action::HistoryNext => self.history_next(),
             Action::ScrollHalfUp => self.scroll_by(10),
@@ -5382,7 +5504,10 @@ impl App {
                         self.input.cut_selection_to_yank();
                         self.copy_text(&text);
                     } else {
-                        self.show_tip("nothing to cut — select with shift+arrows");
+                        self.show_tip(self.locale.tr(
+                        "nothing to cut — select with shift+arrows",
+                        "无可剪切 —— 用 shift+方向键先选中文本",
+                    ));
                     }
                 } else if let Some((a, b)) = self.input_selection_range() {
                     let text = self.input.chars_between(a, b);
@@ -5391,10 +5516,16 @@ impl App {
                         self.input_sel = None;
                         self.copy_text(&text);
                     } else {
-                        self.show_tip("nothing to cut — select with shift+arrows");
+                        self.show_tip(self.locale.tr(
+                        "nothing to cut — select with shift+arrows",
+                        "无可剪切 —— 用 shift+方向键先选中文本",
+                    ));
                     }
                 } else {
-                    self.show_tip("nothing to cut — select with shift+arrows");
+                    self.show_tip(self.locale.tr(
+                        "nothing to cut — select with shift+arrows",
+                        "无可剪切 —— 用 shift+方向键先选中文本",
+                    ));
                 }
             }
         }
@@ -5496,6 +5627,30 @@ impl App {
         options: Vec<PermissionAskOption>,
         reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
     ) {
+        // acp_fs's builtin write-outside ask is authored in English; its
+        // known strings localize here at render time. Anything else (plugin
+        // and host asks) passes through untouched.
+        let title = match title
+            .strip_prefix("write ")
+            .and_then(|rest| rest.strip_suffix(" · outside workspace"))
+        {
+            Some(path) => self.locale.trf(
+                "write {} · outside workspace",
+                "写入 {} · 工作区外",
+                &[path.into()],
+            ),
+            None => title,
+        };
+        let mut options = options;
+        for option in &mut options {
+            match (option.option_id.as_str(), option.name.as_str()) {
+                ("deny", "Deny") => option.name = self.locale.tr("Deny", "拒绝").into(),
+                ("allow", "Allow write") => {
+                    option.name = self.locale.tr("Allow write", "允许写入").into();
+                }
+                _ => {}
+            }
+        }
         let sel = permission_ask_default_sel(&options);
         let overlay = PermissionAskOverlay {
             title,
@@ -5516,7 +5671,10 @@ impl App {
             // tab — it must not float over the tab on screen.
             slot.permission_ask = Some(overlay);
         } else {
-            self.show_tip("permission ask from an unknown session — shown here");
+            self.show_tip(self.locale.tr(
+                "permission ask from an unknown session — shown here",
+                "未知会话的权限请求 —— 在此显示",
+            ));
             self.permission_ask = Some(overlay);
         }
         self.needs_redraw = true;
@@ -5531,8 +5689,10 @@ impl App {
         form: crate::elicitation::ElicitationForm,
         reply: tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>,
     ) {
+        let mut form_state = crate::elicitation::ElicitationFormState::new(form);
+        form_state.locale = self.locale;
         let overlay = ElicitationAskOverlay {
-            form: crate::elicitation::ElicitationFormState::new(form),
+            form: form_state,
             scroll: 0,
             reply: Some(reply),
         };
@@ -5551,7 +5711,10 @@ impl App {
         {
             slot.elicitation_ask = Some(overlay);
         } else {
-            self.show_tip("elicitation from an unknown session — shown here");
+            self.show_tip(self.locale.tr(
+                "elicitation from an unknown session — shown here",
+                "未知会话的表单请求 —— 在此显示",
+            ));
             self.elicitation_ask = Some(overlay);
         }
         self.needs_redraw = true;
@@ -5634,8 +5797,14 @@ impl App {
                             model: None,
                             effort: Some(effort.clone()),
                         });
-                        self.transcript
-                            .push_notice(NoticeLevel::Info, format!("reasoning effort → {effort}"));
+                        self.transcript.push_notice(
+                            NoticeLevel::Info,
+                            self.locale.trf(
+                                "reasoning effort → {}",
+                                "推理强度 → {}",
+                                &[effort.clone()],
+                            ),
+                        );
                     }
                     PickerKind::Auth => self.start_auth(&item.id, ctl),
                     PickerKind::CordisPlugin => {
@@ -5654,7 +5823,11 @@ impl App {
                             self.open_cordis_approval_picker(request_id.clone());
                         } else if let Some((plugin_id, status, _)) = action {
                             if matches!(status.as_str(), "starting-host" | "client-pending") {
-                                self.show_tip(format!("plugin {plugin_id} is already starting"));
+                                self.show_tip(self.locale.trf(
+                                    "plugin {} is already starting",
+                                    "插件 {} 已在启动中",
+                                    &[plugin_id],
+                                ));
                                 return;
                             }
                             let enabled = !matches!(status.as_str(), "running" | "waiting");
@@ -5664,9 +5837,17 @@ impl App {
                                 enabled,
                             });
                             self.show_tip(if enabled {
-                                format!("restoring plugin {plugin_id}…")
+                                self.locale.trf(
+                                    "restoring plugin {}…",
+                                    "正在恢复插件 {}…",
+                                    &[plugin_id.clone()],
+                                )
                             } else {
-                                format!("stopping plugin {plugin_id}…")
+                                self.locale.trf(
+                                    "stopping plugin {}…",
+                                    "正在停止插件 {}…",
+                                    &[plugin_id.clone()],
+                                )
                             });
                         }
                     }
@@ -5925,31 +6106,42 @@ impl App {
     }
 
     /// `/resume`: list this workspace's durable sessions in a picker
-    /// (grok-build's session picker). Live ACP prefers `session/list`.
-    fn open_resume_picker(&mut self, ctl: &Controller) {
+    /// (grok-build's session picker). Live ACP prefers `session/list`;
+    /// `limit` is the `/resume n` count (most recent first).
+    fn open_resume_picker(&mut self, limit: usize, ctl: &Controller) {
         if !self.demo && self.list_session {
-            ctl.send(Cmd::ListSessions { prefix: None });
-            self.show_tip("listing ACP sessions…");
+            ctl.send(Cmd::ListSessions {
+                prefix: None,
+                limit,
+            });
+            self.show_tip(self.locale.tr("listing ACP sessions…", "正在列出 ACP 会话…"));
             return;
         }
         if !self.demo {
-            self.show_tip("agent did not advertise session/list — listing local JSONL");
+            self.show_tip(self.locale.tr(
+                "agent did not advertise session/list — listing local JSONL",
+                "Agent 未声明 session/list —— 改为列出本地 JSONL",
+            ));
         }
-        self.open_local_resume_picker();
+        self.open_local_resume_picker(limit);
     }
 
-    fn open_local_resume_picker(&mut self) {
+    fn open_local_resume_picker(&mut self, limit: usize) {
         self.resume_via_acp = false;
         let sessions = crate::sessions::list_sessions(
             &self.cfg.session_root,
             &self.cfg.workspace,
             &self.session_id,
+            limit,
         );
         if sessions.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                "no durable sessions for this workspace yet — finish a turn and /resume finds it"
-                    .into(),
+                self.locale.tr(
+                    "no durable sessions for this workspace yet — finish a turn and /resume finds it",
+                    "此工作区还没有持久会话 —— 完成一轮对话后 /resume 即可找回",
+                )
+                .into(),
             );
             return;
         }
@@ -5983,6 +6175,7 @@ impl App {
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
+                usize::MAX,
             );
         }
         let matches: Vec<crate::sessions::SessionSummary> = self
@@ -5996,7 +6189,11 @@ impl App {
             [] => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
-                    format!("no session matches “{id_or_prefix}” — /resume lists them"),
+                    self.locale.trf(
+                        "no session matches “{}” — /resume lists them",
+                        "没有会话匹配「{}」—— /resume 可列出全部",
+                        &[id_or_prefix.into()],
+                    ),
                 );
                 return;
             }
@@ -6005,9 +6202,10 @@ impl App {
                 None => {
                     self.transcript.push_notice(
                         NoticeLevel::Warn,
-                        format!(
-                            "“{id_or_prefix}” is ambiguous ({} matches) — /resume lists them",
-                            many.len()
+                        self.locale.trf(
+                            "“{}” is ambiguous ({} matches) — /resume lists them",
+                            "「{}」有 {} 个匹配，存在歧义 —— /resume 可列出全部",
+                            &[id_or_prefix.into(), many.len().to_string()],
                         ),
                     );
                     return;
@@ -6019,7 +6217,11 @@ impl App {
             Err(err) => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
-                    format!("cannot read {}: {err:#}", session.file.display()),
+                    self.locale.trf(
+                        "cannot read {}: {}",
+                        "无法读取 {}：{}",
+                        &[session.file.display().to_string(), format!("{err:#}")],
+                    ),
                 );
                 return;
             }
@@ -6032,7 +6234,11 @@ impl App {
                 self.resume_candidates = Vec::new();
                 self.transcript.push_notice(
                     NoticeLevel::Info,
-                    format!("⟲ {} is already open — switched to its tab", session.id),
+                    self.locale.trf(
+                        "⟲ {} is already open — switched to its tab",
+                        "⟲ {} 已在打开的标签页中 —— 已切换过去",
+                        &[session.id.clone()],
+                    ),
                 );
                 return;
             }
@@ -6082,11 +6288,15 @@ impl App {
         self.resume_candidates = Vec::new();
         self.transcript.push_notice(
             NoticeLevel::Info,
-            format!(
-                "⟲ resumed {} · {} turn{} · {replayed} events replayed — the next prompt continues it",
-                session.id,
-                session.turns,
-                if session.turns == 1 { "" } else { "s" },
+            self.locale.trf(
+                "⟲ resumed {} · {} turn{} · {} events replayed — the next prompt continues it",
+                "⟲ 已恢复 {} · {} 轮对话 · 回放 {} 个事件 —— 下一条消息继续它",
+                &[
+                    session.id.clone(),
+                    session.turns.to_string(),
+                    if session.turns == 1 { "" } else { "s" }.to_string(),
+                    replayed.to_string(),
+                ],
             ),
         );
         self.needs_redraw = true;
@@ -6105,7 +6315,11 @@ impl App {
             ctl.send(Cmd::FetchSkills);
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                format!("new session · {id} — /agent picks its agent preset"),
+                self.locale.trf(
+                    "new session · {} — /agent picks its agent preset",
+                    "新会话 · {} —— /agent 选择它的 Agent 预设",
+                    &[id],
+                ),
             );
         } else {
             // A local placeholder ids the tab until session/new resolves —
@@ -6118,7 +6332,7 @@ impl App {
                 open: true,
             });
             ctl.send(Cmd::NewSession);
-            self.show_tip("session/new …");
+            self.show_tip(self.locale.tr("session/new …", "正在创建会话（session/new）…"));
         }
     }
 
@@ -6196,9 +6410,13 @@ impl App {
             bits.push("pending ask cancelled".into());
         }
         if bits.is_empty() {
-            self.show_tip(format!("closed {label}"));
+            self.show_tip(self.locale.trf("closed {}", "已关闭 {}", &[label.clone()]));
         } else {
-            self.show_tip(format!("closed {label} · {}", bits.join(", ")));
+            self.show_tip(self.locale.trf(
+                "closed {} · {}",
+                "已关闭 {} · {}",
+                &[label.clone(), bits.join(", ")],
+            ));
         }
     }
 
@@ -6264,7 +6482,7 @@ impl App {
         ctl.send(Cmd::ResumeSession {
             session_id: id.to_string(),
         });
-        self.show_tip(format!("resuming {id} …"));
+        self.show_tip(self.locale.trf("resuming {} …", "正在恢复会话 {} …", &[id.into()]));
         self.needs_redraw = true;
     }
 
@@ -6272,11 +6490,17 @@ impl App {
         &mut self,
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
+        limit: usize,
         ctl: &Controller,
     ) {
         let skip = self.session_id.clone();
-        let sessions: Vec<SessionListItem> =
-            sessions.into_iter().filter(|s| s.id != skip).collect();
+        // The `/resume n` cap counts resumable sessions only: the current
+        // session is dropped first, then the list truncates to the limit.
+        let mut sessions: Vec<SessionListItem> = sessions
+            .into_iter()
+            .filter(|s| s.id != skip)
+            .collect();
+        sessions.truncate(limit);
         if let Some(prefix) = prefix.as_deref().filter(|p| !p.is_empty()) {
             match unique_session_list_match(&sessions, prefix) {
                 Ok(id) => {
@@ -6294,7 +6518,11 @@ impl App {
         if sessions.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                "no ACP sessions from session/list — finish a turn and /resume finds it".into(),
+                self.locale.tr(
+                    "no ACP sessions from session/list — finish a turn and /resume finds it",
+                    "session/list 没有返回 ACP 会话 —— 完成一轮对话后 /resume 即可找回",
+                )
+                .into(),
             );
             return;
         }
@@ -6305,6 +6533,7 @@ impl App {
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
+                usize::MAX,
             )
             .into_iter()
             .map(|s| (s.id.clone(), s))
@@ -6341,11 +6570,14 @@ impl App {
     fn on_acp_session_list_unavailable(
         &mut self,
         prefix: Option<String>,
+        limit: usize,
         error: String,
         ctl: &Controller,
     ) {
-        self.show_tip(format!(
-            "session/list unavailable ({error}) — listing local JSONL"
+        self.show_tip(self.locale.trf(
+            "session/list unavailable ({}) — listing local JSONL",
+            "session/list 不可用（{}）—— 改为列出本地 JSONL",
+            &[error.clone()],
         ));
         if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
             if self.resume_session_cap || self.load_session {
@@ -6355,7 +6587,7 @@ impl App {
             self.resume_session(&prefix, ctl);
             return;
         }
-        self.open_local_resume_picker();
+        self.open_local_resume_picker(limit);
         if self.resume_session_cap || self.load_session {
             self.resume_via_acp = true;
         }
@@ -6445,7 +6677,7 @@ impl App {
     fn set_mode(&mut self, preset: String, ctl: &Controller) {
         let label = self.agent_label(&preset);
         if self.modes.agent_preset.as_deref() == Some(preset.as_str()) {
-            self.show_tip(format!("agent already {label}"));
+            self.show_tip(self.locale.trf("agent already {}", "Agent 已是 {}", &[label.into()]));
             return;
         }
         ctl.send(Cmd::SetPreset {
@@ -6454,7 +6686,7 @@ impl App {
         });
         // Preset scopes can mount their own skill registries.
         ctl.send(Cmd::FetchSkills);
-        self.show_tip(format!("agent → {label} …"));
+        self.show_tip(self.locale.trf("agent → {} …", "Agent → {} …", &[label.into()]));
     }
 
     /// Ctrl+Shift+A cycles the advertised agent presets directly. `/agent`
@@ -6477,7 +6709,7 @@ impl App {
             .or_else(|| choices.first().copied())
         else {
             ctl.send(Cmd::FetchCatalog);
-            self.show_tip("agent presets unavailable");
+            self.show_tip(self.locale.tr("agent presets unavailable", "Agent 预设不可用"));
             return;
         };
         self.set_mode(next.to_string(), ctl);
@@ -6562,14 +6794,22 @@ impl App {
     /// session is created.
     fn set_permission(&mut self, preset: String, ctl: &Controller) {
         if self.modes.permission.as_deref() == Some(preset.as_str()) {
-            self.show_tip(format!("permission already {preset}"));
+            self.show_tip(self.locale.trf(
+                "permission already {}",
+                "权限预设已是 {}",
+                &[preset.into()],
+            ));
             return;
         }
         ctl.send(Cmd::SetPermission {
             session_id: self.session_id.clone(),
             preset: preset.clone(),
         });
-        self.show_tip(format!("permission → {preset} …"));
+        self.show_tip(self.locale.trf(
+            "permission → {} …",
+            "权限预设 → {} …",
+            &[preset.into()],
+        ));
     }
 
     /// `/permission` — the two stock presets with their meaning, the current
@@ -6649,14 +6889,17 @@ impl App {
         if let Some(edit) = &mut self.queue_edit {
             if edit.delete_confirm {
                 edit.delete_confirm = false;
-                self.show_tip("delete cancelled · still editing queued prompt");
+                self.show_tip(self.locale.tr(
+                    "delete cancelled · still editing queued prompt",
+                    "已取消删除 · 仍在编辑这条排队消息",
+                ));
             } else {
                 self.queue_edit = None;
                 self.input.clear();
                 self.input_sel = None;
                 self.slash_completion_dismissed = false;
                 self.reconcile_attachments();
-                self.show_tip("queued prompt edit cancelled");
+                self.show_tip(self.locale.tr("queued prompt edit cancelled", "已取消编辑排队消息"));
                 if matches!(self.state, RunState::Idle) {
                     self.dispatch_next_queued(ctl);
                 }
@@ -6672,7 +6915,7 @@ impl App {
                     });
                     self.state_note = self.locale.tr("cancelling", "正在取消").into();
                 } else {
-                    self.show_tip("demo turn — it finishes on its own");
+                    self.show_tip(self.locale.tr("demo turn — it finishes on its own", "演示轮次 —— 会自动结束"));
                 }
             }
             RunState::Idle => {
@@ -6682,10 +6925,13 @@ impl App {
                     self.input.history.push(self.input.buf());
                     self.input.clear();
                     self.reconcile_attachments();
-                    self.show_tip("draft cleared — ↑ recalls it");
+                    self.show_tip(self.locale.tr("draft cleared — ↑ recalls it", "草稿已清空 —— ↑ 可找回"));
                     return;
                 }
-                self.show_tip("esc — idle · a running turn is interrupted with esc");
+                self.show_tip(self.locale.tr(
+                    "esc — idle · a running turn is interrupted with esc",
+                    "esc — 空闲 · 运行中的轮次用 esc 中断",
+                ));
             }
         }
     }
@@ -6699,7 +6945,7 @@ impl App {
             self.input.clear();
             self.input_sel = None;
             self.reconcile_attachments();
-            self.show_tip("draft cleared — ↑ recalls it");
+            self.show_tip(self.locale.tr("draft cleared — ↑ recalls it", "草稿已清空 —— ↑ 可找回"));
             return;
         }
         let required = 2;
@@ -6716,9 +6962,15 @@ impl App {
         let remaining = chord.required - chord.presses;
         self.ctrl_c_armed = Some(chord);
         self.show_tip(if remaining == 1 {
-            "press ctrl+c again to exit".into()
+            self.locale
+                .tr("press ctrl+c again to exit", "再按一次 ctrl+c 退出")
+                .into()
         } else {
-            format!("press ctrl+c {remaining} more times to exit while the agent is running")
+            self.locale.trf(
+                "press ctrl+c {} more times to exit while the agent is running",
+                "Agent 运行中，再按 {} 次 ctrl+c 退出",
+                &[remaining.to_string()],
+            )
         });
     }
 
@@ -6870,7 +7122,11 @@ impl App {
                         id: arg.to_string(),
                     });
                 } else {
-                    self.show_tip(format!("unknown UI Plugin: {arg}"));
+                    self.show_tip(self.locale.trf(
+                    "unknown UI Plugin: {}",
+                    "未知 UI 插件：{}",
+                    &[arg.into()],
+                ));
                 }
             }
             "plugins" => {
@@ -6905,24 +7161,52 @@ impl App {
             }
             "new" => self.new_session_flow(arg, ctl),
             "close" => self.close_session_flow(ctl),
-            "session" => self.push_session_info(),
+            "session" => match arg {
+                "view" | "" => self.push_session_info(),
+                "prev" => {
+                    let count = self.session_tab_count();
+                    if count > 1 {
+                        let prev =
+                            if self.current == 0 { count - 1 } else { self.current - 1 };
+                        self.switch_view_to_tab(prev, ctl);
+                    }
+                }
+                "next" => {
+                    let count = self.session_tab_count();
+                    if count > 1 {
+                        let next = (self.current + 1) % count;
+                        self.switch_view_to_tab(next, ctl);
+                    }
+                }
+                _ => self.show_tip(self.locale.tr(
+                    "usage: /session [view|prev|next]",
+                    "用法：/session [view|prev|next]",
+                )),
+            },
             "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
             "resume" => {
+                // `/resume [n|id]` — a bare number is how many of the most
+                // recent durable sessions to list (default 50); anything
+                // else is an id prefix to resume.
                 if arg.is_empty() {
-                    self.open_resume_picker(ctl);
+                    self.open_resume_picker(crate::sessions::DEFAULT_SESSION_LIST_LIMIT, ctl);
+                } else if let Ok(n) = arg.parse::<usize>() {
+                    self.open_resume_picker(n.max(1), ctl);
                 } else if !self.demo && self.list_session {
                     ctl.send(Cmd::ListSessions {
                         prefix: Some(arg.to_string()),
+                        limit: usize::MAX,
                     });
-                    self.show_tip("listing ACP sessions…");
+                    self.show_tip(self.locale.tr("listing ACP sessions…", "正在列出 ACP 会话…"));
                 } else if !self.demo && (self.resume_session_cap || self.load_session) {
                     self.resume_acp_session(arg, ctl);
                 } else {
                     if !self.demo {
-                        self.show_tip(
+                        self.show_tip(self.locale.tr(
                             "agent did not advertise session/resume or loadSession — replaying local JSONL",
-                        );
+                            "Agent 未声明 session/resume 或 loadSession —— 改为回放本地 JSONL",
+                        ));
                     }
                     self.resume_session(arg, ctl);
                 }
@@ -7019,7 +7303,7 @@ impl App {
         self.state = RunState::Idle;
         self.run_started = None;
         self.state_note.clear();
-        self.show_tip("sign-in needed — /auth to retry");
+        self.show_tip(self.locale.tr("sign-in needed — /auth to retry", "需要登录 —— /auth 重试"));
         self.start_auth("", ctl);
     }
 
@@ -7064,16 +7348,25 @@ impl App {
         };
         if self.demo {
             self.transcript
-                .push_notice(NoticeLevel::Info, "demo has no ACP authenticate".into());
+                .push_notice(
+                    NoticeLevel::Info,
+                    self.locale
+                        .tr("demo has no ACP authenticate", "演示模式没有 ACP authenticate")
+                        .into(),
+                );
             return;
         }
         if self.auth.methods.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                self.auth
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| "this agent did not advertise auth methods".into()),
+                self.auth.message.clone().unwrap_or_else(|| {
+                    self.locale
+                        .tr(
+                            "this agent did not advertise auth methods",
+                            "此 Agent 未声明认证方式",
+                        )
+                        .into()
+                }),
             );
             return;
         }
@@ -7101,7 +7394,11 @@ impl App {
         let Some(method) = select_auth_method(&self.auth.methods, Some(&method_id)).cloned() else {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                format!("ACP auth method is unavailable or not supported: {method_id}"),
+                self.locale.trf(
+                    "ACP auth method is unavailable or not supported: {}",
+                    "ACP 认证方式不可用或不支持：{}",
+                    &[method_id.clone()],
+                ),
             );
             return;
         };
@@ -7115,14 +7412,16 @@ impl App {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
                 if vars.is_empty() {
-                    format!(
+                    self.locale.trf(
                         "ACP auth method {} requires credential variables and cannot be started as a sign-in flow.",
-                        method.id
+                        "ACP 认证方式 {} 需要凭据变量，无法以登录流程启动。",
+                        &[method.id.clone()],
                     )
                 } else {
-                    format!(
-                        "ACP auth method {} requires credential variables ({vars}) and cannot be started as a sign-in flow.",
-                        method.id
+                    self.locale.trf(
+                        "ACP auth method {} requires credential variables ({}) and cannot be started as a sign-in flow.",
+                        "ACP 认证方式 {} 需要凭据变量（{}），无法以登录流程启动。",
+                        &[method.id.clone(), vars],
                     )
                 },
             );
@@ -7130,7 +7429,10 @@ impl App {
         }
         let values = values_from_auth_arg(&method, &rest);
         if method.form && authenticate_meta_from_method(&method, &values).is_none() {
-            self.show_tip("usage: /auth <api-key> · gateway: /auth <base-url> <api-key>");
+            self.show_tip(self.locale.tr(
+                "usage: /auth <api-key> · gateway: /auth <base-url> <api-key>",
+                "用法：/auth <api-key> · 网关：/auth <base-url> <api-key>",
+            ));
             return;
         }
         if values.is_empty() {
@@ -7138,9 +7440,14 @@ impl App {
                 self.pending_terminal_auth = Some(launch);
                 self.transcript.push_notice(
                     NoticeLevel::Info,
-                    format!(
+                    self.locale.trf(
                         "leaving the TUI for {} — return here when it finishes",
-                        method.name.as_deref().unwrap_or(&method.id)
+                        "离开 TUI 前往 {} —— 完成后回到这里",
+                        &[method
+                            .name
+                            .as_deref()
+                            .unwrap_or(&method.id)
+                            .to_string()],
                     ),
                 );
                 return;
@@ -7492,7 +7799,10 @@ impl App {
         // instead of silently dropping them.
         if !self.pending_images.is_empty() && (text.starts_with('/') || text.starts_with('!')) {
             self.show_tip(
-                "send or delete the [image] chips first — /commands and !shell don't take images",
+                self.locale.tr(
+                    "send or delete the [image] chips first — /commands and !shell don't take images",
+                    "先发送或删除 [image] 标记 —— /命令 和 !shell 不接受图片",
+                ),
             );
             return;
         }
@@ -7571,7 +7881,10 @@ impl App {
                 blocks: vec![StagedBlock::Text(text.clone())],
             });
             self.queued += 1;
-            self.show_tip("queued · empty enter sends first · alt+↑ edit");
+            self.show_tip(self.locale.tr(
+                "queued · empty enter sends first · alt+↑ edit",
+                "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
+            ));
         } else {
             self.transcript.push_user(text.clone(), false);
             self.prompt_pending = true;
@@ -7598,7 +7911,10 @@ impl App {
                 .locale
                 .tr("queue paused for selection/edit", "队列已暂停 · 请选择或编辑")
                 .into();
-            self.show_tip("queue paused · finish or close the queue editor");
+            self.show_tip(self.locale.tr(
+                "queue paused · finish or close the queue editor",
+                "队列暂停 · 完成或关闭队列编辑器",
+            ));
             return;
         }
         if !self.session_bound {
@@ -7673,7 +7989,10 @@ impl App {
                     requeue_front: true,
                 },
             );
-            self.show_tip("queue head sent now — lands at the next agent step");
+            self.show_tip(self.locale.tr(
+                "queue head sent now — lands at the next agent step",
+                "队首已立即发送 —— 在下一步 Agent 处生效",
+            ));
             ctl.send(if let Some(text) = text {
                 Cmd::Steer {
                     session_id: self.session_id.clone(),
@@ -7712,22 +8031,31 @@ impl App {
             return;
         }
         if !self.input.is_empty() {
-            self.show_tip("send or clear the current draft before editing the queue");
+            self.show_tip(self.locale.tr(
+                "send or clear the current draft before editing the queue",
+                "编辑队列前请先发送或清空当前草稿",
+            ));
             return;
         }
         if self.prompt_queue.is_empty() {
-            self.show_tip("no queued prompt to edit");
+            self.show_tip(self.locale.tr("no queued prompt to edit", "没有可编辑的排队消息"));
             return;
         }
         self.queue_selection = Some(self.prompt_queue.len() - 1);
         self.slash_completion_dismissed = true;
-        self.show_tip("select queued prompt · ↑/↓ choose · enter edit · esc close");
+        self.show_tip(self.locale.tr(
+            "select queued prompt · ↑/↓ choose · enter edit · esc close",
+            "选择排队消息 · ↑/↓ 选择 · enter 编辑 · esc 关闭",
+        ));
     }
 
     fn begin_queue_edit_at(&mut self, index: usize) {
         let Some(prompt) = self.prompt_queue.get(index) else {
             self.queue_selection = None;
-            self.show_tip("queued prompt already left the queue");
+            self.show_tip(self.locale.tr(
+                "queued prompt already left the queue",
+                "这条消息已离开队列",
+            ));
             return;
         };
         let prompt_id = prompt.id;
@@ -7751,9 +8079,10 @@ impl App {
         });
         self.input.set(text);
         self.slash_completion_dismissed = false;
-        self.show_tip(format!(
+        self.show_tip(self.locale.trf(
             "editing queued prompt {} · enter save · ctrl+d delete · esc cancel",
-            index + 1
+            "编辑排队消息 {} · enter 保存 · ctrl+d 删除 · esc 取消",
+            &[(index + 1).to_string()],
         ));
     }
 
@@ -7768,7 +8097,10 @@ impl App {
         }
         let raw = self.input.buf().trim().to_string();
         if raw.is_empty() && self.pending_images.is_empty() {
-            self.show_tip("queued prompt cannot be empty · ctrl+d deletes it");
+            self.show_tip(self.locale.tr(
+                "queued prompt cannot be empty · ctrl+d deletes it",
+                "排队消息不能为空 · ctrl+d 可删除",
+            ));
             return;
         }
         let blocks = if self.pending_images.is_empty() {
@@ -7783,7 +8115,10 @@ impl App {
         else {
             self.queue_edit = None;
             self.input.clear();
-            self.show_tip("queued prompt already left the queue");
+            self.show_tip(self.locale.tr(
+                "queued prompt already left the queue",
+                "这条消息已离开队列",
+            ));
             return;
         };
         self.prompt_queue[index].blocks = blocks;
@@ -7791,7 +8126,11 @@ impl App {
         self.input.clear();
         self.slash_completion_dismissed = false;
         self.reconcile_attachments();
-        self.show_tip(format!("queued prompt {} updated", index + 1));
+        self.show_tip(self.locale.trf(
+            "queued prompt {} updated",
+            "排队消息 {} 已更新",
+            &[(index + 1).to_string()],
+        ));
         if matches!(self.state, RunState::Idle) {
             self.dispatch_next_queued(ctl);
         }
@@ -7808,7 +8147,10 @@ impl App {
         else {
             self.queue_edit = None;
             self.input.clear();
-            self.show_tip("queued prompt already left the queue");
+            self.show_tip(self.locale.tr(
+                "queued prompt already left the queue",
+                "这条消息已离开队列",
+            ));
             return;
         };
         self.prompt_queue.remove(index);
@@ -7817,7 +8159,11 @@ impl App {
         self.input.clear();
         self.slash_completion_dismissed = false;
         self.reconcile_attachments();
-        self.show_tip(format!("queued prompt {} deleted", index + 1));
+        self.show_tip(self.locale.trf(
+            "queued prompt {} deleted",
+            "排队消息 {} 已删除",
+            &[(index + 1).to_string()],
+        ));
         if matches!(self.state, RunState::Idle) {
             self.dispatch_next_queued(ctl);
         }
@@ -7831,17 +8177,27 @@ impl App {
             None => (arg, String::new()),
         };
         if path.is_empty() {
-            self.show_tip("/image needs a path — /image ./pic.png [caption]");
+            self.show_tip(self.locale.tr(
+                "/image needs a path — /image ./pic.png [caption]",
+                "/image 需要路径 —— /image ./pic.png [说明]",
+            ));
             return;
         }
         let Some(media_type) = media_type_for(path) else {
-            self.show_tip("unsupported image — use .png .jpg .jpeg .webp .gif");
+            self.show_tip(self.locale.tr(
+                "unsupported image — use .png .jpg .jpeg .webp .gif",
+                "不支持的图片 —— 支持 .png .jpg .jpeg .webp .gif",
+            ));
             return;
         };
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(err) => {
-                self.show_tip(format!("cannot read {path}: {err}"));
+                self.show_tip(self.locale.trf(
+                    "cannot read {}: {}",
+                    "无法读取 {}：{}",
+                    &[path.into(), err.to_string()],
+                ));
                 return;
             }
         };
@@ -7864,7 +8220,10 @@ impl App {
                 bytes,
                 caption.to_string(),
             ),
-            None => self.show_tip("clipboard has no image, or this platform isn't supported"),
+            None => self.show_tip(self.locale.tr(
+                "clipboard has no image, or this platform isn't supported",
+                "剪贴板没有图片，或当前平台不支持",
+            )),
         }
     }
 
@@ -7881,7 +8240,13 @@ impl App {
         let token = match self.pending_images.add(name, path, media_type, data) {
             Ok(att) => att.token.clone(),
             Err(full) => {
-                self.show_tip(full);
+                self.show_tip(if full == "attachment tray is full — send or remove an [image] chip first" {
+                    self.locale
+                        .tr(full, "附件栏已满 —— 先发送或移除一个 [image] 标记")
+                        .to_string()
+                } else {
+                    full.to_string()
+                });
                 return;
             }
         };
@@ -7900,7 +8265,10 @@ impl App {
             self.input.insert_char(' ');
         }
         self.input.insert_str(&token);
-        self.show_tip("image staged — ⌫ deletes its chip · hover it to preview");
+        self.show_tip(self.locale.tr(
+            "image staged — ⌫ deletes its chip · hover it to preview",
+            "图片已附加 —— ⌫ 删除其标记 · 悬停可预览",
+        ));
         self.needs_redraw = true;
     }
 
@@ -7987,9 +8355,15 @@ impl App {
                 .push_back(ClientQueuedPrompt { id, blocks: staged });
             self.queued += 1;
             self.show_tip(if n <= 1 {
-                "image queued · empty enter sends first".to_string()
+                self.locale
+                    .tr("image queued · empty enter sends first", "图片已排队 · 空输入按 enter 发送队首")
+                    .to_string()
             } else {
-                format!("{n} images queued · empty enter sends first")
+                self.locale.trf(
+                    "{} images queued · empty enter sends first",
+                    "{} 张图片已排队 · 空输入按 enter 发送队首",
+                    &[n.to_string()],
+                )
             });
             self.scroll_up = 0;
             return;
@@ -8013,7 +8387,10 @@ impl App {
         let raw = self.input.buf().trim().to_string();
         if !self.pending_images.is_empty() && (raw.starts_with('/') || raw.starts_with('!')) {
             self.show_tip(
-                "send or delete the [image] chips first — /commands and !shell don't take images",
+                self.locale.tr(
+                    "send or delete the [image] chips first — /commands and !shell don't take images",
+                    "先发送或删除 [image] 标记 —— /命令 和 !shell 不接受图片",
+                ),
             );
             return;
         }
@@ -8039,7 +8416,10 @@ impl App {
                 .filter(|b| matches!(b, StagedBlock::Image(_)))
                 .count();
             if running {
-                self.show_tip("steered with image — lands at the next agent step");
+                self.show_tip(self.locale.tr(
+                    "steered with image — lands at the next agent step",
+                    "已带图 steer —— 在下一步 Agent 处生效",
+                ));
             } else {
                 self.prompt_pending = true;
                 self.state = RunState::Starting;
@@ -8061,7 +8441,10 @@ impl App {
             let cell = self.transcript.cells.len();
             self.transcript.push_user(text.clone(), false);
             if running {
-                self.show_tip("steered — lands at the next agent step");
+                self.show_tip(self.locale.tr(
+                    "steered — lands at the next agent step",
+                    "已 steer —— 在下一步 Agent 处生效",
+                ));
             } else {
                 self.prompt_pending = true;
                 self.state = RunState::Starting;

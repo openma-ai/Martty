@@ -88,17 +88,25 @@ impl AuthSnapshot {
         }
     }
 
-    pub fn notice(&self) -> Option<(crate::transcript::NoticeLevel, String)> {
+    pub fn notice(
+        &self,
+        locale: crate::locale::Locale,
+    ) -> Option<(crate::transcript::NoticeLevel, String)> {
         use crate::transcript::NoticeLevel;
         match self.status {
             AuthStatus::Configured | AuthStatus::None => None,
             AuthStatus::Unknown => Some((
                 NoticeLevel::Warn,
-                self.message
-                    .clone()
-                    .unwrap_or_else(|| "no supported ACP auth method is available".into()),
+                self.message.clone().unwrap_or_else(|| {
+                    locale
+                        .tr(
+                            "no supported ACP auth method is available",
+                            "没有可用的 ACP 认证方式",
+                        )
+                        .into()
+                }),
             )),
-            AuthStatus::NeedsAuth => Some((NoticeLevel::Warn, needs_auth_notice(self))),
+            AuthStatus::NeedsAuth => Some((NoticeLevel::Warn, needs_auth_notice(self, locale))),
         }
     }
 }
@@ -352,7 +360,10 @@ pub fn process_env() -> BTreeMap<String, String> {
     std::env::vars().collect()
 }
 
-pub fn run_terminal_auth(launch: &TerminalAuthLaunch) -> Result<(), String> {
+pub fn run_terminal_auth(
+    launch: &TerminalAuthLaunch,
+    locale: crate::locale::Locale,
+) -> Result<(), String> {
     let mut cmd = std::process::Command::new(&launch.command);
     cmd.args(&launch.args);
     if let Some(cwd) = &launch.cwd {
@@ -366,19 +377,26 @@ pub fn run_terminal_auth(launch: &TerminalAuthLaunch) -> Result<(), String> {
         .stderr(Stdio::inherit());
     match cmd.status() {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!(
+        Ok(status) => Err(locale.trf(
             "{} exited {}",
-            launch.label,
-            status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signaled".into())
+            "{} 以退出码 {} 结束",
+            &[
+                launch.label.clone(),
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| locale.tr("signaled", "被信号终止").into()),
+            ],
         )),
-        Err(err) => Err(format!("could not start {}: {err}", launch.label)),
+        Err(err) => Err(locale.trf(
+            "could not start {}: {}",
+            "无法启动 {}：{}",
+            &[launch.label.clone(), err.to_string()],
+        )),
     }
 }
 
-fn needs_auth_notice(snapshot: &AuthSnapshot) -> String {
+fn needs_auth_notice(snapshot: &AuthSnapshot, locale: crate::locale::Locale) -> String {
     let name = snapshot
         .method_name
         .as_deref()
@@ -388,7 +406,7 @@ fn needs_auth_notice(snapshot: &AuthSnapshot) -> String {
         .method_id
         .as_ref()
         .and_then(|id| snapshot.methods.iter().find(|m| m.id == *id));
-    let mut lines = vec![format!("sign-in needed · {name}")];
+    let mut lines = vec![locale.trf("sign-in needed · {}", "需要登录 · {}", &[name.into()])];
     if let Some(message) = &snapshot.message {
         if !message.is_empty() {
             lines.push(message.clone());
@@ -401,17 +419,27 @@ fn needs_auth_notice(snapshot: &AuthSnapshot) -> String {
             }
         }
         if method.form {
-            lines.push(
-                "  /auth <api-key>  submits through ACP authenticate (martty does not keep it)"
-                    .into(),
-            );
+            lines.push(locale.tr(
+                "  /auth <api-key>  submits through ACP authenticate (martty does not keep it)",
+                "  /auth <api-key>  通过 ACP authenticate 提交（martty 不保存密钥）",
+            ).into());
         } else if method.terminal_launch.is_some() {
-            lines.push("  /auth  runs the agent's terminal login, then ACP authenticate".into());
+            lines.push(locale.tr(
+                "  /auth  runs the agent's terminal login, then ACP authenticate",
+                "  /auth  运行 Agent 的终端登录，然后 ACP authenticate",
+            ).into());
         } else {
-            lines.push("  /auth  retries ACP authenticate after out-of-band login".into());
+            lines.push(locale.tr(
+                "  /auth  retries ACP authenticate after out-of-band login",
+                "  /auth  在外部登录后重试 ACP authenticate",
+            ).into());
         }
         if let Some(link) = &method.link {
-            lines.push(format!("  credential source · {link}"));
+            lines.push(locale.trf(
+                "  credential source · {}",
+                "  凭据来源 · {}",
+                &[link.clone()],
+            ));
         }
     }
     lines.join("\n")

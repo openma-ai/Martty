@@ -521,7 +521,7 @@ fn main() -> Result<()> {
                     "\n{} — finish setup in this terminal, then Martty resumes.\n",
                     launch.label
                 );
-                let result = crate::acp_auth::run_terminal_auth(&launch);
+                let result = crate::acp_auth::run_terminal_auth(&launch, app.locale);
                 enter_tui()?;
                 app.needs_redraw = true;
                 while let Ok(ev) = bus_rx.try_recv() {

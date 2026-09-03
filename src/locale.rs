@@ -44,6 +44,23 @@ impl Locale {
         }
     }
 
+    /// Localized template whose `{}` holes are filled left-to-right from
+    /// `args` (string/`Display` values — use [`Self::tr_fmt`] for a lone
+    /// `usize`). Unfilled holes stay literal, matching the static `tr` pair.
+    pub fn trf(self, en: &'static str, zh: &'static str, args: &[String]) -> String {
+        let mut out = match self {
+            Self::En => en,
+            Self::Zh => zh,
+        }
+        .to_string();
+        for arg in args {
+            if let Some(pos) = out.find("{}") {
+                out.replace_range(pos..pos + 2, arg);
+            }
+        }
+        out
+    }
+
     pub fn command_desc(self, name: &str, fallback: &'static str) -> &'static str {
         if self == Self::En {
             return fallback;
@@ -52,7 +69,8 @@ impl Locale {
             "help" => "显示帮助和使用提示",
             "keys" => "查看键盘快捷键",
             "new" => "开始一个新会话",
-            "resume" => "恢复当前工作区的持久会话",
+            "resume" => "列出最近 n 个会话（默认 50）· /resume <id> 恢复指定会话",
+            "close" => "关闭当前会话标签页（最后一个标签页不能关闭）",
             "clear" => "清空对话滚动区",
             "model" => "通过 ACP 实时切换模型",
             "agent" => "切换 Agent 预设 · ctrl+shift+a",
@@ -66,7 +84,7 @@ impl Locale {
             "vim" => "切换 vim 模式编辑（默认关闭）",
             "plugins" => "查看 Host 插件状态（只读）",
             "cordis-plugins" => "查看或管理动态 Cordis 插件",
-            "session" => "显示会话和运行时信息",
+            "session" => "显示会话信息 · /session prev|next 切换标签页",
             "auth" => "ACP 登录（Backchat authenticate）",
             "lang" => "切换界面语言",
             "liang" => "召唤小难梁 — 🤫 空闲 · ⌨︎ 工作中",

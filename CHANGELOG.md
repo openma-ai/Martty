@@ -7,6 +7,21 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- `/resume [n|id]` — a bare number lists the `n` most recent durable
+  sessions in the resume picker (`/resume 10` → latest 10). Without a
+  number the default is 50 (`/resume` ≡ `/resume 50`); anything that is
+  not a number stays an id prefix for a direct resume. The cap applies to
+  both the ACP `session/list` results and the local JSONL listing, and
+  survives the `session/list`-unavailable fallback.
+
+- Chinese coverage for every client-owned user-visible string: status-bar
+  tips, transcript notices (turn end, session/plan/policy/approval facts,
+  subagent labels, tool preview chrome), elicitation form validation
+  errors, auth notices (sign-in hints, terminal-auth failures), the
+  write-outside permission ask, and the composer/subagent chrome. ACP and
+  plugin payloads stay authored by their owner. `Locale::trf` fills `{}` 
+  holes left-to-right for parameterized messages.
+
 - `/close` closes the current session tab (issue #94): everything bound to
   the tab — transcript, composer draft, staged images, prompt queue, ACP
   asks, subagents — is discarded, and the ACP controller forgets the
@@ -29,12 +44,12 @@ All notable changes to this project are documented here. The project follows
   shell command started on one session lands its result in that session's
   transcript even if the user switched tabs while it ran.
 
-- `alt+1` … `alt+9` jump straight to a session tab (issue #94) — the tab
-  strip no longer needs the mouse. Both routes (click and key) share one
-  path that dismisses transient interactions and releases compositor
-  overlays with their cancel events before parking the session.
-  `alt+]` / `ctrl+pagedown` and `alt+[` / `ctrl+pageup` cycle through
-  tabs, and overflowing tab bars show an overflow counter (`+N`).
+- `/session view` shows the session + runtime info popup, and
+  `/session prev` / `/session next` switch to the previous/next session
+  tab (issue #94) — the tab strip needs no mouse. Every route (click and
+  command) shares one path that dismisses transient interactions and
+  releases compositor overlays with their cancel events before parking
+  the session. Overflowing tab bars show an overflow counter (`+N`).
 
 ### Fixed
 
