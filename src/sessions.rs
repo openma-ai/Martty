@@ -72,7 +72,16 @@ fn session_file(dir: &Path) -> Option<PathBuf> {
 /// List resumable sessions for `workspace`, newest first, excluding
 /// `skip_id` (the currently active session). Best effort: unreadable or
 /// foreign files are skipped, never an error.
-pub fn list_sessions(cfg_root: &str, workspace: &str, skip_id: &str) -> Vec<SessionSummary> {
+/// Default cap for the `/resume` picker when no explicit count is given
+/// (`/resume` behaves like `/resume 50`).
+pub const DEFAULT_SESSION_LIST_LIMIT: usize = 50;
+
+pub fn list_sessions(
+    cfg_root: &str,
+    workspace: &str,
+    skip_id: &str,
+    limit: usize,
+) -> Vec<SessionSummary> {
     let slug = workspace_slug(workspace);
     let mut candidate_files: Vec<(PathBuf, SystemTime)> = Vec::new();
     for root in session_roots(cfg_root) {
@@ -109,7 +118,7 @@ pub fn list_sessions(cfg_root: &str, workspace: &str, skip_id: &str) -> Vec<Sess
             continue;
         }
         out.push(summary);
-        if out.len() >= 50 {
+        if out.len() >= limit {
             break;
         }
     }

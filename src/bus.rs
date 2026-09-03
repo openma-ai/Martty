@@ -160,9 +160,11 @@ pub enum CtlEvent {
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
     },
-    /// `session/list` missing or failed; UI falls back to local JSONL.
+    /// `session/list` missing or failed; UI falls back to local JSONL with
+    /// the same `limit` the request carried.
     SessionListUnavailable {
         prefix: Option<String>,
+        limit: usize,
         error: String,
     },
 }
@@ -423,9 +425,11 @@ pub enum Cmd {
     },
     /// Live ACP `/new` → `session/new` (cwd = workspace).
     NewSession,
-    /// Live ACP `/resume` listing (`session/list`). `prefix` is the typed id.
+    /// Live ACP `/resume` listing (`session/list`). `prefix` is the typed id;
+    /// `limit` caps how many entries come back (`/resume n`).
     ListSessions {
         prefix: Option<String>,
+        limit: usize,
     },
     /// Live ACP `/resume` pick → `session/resume`, with legacy `session/load` fallback.
     ResumeSession {

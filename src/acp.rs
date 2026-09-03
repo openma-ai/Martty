@@ -2642,10 +2642,11 @@ where
                                 }
                             }
                         }
-                        Cmd::ListSessions { prefix } => {
+                        Cmd::ListSessions { prefix, limit } => {
                             if !list_session {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
                                     prefix,
+                                    limit,
                                     error: "agent did not advertise sessionCapabilities.list"
                                         .into(),
                                 }));
@@ -2657,7 +2658,7 @@ where
                                 .await
                             {
                                 Ok(listed) => {
-                                    let sessions = listed
+                                    let mut sessions: Vec<SessionListItem> = listed
                                         .sessions
                                         .into_iter()
                                         .map(|s| SessionListItem {
@@ -2666,6 +2667,9 @@ where
                                             updated_at: s.updated_at,
                                         })
                                         .collect();
+                                    // `/resume n`: keep only the first n entries
+                                    // (the agent orders them most-recent-first).
+                                    sessions.truncate(limit);
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionList {
                                         sessions,
                                         prefix,
@@ -2682,6 +2686,7 @@ where
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
                                         prefix,
+                                        limit,
                                         error: err.to_string(),
                                     }));
                                 }

@@ -226,8 +226,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "resume",
-        usage: "/resume [id]",
-        desc: "resume a durable session from this workspace",
+        usage: "/resume [n|id]",
+        desc: "list the n most recent sessions (default 50) · /resume <id> resumes it",
     },
     SlashCommand {
         name: "session",
@@ -3740,8 +3740,12 @@ impl App {
                     CtlEvent::SessionList { sessions, prefix } => {
                         self.on_acp_session_list(sessions, prefix, ctl);
                     }
-                    CtlEvent::SessionListUnavailable { prefix, error } => {
-                        self.on_acp_session_list_unavailable(prefix, error, ctl);
+                    CtlEvent::SessionListUnavailable {
+                        prefix,
+                        limit,
+                        error,
+                    } => {
+                        self.on_acp_session_list_unavailable(prefix, limit, error, ctl);
                     }
                 }
                 self.needs_redraw = true;
@@ -6098,10 +6102,14 @@ impl App {
     }
 
     /// `/resume`: list this workspace's durable sessions in a picker
-    /// (grok-build's session picker). Live ACP prefers `session/list`.
-    fn open_resume_picker(&mut self, ctl: &Controller) {
+    /// (grok-build's session picker). Live ACP prefers `session/list`;
+    /// `limit` is the `/resume n` count (most recent first).
+    fn open_resume_picker(&mut self, limit: usize, ctl: &Controller) {
         if !self.demo && self.list_session {
-            ctl.send(Cmd::ListSessions { prefix: None });
+            ctl.send(Cmd::ListSessions {
+                prefix: None,
+                limit,
+            });
             self.show_tip(self.locale.tr("listing ACP sessions…", "正在列出 ACP 会话…"));
             return;
         }
@@ -6111,15 +6119,16 @@ impl App {
                 "Agent 未声明 session/list —— 改为列出本地 JSONL",
             ));
         }
-        self.open_local_resume_picker();
+        self.open_local_resume_picker(limit);
     }
 
-    fn open_local_resume_picker(&mut self) {
+    fn open_local_resume_picker(&mut self, limit: usize) {
         self.resume_via_acp = false;
         let sessions = crate::sessions::list_sessions(
             &self.cfg.session_root,
             &self.cfg.workspace,
             &self.session_id,
+            limit,
         );
         if sessions.is_empty() {
             self.transcript.push_notice(
@@ -6162,6 +6171,7 @@ impl App {
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
+                usize::MAX,
             );
         }
         let matches: Vec<crate::sessions::SessionSummary> = self
@@ -6513,6 +6523,7 @@ impl App {
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
+                usize::MAX,
             )
             .into_iter()
             .map(|s| (s.id.clone(), s))
@@ -6549,6 +6560,7 @@ impl App {
     fn on_acp_session_list_unavailable(
         &mut self,
         prefix: Option<String>,
+        limit: usize,
         error: String,
         ctl: &Controller,
     ) {
@@ -6565,7 +6577,7 @@ impl App {
             self.resume_session(&prefix, ctl);
             return;
         }
-        self.open_local_resume_picker();
+        self.open_local_resume_picker(limit);
         if self.resume_session_cap || self.load_session {
             self.resume_via_acp = true;
         }
@@ -7164,11 +7176,17 @@ impl App {
             "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
             "resume" => {
+                // `/resume [n|id]` — a bare number is how many of the most
+                // recent durable sessions to list (default 50); anything
+                // else is an id prefix to resume.
                 if arg.is_empty() {
-                    self.open_resume_picker(ctl);
+                    self.open_resume_picker(crate::sessions::DEFAULT_SESSION_LIST_LIMIT, ctl);
+                } else if let Ok(n) = arg.parse::<usize>() {
+                    self.open_resume_picker(n.max(1), ctl);
                 } else if !self.demo && self.list_session {
                     ctl.send(Cmd::ListSessions {
                         prefix: Some(arg.to_string()),
+                        limit: usize::MAX,
                     });
                     self.show_tip(self.locale.tr("listing ACP sessions…", "正在列出 ACP 会话…"));
                 } else if !self.demo && (self.resume_session_cap || self.load_session) {

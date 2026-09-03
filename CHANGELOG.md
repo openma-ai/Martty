@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- `/resume [n|id]` — a bare number lists the `n` most recent durable
+  sessions in the resume picker (`/resume 10` → latest 10). Without a
+  number the default is 50 (`/resume` ≡ `/resume 50`); anything that is
+  not a number stays an id prefix for a direct resume. The cap applies to
+  both the ACP `session/list` results and the local JSONL listing, and
+  survives the `session/list`-unavailable fallback.
+
 - Chinese coverage for every client-owned user-visible string: status-bar
   tips, transcript notices (turn end, session/plan/policy/approval facts,
   subagent labels, tool preview chrome), elicitation form validation
