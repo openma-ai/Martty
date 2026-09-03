@@ -2070,7 +2070,8 @@ fn model_picker_marks_only_the_current_provider_model_pair() {
 }
 
 /// The ⌕ jump flash (issue #103): for ~5 s after a jump the jumped
-/// prompt's bubble rows carry the chip background wash; after the window
+/// prompt's bubble rows are highlighted like a picker's selected row —
+/// chip background wash and the text in the brand tone; after the window
 /// the next tick clears it and the next frame restores the normal bubble.
 #[test]
 fn prompt_jump_flash_washes_the_jumped_prompt_then_restores() {
@@ -2111,12 +2112,14 @@ fn prompt_jump_flash_washes_the_jumped_prompt_then_restores() {
     let (bx, by) = text_cell(terminal.backend().buffer(), "beta prompt")
         .expect("beta prompt rendered");
 
-    // Frame 1, no flash: the bubble keeps its normal background.
+    // Frame 1, no flash: the bubble keeps its normal colors.
     let buf = terminal.backend().buffer().clone();
     assert_eq!(buf[(bx, by)].bg, theme.bubble_bg, "idle bubble background");
+    assert_eq!(buf[(bx, by)].fg, theme.bubble_fg, "idle bubble text");
 
-    // Arm the flash for the second prompt and redraw: its rows wash with
-    // the chip tone while other rows stay untouched.
+    // Arm the flash for the second prompt and redraw: its rows carry the
+    // chip wash with the text in the brand tone, while the other prompt
+    // stays untouched.
     app.prompt_flash = Some((
         beta_cell,
         std::time::Instant::now() + crate::app::PROMPT_FLASH_TTL,
@@ -2124,11 +2127,16 @@ fn prompt_jump_flash_washes_the_jumped_prompt_then_restores() {
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
     let buf = terminal.backend().buffer().clone();
     assert_eq!(buf[(bx, by)].bg, theme.chip_bg, "jumped prompt washed");
+    assert_eq!(buf[(bx, by)].fg, theme.brand, "jumped prompt text brand");
     let (ax, ay) = text_cell(terminal.backend().buffer(), "alpha prompt")
         .expect("alpha prompt rendered");
     assert_ne!(
         buf[(ax, ay)].bg, theme.chip_bg,
         "the other prompt keeps its background"
+    );
+    assert_ne!(
+        buf[(ax, ay)].fg, theme.brand,
+        "the other prompt keeps its text color"
     );
 
     // Expire the flash: the tick clears it and the next frame restores the
@@ -2143,7 +2151,11 @@ fn prompt_jump_flash_washes_the_jumped_prompt_then_restores() {
     let buf = terminal.backend().buffer().clone();
     assert_eq!(
         buf[(bx, by)].bg, theme.bubble_bg,
-        "flash restored the normal bubble"
+        "flash restored the normal bubble background"
+    );
+    assert_eq!(
+        buf[(bx, by)].fg, theme.bubble_fg,
+        "flash restored the normal bubble text"
     );
 }
 

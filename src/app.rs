@@ -1150,9 +1150,10 @@ pub struct App {
     /// wraps to the newest. In-memory only — never persisted.
     pub(crate) prompt_jump_cell: Option<usize>,
     /// The `⌕` jump flash (issue #103): the transcript cell of the prompt
-    /// that was just jumped to, with the instant the background wash
-    /// expires (5 s after the click). `App::tick` clears it on expiry; the
-    /// painter resolves the cell to lines per frame.
+    /// that was just jumped to, with the instant the highlight (chip
+    /// background wash + brand text) expires, 5 s after the click.
+    /// `App::tick` clears it on expiry; the painter resolves the cell to
+    /// lines per frame.
     pub(crate) prompt_flash: Option<(usize, std::time::Instant)>,
     /// Per-frame absolute line span `[start, end)` of the flashing prompt,
     /// resolved by `draw_chat` from `prompt_flash` against the current

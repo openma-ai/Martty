@@ -2298,10 +2298,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// The transient `⌕` jump highlight (issue #103): right after a jump the
-/// jumped prompt's rows carry a soft background wash — the same chip tone
-/// the pickers use for the selected row — for ~5 seconds, then the
-/// ordinary bubble look returns (the expiry lives in `App::tick`, which
-/// clears the state and requests a repaint).
+/// jumped prompt's rows are highlighted exactly like a picker's selected
+/// row — chip background wash plus the text brightened to the brand tone —
+/// for ~5 seconds, then the ordinary bubble look returns (the expiry lives
+/// in `App::tick`, which clears the state and requests a repaint).
 fn draw_prompt_flash(f: &mut Frame, app: &App, inner: Rect, start: usize) {
     let Some((s, e)) = app.prompt_flash_lines else {
         return;
@@ -2322,7 +2322,10 @@ fn draw_prompt_flash(f: &mut Frame, app: &App, inner: Rect, start: usize) {
         }
         for c in 0..lw.min(inner.width as usize) {
             if let Some(cell) = buf.cell_mut((inner.x + c as u16, inner.y + r)) {
-                cell.set_bg(theme.chip_bg);
+                let style = cell
+                    .style()
+                    .patch(Style::default().fg(theme.brand).bg(theme.chip_bg));
+                cell.set_style(style);
             }
         }
     }

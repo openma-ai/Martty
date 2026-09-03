@@ -25,8 +25,9 @@ All notable changes to this project are documented here. The project follows
   so the walk resumes where the previous click stopped; the cap row tip
   shows the current position (`user prompt k/n · newest first`). Text and
   image prompts both count as jump targets. Right after a jump the jumped
-  prompt's rows are background-washed for 5 seconds (the chip tone of
-  picker row highlights) and then restore to the ordinary bubble look.
+  prompt's rows are highlighted for 5 seconds like a picker's selected row
+  (chip background wash with the text in the brand tone) and then restore
+  to the ordinary bubble look.
 
 
 - `/resume [n|id]` — a bare number lists the `n` most recent durable
