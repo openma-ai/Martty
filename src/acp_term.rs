@@ -19,11 +19,56 @@ const DEFAULT_BYTE_LIMIT: usize = 1_048_576;
 
 struct TerminalRec {
     child: Mutex<std::process::Child>,
-    buf: Mutex<String>,
+    buf: Mutex<TerminalOutput>,
     truncated: AtomicBool,
     byte_limit: usize,
     exit: Mutex<Option<TerminalExitStatus>>,
     notify: Notify,
+}
+
+/// A bounded output window without shifting the whole retained transcript on
+/// every read. Terminal processes commonly emit in small chunks; repeatedly
+/// deleting from the start of a `String` once the window is full turns a
+/// streaming command into repeated near-limit memory copies.
+#[derive(Default)]
+struct TerminalOutput {
+    text: String,
+    /// Byte offset of the first visible character in `text`. It is always a
+    /// UTF-8 boundary, so snapshots can borrow the visible suffix directly.
+    start: usize,
+}
+
+impl TerminalOutput {
+    fn snapshot(&self) -> String {
+        self.text[self.start..].to_owned()
+    }
+
+    /// Appends decoded output and returns whether the bounded window dropped
+    /// any older text. Physical compaction is deliberately amortized: the
+    /// common append path only advances `start`; it copies the live suffix
+    /// after a sizeable consumed prefix has accumulated.
+    fn append(&mut self, text: &str, byte_limit: usize) -> bool {
+        self.text.push_str(text);
+        let visible = self.text.len().saturating_sub(self.start);
+        if visible <= byte_limit {
+            return false;
+        }
+
+        self.start += visible - byte_limit;
+        while self.start < self.text.len() && !self.text.is_char_boundary(self.start) {
+            self.start += 1;
+        }
+
+        // Keep memory bounded while avoiding a memmove for every small read.
+        // A 4 KiB floor also prevents tiny requested windows from repeatedly
+        // compacting their small backing strings.
+        let compact_at = self.text.capacity().saturating_div(2).max(4096);
+        if self.start >= compact_at {
+            self.text.drain(..self.start);
+            self.start = 0;
+        }
+        true
+    }
 }
 
 pub struct TerminalBroker {
@@ -65,7 +110,7 @@ impl TerminalBroker {
         let stderr = child.stderr.take();
         let rec = Arc::new(TerminalRec {
             child: Mutex::new(child),
-            buf: Mutex::new(String::new()),
+            buf: Mutex::new(TerminalOutput::default()),
             truncated: AtomicBool::new(false),
             byte_limit: output_byte_limit
                 .map(|n| n as usize)
@@ -100,7 +145,7 @@ impl TerminalBroker {
         let Some(rec) = self.get(terminal_id) else {
             return Err(format!("unknown terminal: {terminal_id}"));
         };
-        let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).snapshot();
         let truncated = rec.truncated.load(Ordering::Relaxed);
         let exit = rec.exit.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Ok((output, truncated, exit))
@@ -245,13 +290,7 @@ fn spawn_waiter(rec: Arc<TerminalRec>) {
 fn append_output(rec: &TerminalRec, bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
     let mut buf = rec.buf.lock().unwrap_or_else(|e| e.into_inner());
-    buf.push_str(&text);
-    if buf.len() > rec.byte_limit {
-        let mut cut = buf.len() - rec.byte_limit;
-        while cut < buf.len() && !buf.is_char_boundary(cut) {
-            cut += 1;
-        }
-        buf.replace_range(0..cut, "");
+    if buf.append(&text, rec.byte_limit) {
         rec.truncated.store(true, Ordering::Relaxed);
     }
 }

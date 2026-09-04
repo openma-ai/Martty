@@ -446,7 +446,9 @@ fn main() -> Result<()> {
         }
     }
     // ACP commands for the slash menu; demo serves samples.
-    controller.send(bus::Cmd::FetchSkills);
+    controller.send(bus::Cmd::FetchSkills {
+        session_id: app.session_id.clone(),
+    });
 
     let run = (|| -> Result<()> {
         let mut last_tick = std::time::Instant::now();

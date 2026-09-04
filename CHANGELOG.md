@@ -27,8 +27,7 @@ All notable changes to this project are documented here. The project follows
   image prompts both count as jump targets. Right after a jump the jumped
   prompt's rows are highlighted for 5 seconds like a picker's selected row
   (chip background wash with the text in the brand tone) and then restore
-  to the ordinary bubble look. Hovering either cap-row glyph pops a small
-  tooltip card above it explaining the click (⛶ expand/collapse, ⌕ jump).
+  to the ordinary bubble look.
 
 
 - `/resume [n|id]` — a bare number lists the `n` most recent durable
@@ -76,6 +75,23 @@ All notable changes to this project are documented here. The project follows
   the session. Overflowing tab bars show an overflow counter (`+N`).
 
 ### Fixed
+
+- Multi-session state is now isolated end to end: background ACP updates no
+  longer replace the visible tab's config, plan, stats, status, model/skill/
+  permission catalogs, cancellation state, or `/resume` picker; stale prompt
+  completions also cannot release a newer turn after a session is rebound.
+
+- `dsh --profile martty` starts correctly with dsh 0.1.2: an intentional Client
+  `SIGTERM` during the initial profile recompose no longer exits the replacement
+  Host tree, and compatibility adapters cover the new scoped user-question and
+  subagent model-selection Host services, the immutable session-event snapshot,
+  and the Session-based permission projection used by `/new` and `/resume`.
+  If a future bind fails, the ACP error is now shown instead of being discarded.
+
+- Long-running ACP `terminal/*` commands now evict old output with an
+  amortized buffer instead of shifting the full retained window for every
+  small read. The bounded tail and UTF-8-safe output are unchanged, while
+  high-volume command output avoids repeated near-limit memory copies.
 
 - Code-review sweep (2026-09-03):
 

@@ -24,6 +24,7 @@ const COMPOSITOR_METHODS = Object.freeze(new Set([
   CORDIS_METHODS.agentsUpdate,
   CORDIS_METHODS.agentsSelect,
   CORDIS_METHODS.agentsNavigate,
+  CORDIS_METHODS.sessionActive,
   CORDIS_METHODS.sessionConfigSet,
   CORDIS_METHODS.approvalRespond,
   CORDIS_METHODS.uiSelected,

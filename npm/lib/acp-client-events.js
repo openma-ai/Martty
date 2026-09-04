@@ -14,6 +14,7 @@ class AcpClientEventsService extends Service {
   register(observer) { return this.core.register(this.ctx, observer) }
   observeClient(message) { return this.core.observeClient(message) }
   observeAgent(message) { return this.core.observeAgent(message) }
+  selectSession(sessionId) { return this.core.selectSession(sessionId) }
 }
 
 export function installAcpClientEvents(ctx) {
@@ -48,13 +49,18 @@ export function installAcpClientEvents(ctx) {
     for (const observer of [...observers]) observer.observeAgent?.(message)
   }
 
-  const core = { register, observeClient, observeAgent }
+  function selectSession(sessionId) {
+    for (const observer of [...observers]) observer.selectSession?.(sessionId)
+  }
+
+  const core = { register, observeClient, observeAgent, selectSession }
   const service = typeof ctx.provide === 'function'
     ? new AcpClientEventsService(ctx, core)
     : {
         register(observer) { return register(ctx, observer) },
         observeClient,
         observeAgent,
+        selectSession,
       }
   if (typeof ctx.provide !== 'function') ctx.acpClientEvents = service
   return service

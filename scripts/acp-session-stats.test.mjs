@@ -123,3 +123,28 @@ test('session load restores only the latest prompt usage snapshot', () => {
   assert.deepEqual(stats.current().context, { used: 0, size: 0 })
   assert.equal(stats.current().stats.turns, 0)
 })
+
+test('concurrent Session statistics remain isolated across native tab switches', () => {
+  let now = 0
+  const stats = statsModule.installAcpSessionStats(makeCtx(), { now: () => now })
+  stats.selectSession('s-1')
+  stats.observeClient({
+    jsonrpc: '2.0', id: 'p1', method: 'session/prompt', params: { sessionId: 's-1' },
+  })
+  stats.observeClient({
+    jsonrpc: '2.0', id: 'p2', method: 'session/prompt', params: { sessionId: 's-2' },
+  })
+  now = 10
+  stats.observeAgent({
+    jsonrpc: '2.0', id: 'p2',
+    result: { usage: { inputTokens: 20, outputTokens: 2 } },
+  })
+  assert.equal(stats.current().stats.turns, 1)
+  assert.equal(stats.current().usage.input, 0, 'background completion does not pollute s-1')
+
+  stats.selectSession('s-2')
+  assert.equal(stats.current().stats.turns, 1)
+  assert.equal(stats.current().usage.input, 20)
+  stats.selectSession('s-1')
+  assert.equal(stats.current().usage.input, 0)
+})

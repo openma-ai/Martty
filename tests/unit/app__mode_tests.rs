@@ -1030,6 +1030,7 @@ fn live_mode_picker_uses_advertised_composition_not_stock() {
     app.demo = false;
     app.handle(
         AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: None,
             models: Vec::new(),
             presets: vec![CatalogPreset {
                 id: "cordis".into(),
@@ -1054,6 +1055,7 @@ fn host_catalog_replaces_mode_picker_items() {
     app.run_slash("agent", "", &ctl);
     app.handle(
         AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: None,
             models: Vec::new(),
             presets: vec![
                 CatalogPreset {
@@ -1092,6 +1094,7 @@ fn host_catalog_model_picker_distinguishes_duplicate_ids_by_provider() {
     app.open_model_picker(&ctl);
     app.handle(
         AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: None,
             models: vec![
                 CatalogModel {
                     provider: "coding-plan-a".into(),
@@ -1432,6 +1435,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
     app.load_session = true;
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: app.session_id.clone(),
             sessions: vec![
                 SessionListItem {
                     id: "s-old".into(),
@@ -1457,6 +1461,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
     app.picker = None;
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: app.session_id.clone(),
             sessions: vec![SessionListItem {
                 id: "s-old".into(),
                 title: None,
@@ -1469,6 +1474,32 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
     );
     assert_eq!(app.session_id, "s-old");
     assert!(app.picker.is_none());
+}
+
+#[test]
+fn acp_session_list_response_is_dropped_after_switching_tabs() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let requester = app.session_id.clone();
+    app.open_new_session("s-two".into(), true);
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: requester,
+            sessions: vec![SessionListItem {
+                id: "s-old".into(),
+                title: None,
+                updated_at: None,
+            }],
+            prefix: Some("s-old".into()),
+            limit: usize::MAX,
+        }),
+        &ctl,
+    );
+
+    assert_eq!(app.session_id, "s-two");
+    assert!(app.picker.is_none());
+    assert_eq!(app.session_tab_count(), 2);
 }
 
 #[test]
@@ -1496,6 +1527,7 @@ fn acp_session_list_enriches_rows_with_local_summaries() {
 
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: app.session_id.clone(),
             sessions: vec![SessionListItem {
                 id: "s-local".into(),
                 title: None,
@@ -1759,7 +1791,12 @@ fn cancel_requested_stops_in_flight_tools() {
         name: "bash".into(),
         arguments: r#"{"command":"grep"}"#.into(),
     });
-    app.handle(AppEvent::Ctl(CtlEvent::CancelRequested), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::CancelRequested {
+            session_id: app.session_id.clone(),
+        }),
+        &ctl,
+    );
     assert_eq!(app.state_note, "cancelling");
     assert!(
         matches!(app.state, RunState::Running),

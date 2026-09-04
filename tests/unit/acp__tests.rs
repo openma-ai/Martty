@@ -275,6 +275,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
                         | crate::cordis::THEME_SELECTED
                         | crate::cordis::OVERLAY_EVENT
                         | crate::cordis::AGENTS_UPDATE
+                        | crate::cordis::SESSION_ACTIVE
                 ) {
                     let _ = request_tx.send((
                         "request",
@@ -463,6 +464,18 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
             ]
         })
     );
+    cmd_tx
+        .send(Cmd::ActiveSession {
+            session_id: Some("s1".into()),
+        })
+        .expect("publish active Session");
+    let (kind, method, params) = tokio::time::timeout(Duration::from_secs(2), extension_rx.recv())
+        .await
+        .expect("active Session should reach the compositor plane")
+        .expect("extension channel");
+    assert_eq!(kind, "request");
+    assert_eq!(method, crate::cordis::SESSION_ACTIVE);
+    assert_eq!(params, json!({ "protocol": 0, "sessionId": "s1" }));
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
@@ -3021,6 +3034,176 @@ async fn sessions_run_concurrent_prompts_on_one_connection() {
         "each session's completion is tagged with its own id",
     );
 
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_text_prompt_finish_cannot_release_a_rebound_sessions_new_turn() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
+        NewSessionResponse, PromptResponse, ResumeSessionRequest, ResumeSessionResponse,
+        SessionCapabilities, SessionResumeCapabilities, StopReason,
+    };
+    use std::collections::VecDeque;
+    use std::time::{Duration, Instant};
+
+    let (old_tx, old_rx) = tokio::sync::oneshot::channel::<()>();
+    let (new_tx, new_rx) = tokio::sync::oneshot::channel::<()>();
+    let (third_tx, third_rx) = tokio::sync::oneshot::channel::<()>();
+    let releases = Arc::new(Mutex::new(VecDeque::from([old_rx, new_rx, third_rx])));
+    let (arrived_tx, mut arrived_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    let agent = Agent
+        .builder()
+        .name("stale-finish-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new().session_capabilities(
+                            SessionCapabilities::new().resume(SessionResumeCapabilities::new()),
+                        ))
+                        .agent_info(Implementation::new("stale-finish-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: ResumeSessionRequest, responder, _cx| {
+                responder.respond(ResumeSessionResponse::new())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let releases = Arc::clone(&releases);
+                async move |req: PromptRequest, responder, cx| {
+                    let text = req
+                        .prompt
+                        .iter()
+                        .find_map(|block| match block {
+                            ContentBlock::Text(text) => Some(text.text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let _ = arrived_tx.send(text);
+                    let release = releases.lock().unwrap().pop_front();
+                    cx.spawn(async move {
+                        if let Some(release) = release {
+                            let _ = release.await;
+                        }
+                        let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) if session_id == "s1" => {
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "s1".into(),
+            text: "old".into(),
+        })
+        .expect("old prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), arrived_rx.recv())
+            .await
+            .expect("old prompt arrival")
+            .as_deref(),
+        Some("old")
+    );
+    cmd_tx
+        .send(Cmd::ForgetSession {
+            session_id: "s1".into(),
+        })
+        .expect("forget old binding");
+    cmd_tx
+        .send(Cmd::ResumeSession {
+            session_id: "s1".into(),
+        })
+        .expect("resume same id");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut rebound = false;
+    while Instant::now() < deadline && !rebound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) if session_id == "s1" => {
+                rebound = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(rebound, "same Session id rebound");
+
+    for text in ["new", "queued"] {
+        cmd_tx
+            .send(Cmd::Prompt {
+                session_id: "s1".into(),
+                text: text.into(),
+            })
+            .expect("prompt after rebound");
+    }
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), arrived_rx.recv())
+            .await
+            .expect("new prompt arrival")
+            .as_deref(),
+        Some("new")
+    );
+
+    old_tx.send(()).expect("release stale prompt");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), arrived_rx.recv())
+            .await
+            .is_err(),
+        "the stale finish must not release the queued prompt"
+    );
+    new_tx.send(()).expect("release current prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), arrived_rx.recv())
+            .await
+            .expect("queued prompt arrival")
+            .as_deref(),
+        Some("queued")
+    );
+    let _ = third_tx.send(());
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }

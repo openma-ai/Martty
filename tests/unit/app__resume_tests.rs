@@ -541,7 +541,7 @@ fn acp_session_list_limit_skips_the_current_session_before_truncating() {
             updated_at: None,
         });
     }
-    app.on_acp_session_list(sessions, None, 10, &ctl);
+    app.on_acp_session_list(app.session_id.clone(), sessions, None, 10, &ctl);
     let picker = app.picker.as_ref().expect("/resume 10 opens the picker");
     assert_eq!(picker.items.len(), 10, "limit counts resumable rows only");
     assert!(

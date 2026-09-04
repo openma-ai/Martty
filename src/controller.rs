@@ -331,9 +331,10 @@ fn controller_loop(
                     ))));
                 }
             }
-            Cmd::FetchCatalog => {
+            Cmd::FetchCatalog { session_id } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+                        session_id: Some(session_id.clone()),
                         models: vec![
                             CatalogModel {
                                 provider: "deepseek-official".into(),
@@ -359,7 +360,11 @@ fn controller_loop(
                 match result {
                     Some(Ok(value)) => {
                         let (models, presets) = parse_catalog(&value);
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models, presets }));
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+                            session_id: Some(session_id),
+                            models,
+                            presets,
+                        }));
                     }
                     Some(Err(err)) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -373,9 +378,10 @@ fn controller_loop(
                     }
                 }
             }
-            Cmd::FetchSkills => {
+            Cmd::FetchSkills { session_id } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                        session_id: Some(session_id.clone()),
                         skills: vec![
                             SkillInfo {
                                 name: "commit-helper".into(),
@@ -405,7 +411,10 @@ fn controller_loop(
                     Some(Ok(value)) => parse_skills(&value),
                     _ => Vec::new(),
                 };
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                    session_id: Some(session_id),
+                    skills,
+                }));
             }
             Cmd::FetchStaticPlugins => {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::StaticPlugins {
@@ -442,9 +451,14 @@ fn controller_loop(
                     "client plugin overlays require the ACP compositor transport".into(),
                 )));
             }
-            Cmd::FetchEfforts { provider, model } => {
+            Cmd::FetchEfforts {
+                session_id,
+                provider,
+                model,
+            } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                        session_id: Some(session_id.clone()),
                         efforts: vec!["off".into(), "high".into(), "max".into()],
                         default: Some("high".into()),
                     }));
@@ -475,7 +489,11 @@ fn controller_loop(
                             .pointer("/reasoning/defaultEffort")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts { efforts, default }));
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                            session_id: Some(session_id.clone()),
+                            efforts,
+                            default,
+                        }));
                     }
                     Some(Err(err)) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -484,6 +502,7 @@ fn controller_loop(
                     }
                     None => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                            session_id: Some(session_id),
                             efforts: vec!["off".into(), "high".into(), "max".into()],
                             default: None,
                         }));
@@ -617,7 +636,7 @@ fn controller_loop(
                 // Sessions only exist on the ACP transport; the legacy/demo
                 // controller owns nothing to forget.
             }
-            Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } => {
+            Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } | Cmd::ActiveSession { .. } => {
                 // The legacy/demo controller has no local Cordis compositor.
             }
             Cmd::Shutdown => {

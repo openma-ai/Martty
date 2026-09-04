@@ -819,6 +819,11 @@ pub struct SessionSlot {
     pub prompt_queue: VecDeque<ClientQueuedPrompt>,
     pub prompt_pending: bool,
     pub modes: Modes,
+    pub skills: Vec<crate::bus::SkillInfo>,
+    pub presets: Vec<crate::bus::CatalogPreset>,
+    pub models: Vec<crate::bus::CatalogModel>,
+    pub permission_choices: Vec<crate::bus::CatalogPreset>,
+    pub effort_choices: Vec<String>,
     pub session_bound: bool,
     pub pending_steer_cells: HashMap<u64, PendingSteer>,
     pub subagents: Vec<SubagentView>,
@@ -869,6 +874,11 @@ impl SessionSlot {
             prompt_queue: VecDeque::new(),
             prompt_pending: false,
             modes: Modes::default(),
+            skills: Vec::new(),
+            presets: Vec::new(),
+            models: Vec::new(),
+            permission_choices: Vec::new(),
+            effort_choices: Vec::new(),
             session_bound: bound,
             pending_steer_cells: HashMap::new(),
             subagents: Vec::new(),
@@ -1920,6 +1930,11 @@ impl App {
             prompt_queue: std::mem::take(&mut self.prompt_queue),
             prompt_pending: std::mem::take(&mut self.prompt_pending),
             modes: std::mem::take(&mut self.modes),
+            skills: std::mem::take(&mut self.skills),
+            presets: std::mem::take(&mut self.last_presets),
+            models: std::mem::take(&mut self.last_models),
+            permission_choices: std::mem::take(&mut self.permission_choices),
+            effort_choices: std::mem::take(&mut self.effort_choices),
             session_bound: std::mem::take(&mut self.session_bound),
             pending_steer_cells: std::mem::take(&mut self.pending_steer_cells),
             subagents: std::mem::take(&mut self.subagents),
@@ -1950,6 +1965,11 @@ impl App {
         self.prompt_queue = slot.prompt_queue;
         self.prompt_pending = slot.prompt_pending;
         self.modes = slot.modes;
+        self.skills = slot.skills;
+        self.last_presets = slot.presets;
+        self.last_models = slot.models;
+        self.permission_choices = slot.permission_choices;
+        self.effort_choices = slot.effort_choices;
         self.session_bound = slot.session_bound;
         self.pending_steer_cells = slot.pending_steer_cells;
         self.subagents = slot.subagents;
@@ -3058,6 +3078,7 @@ impl App {
         // snapshot per event multiplies that into a UI-melting alloc storm.
         let queue_before = (!self.demo).then(|| self.queue_fingerprint());
         let agents_before = (!self.demo).then(|| self.agents_fingerprint());
+        let active_before = (!self.demo).then(|| (self.session_id.clone(), self.session_bound));
         self.handle_inner(ev, ctl);
         // A turn ran on the picked model → the stream is the truth again.
         if self.selected_model.is_some()
@@ -3076,6 +3097,13 @@ impl App {
             if self.agents_fingerprint() != before {
                 ctl.send(Cmd::AgentsSnapshot {
                     snapshot: self.agents_snapshot(),
+                });
+            }
+        }
+        if let Some(before) = active_before {
+            if (self.session_id.as_str(), self.session_bound) != (before.0.as_str(), before.1) {
+                ctl.send(Cmd::ActiveSession {
+                    session_id: self.session_bound.then(|| self.session_id.clone()),
                 });
             }
         }
@@ -3578,7 +3606,7 @@ impl App {
                                 .push_notice(NoticeLevel::Error, message);
                         }
                     }
-                    CtlEvent::BindFailed => {
+                    CtlEvent::BindFailed { message } => {
                         // session/new·resume failed outright. acp completes
                         // bind requests in order, so the FIFO head owns the
                         // failure: drop its entry so a later bind cannot
@@ -3587,10 +3615,11 @@ impl App {
                         // retry /new·resume).
                         if let Some(awaiting) = self.awaiting_binds.pop_front() {
                             if awaiting.open {
-                                let msg: String = self.locale.tr(
-                                    "session bind failed — this tab stays open; /close it or retry /new",
-                                    "会话绑定失败 —— 本标签页保持打开;/close 关闭或重试 /new",
-                                ).into();
+                                let msg = self.locale.trf(
+                                    "session bind failed: {} — this tab stays open; /close it or retry /new",
+                                    "会话绑定失败：{} —— 本标签页保持打开；/close 关闭或重试 /new",
+                                    &[message.clone()],
+                                );
                                 if self.session_id == awaiting.id {
                                     self.transcript.push_notice(NoticeLevel::Warn, msg);
                                 } else if let Some(slot) = self
@@ -3602,12 +3631,23 @@ impl App {
                                 }
                             }
                         }
-                        self.show_tip(self.locale.tr("session bind failed", "会话绑定失败"));
+                        self.show_tip(self.locale.trf(
+                            "session bind failed: {}",
+                            "会话绑定失败：{}",
+                            &[message],
+                        ));
                         self.needs_redraw = true;
                     }
-                    CtlEvent::CancelRequested => {
-                        self.state_note = "cancelling".into();
-                        self.transcript.cancel_open_work();
+                    CtlEvent::CancelRequested { session_id } => {
+                        if session_id == self.session_id {
+                            self.state_note = "cancelling".into();
+                            self.transcript.cancel_open_work();
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            slot.state_note = "cancelling".into();
+                            slot.transcript.cancel_open_work();
+                        }
                     }
                     CtlEvent::Interrupted { session_id } => {
                         // One connection can run turns for several sessions;
@@ -3642,8 +3682,19 @@ impl App {
                         }
                         self.dispatch_session_queue(&session_id, ctl);
                     }
-                    CtlEvent::Skills { skills } => {
-                        self.skills = skills;
+                    CtlEvent::Skills { session_id, skills } => {
+                        let is_live = session_id
+                            .as_deref()
+                            .is_none_or(|session_id| session_id == self.session_id);
+                        if is_live {
+                            self.skills = skills;
+                        } else if let Some(session_id) = session_id.as_deref() {
+                            if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == session_id)
+                            {
+                                slot.skills = skills;
+                            }
+                        }
                     }
                     CtlEvent::StaticPlugins { plugins } => {
                         self.static_plugins = plugins;
@@ -3653,7 +3704,23 @@ impl App {
                         self.cordis_plugins = plugins;
                         self.open_cordis_plugin_picker();
                     }
-                    CtlEvent::Catalog { models, presets } => {
+                    CtlEvent::Catalog {
+                        session_id: Some(session_id),
+                        models,
+                        presets,
+                    } if session_id != self.session_id => {
+                        if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            if !presets.is_empty() {
+                                slot.presets = presets;
+                            }
+                            if !models.is_empty() {
+                                slot.models = models;
+                            }
+                        }
+                    }
+                    CtlEvent::Catalog { models, presets, .. } => {
                         if !presets.is_empty() {
                             self.last_presets = presets.clone();
                         }
@@ -3731,10 +3798,10 @@ impl App {
                             Some(sid) => sid == &self.session_id,
                             None => true,
                         };
-                        if !modes.is_empty() {
-                            self.permission_choices = modes.clone();
-                        }
                         if is_live {
+                            if !modes.is_empty() {
+                                self.permission_choices = modes.clone();
+                            }
                             if let Some(id) = &current {
                                 self.modes.permission = Some(id.clone());
                             }
@@ -3758,17 +3825,37 @@ impl App {
                             }
                         } else if let Some(sid) = session_id.as_deref() {
                             if let Some(slot) = self.parked.iter_mut().find(|s| s.id == sid) {
+                                if !modes.is_empty() {
+                                    slot.permission_choices = modes;
+                                }
                                 if let Some(id) = current {
                                     slot.modes.permission = Some(id);
                                 }
                             }
                         }
                     }
-                    CtlEvent::Efforts { efforts, default } => {
-                        if !efforts.is_empty() {
-                            self.effort_choices = efforts.clone();
+                    CtlEvent::Efforts {
+                        session_id,
+                        efforts,
+                        default,
+                    } => {
+                        let is_live = session_id
+                            .as_deref()
+                            .is_none_or(|session_id| session_id == self.session_id);
+                        if is_live {
+                            if !efforts.is_empty() {
+                                self.effort_choices = efforts.clone();
+                            }
+                            self.open_effort_picker(efforts, default);
+                        } else if let Some(session_id) = session_id.as_deref() {
+                            if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == session_id)
+                            {
+                                if !efforts.is_empty() {
+                                    slot.effort_choices = efforts;
+                                }
+                            }
                         }
-                        self.open_effort_picker(efforts, default);
                     }
                     CtlEvent::PresetSet {
                         session_id,
@@ -3999,22 +4086,36 @@ impl App {
                         }
                         if let Some(bound) = just_bound {
                             self.dispatch_session_queue(&bound, ctl);
+                            ctl.send(Cmd::FetchSkills { session_id: bound });
                         }
-                        ctl.send(Cmd::FetchSkills);
                     }
                     CtlEvent::SessionList {
+                        requester_session_id,
                         sessions,
                         prefix,
                         limit,
                     } => {
-                        self.on_acp_session_list(sessions, prefix, limit, ctl);
+                        self.on_acp_session_list(
+                            requester_session_id,
+                            sessions,
+                            prefix,
+                            limit,
+                            ctl,
+                        );
                     }
                     CtlEvent::SessionListUnavailable {
+                        requester_session_id,
                         prefix,
                         limit,
                         error,
                     } => {
-                        self.on_acp_session_list_unavailable(prefix, limit, error, ctl);
+                        self.on_acp_session_list_unavailable(
+                            requester_session_id,
+                            prefix,
+                            limit,
+                            error,
+                            ctl,
+                        );
                     }
                 }
                 self.needs_redraw = true;
@@ -6399,7 +6500,9 @@ impl App {
     fn open_model_picker(&mut self, ctl: &Controller) {
         // Ask the ACP agent for its real catalog; seed the picker
         // with fallback presets / env snapshot meanwhile.
-        ctl.send(Cmd::FetchCatalog);
+        ctl.send(Cmd::FetchCatalog {
+            session_id: self.session_id.clone(),
+        });
         let mut items: Vec<PickerItem> = host_catalog_models()
             .unwrap_or_else(|| MODEL_PRESETS.iter().map(|s| s.to_string()).collect())
             .into_iter()
@@ -6516,6 +6619,7 @@ impl App {
     fn open_resume_picker(&mut self, limit: usize, ctl: &Controller) {
         if !self.demo && self.list_session {
             ctl.send(Cmd::ListSessions {
+                requester_session_id: self.session_id.clone(),
                 prefix: None,
                 limit,
             });
@@ -6721,7 +6825,9 @@ impl App {
                 arg.to_string()
             };
             self.open_new_session(id.clone(), true);
-            ctl.send(Cmd::FetchSkills);
+            ctl.send(Cmd::FetchSkills {
+                session_id: self.session_id.clone(),
+            });
             self.transcript.push_notice(
                 NoticeLevel::Info,
                 self.locale.trf(
@@ -6833,6 +6939,11 @@ impl App {
         self.reset_subagent_views();
         self.transcript.clear();
         self.modes = Modes::default();
+        self.skills.clear();
+        self.last_presets.clear();
+        self.last_models.clear();
+        self.permission_choices.clear();
+        self.effort_choices.clear();
         self.selected_model = None;
         self.session_title = None;
         self.show_banner = false;
@@ -6906,11 +7017,15 @@ impl App {
 
     fn on_acp_session_list(
         &mut self,
+        requester_session_id: String,
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
         limit: usize,
         ctl: &Controller,
     ) {
+        if requester_session_id != self.session_id {
+            return;
+        }
         let skip = self.session_id.clone();
         // The `/resume n` cap counts resumable sessions only: the current
         // session is dropped first, then the list truncates to the limit.
@@ -6987,11 +7102,15 @@ impl App {
 
     fn on_acp_session_list_unavailable(
         &mut self,
+        requester_session_id: String,
         prefix: Option<String>,
         limit: usize,
         error: String,
         ctl: &Controller,
     ) {
+        if requester_session_id != self.session_id {
+            return;
+        }
         self.show_tip(self.locale.trf(
             "session/list unavailable ({}) — listing local JSONL",
             "session/list 不可用（{}）—— 改为列出本地 JSONL",
@@ -7012,7 +7131,9 @@ impl App {
     }
 
     fn open_mode_picker(&mut self, ctl: &Controller) {
-        ctl.send(Cmd::FetchCatalog);
+        ctl.send(Cmd::FetchCatalog {
+            session_id: self.session_id.clone(),
+        });
         let items: Vec<PickerItem> = if self.demo {
             AGENT_MODES
                 .iter()
@@ -7103,7 +7224,9 @@ impl App {
             preset: preset.clone(),
         });
         // Preset scopes can mount their own skill registries.
-        ctl.send(Cmd::FetchSkills);
+        ctl.send(Cmd::FetchSkills {
+            session_id: self.session_id.clone(),
+        });
         self.show_tip(self.locale.trf("agent → {} …", "Agent → {} …", &[label.into()]));
     }
 
@@ -7126,7 +7249,9 @@ impl App {
             .map(|index| choices[(index + 1) % choices.len()])
             .or_else(|| choices.first().copied())
         else {
-            ctl.send(Cmd::FetchCatalog);
+            ctl.send(Cmd::FetchCatalog {
+                session_id: self.session_id.clone(),
+            });
             self.show_tip(self.locale.tr("agent presets unavailable", "Agent 预设不可用"));
             return;
         };
@@ -7154,6 +7279,7 @@ impl App {
         }
         // Stage 2: offer efforts for the chosen model.
         ctl.send(Cmd::FetchEfforts {
+            session_id: self.session_id.clone(),
             provider: self.cfg.provider.clone(),
             model: self.cfg.model.clone(),
         });
@@ -7624,6 +7750,7 @@ impl App {
                     self.open_resume_picker(n.max(1), ctl);
                 } else if !self.demo && self.list_session {
                     ctl.send(Cmd::ListSessions {
+                        requester_session_id: self.session_id.clone(),
                         prefix: Some(arg.to_string()),
                         limit: usize::MAX,
                     });
@@ -7643,6 +7770,7 @@ impl App {
             "effort" => {
                 if arg.is_empty() {
                     ctl.send(Cmd::FetchEfforts {
+                        session_id: self.session_id.clone(),
                         provider: self.cfg.provider.clone(),
                         model: self.cfg.model.clone(),
                     });

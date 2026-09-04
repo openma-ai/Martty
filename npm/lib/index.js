@@ -132,9 +132,10 @@ export async function applyShell(ctx, options = {}) {
   }
   const clientEvents = ctx.acpClientEvents ?? ctx.get?.('acpClientEvents')
   if (clientEvents === undefined || typeof clientEvents.observeClient !== 'function'
-    || typeof clientEvents.observeAgent !== 'function') {
+    || typeof clientEvents.observeAgent !== 'function'
+    || typeof clientEvents.selectSession !== 'function') {
     throw new Error(
-      'dsh-tui-shell: ctx.acpClientEvents must expose ACP observers',
+      'dsh-tui-shell: ctx.acpClientEvents must expose ACP observers and Session selection',
     )
   }
   const queue = ctx.tuiQueue ?? ctx.get?.('tuiQueue')
@@ -242,6 +243,13 @@ export async function applyShell(ctx, options = {}) {
         }
         if (message.method === CORDIS_METHODS.agentsUpdate) {
           return { ok: agents.observe(message.params) }
+        }
+        if (message.method === CORDIS_METHODS.sessionActive) {
+          const active = message.params?.sessionId
+          clientEvents.selectSession(
+            typeof active === 'string' && active.length > 0 ? active : undefined,
+          )
+          return { ok: true }
         }
         if (message.method === CORDIS_METHODS.approvalRespond) {
           return clientRunner.respondApproval(message.params)

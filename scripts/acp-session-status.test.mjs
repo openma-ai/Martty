@@ -383,3 +383,28 @@ test('the status service re-reports subscriptions', () => {
   assert.equal(snapshots.length, 1)
   assert.equal(snapshots[0].state, 'running')
 })
+
+test('background Session status and mode facts do not contaminate the selected tab', () => {
+  const service = installAcpSessionStatus(makeCtx(), {
+    events: { register: () => () => {} },
+    sessionConfig: makeSessionConfig(),
+  })
+  service.selectSession('s-2')
+  service.observeAgent({
+    jsonrpc: '2.0', method: 'session.status',
+    params: { sessionId: 's-1', status: 'running' },
+  })
+  service.observeAgent({
+    jsonrpc: '2.0', method: 'session.event', params: {
+      sessionId: 's-1',
+      event: { type: 'permission/preset', data: { preset: 'danger-full-access' } },
+    },
+  })
+  assert.equal(service.current().state, 'idle')
+  assert.equal(service.current().permission, undefined)
+  assert.equal(service.current().session.sessionId, 's-2')
+
+  service.selectSession('s-1')
+  assert.equal(service.current().state, 'running')
+  assert.equal(service.current().permission, 'danger-full-access')
+})

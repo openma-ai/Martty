@@ -62,14 +62,20 @@ pub enum AcpEndpoint {
     AttachTcp(std::net::TcpStream),
 }
 
-#[derive(Default)]
-struct Surface {
+#[derive(Clone, Default)]
+struct SessionSurface {
     composition_id: Option<String>,
     models: Vec<crate::bus::CatalogModel>,
     presets: Vec<CatalogPreset>,
     skills: Vec<crate::bus::SkillInfo>,
     efforts: Vec<String>,
     modes: Vec<CatalogPreset>,
+}
+
+#[derive(Default)]
+struct Surface {
+    sessions: HashMap<String, SessionSurface>,
+    fallback: SessionSurface,
     /// Agent advertised `promptCapabilities.image` (ACP Image blocks allowed).
     prompt_image: bool,
     /// Agent negotiated the DSH Cordis ACP extension family.
@@ -77,6 +83,17 @@ struct Surface {
 }
 
 impl Surface {
+    fn session_mut(&mut self, session_id: Option<&str>) -> &mut SessionSurface {
+        match session_id {
+            Some(id) => self.sessions.entry(id.to_string()).or_default(),
+            None => &mut self.fallback,
+        }
+    }
+
+    fn session(&self, session_id: &str) -> &SessionSurface {
+        self.sessions.get(session_id).unwrap_or(&self.fallback)
+    }
+
     fn apply_config_options(
         &mut self,
         options: &Value,
@@ -84,17 +101,18 @@ impl Surface {
         session_id: Option<&str>,
     ) {
         let (models, presets, composition_id) = catalog_from_config_options(options);
-        self.models = models.clone();
-        self.presets = presets.clone();
+        let target = self.session_mut(session_id);
+        target.models = models.clone();
+        target.presets = presets.clone();
         if composition_id.is_some() {
-            self.composition_id = composition_id;
+            target.composition_id = composition_id;
         }
         if let Some(arr) = options.as_array() {
             if let Some(effort) = arr
                 .iter()
                 .find(|o| o.get("id").and_then(Value::as_str) == Some("effort"))
             {
-                self.efforts =
+                target.efforts =
                     flatten_select_options(effort.get("options").unwrap_or(&Value::Null))
                         .into_iter()
                         .map(|(id, _, _)| id)
@@ -119,14 +137,14 @@ impl Surface {
                             broken: false,
                         })
                         .collect();
-                let changed = !list.is_empty() && list != self.modes;
+                let changed = !list.is_empty() && list != target.modes;
                 if changed {
-                    self.modes = list;
+                    target.modes = list;
                 }
-                if !self.modes.is_empty() {
+                if !target.modes.is_empty() {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
                         session_id: session_id.map(str::to_string),
-                        modes: self.modes.clone(),
+                        modes: target.modes.clone(),
                         current: mode
                             .get("currentValue")
                             .or_else(|| mode.get("current_value"))
@@ -136,7 +154,11 @@ impl Surface {
                 }
             }
         }
-        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models, presets }));
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: session_id.map(str::to_string),
+            models,
+            presets,
+        }));
     }
 
     fn apply_session_modes(
@@ -150,7 +172,7 @@ impl Surface {
             return;
         }
         if !list.is_empty() {
-            self.modes = list.clone();
+            self.session_mut(session_id).modes = list.clone();
         }
         let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
             session_id: session_id.map(str::to_string),
@@ -345,9 +367,11 @@ struct SteerFinish {
 /// prompt promise settle on its own.
 fn abort_turn(cx: &ConnectionTo<Agent>, session_id: &Option<SessionId>, bus: &Sender<AppEvent>) {
     if let Some(sid) = session_id.clone() {
-        let _ = cx.send_notification(CancelNotification::new(sid));
+        let _ = cx.send_notification(CancelNotification::new(sid.clone()));
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::CancelRequested {
+            session_id: sid.to_string(),
+        }));
     }
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::CancelRequested));
 }
 
 fn spawn_session_prompt(
@@ -801,12 +825,12 @@ fn apply_setup(
     bus: &Sender<AppEvent>,
 ) {
     if let Ok(mut surface) = surface.lock() {
-        surface.modes.clear();
         let session = value
             .get("sessionId")
             .or_else(|| value.get("session_id"))
             .and_then(Value::as_str)
             .or(session_hint);
+        surface.session_mut(session).modes.clear();
         if let Some(options) = value
             .get("configOptions")
             .or_else(|| value.get("config_options"))
@@ -1330,10 +1354,17 @@ where
                             .or_else(|| update.get("available_commands"))
                         {
                             let skills = skills_from_available_commands(commands);
+                            let session = params
+                                .get("sessionId")
+                                .or_else(|| params.get("session_id"))
+                                .and_then(Value::as_str);
                             if let Ok(mut surface) = surface_n.lock() {
-                                surface.skills = skills.clone();
+                                surface.session_mut(session).skills = skills.clone();
                             }
-                            let _ = bus_n.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+                            let _ = bus_n.send(AppEvent::Ctl(CtlEvent::Skills {
+                                session_id: session.map(str::to_string),
+                                skills,
+                            }));
                         }
                     }
                     Ok(())
@@ -1968,6 +1999,7 @@ where
                                     if handle.inflight.is_some() || !parked.is_empty() {
                                         handle.queue.push_back(next);
                                     } else {
+                                        prompt_gen += 1;
                                         handle.inflight = begin_prompt(
                                             next,
                                             &cx,
@@ -2206,7 +2238,12 @@ where
                             if let Some(model) = model {
                                 let value = {
                                     let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
-                                    match surface.models.iter().find(|m| m.id == model) {
+                                    match surface
+                                        .session(&sid.0)
+                                        .models
+                                        .iter()
+                                        .find(|m| m.id == model)
+                                    {
                                         Some(m) if !m.provider.is_empty() => {
                                             format!("{}/{}", m.provider, model)
                                         }
@@ -2253,27 +2290,29 @@ where
                                     });
                             }
                         }
-                        Cmd::FetchCatalog => {
+                        Cmd::FetchCatalog { session_id } => {
                             let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                            let scoped = surface.session(&session_id);
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
-                                models: surface.models.clone(),
-                                presets: surface.presets.clone(),
+                                session_id: Some(session_id.clone()),
+                                models: scoped.models.clone(),
+                                presets: scoped.presets.clone(),
                             }));
-                            if !surface.modes.is_empty() {
+                            if !scoped.modes.is_empty() {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
-                                    session_id: None,
-                                    modes: surface.modes.clone(),
+                                    session_id: Some(session_id),
+                                    modes: scoped.modes.clone(),
                                     current: None,
                                 }));
                             }
                         }
-                        Cmd::FetchSkills => {
-                            let skills = surface
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .skills
-                                .clone();
-                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+                        Cmd::FetchSkills { session_id } => {
+                            let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                            let skills = surface.session(&session_id).skills.clone();
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                                session_id: Some(session_id),
+                                skills,
+                            }));
                         }
                         Cmd::FetchStaticPlugins => match fetch_static_plugins(&cx).await {
                             Ok(plugins) => {
@@ -2458,13 +2497,11 @@ where
                                 ))));
                             }
                         }
-                        Cmd::FetchEfforts { .. } => {
-                            let efforts = surface
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .efforts
-                                .clone();
+                        Cmd::FetchEfforts { session_id, .. } => {
+                            let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                            let efforts = surface.session(&session_id).efforts.clone();
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                                session_id: Some(session_id),
                                 efforts: if efforts.is_empty() {
                                     vec!["off".into(), "high".into(), "max".into()]
                                 } else {
@@ -2533,6 +2570,7 @@ where
                             let config_id = surface
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
+                                .session(&sid.0)
                                 .composition_id
                                 .clone()
                                 .unwrap_or_else(|| "agent".into());
@@ -2788,7 +2826,9 @@ where
                                     // never land on it. The tab stays open
                                     // (BindFailed notice) — /new again after
                                     // signing in.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                     emit_needs_auth_open(
                                         &bus,
                                         methods.clone(),
@@ -2796,17 +2836,20 @@ where
                                         Some(acp_error_message(&err)),
                                     );
                                 }
-                                Err(_) => {
+                                Err(err) => {
                                     // The request the UI is awaiting died;
                                     // the tab that asked stays open but the
                                     // bind is never coming.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                 }
                             }
                         }
-                        Cmd::ListSessions { prefix, limit } => {
+                        Cmd::ListSessions { requester_session_id, prefix, limit } => {
                             if !list_session {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
+                                    requester_session_id,
                                     prefix,
                                     limit,
                                     error: "agent did not advertise sessionCapabilities.list"
@@ -2833,6 +2876,7 @@ where
                                     // App side, after the current session is
                                     // filtered out of the list.
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionList {
+                                        requester_session_id,
                                         sessions,
                                         prefix,
                                         limit,
@@ -2848,6 +2892,7 @@ where
                                 }
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
+                                        requester_session_id,
                                         prefix,
                                         limit,
                                         error: err.to_string(),
@@ -2929,7 +2974,9 @@ where
                                     // Same dead-request rule as /new: the
                                     // awaiting entry pops now; retry /resume
                                     // after signing in.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                     emit_needs_auth_open(
                                         &bus,
                                         methods.clone(),
@@ -2937,10 +2984,12 @@ where
                                         Some(acp_error_message(&err)),
                                     );
                                 }
-                                Err(_) => {
+                                Err(err) => {
                                     // session/resume failed outright: the
                                     // awaiting tab's bind is never coming.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                 }
                             }
                         }
@@ -3005,6 +3054,19 @@ where
                                     "selectedId": snapshot.selected_id,
                                     "items": items,
                                 }),
+                                )
+                                .await;
+                            }
+                        }
+                        Cmd::ActiveSession { session_id } => {
+                            if agent_cordis_negotiated(&surface) {
+                                let _ = call_tui_extension(
+                                    &cx,
+                                    crate::cordis::SESSION_ACTIVE,
+                                    serde_json::json!({
+                                        "protocol": crate::cordis::PROTOCOL,
+                                        "sessionId": session_id,
+                                    }),
                                 )
                                 .await;
                             }

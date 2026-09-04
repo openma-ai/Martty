@@ -57,6 +57,9 @@ test('the packaged ACP ignores an old installed profile and restores the Host pe
     ...process.env,
     DSH_HOME: home,
     DSH_SESSION_ROOT: sessions,
+    // Keep this package test hermetic when the developer's global dsh is
+    // newer than the ACP runtime dependency supported by this checkout.
+    DSH_PATH: npmRoot,
     DEEPSEEK_API_KEY: 'sk-test-not-real',
     DEEPSEEK_BASE_URL: 'http://127.0.0.1:1',
   }
