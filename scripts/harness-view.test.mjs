@@ -5,7 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { installTuiCommands } from '../npm/lib/tui-commands.js'
 import { installTuiOverlay } from '../npm/lib/tui-overlay.js'
-import { activateHarness, selectedHarness, upsertHarness } from '../npm/lib/harnesses.js'
+import { selectedHarness, setDefaultHarness, upsertHarness } from '../npm/lib/harnesses.js'
 
 const harnessView = await import('../npm/lib/harness-view.js').catch(() => ({}))
 
@@ -45,7 +45,7 @@ test('/harness opens a native picker over configured and discovered entries', as
       command: 'local-acp',
       args: ['--stdio'],
     })
-    activateHarness(settingsPath, 'local')
+    setDefaultHarness(settingsPath, 'local')
     const ctx = makeCtx()
     harnessView.apply(ctx, {
       settingsPath,
@@ -61,9 +61,9 @@ test('/harness opens a native picker over configured and discovered entries', as
 
     assert.deepEqual(ctx.tuiCommands.list(), [{
       name: 'harness',
-      description: 'Switch Harness now and start a new session',
+      description: 'Switch or add a Harness; switching starts a new session',
       input: {
-        hint: '[id]',
+        hint: '[id] or add <id> --command <cmd>',
         options: [
           { value: 'local', label: 'Local ACP', description: 'configured · local-acp --stdio' },
           { value: 'builtin-dsh', label: 'Bundled DeepSeek Harness', description: 'builtin · /pkg/dsh-acp' },
@@ -87,7 +87,74 @@ test('/harness opens a native picker over configured and discovered entries', as
   }
 })
 
-test('/harness marks the configured product default until this process switches', async () => {
+test('/harness add saves a custom ACP command and switches to it immediately', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-add-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const switched = []
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent(agent) {
+        switched.push(agent)
+      },
+    })
+    harnessView.apply(ctx, { settingsPath, pathValue: '', defaults: [] })
+
+    const result = await ctx.tuiCommands.dispatch({
+      protocol: 0,
+      name: 'harness',
+      args: 'add local --label "Local ACP" --command local-acp --arg --stdio',
+    })
+
+    assert.deepEqual(switched, [{ command: 'local-acp', args: ['--stdio'] }])
+    assert.deepEqual(ctx.tuiCommands.list()[0].input.options, [{
+      value: 'local',
+      label: 'Local ACP',
+      description: 'configured · local-acp --stdio',
+    }])
+    assert.deepEqual(selectedHarness(settingsPath), {
+      id: 'local',
+      label: 'Local ACP',
+      command: 'local-acp',
+      args: ['--stdio'],
+    })
+    assert.deepEqual(result, {
+      action: 'harness-switched',
+      harness: {
+        id: 'local',
+        label: 'Local ACP',
+        command: 'local-acp',
+        args: ['--stdio'],
+      },
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness add without arguments opens guided setup in the native overlay', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-add-help-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const ctx = makeCtx()
+    harnessView.apply(ctx, { settingsPath, pathValue: '', defaults: [] })
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'add' })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'view',
+      id: 'harness-add-help',
+      title: 'Add a Harness',
+      nodes: [{
+        id: 'instructions',
+        kind: 'markdown',
+        text: 'Use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+      }],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness marks the forced product Harness until this process switches', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-default-'))
   const settingsPath = path.join(root, 'settings.json')
   const productDefault = {
@@ -101,7 +168,7 @@ test('/harness marks the configured product default until this process switches'
     upsertHarness(settingsPath, {
       id: 'last-used', label: 'Last Used', command: 'last-used-acp', args: [],
     })
-    activateHarness(settingsPath, 'last-used')
+    setDefaultHarness(settingsPath, 'last-used')
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
@@ -111,7 +178,7 @@ test('/harness marks the configured product default until this process switches'
     })
     harnessView.apply(ctx, {
       settingsPath,
-      defaultHarness: productDefault,
+      forcedHarness: productDefault,
       defaults: [productDefault],
       pathValue: '',
     })
@@ -141,7 +208,7 @@ test('submitting the TUI harness picker without an active session immediately re
     upsertHarness(settingsPath, {
       id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
     })
-    activateHarness(settingsPath, 'local')
+    setDefaultHarness(settingsPath, 'local')
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
@@ -198,7 +265,7 @@ test('submitting the TUI harness picker from an unused bound session switches im
     upsertHarness(settingsPath, {
       id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
     })
-    activateHarness(settingsPath, 'local')
+    setDefaultHarness(settingsPath, 'local')
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
@@ -249,7 +316,7 @@ test('submitting the TUI harness picker after the first prompt requires confirma
     upsertHarness(settingsPath, {
       id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
     })
-    activateHarness(settingsPath, 'local')
+    setDefaultHarness(settingsPath, 'local')
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',

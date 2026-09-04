@@ -145,9 +145,9 @@ already received a prompt or was restored through `/session`, Martty confirms
 first and keeps that session available for navigation.
 
 `harness list` includes saved entries, the bundled DSH runtime, and executable
-`*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks the active entry.
+`*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks the default entry.
 `add` and `use` preserve the other fields in `$MARTTY_HOME/settings.json` while
-writing `harnesses` and `activeHarness`. Selection applies to the **next
+writing `harnesses` and `defaultHarness`. Selection applies to the **next
 standalone launch**, which initializes the selected Harness and binds an empty
 session. This makes the Agent's model and effort config available before the
 first prompt without starting a model turn. Sessions are never carried across Harnesses, and
@@ -155,12 +155,15 @@ first prompt without starting a model turn. Sessions are never carried across Ha
 
 `martty harness add codex` is a shortcut that saves an `npx`
 `@agentclientprotocol/codex-acp` recipe, so no Codex CLI flags need to be guessed.
+Inside a running standalone TUI, `/harness add <id> --command <cmd> [--arg <arg>]`
+saves the recipe and switches to it immediately (with confirmation after a
+prompt has started).
 
 Standalone precedence is explicit `--agent`, `DSH_TUI_AGENT`, the product's
-internal initialization `defaultHarness` (empty by default), the persisted
-`activeHarness`, then the bundled fallback. `defaultHarness` is not a CLI or
-user startup argument. `/harness` updates only `activeHarness`; it never
-changes the product default.
+internal initialization `forcedHarness` (empty by default), the persisted
+`defaultHarness`, then the bundled fallback. `forcedHarness` is not a CLI or
+user startup argument. `/harness` updates only the persisted `defaultHarness`;
+it never changes the product forced value.
 A one-run `--agent` override never changes the saved choice.
 
 Cordis embedding uses `config.agent: { command, args }` to spawn a server, or

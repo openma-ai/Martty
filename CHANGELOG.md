@@ -16,13 +16,14 @@ All notable changes to this project are documented here. The project follows
 - Standalone harness registry and discovery: `martty harness list` shows saved
   entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
   on `PATH`; `harness add` saves a named command and repeated arguments, while
-  `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
-  The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
+  `harness use` persists the default entry in `$MARTTY_HOME/settings.json`.
+  The built-in Client Plugin adds `/harness`, `/harness <id>`, and
+  `/harness add <id> --command <cmd> [--arg <arg>]` as the third
   entry point, using the native TUI single-select overlay and the same registry.
   Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → an internal,
-  product-owned `defaultHarness` (empty by default, when supplied) → the saved `activeHarness`
+  product-owned `forcedHarness` (empty by default, when supplied) → the saved `defaultHarness`
   → the bundled fallback. CLI/settings selection applies on the next
-  standalone launch when the product does not pin a default. In a running
+  standalone launch when the product does not force a Harness. In a running
   standalone TUI, `/harness` replaces the ACP child immediately while no
   prompt has started the current session. Once
   the first `session/prompt` has been sent, or an existing session has been
@@ -33,8 +34,8 @@ All notable changes to this project are documented here. The project follows
   This binds an empty session without starting a model turn and returns the TUI
   to its landing page; the switch result stays in the composer Tip instead of
   becoming transcript. Sessions never carry across Harnesses; profile-owned
-  Host runtimes and sessions remain unchanged. `/harness` updates only
-  `activeHarness`, never the product default.
+  Host runtimes and sessions remain unchanged. `/harness` updates only the
+  saved `defaultHarness`, never the product forced value.
 - The `@file` mention browser now follows the typed query across the
   tree: the listing is live-filtered to matching names (exact > prefix >
   contains > subsequence, `../` always kept so a filtered view can back

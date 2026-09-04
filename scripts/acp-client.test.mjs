@@ -25,10 +25,10 @@ test('resolveAgent defaults to dsh-acp and honors command/args', () => {
   }
 })
 
-test('standalone resolution uses the active harness from Martty settings', () => {
+test('standalone resolution uses the default harness from Martty settings', () => {
   const previous = process.env.DSH_TUI_AGENT
   delete process.env.DSH_TUI_AGENT
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-active-harness-'))
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-default-harness-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
     writeFileSync(settingsPath, JSON.stringify({
@@ -38,7 +38,7 @@ test('standalone resolution uses the active harness from Martty settings', () =>
         command: '/opt/local/bin/local-acp',
         args: ['--stdio'],
       }],
-      activeHarness: 'local',
+      defaultHarness: 'local',
     }))
     assert.deepEqual(resolveStackedAgent(import.meta.url, { settingsPath }), {
       command: '/opt/local/bin/local-acp',
@@ -51,12 +51,12 @@ test('standalone resolution uses the active harness from Martty settings', () =>
   }
 })
 
-test('a product default Harness wins the last active Harness at startup', () => {
+test('a forced product Harness wins the saved default Harness at startup', () => {
   const previous = process.env.DSH_TUI_AGENT
   delete process.env.DSH_TUI_AGENT
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-default-harness-'))
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-forced-harness-'))
   const settingsPath = path.join(root, 'settings.json')
-  const defaultHarness = {
+  const forcedHarness = {
     id: 'product-default',
     label: 'Product Default',
     command: 'product-acp',
@@ -70,15 +70,15 @@ test('a product default Harness wins the last active Harness at startup', () => 
         command: 'last-used-acp',
         args: [],
       }],
-      activeHarness: 'last-used',
+      defaultHarness: 'last-used',
     }))
 
     assert.deepEqual(
-      parseClientArgv([], { settingsPath, defaultHarness }).agent,
+      parseClientArgv([], { settingsPath, forcedHarness }).agent,
       { command: 'product-acp', args: ['--stdio'] },
     )
     assert.equal(
-      JSON.parse(readFileSync(settingsPath, 'utf8')).activeHarness,
+      JSON.parse(readFileSync(settingsPath, 'utf8')).defaultHarness,
       'last-used',
       'startup resolution must not overwrite the last user selection',
     )
@@ -89,10 +89,10 @@ test('a product default Harness wins the last active Harness at startup', () => 
   }
 })
 
-test('an empty product default Harness falls back to the last active Harness', () => {
+test('an empty forced Harness falls back to the saved default Harness', () => {
   const previous = process.env.DSH_TUI_AGENT
   delete process.env.DSH_TUI_AGENT
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-empty-default-harness-'))
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-empty-forced-harness-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
     writeFileSync(settingsPath, JSON.stringify({
@@ -102,11 +102,11 @@ test('an empty product default Harness falls back to the last active Harness', (
         command: 'last-used-acp',
         args: [],
       }],
-      activeHarness: 'last-used',
+      defaultHarness: 'last-used',
     }))
 
     assert.deepEqual(
-      parseClientArgv([], { settingsPath, defaultHarness: null }).agent,
+      parseClientArgv([], { settingsPath, forcedHarness: null }).agent,
       { command: 'last-used-acp', args: [] },
     )
   } finally {
@@ -158,7 +158,7 @@ test('parseClientArgv uses the selected harness when no CLI override is present'
         command: 'other-acp',
         args: ['serve'],
       }],
-      activeHarness: 'other',
+      defaultHarness: 'other',
     }))
     assert.deepEqual(parseClientArgv(['--theme', 'dark'], { settingsPath }), {
       agent: { command: 'other-acp', args: ['serve'] },
@@ -171,7 +171,7 @@ test('parseClientArgv uses the selected harness when no CLI override is present'
   }
 })
 
-test('standalone argv resolution reads the active harness from MARTTY_HOME by default', () => {
+test('standalone argv resolution reads the default harness from MARTTY_HOME by default', () => {
   const previousAgent = process.env.DSH_TUI_AGENT
   const previousHome = process.env.MARTTY_HOME
   delete process.env.DSH_TUI_AGENT
@@ -185,7 +185,7 @@ test('standalone argv resolution reads the active harness from MARTTY_HOME by de
         command: 'home-acp',
         args: [],
       }],
-      activeHarness: 'home',
+      defaultHarness: 'home',
     }))
     assert.deepEqual(parseClientArgv([]).agent, { command: 'home-acp', args: [] })
   } finally {

@@ -85,15 +85,15 @@ to bind an empty session. This does not start a model turn. It never carries one
 across Harnesses. The settings and CLI entry points select the Harness for the
 next standalone launch; a profile-owned Host cannot be replaced by its Client.
 
-Every selection is stored in `$MARTTY_HOME/settings.json`. CLI/settings
+Every selection is stored in `$MARTTY_HOME/settings.json` as `defaultHarness`. CLI/settings
 selection takes effect on the next standalone launch; TUI selection also
 updates the running standalone process immediately. Standalone startup only
 initializes the selected Harness and binds an empty ACP session before showing Ready.
-The product's internal `defaultHarness` initialization value is empty by
+The product's internal `forcedHarness` initialization value is empty by
 default and is not a CLI/user startup argument. When the product supplies it,
-startup selects it before consulting the last persisted `activeHarness`; when
-empty, startup resumes that active selection. `/harness` never mutates the
-product default.
+startup selects it before consulting the persisted `defaultHarness`; when
+empty, startup uses that saved default and otherwise the bundled fallback.
+`/harness` updates the saved `defaultHarness`, never the product forced value.
 `--agent` and `DSH_TUI_AGENT` remain higher startup priorities.
 None of these replace the Host-owned runtime or session of
 `dsh --profile martty`.

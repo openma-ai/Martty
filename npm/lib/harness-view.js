@@ -1,9 +1,11 @@
 /** Built-in Client Plugin: switch the standalone ACP Harness with a fresh session. */
 
 import {
-  activateHarness,
+  addHarness,
   discoverHarnesses,
   selectedHarness,
+  setDefaultHarness,
+  tokenizeHarnessArgs,
   upsertHarness,
 } from './harnesses.js'
 
@@ -23,8 +25,12 @@ function entryOptions(settingsPath, options) {
 export function apply(ctx, options = {}) {
   const settingsPath = options.settingsPath
   const choices = () => entryOptions(settingsPath, options)
-  let runningHarnessId = typeof options.defaultHarness?.id === 'string'
-    ? options.defaultHarness.id
+  let commandRegistration
+  const refreshCommandChoices = () => commandRegistration?.update({
+    input: { hint: '[id] or add <id> --command <cmd>', options: choices() },
+  })
+  let runningHarnessId = typeof options.forcedHarness?.id === 'string'
+    ? options.forcedHarness.id
     : selectedHarness(settingsPath)?.id
   const switchNow = async (entry) => {
     if (typeof ctx.acpClient?.switchAgent !== 'function') {
@@ -32,8 +38,9 @@ export function apply(ctx, options = {}) {
     }
     await ctx.acpClient.switchAgent({ command: entry.command, args: entry.args })
     upsertHarness(settingsPath, entry)
-    activateHarness(settingsPath, entry.id)
+    setDefaultHarness(settingsPath, entry.id)
     runningHarnessId = entry.id
+    refreshCommandChoices()
     return {
       action: 'harness-switched',
       harness: {
@@ -75,7 +82,8 @@ export function apply(ctx, options = {}) {
       return switchNow(entry)
     }
     upsertHarness(settingsPath, entry)
-    activateHarness(settingsPath, id)
+    setDefaultHarness(settingsPath, id)
+    refreshCommandChoices()
     ctx.tuiOverlay.openView({
       id: 'harness-saved',
       title: 'Harness saved',
@@ -89,15 +97,76 @@ export function apply(ctx, options = {}) {
       }],
     })
   }
-  const command = ctx.tuiCommands.register({
+  commandRegistration = ctx.tuiCommands.register({
     name: 'harness',
-    description: 'Switch Harness now and start a new session',
-    input: { hint: '[id]', options: choices() },
+    description: 'Switch or add a Harness; switching starts a new session',
+    input: { hint: '[id] or add <id> --command <cmd>', options: choices() },
   }, async (args) => {
     const requested = args.trim()
-    if (requested.length > 0) return save(requested)
+    if (requested.length > 0) {
+      let tokens
+      try {
+        tokens = tokenizeHarnessArgs(requested)
+      } catch (error) {
+        ctx.tuiOverlay.openView({
+          id: 'harness-add-error',
+          title: 'Could not add Harness',
+          nodes: [{
+            id: 'error',
+            kind: 'notice',
+            level: 'error',
+            text: error instanceof Error ? error.message : String(error),
+          }],
+        })
+        return undefined
+      }
+      if (tokens[0] === 'add') {
+        if (tokens[1] === undefined) {
+          ctx.tuiOverlay.openView({
+            id: 'harness-add-help',
+            title: 'Add a Harness',
+            nodes: [{
+              id: 'instructions',
+              kind: 'markdown',
+              text: 'Use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+            }],
+          })
+          return undefined
+        }
+        let entry
+        try {
+          entry = addHarness(settingsPath, tokens[1], tokens.slice(2))
+        } catch (error) {
+          ctx.tuiOverlay.openView({
+            id: 'harness-add-error',
+            title: 'Could not add Harness',
+            nodes: [{
+              id: 'error',
+              kind: 'notice',
+              level: 'error',
+              text: error instanceof Error ? error.message : String(error),
+            }],
+          })
+          return undefined
+        }
+        return save(entry.id)
+      }
+      return save(tokens[0])
+    }
     const entries = choices()
     const selected = runningHarnessId
+    if (entries.length === 0) {
+      ctx.tuiOverlay.openView({
+        id: 'harness-add-help',
+        title: 'Add a Harness',
+        nodes: [{
+          id: 'instructions',
+          kind: 'markdown',
+          text: 'Use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+        }],
+      })
+      return undefined
+    }
     ctx.tuiOverlay.openSelect({
       id: 'harness',
       title: 'Switch Harness · starts a new session',
@@ -105,5 +174,5 @@ export function apply(ctx, options = {}) {
       options: entries,
     }, { onSubmit: save })
   })
-  return () => command?.()
+  return () => commandRegistration?.()
 }

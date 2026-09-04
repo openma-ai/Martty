@@ -79,6 +79,7 @@ function argumentText(args, options) {
 
 function sourceLabel(source) {
   if (source === 'configured') return 'Settings'
+  if (source === 'forced') return 'Forced'
   if (source === 'builtin') return 'Bundled'
   if (source === 'path') return 'PATH'
   return source
@@ -102,7 +103,7 @@ ${section('Usage')}
 ${section('Commands')}
   list              Show saved, bundled, and PATH Harnesses
   add <id>          Save a named Harness command
-  use <id>          Select a Harness for the next standalone launch
+  use <id>          Set the default Harness for the next standalone launch
   help              Show this help
 
 ${section('Add options')}
@@ -115,9 +116,10 @@ ${section('Examples')}
   ${command('martty harness add codex')}
   ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
   ${command('martty harness use local')}
+  ${command('/harness add local --command local-acp --arg --stdio')}
 
-Switching Harnesses takes effect on the next standalone launch and starts a
-new ACP session. Sessions are never carried across Harnesses.
+The selected Harness is saved as defaultHarness in Martty settings. It is
+used on the next standalone launch, which starts a new ACP session.
 `
 }
 
@@ -167,7 +169,7 @@ function savedHarnessOutput(harness, color = false) {
   return `${lines.join('\n')}\n`
 }
 
-function formatHarnessList(entries, active, options = {}) {
+function formatHarnessList(entries, defaultId, options = {}) {
   const columns = Number.isInteger(options.columns) && options.columns > 0
     ? options.columns
     : 100
@@ -184,7 +186,7 @@ No Harnesses found.
 
   const lines = [paint(`Harnesses (${entries.length})`, 'bold', color), '']
   for (const entry of entries) {
-    const selected = entry.id === active
+    const selected = entry.id === defaultId
     const marker = paint(selected ? '●' : '○', selected ? 'green' : 'dim', color)
     const prefix = '  ○ '
     const label = clip(entry.label, columns - displayWidth(prefix))
@@ -197,9 +199,9 @@ No Harnesses found.
     }
     lines.push('')
   }
-  const activeLabel = active ?? 'none (bundled default on next launch)'
-  lines.push(fieldLine('Active', activeLabel, columns, color, 2))
-  lines.push(fieldLine('Switch', 'martty harness use <id>', columns, color, 2))
+  const defaultLabel = defaultId ?? 'none (bundled fallback on next launch)'
+  lines.push(fieldLine('Default', defaultLabel, columns, color, 2))
+  lines.push(fieldLine('Set', 'martty harness use <id>', columns, color, 2))
   lines.push(fieldLine('In TUI', '/harness', columns, color, 2))
   return `${lines.join('\n')}\n`
 }
@@ -254,6 +256,24 @@ function configuredHarnesses(settings) {
   return settings.harnesses.map(validateHarness)
 }
 
+function withoutLegacyActive(settings) {
+  const { activeHarness: _legacyActive, ...current } = settings
+  if (current.defaultHarness === undefined && typeof _legacyActive === 'string') {
+    current.defaultHarness = _legacyActive
+  }
+  return current
+}
+
+function persistedDefaultId(settings) {
+  if (typeof settings.defaultHarness === 'string') return settings.defaultHarness
+  // Read legacy settings during the migration window, but never write the
+  // old key back. An explicit null/empty default means the bundled fallback.
+  if (settings.defaultHarness === undefined && typeof settings.activeHarness === 'string') {
+    return settings.activeHarness
+  }
+  return undefined
+}
+
 export function upsertHarness(settingsPath, harness) {
   const next = validateHarness(harness)
   const settings = readSettings(settingsPath)
@@ -261,23 +281,106 @@ export function upsertHarness(settingsPath, harness) {
   const index = harnesses.findIndex(({ id }) => id === next.id)
   if (index === -1) harnesses.push(next)
   else harnesses[index] = next
-  writeSettings(settingsPath, { ...settings, harnesses })
+  writeSettings(settingsPath, { ...withoutLegacyActive(settings), harnesses })
   return next
 }
 
-export function activateHarness(settingsPath, id) {
+export function setDefaultHarness(settingsPath, id) {
   const settings = readSettings(settingsPath)
   const harnesses = configuredHarnesses(settings)
   if (!harnesses.some((harness) => harness.id === id)) {
     throw new Error(`unknown harness ${JSON.stringify(id)}`)
   }
-  writeSettings(settingsPath, { ...settings, harnesses, activeHarness: id })
+  writeSettings(settingsPath, { ...withoutLegacyActive(settings), harnesses, defaultHarness: id })
 }
+
+// Kept as a source-compatible alias for integrations compiled against 0.2.30.
+// Persisted settings use only `defaultHarness`.
+export const activateHarness = setDefaultHarness
 
 export function selectedHarness(settingsPath) {
   const settings = readSettings(settingsPath)
-  if (typeof settings.activeHarness !== 'string') return undefined
-  return configuredHarnesses(settings).find(({ id }) => id === settings.activeHarness)
+  const id = persistedDefaultId(settings)
+  if (typeof id !== 'string') return undefined
+  return configuredHarnesses(settings).find((harness) => harness.id === id)
+}
+
+export function tokenizeHarnessArgs(value) {
+  const tokens = []
+  let token = ''
+  let quote
+  let escaped = false
+  for (const char of String(value ?? '')) {
+    if (escaped) {
+      token += char
+      escaped = false
+    } else if (char === '\\') {
+      escaped = true
+    } else if (quote !== undefined) {
+      if (char === quote) quote = undefined
+      else token += char
+    } else if (char === '"' || char === "'") {
+      quote = char
+    } else if (/\s/.test(char)) {
+      if (token.length > 0) {
+        tokens.push(token)
+        token = ''
+      }
+    } else {
+      token += char
+    }
+  }
+  if (escaped) token += '\\'
+  if (quote !== undefined) throw new HarnessUsageError(`Unclosed ${quote} quote in Harness command`)
+  if (token.length > 0) tokens.push(token)
+  return tokens
+}
+
+export function addHarness(settingsPath, id, tokens = []) {
+  const color = false
+  if (id === undefined || ['help', '-h', '--help'].includes(id)) {
+    throw new HarnessUsageError(addHarnessHelp(color))
+  }
+  if (!HARNESS_ID.test(id)) {
+    throw new HarnessUsageError(
+      `Invalid Harness id ${JSON.stringify(id)}. Use lowercase letters, numbers, and hyphens.`,
+    )
+  }
+  if (id === 'codex' && tokens.length === 0) {
+    return upsertHarness(settingsPath, {
+      id: 'codex',
+      label: 'Codex Harness',
+      command: 'npx',
+      args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp'],
+    })
+  }
+  let command
+  let label
+  const args = []
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    const value = tokens[index + 1]
+    if (value === undefined) {
+      throw new HarnessUsageError(`${token} needs a value.\n\n${addHarnessHelp(color)}`)
+    }
+    if (token === '--command') command = value
+    else if (token === '--label') label = value
+    else if (token === '--arg') args.push(value)
+    else {
+      throw new HarnessUsageError(
+        `Unknown add option ${JSON.stringify(token)}.\n\n${addHarnessHelp(color)}`,
+      )
+    }
+    index += 1
+  }
+  if (typeof command !== 'string' || command.trim().length === 0) {
+    throw new HarnessUsageError(
+      `Missing --command for custom Harness ${JSON.stringify(id)}.\n\n`
+      + `  martty harness add ${id} --command <cmd>\n\n`
+      + 'The command must start an ACP-compatible server on stdin/stdout.',
+    )
+  }
+  return upsertHarness(settingsPath, { id, label, command, args })
 }
 
 export function discoverPathHarnesses(pathValue = process.env.PATH ?? '') {
@@ -323,8 +426,12 @@ export function discoverHarnesses(settingsPath, options = {}) {
     source: typeof entry.source === 'string' ? entry.source : 'builtin',
   }))
   const pathEntries = discoverPathHarnesses(options.pathValue)
+  // A product-forced recipe must be the visible and selectable entry even
+  // when a user has a saved recipe with the same id.
+  const forced = defaults.filter((entry) => entry.source === 'forced')
+  const ordinaryDefaults = defaults.filter((entry) => entry.source !== 'forced')
   const seen = new Set()
-  return [...configured, ...defaults, ...pathEntries].filter((entry) => {
+  return [...forced, ...configured, ...ordinaryDefaults, ...pathEntries].filter((entry) => {
     if (seen.has(entry.id)) return false
     seen.add(entry.id)
     return true
@@ -342,18 +449,18 @@ export function runHarnessCommand(argv, options) {
   }
   if (action === 'list') {
     const settings = readSettings(settingsPath)
-    const active = typeof settings.activeHarness === 'string' ? settings.activeHarness : undefined
+    const defaultId = persistedDefaultId(settings)
     const entries = discoverHarnesses(settingsPath, options)
-    return { code: 0, stdout: formatHarnessList(entries, active, options), stderr: '' }
+    return { code: 0, stdout: formatHarnessList(entries, defaultId, options), stderr: '' }
   }
   if (action === 'use') {
     const harness = discoverHarnesses(settingsPath, options).find((entry) => entry.id === id)
     if (harness === undefined) throw new Error(`unknown harness ${JSON.stringify(id ?? '')}`)
     upsertHarness(settingsPath, harness)
-    activateHarness(settingsPath, id)
+    setDefaultHarness(settingsPath, id)
     return {
       code: 0,
-      stdout: `active harness ${id}; next standalone launch starts a new session\n`,
+      stdout: `default harness ${id}; next standalone launch starts a new session\n`,
       stderr: '',
     }
   }
@@ -365,46 +472,6 @@ export function runHarnessCommand(argv, options) {
   if (wantsAddHelp) {
     return { code: 0, stdout: addHarnessHelp(color), stderr: '' }
   }
-  if (!HARNESS_ID.test(id)) {
-    throw new HarnessUsageError(
-      `Invalid Harness id ${JSON.stringify(id)}. Use lowercase letters, numbers, and hyphens.`,
-    )
-  }
-  if (id === 'codex' && tokens.length === 0) {
-    const harness = upsertHarness(settingsPath, {
-      id: 'codex',
-      label: 'Codex Harness',
-      command: 'npx',
-      args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp'],
-    })
-    return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
-  }
-  let command
-  let label
-  const args = []
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]
-    const value = tokens[index + 1]
-    if (value === undefined) {
-      throw new HarnessUsageError(`${token} needs a value.\n\n${addHarnessHelp(color)}`)
-    }
-    if (token === '--command') command = value
-    else if (token === '--label') label = value
-    else if (token === '--arg') args.push(value)
-    else {
-      throw new HarnessUsageError(
-        `Unknown add option ${JSON.stringify(token)}.\n\n${addHarnessHelp(color)}`,
-      )
-    }
-    index += 1
-  }
-  if (typeof command !== 'string' || command.trim().length === 0) {
-    throw new HarnessUsageError(
-      `Missing --command for custom Harness ${JSON.stringify(id)}.\n\n`
-      + `  martty harness add ${id} --command <cmd>\n\n`
-      + 'The command must start an ACP-compatible server on stdin/stdout.',
-    )
-  }
-  const harness = upsertHarness(settingsPath, { id, label, command, args })
+  const harness = addHarness(settingsPath, id, tokens)
   return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
 }

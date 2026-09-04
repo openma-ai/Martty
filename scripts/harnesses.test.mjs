@@ -10,7 +10,7 @@ const moduleUrl = new URL('../npm/lib/harnesses.js', import.meta.url)
 test('named harnesses persist without overwriting existing Martty settings', async () => {
   const module = await import(moduleUrl).catch(() => ({}))
   assert.equal(typeof module.upsertHarness, 'function')
-  assert.equal(typeof module.activateHarness, 'function')
+  assert.equal(typeof module.setDefaultHarness, 'function')
   assert.equal(typeof module.selectedHarness, 'function')
 
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harnesses-'))
@@ -23,7 +23,7 @@ test('named harnesses persist without overwriting existing Martty settings', asy
       command: '/opt/local/bin/local-acp',
       args: ['--stdio'],
     })
-    module.activateHarness(settingsPath, 'local')
+    module.setDefaultHarness(settingsPath, 'local')
 
     assert.deepEqual(module.selectedHarness(settingsPath), {
       id: 'local',
@@ -40,8 +40,28 @@ test('named harnesses persist without overwriting existing Martty settings', asy
         command: '/opt/local/bin/local-acp',
         args: ['--stdio'],
       }],
-      activeHarness: 'local',
+      defaultHarness: 'local',
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('writing a legacy active Harness migrates it to defaultHarness', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-migrate-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    writeFileSync(settingsPath, JSON.stringify({
+      harnesses: [{ id: 'legacy', label: 'Legacy', command: 'legacy-acp', args: [] }],
+      activeHarness: 'legacy',
+    }))
+    module.upsertHarness(settingsPath, {
+      id: 'new', label: 'New', command: 'new-acp', args: [],
+    })
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    assert.equal(settings.defaultHarness, 'legacy')
+    assert.equal(Object.hasOwn(settings, 'activeHarness'), false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -169,7 +189,7 @@ test('custom harness add errors show a copyable command and use exit code 2', as
   )
 })
 
-test('harness use can persist and activate a discovered local entrypoint', async () => {
+test('harness use can persist and set a discovered local entrypoint as default', async () => {
   const module = await import(moduleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-use-'))
   const bin = path.join(root, 'bin')
@@ -186,7 +206,7 @@ test('harness use can persist and activate a discovered local entrypoint', async
     })
     assert.deepEqual(result, {
       code: 0,
-      stdout: 'active harness path-dsh-acp; next standalone launch starts a new session\n',
+      stdout: 'default harness path-dsh-acp; next standalone launch starts a new session\n',
       stderr: '',
     })
     assert.deepEqual(module.selectedHarness(settingsPath), {
@@ -200,7 +220,7 @@ test('harness use can persist and activate a discovered local entrypoint', async
   }
 })
 
-test('harness list marks the active entry and reports discovery sources', async () => {
+test('harness list marks the default entry and reports discovery sources', async () => {
   const module = await import(moduleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-list-'))
   const settingsPath = path.join(root, 'settings.json')
@@ -211,7 +231,7 @@ test('harness list marks the active entry and reports discovery sources', async 
       command: 'local-acp',
       args: ['--stdio'],
     })
-    module.activateHarness(settingsPath, 'local')
+    module.setDefaultHarness(settingsPath, 'local')
 
     const result = module.runHarnessCommand(['list'], {
       settingsPath,
@@ -237,10 +257,32 @@ test('harness list marks the active entry and reports discovery sources', async 
     assert.match(result.stdout, /^    Source   Bundled$/m)
     assert.match(result.stdout, /^    Command  \/pkg\/dsh-acp$/m)
     assert.match(result.stdout, /^    Args     --bundle \/pkg\/creator$/m)
-    assert.match(result.stdout, /^  Active   local$/m)
-    assert.match(result.stdout, /^  Switch   martty harness use <id>$/m)
+    assert.match(result.stdout, /^  Default  local$/m)
+    assert.match(result.stdout, /^  Set      martty harness use <id>$/m)
     assert.match(result.stdout, /^  In TUI   \/harness$/m)
     assert.doesNotMatch(result.stdout, /\t/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a forced Harness takes precedence over a saved recipe with the same id', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-forced-list-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    module.upsertHarness(settingsPath, {
+      id: 'codex', label: 'Saved Codex', command: 'saved-codex', args: [],
+    })
+    const entries = module.discoverHarnesses(settingsPath, {
+      pathValue: '',
+      defaults: [{
+        id: 'codex', label: 'Forced Codex', command: 'forced-codex', args: [], source: 'forced',
+      }],
+    })
+    assert.deepEqual(entries, [{
+      id: 'codex', label: 'Forced Codex', command: 'forced-codex', args: [], source: 'forced',
+    }])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

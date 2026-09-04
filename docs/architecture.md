@@ -86,9 +86,9 @@ Client 进程：独立 Cordis root
                standalone 启动与切换会 initialize 并绑定空会话；
                首个 session/prompt 前即时替换 ACP 子进程，发过 prompt 后或
                session/load 恢复旧会话时先确认，再 initialize 新 Harness；
-               产品内部 defaultHarness 初始化配置默认为空；有值时启动优先于
-               持久化 activeHarness；它不是 CLI 启动参数；
-               /harness 只更新 activeHarness，不修改产品默认；
+               产品内部 forcedHarness 初始化配置默认为空；有值时启动优先于
+               持久化 defaultHarness；它不是 CLI 启动参数；
+               /harness 只更新 defaultHarness，不修改产品强制值；
                profile 主路径仍由 Host 拥有 runtime
   tui-presets  提供 tuiPresets，注册持久化 /ui 选择与组合生命周期
   martty-preset default UI Plugin，组合 welcome.hero + welcome.info

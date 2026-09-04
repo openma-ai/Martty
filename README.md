@@ -242,7 +242,7 @@ martty --check-runtime
 
 `harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
-`$MARTTY_HOME/settings.json` 的 `harnesses` 与 `activeHarness`，并保留同文件中的主题、
+`$MARTTY_HOME/settings.json` 的 `harnesses` 与 `defaultHarness`，并保留同文件中的主题、
 语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，启动时依次通过 ACP
 `initialize` 与 `session/new` 连接选中的 Harness，因此欢迎页在首条消息前就能显示
 Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
@@ -251,10 +251,18 @@ Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 tur
 `martty harness add codex` 是快捷配方，会保存通过 `npx` 启动
 `@agentclientprotocol/codex-acp` 的配置；无需自己猜 Codex CLI 参数。
 
+运行中的 standalone TUI 也可以直接添加并切换：
+
+```text
+/harness add local --label "Local ACP" --command local-acp --arg --stdio
+```
+
+这会保存 Harness、设为 `defaultHarness`，并立即切到新的空会话；已有会话时先确认。
+
 Standalone 启动优先级是显式 `--agent`、`DSH_TUI_AGENT`、产品内部初始化配置
-`defaultHarness`（默认为空）、持久化的 `activeHarness`、包内置回退值。
-`defaultHarness` 不是 CLI/用户启动参数；`/harness` 只更新 `activeHarness`，不修改
-产品默认值；`--agent` 仍是不改保存选择的一次性覆盖。
+`forcedHarness`（默认为空）、持久化的 `defaultHarness`、包内置回退值。
+`forcedHarness` 不是 CLI/用户启动参数；它由产品宿主在需要时注入，存在时每次启动优先于
+用户默认。`--agent` 仍是不改保存选择的一次性覆盖。
 
 Cordis 嵌入场景可以使用 `config.agent: { command, args }` 启动 ACP server，或使用
 `config.stream` 接入调用方已有的标准管道。单次运行也可以使用 `--agent` 与重复的
