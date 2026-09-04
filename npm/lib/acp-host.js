@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 export const name = 'dsh-tui-acp-host'
-export const inject = ['loader', 'userQuestions']
+export const inject = ['loader', 'userQuestions', 'permissionPresets']
 
 function resolvedModule(ctx, specifier) {
   for (const anchor of [ctx.baseUrl, import.meta.url]) {
@@ -51,7 +51,81 @@ export function installUserQuestionsCompatibility(ctx) {
   return true
 }
 
+/**
+ * dsh 0.1.2 replaced Session.events with snapshotEvents(). ACP 0.4.x only
+ * reads the old immutable snapshot, so restore that getter until ACP can
+ * require the new Host API directly.
+ */
+export function installSessionEventsCompatibility(Session) {
+  const prototype = Session?.prototype
+  if (prototype === undefined || 'events' in prototype) return false
+  if (typeof prototype.snapshotEvents !== 'function') return false
+  Object.defineProperty(prototype, 'events', {
+    configurable: true,
+    get() {
+      if (typeof this.snapshotEvents === 'function') return this.snapshotEvents()
+      // Cordis may hand an older plugin a remote Session reference whose
+      // declared surface predates snapshotEvents(). The 0.1.2 reference still
+      // exposes the scalar seq/eventAt pair, which yields the same snapshot.
+      if (typeof this.eventAt === 'function' && Number.isInteger(this.seq)) {
+        const events = []
+        for (let seq = 0; seq < this.seq; seq += 1) {
+          const event = this.eventAt(seq)
+          if (event !== undefined) events.push(event)
+        }
+        return Object.freeze(events)
+      }
+      return Object.freeze([])
+    },
+  })
+  return true
+}
+
+/** Accept ACP 0.4.x's event-array read alongside dsh 0.1.2's Session read. */
+export function installPermissionPresetsCompatibility(permissionPresets) {
+  if (permissionPresets === undefined) return false
+  const current = permissionPresets.current
+  if (typeof current !== 'function' || current.dshTuiAcceptsEventArrays === true) return false
+  const compatibleCurrent = function (target) {
+    if (!Array.isArray(target)) return current.call(this, target)
+    let state = { preset: null, sandbox: null, approval: null, seeded: false }
+    for (const event of target) {
+      switch (event?.type) {
+        case 'permission/preset':
+          state = { ...state, preset: event.data?.preset ?? null }
+          break
+        case 'sandbox/mode':
+          state = { ...state, sandbox: event.data?.mode ?? null }
+          break
+        case 'approval/policy':
+          state = { ...state, approval: event.data?.policy ?? null }
+          break
+        case 'session/end-seed':
+          state = { ...state, seeded: true }
+          break
+      }
+    }
+    return this.derive(state)
+  }
+  Object.defineProperty(compatibleCurrent, 'dshTuiAcceptsEventArrays', { value: true })
+  Object.defineProperty(permissionPresets, 'current', {
+    configurable: true,
+    value: compatibleCurrent,
+  })
+  return true
+}
+
 async function mountHostCompatibility(ctx) {
+  // The service can come from the active Host even when module resolution
+  // below lands on ACP's older peer copy, so adapt the live instance directly.
+  installPermissionPresetsCompatibility(ctx.permissionPresets ?? ctx.get?.('permissionPresets'))
+
+  const sessionModule = resolvedHostModule(ctx, '@deepseek-ai/dsh-session')
+  if (sessionModule !== undefined) {
+    const exports = await ctx.loader.import(sessionModule)
+    installSessionEventsCompatibility(exports.Session)
+  }
+
   // New dsh presets opt the delegation tool into Host-owned model selection.
   // Older hosts neither export nor require this service, so resolution is
   // deliberately anchored only at the active Host profile.

@@ -84,7 +84,9 @@ All notable changes to this project are documented here. The project follows
 - `dsh --profile martty` starts correctly with dsh 0.1.2: an intentional Client
   `SIGTERM` during the initial profile recompose no longer exits the replacement
   Host tree, and compatibility adapters cover the new scoped user-question and
-  subagent model-selection Host services.
+  subagent model-selection Host services, the immutable session-event snapshot,
+  and the Session-based permission projection used by `/new` and `/resume`.
+  If a future bind fails, the ACP error is now shown instead of being discarded.
 
 - Long-running ACP `terminal/*` commands now evict old output with an
   amortized buffer instead of shifting the full retained window for every

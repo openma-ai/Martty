@@ -2826,7 +2826,9 @@ where
                                     // never land on it. The tab stays open
                                     // (BindFailed notice) — /new again after
                                     // signing in.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                     emit_needs_auth_open(
                                         &bus,
                                         methods.clone(),
@@ -2834,11 +2836,13 @@ where
                                         Some(acp_error_message(&err)),
                                     );
                                 }
-                                Err(_) => {
+                                Err(err) => {
                                     // The request the UI is awaiting died;
                                     // the tab that asked stays open but the
                                     // bind is never coming.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                 }
                             }
                         }
@@ -2970,7 +2974,9 @@ where
                                     // Same dead-request rule as /new: the
                                     // awaiting entry pops now; retry /resume
                                     // after signing in.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                     emit_needs_auth_open(
                                         &bus,
                                         methods.clone(),
@@ -2978,10 +2984,12 @@ where
                                         Some(acp_error_message(&err)),
                                     );
                                 }
-                                Err(_) => {
+                                Err(err) => {
                                     // session/resume failed outright: the
                                     // awaiting tab's bind is never coming.
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed));
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed {
+                                        message: acp_error_message(&err),
+                                    }));
                                 }
                             }
                         }

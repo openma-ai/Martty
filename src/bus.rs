@@ -165,7 +165,9 @@ pub enum CtlEvent {
     /// requests in order, so the awaiting-bind FIFO head owns the failure;
     /// the UI drops that entry instead of letting a later bind land on a
     /// dead request (issue #94 bind poisoning).
-    BindFailed,
+    BindFailed {
+        message: String,
+    },
     /// `session/list` rows (`prefix` is the `/resume` argument, if any).
     /// Rows from ACP `session/list`, plus the `/resume n` limit carried by
     /// the request (applied after the current session is filtered out).

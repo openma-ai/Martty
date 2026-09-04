@@ -3606,7 +3606,7 @@ impl App {
                                 .push_notice(NoticeLevel::Error, message);
                         }
                     }
-                    CtlEvent::BindFailed => {
+                    CtlEvent::BindFailed { message } => {
                         // session/new·resume failed outright. acp completes
                         // bind requests in order, so the FIFO head owns the
                         // failure: drop its entry so a later bind cannot
@@ -3615,10 +3615,11 @@ impl App {
                         // retry /new·resume).
                         if let Some(awaiting) = self.awaiting_binds.pop_front() {
                             if awaiting.open {
-                                let msg: String = self.locale.tr(
-                                    "session bind failed — this tab stays open; /close it or retry /new",
-                                    "会话绑定失败 —— 本标签页保持打开;/close 关闭或重试 /new",
-                                ).into();
+                                let msg = self.locale.trf(
+                                    "session bind failed: {} — this tab stays open; /close it or retry /new",
+                                    "会话绑定失败：{} —— 本标签页保持打开；/close 关闭或重试 /new",
+                                    &[message.clone()],
+                                );
                                 if self.session_id == awaiting.id {
                                     self.transcript.push_notice(NoticeLevel::Warn, msg);
                                 } else if let Some(slot) = self
@@ -3630,7 +3631,11 @@ impl App {
                                 }
                             }
                         }
-                        self.show_tip(self.locale.tr("session bind failed", "会话绑定失败"));
+                        self.show_tip(self.locale.trf(
+                            "session bind failed: {}",
+                            "会话绑定失败：{}",
+                            &[message],
+                        ));
                         self.needs_redraw = true;
                     }
                     CtlEvent::CancelRequested { session_id } => {

@@ -1181,7 +1181,12 @@ fn bind_failure_clears_the_awaiting_entry_without_poisoning_the_next_bind() {
     while commands.try_recv().is_ok() {}
     let placeholder = app.session_id.clone();
 
-    app.handle(AppEvent::Ctl(CtlEvent::BindFailed), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::BindFailed {
+            message: "mock bind error".into(),
+        }),
+        &ctl,
+    );
     assert_eq!(
         app.awaiting_binds.len(),
         0,
@@ -1189,6 +1194,10 @@ fn bind_failure_clears_the_awaiting_entry_without_poisoning_the_next_bind() {
     );
     assert_eq!(app.session_id, placeholder, "tab stays open");
     assert!(!app.session_bound);
+    assert!(
+        transcript_text(&mut app.transcript).contains("mock bind error"),
+        "the ACP failure detail is retained in the requesting tab",
+    );
 
     // A later /new binds normally: the failed request cannot shadow it.
     app.run_slash("new", "", &ctl);
