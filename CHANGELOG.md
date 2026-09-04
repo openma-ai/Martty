@@ -27,8 +27,7 @@ All notable changes to this project are documented here. The project follows
   image prompts both count as jump targets. Right after a jump the jumped
   prompt's rows are highlighted for 5 seconds like a picker's selected row
   (chip background wash with the text in the brand tone) and then restore
-  to the ordinary bubble look. Hovering either cap-row glyph pops a small
-  tooltip card above it explaining the click (⛶ expand/collapse, ⌕ jump).
+  to the ordinary bubble look.
 
 
 - `/resume [n|id]` — a bare number lists the `n` most recent durable
