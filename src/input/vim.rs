@@ -139,6 +139,10 @@ impl VimState {
             (_, 'O') => {
                 editor.line_head();
                 editor.insert_newline();
+                // `insert_newline` leaves the cursor at (row+1, 0) — the
+                // head of the original text shifted down. Lift back onto
+                // the new blank line above, as vim's `O` does.
+                editor.move_up();
                 self.mode = VimMode::Insert;
             }
             // Anything else (letters, digits, punctuation) is consumed as

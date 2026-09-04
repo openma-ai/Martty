@@ -28,12 +28,26 @@ function readSettings(settingsPath) {
   try {
     value = JSON.parse(readFileSync(settingsPath, 'utf8'))
   } catch (error) {
-    throw new Error(`invalid Martty settings: ${error.message}`)
+    // A corrupt settings file must never block boot (boot.js: "must not
+    // block boot"). Park the unreadable file for diagnosis and start
+    // over — the same resilience tui-theme/tui-presets apply.
+    quarantineSettings(settingsPath, `invalid Martty settings: ${error.message}`)
+    return {}
   }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('invalid Martty settings: root must be an object')
+    quarantineSettings(settingsPath, 'invalid Martty settings: root must be an object')
+    return {}
   }
   return value
+}
+
+function quarantineSettings(settingsPath, reason) {
+  process.stderr.write(`martty: ${reason} — moving it aside and starting fresh\n`)
+  try {
+    renameSync(settingsPath, `${settingsPath}.corrupt-${Date.now()}`)
+  } catch {
+    // Best effort only; the fresh settings write below still proceeds.
+  }
 }
 
 function writeSettings(settingsPath, value) {

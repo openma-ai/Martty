@@ -29,7 +29,9 @@ mod transcript;
 mod ui;
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -386,11 +388,26 @@ fn main() -> Result<()> {
     let mut thumbnails = pet::Thumbnails::new();
 
     // input pump
+    let input_gate = Arc::new(InputGate::default());
     {
         let tx = bus_tx.clone();
+        let gate = Arc::clone(&input_gate);
         std::thread::Builder::new()
             .name("input".into())
             .spawn(move || loop {
+                if gate.paused.load(Ordering::SeqCst) {
+                    // Parked: Terminal Auth (or another TTY owner) has the
+                    // terminal — never compete for keystrokes.
+                    gate.parked.store(true, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                gate.parked.store(false, Ordering::SeqCst);
+                match crossterm::event::poll(Duration::from_millis(50)) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
                 match crossterm::event::read() {
                     Ok(crossterm::event::Event::Key(key)) => {
                         // Recover terminal-lost physical modifiers at read
@@ -516,6 +533,9 @@ fn main() -> Result<()> {
                 last_tick = std::time::Instant::now();
             }
             if let Some(launch) = app.take_terminal_auth() {
+                // Park the input reader first: the auth subprocess inherits
+                // the TTY and must not race crossterm for keystrokes.
+                input_gate.park();
                 restore_terminal();
                 eprintln!(
                     "\n{} — finish setup in this terminal, then Martty resumes.\n",
@@ -523,6 +543,7 @@ fn main() -> Result<()> {
                 );
                 let result = crate::acp_auth::run_terminal_auth(&launch, app.locale);
                 enter_tui()?;
+                input_gate.unpark();
                 app.needs_redraw = true;
                 while let Ok(ev) = bus_rx.try_recv() {
                     if !matches!(ev, AppEvent::Term(_)) {
@@ -580,6 +601,34 @@ fn enter_tui() -> Result<()> {
     Ok(())
 }
 
+/// Keeps the crossterm input thread from competing for TTY keystrokes
+/// while Terminal Auth owns the terminal. `parked` lets the main thread
+/// wait until the reader is actually out of the poll/read path, so the
+/// auth subprocess inherits an uncontended input queue.
+#[derive(Default)]
+struct InputGate {
+    paused: AtomicBool,
+    parked: AtomicBool,
+}
+
+impl InputGate {
+    /// Park the input thread. Bounded wait: a wedged reader must not
+    /// hang the run loop — at worst one keystroke in the transition
+    /// window is still lost (unavoidable with a blocked reader).
+    fn park(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_millis(300);
+        while !self.parked.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn unpark(&self) {
+        self.parked.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
+    }
+}
+
 #[cfg(unix)]
 fn install_termination_handler(tx: mpsc::Sender<AppEvent>) -> Result<()> {
     let mut signals = signal_hook::iterator::Signals::new([
@@ -590,7 +639,11 @@ fn install_termination_handler(tx: mpsc::Sender<AppEvent>) -> Result<()> {
     std::thread::Builder::new()
         .name("termination-signal".into())
         .spawn(move || {
-            if signals.forever().next().is_some() {
+            // Stay registered for the process lifetime: dropping the
+            // iterator would unregister the handlers and leave a second
+            // Ctrl+C to hit the default disposition (raw mode + alternate
+            // screen intact, terminal left broken).
+            for _sig in signals.forever() {
                 let _ = tx.send(AppEvent::Terminate);
             }
         })

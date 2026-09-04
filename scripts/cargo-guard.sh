@@ -53,9 +53,18 @@ esac
 
 size_kib=0
 if [ -d "$target_dir" ]; then
+  # Fall back to 0 on failure (permissions, racing deletion) so the guard
+  # degrades to "skip the size check" instead of aborting the build with
+  # an "Illegal number" test error.
   size_kib=$(du -sk "$target_dir" 2>/dev/null | awk '{print $1}')
+  case "$size_kib" in
+    ''|*[!0-9]*) size_kib=0 ;;
+  esac
 fi
 available_kib=$(df -Pk "$project_root" | awk 'NR == 2 {print $4}')
+case "$available_kib" in
+  ''|*[!0-9]*) available_kib=0 ;;
+esac
 max_kib=$((max_gib * 1024 * 1024))
 min_free_kib=$((min_free_gib * 1024 * 1024))
 

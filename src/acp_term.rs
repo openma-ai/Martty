@@ -5,7 +5,7 @@
 //! children when the broker drops.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -93,19 +93,22 @@ impl TerminalBroker {
         Ok(id)
     }
 
-    pub fn output(&self, terminal_id: &str) -> (String, bool, Option<TerminalExitStatus>) {
+    pub fn output(
+        &self,
+        terminal_id: &str,
+    ) -> Result<(String, bool, Option<TerminalExitStatus>), String> {
         let Some(rec) = self.get(terminal_id) else {
-            return (String::new(), false, None);
+            return Err(format!("unknown terminal: {terminal_id}"));
         };
         let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let truncated = rec.truncated.load(Ordering::Relaxed);
         let exit = rec.exit.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (output, truncated, exit)
+        Ok((output, truncated, exit))
     }
 
-    pub async fn wait(&self, terminal_id: &str) -> TerminalExitStatus {
+    pub async fn wait(&self, terminal_id: &str) -> Result<TerminalExitStatus, String> {
         let Some(rec) = self.get(terminal_id) else {
-            return TerminalExitStatus::new();
+            return Err(format!("unknown terminal: {terminal_id}"));
         };
         loop {
             // Register interest *before* re-checking the status:
@@ -116,24 +119,27 @@ impl TerminalBroker {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if let Some(status) = rec.exit.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-                return status;
+                return Ok(status);
             }
             notified.await;
         }
     }
 
-    pub fn kill(&self, terminal_id: &str) {
-        if let Some(rec) = self.get(terminal_id) {
-            let _ = rec.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
-        }
+    pub fn kill(&self, terminal_id: &str) -> Result<(), String> {
+        let rec = self
+            .get(terminal_id)
+            .ok_or_else(|| format!("unknown terminal: {terminal_id}"))?;
+        let _ = rec.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+        Ok(())
     }
 
-    pub fn release(&self, terminal_id: &str) {
-        self.kill(terminal_id);
+    pub fn release(&self, terminal_id: &str) -> Result<(), String> {
+        self.kill(terminal_id)?;
         self.terms
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(terminal_id);
+        Ok(())
     }
 
     fn get(&self, terminal_id: &str) -> Option<Arc<TerminalRec>> {
@@ -165,11 +171,49 @@ fn spawn_reader(rec: Arc<TerminalRec>, mut stream: impl Read + Send + 'static) {
         .name("dsh-acp-term-io".into())
         .spawn(move || {
             let mut chunk = [0u8; 4096];
+            // Carry bytes that may be the start of a truncated multi-byte
+            // UTF-8 sequence across reads, so characters split at the read
+            // boundary do not turn into U+FFFD.
+            let mut carry: Vec<u8> = Vec::new();
             loop {
                 match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => append_output(&rec, &chunk[..n]),
-                    Err(_) => break,
+                    Ok(0) => {
+                        if !carry.is_empty() {
+                            append_output(&rec, &carry);
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        carry.extend_from_slice(&chunk[..n]);
+                        // Flush the longest prefix that is valid UTF-8 and
+                        // keeps the remainder as carry. A read boundary may
+                        // only split a sequence that is already invalid, in
+                        // which case everything is emitted (with U+FFFD) so
+                        // the carry buffer cannot grow unbounded.
+                        let keep = match std::str::from_utf8(&carry) {
+                            Ok(_) => carry.len(),
+                            Err(err) => {
+                                if err.valid_up_to() > 0 {
+                                    err.valid_up_to()
+                                } else if err.error_len().is_some() {
+                                    carry.len()
+                                } else {
+                                    0
+                                }
+                            }
+                        };
+                        if keep > 0 {
+                            append_output(&rec, &carry[..keep]);
+                            carry.drain(..keep);
+                        }
+                    }
+                    Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                    Err(_) => {
+                        if !carry.is_empty() {
+                            append_output(&rec, &carry);
+                        }
+                        break;
+                    }
                 }
             }
         })

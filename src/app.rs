@@ -7,7 +7,9 @@
 //! history on an empty prompt.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
+#[cfg(not(unix))]
+use std::io::BufRead;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -511,12 +513,34 @@ pub struct ChatView {
     /// the streaming tail; a scroll gesture is resolved into a fresh anchor
     /// by the next draw.
     pub(crate) manual_top: Option<usize>,
+    /// The frame's selection snapshot, **viewport-sized**: the plain text of
+    /// the `top..top+len` layout lines this frame actually showed (L25 —
+    /// hit-testing and copy extraction never need more). `total` carries the
+    /// absolute line count for scroll math.
     pub lines: Vec<String>,
-    /// Per layout line, the transcript cell that owns it (only tool cells
-    /// claim ownership) — the seam for click-to-expand.
+    /// Per snapshot line (same viewport window), the transcript cell that
+    /// owns it (only tool cells claim ownership) — the seam for
+    /// click-to-expand.
     pub owners: Vec<Option<usize>>,
+    /// Total layout line count of the last frame (viewport-relative lines
+    /// exist only for `top..top+lines.len()`).
+    pub total: usize,
     /// Visible image thumbnails, filled by `ui::draw_chat` every frame.
     pub images: Vec<ThumbPlacement>,
+}
+
+impl ChatView {
+    /// The frame's snapshot text for an absolute layout line — `None`
+    /// outside the viewport this frame captured.
+    pub fn line_text(&self, line: usize) -> Option<&str> {
+        self.lines.get(line.checked_sub(self.top)?).map(String::as_str)
+    }
+
+    /// The transcript cell owning an absolute layout line — `None` outside
+    /// the viewport or for lines no tool cell owns.
+    pub fn line_owner(&self, line: usize) -> Option<usize> {
+        self.owners.get(line.checked_sub(self.top)?).copied().flatten()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -989,6 +1013,23 @@ struct PersistentShell {
     marker: String,
 }
 
+/// Silence deadline for one `!` command. A wedged command (or a closed
+/// control fd) must not block the single-shell worker forever; on timeout
+/// the shell is killed and the next request spawns a fresh one.
+#[cfg(unix)]
+const SHELL_SILENCE: Duration = Duration::from_secs(120);
+
+/// Outcome of the marker wait.
+#[cfg(unix)]
+enum ShellRead {
+    /// Marker found; carries the parsed exit status.
+    Done(Option<i32>),
+    /// Shell stdout closed.
+    Eof,
+    /// No output within `SHELL_SILENCE`.
+    Silent,
+}
+
 impl PersistentShell {
     fn spawn(cwd: &str) -> std::io::Result<Self> {
         let mut child = std::process::Command::new("sh")
@@ -1018,7 +1059,11 @@ impl PersistentShell {
 
     fn run(&mut self, id: u64, command: &str) -> std::io::Result<(Option<i32>, String, bool)> {
         let marker = format!("\x1e{}:{id}:", self.marker);
-        writeln!(self.stdin, "eval {} 2>&1", shell_quote(command))?;
+        // stdin from /dev/null: the persistent shell's stdin is the command
+        // pipe itself, so a command that reads it (`!cat`, `!ssh …`) would
+        // otherwise swallow the status/marker lines and hang the marker
+        // wait forever.
+        writeln!(self.stdin, "eval {} 2>&1 < /dev/null", shell_quote(command))?;
         writeln!(self.stdin, "__martty_shell_status=$?")?;
         writeln!(
             self.stdin,
@@ -1028,27 +1073,115 @@ impl PersistentShell {
         self.stdin.flush()?;
 
         let mut captured = Vec::new();
-        loop {
-            let read = self.stdout.read_until(0x1f, &mut captured)?;
-            if read == 0 {
-                let code = self.child.wait().ok().and_then(|status| status.code());
-                return Ok((code, shell_output(captured), false));
+        #[cfg(unix)]
+        {
+            match self.read_marker(&marker, &mut captured)? {
+                ShellRead::Done(status) => return Ok((status, shell_output(captured), true)),
+                ShellRead::Eof => {
+                    let code = self.child.wait().ok().and_then(|status| status.code());
+                    return Ok((code, shell_output(captured), false));
+                }
+                ShellRead::Silent => {
+                    // No output within the deadline: the command is wedged
+                    // (the single worker thread must never block forever).
+                    // Kill the shell; the next `!` request spawns a fresh one.
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Ok((
+                        None,
+                        format!(
+                            "command killed: no output for {}s — the next `!` restarts the shell",
+                            SHELL_SILENCE.as_secs()
+                        ),
+                        false,
+                    ));
+                }
             }
-            let Some(start) = find_bytes(&captured, marker.as_bytes()) else {
+        }
+        #[cfg(not(unix))]
+        {
+            loop {
+                let read = self.stdout.read_until(0x1f, &mut captured)?;
+                if read == 0 {
+                    let code = self.child.wait().ok().and_then(|status| status.code());
+                    return Ok((code, shell_output(captured), false));
+                }
+                let Some(start) = find_bytes(&captured, marker.as_bytes()) else {
+                    continue;
+                };
+                let status_start = start + marker.len();
+                let Some(status_len) = captured[status_start..]
+                    .iter()
+                    .position(|byte| *byte == 0x1f)
+                else {
+                    continue;
+                };
+                let status =
+                    std::str::from_utf8(&captured[status_start..status_start + status_len])
+                        .ok()
+                        .and_then(|value| value.parse::<i32>().ok());
+                captured.truncate(start);
+                return Ok((status, shell_output(captured), true));
+            }
+        }
+    }
+
+    /// Read stdout until the status marker arrives. Poll-based so the
+    /// silence deadline can fire even though `BufReader` has no
+    /// non-blocking mode; every byte of progress resets the deadline.
+    #[cfg(unix)]
+    fn read_marker(
+        &mut self,
+        marker: &str,
+        captured: &mut Vec<u8>,
+    ) -> std::io::Result<ShellRead> {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.stdout.get_ref().as_raw_fd();
+        let mut pollfd = [libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let mut chunk = [0u8; 8192];
+        let marker_bytes = marker.as_bytes();
+        let timeout_ms = SHELL_SILENCE.as_millis().min(i32::MAX as u128) as i32;
+        loop {
+            let ready = unsafe { libc::poll(pollfd.as_mut_ptr(), 1, timeout_ms) };
+            if ready < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            if ready == 0 {
+                return Ok(ShellRead::Silent);
+            }
+            if pollfd[0].revents & libc::POLLNVAL != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "shell stdout closed",
+                ));
+            }
+            // POLLIN (and/or POLLHUP) — a read never blocks here.
+            let read = self.stdout.read(&mut chunk)?;
+            if read == 0 {
+                return Ok(ShellRead::Eof);
+            }
+            captured.extend_from_slice(&chunk[..read]);
+            let Some(start) = find_bytes(captured, marker_bytes) else {
                 continue;
             };
-            let status_start = start + marker.len();
-            let Some(status_len) = captured[status_start..]
-                .iter()
-                .position(|byte| *byte == 0x1f)
-            else {
+            let status_start = start + marker_bytes.len();
+            let Some(status_len) = captured[status_start..].iter().position(|b| *b == 0x1f) else {
                 continue;
             };
-            let status = std::str::from_utf8(&captured[status_start..status_start + status_len])
-                .ok()
-                .and_then(|value| value.parse::<i32>().ok());
+            let status =
+                std::str::from_utf8(&captured[status_start..status_start + status_len])
+                    .ok()
+                    .and_then(|value| value.parse::<i32>().ok());
             captured.truncate(start);
-            return Ok((status, shell_output(captured), true));
+            return Ok(ShellRead::Done(status));
         }
     }
 }
@@ -1335,7 +1468,7 @@ pub struct App {
     /// ACP request task yet. Runtime startup alone does not make a turn busy.
     prompt_pending: bool,
     shell_seq: u64,
-    shell_pending: Vec<(u64, String, usize)>, // (id, session id, cell idx)
+    shell_pending: Vec<(u64, String, usize, u64)>, // (id, session id, cell idx, transcript gen)
     shell_worker: Option<ShellWorker>,
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
@@ -1427,6 +1560,9 @@ pub(crate) struct PendingSteer {
     blocks: Vec<StagedBlock>,
     /// Queue-head retries keep their original FIFO position when deferred.
     requeue_front: bool,
+    /// Transcript generation at echo time — a `/clear` invalidates the
+    /// hide handles (stale indexes must not touch the new transcript).
+    gen: u64,
 }
 
 fn token_spans_in(
@@ -2083,6 +2219,12 @@ impl App {
         let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) else {
             return;
         };
+        if !slot.session_bound {
+            // Mirror of the live path's guard (dispatch_next_queued): an
+            // unbound placeholder must never burn its queue — the prompts
+            // would be addressed to an id acp.rs does not know.
+            return;
+        }
         let Some(prompt) = slot.prompt_queue.pop_front() else {
             return;
         };
@@ -2124,7 +2266,7 @@ impl App {
     fn settle_steer(&mut self, message_id: u64, deferred: bool) {
         if let Some(pending) = self.pending_steer_cells.remove(&message_id) {
             if deferred {
-                self.transcript.hide_cells(&pending.cells);
+                self.transcript.hide_cells(&pending.cells, pending.gen);
                 let queued = ClientQueuedPrompt {
                     id: message_id,
                     blocks: pending.blocks,
@@ -2146,7 +2288,7 @@ impl App {
         for slot in &mut self.parked {
             if let Some(pending) = slot.pending_steer_cells.remove(&message_id) {
                 if deferred {
-                    slot.transcript.hide_cells(&pending.cells);
+                    slot.transcript.hide_cells(&pending.cells, pending.gen);
                     let queued = ClientQueuedPrompt {
                         id: message_id,
                         blocks: pending.blocks,
@@ -3363,7 +3505,28 @@ impl App {
                             self.state_note.clear();
                         }
                     }
-                    CtlEvent::PromptQueued { .. } => {
+                    CtlEvent::PromptQueued {
+                        session_id: Some(sid),
+                        ..
+                    } => {
+                        // Per-session: only the session the prompt belongs
+                        // to settles — a background tab's prompt must not
+                        // flip the viewed tab out of Starting.
+                        if sid == self.session_id {
+                            self.prompt_pending = false;
+                            if self.state == RunState::Starting {
+                                self.state = RunState::Running;
+                            }
+                            self.state_note.clear();
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == *sid)
+                        {
+                            slot.prompt_pending = false;
+                        }
+                    }
+                    CtlEvent::PromptQueued { session_id: None, .. } => {
+                        // Legacy attach transport: no session attribution,
+                        // settle the viewed tab as before.
                         self.prompt_pending = false;
                         if self.state == RunState::Starting {
                             self.state = RunState::Running;
@@ -3707,7 +3870,7 @@ impl App {
                                         slot.transcript
                                             .push_notice(NoticeLevel::Info, notice);
                                     }
-                                    for (_, sid, _) in &mut self.shell_pending {
+                                    for (_, sid, _, _) in &mut self.shell_pending {
                                         if sid == &old_id {
                                             *sid = session_id.clone();
                                         }
@@ -3729,7 +3892,7 @@ impl App {
                                             self.transcript
                                                 .push_notice(NoticeLevel::Info, notice);
                                         }
-                                        for (_, sid, _) in &mut self.shell_pending {
+                                        for (_, sid, _, _) in &mut self.shell_pending {
                                             if sid == &old_id {
                                                 *sid = session_id.clone();
                                             }
@@ -3776,7 +3939,7 @@ impl App {
                                 if let Some(notice) = notice {
                                     self.transcript.push_notice(NoticeLevel::Info, notice);
                                 }
-                                for (_, sid, _) in &mut self.shell_pending {
+                                for (_, sid, _, _) in &mut self.shell_pending {
                                     if sid == &old_id || sid == &awaiting.id {
                                         *sid = session_id.clone();
                                     }
@@ -3792,7 +3955,7 @@ impl App {
                                 if let Some(notice) = notice {
                                     slot.transcript.push_notice(NoticeLevel::Info, notice);
                                 }
-                                for (_, sid, _) in &mut self.shell_pending {
+                                for (_, sid, _, _) in &mut self.shell_pending {
                                     if sid == &old_id || sid == &awaiting.id {
                                         *sid = session_id.clone();
                                     }
@@ -3827,7 +3990,7 @@ impl App {
                             if let Some(notice) = notice {
                                 self.transcript.push_notice(NoticeLevel::Info, notice);
                             }
-                            for (_, sid, _) in &mut self.shell_pending {
+                            for (_, sid, _, _) in &mut self.shell_pending {
                                 if sid == &old_id {
                                     *sid = session_id.clone();
                                 }
@@ -3875,18 +4038,19 @@ impl App {
                 if let Some(pos) = self
                     .shell_pending
                     .iter()
-                    .position(|(sid, _, _)| *sid == id)
+                    .position(|(sid, _, _, _)| *sid == id)
                 {
-                    let (_, session, cell) = self.shell_pending.remove(pos);
+                    let (_, session, cell, gen) = self.shell_pending.remove(pos);
                     // The shell is workspace-wide but its cell lives in the
                     // transcript of the session that ran it — the user may
-                    // have switched tabs while the command ran.
+                    // have switched tabs while the command ran. The gen
+                    // guard drops results for cells a /clear removed.
                     if session == self.session_id {
-                        self.transcript.finish_shell(cell, code, output);
+                        self.transcript.finish_shell(cell, code, output, gen);
                     } else if let Some(slot) =
                         self.parked.iter_mut().find(|slot| slot.id == session)
                     {
-                        slot.transcript.finish_shell(cell, code, output);
+                        slot.transcript.finish_shell(cell, code, output, gen);
                     }
                     self.needs_redraw = true;
                 }
@@ -4575,8 +4739,11 @@ impl App {
         {
             return None;
         }
+        // The snapshot covers only the viewport: clamp the screen row to it
+        // (content shorter than the pane) — absolute line = top + rel.
+        let rel = ((row - a.y) as usize).min(self.chat_view.lines.len() - 1);
         Some(SelPoint {
-            line: (self.chat_view.top + (row - a.y) as usize).min(self.chat_view.lines.len() - 1),
+            line: self.chat_view.top + rel,
             col: (col - a.x) as usize,
         })
     }
@@ -4594,7 +4761,7 @@ impl App {
     /// The transcript cell that owns the line under a screen cell, if any.
     fn tool_at(&self, col: u16, row: u16) -> Option<usize> {
         let p = self.chat_hit(col, row)?;
-        self.chat_view.owners.get(p.line).copied().flatten()
+        self.chat_view.line_owner(p.line)
     }
 
     /// Mouse wheel always scrolls the conversation, including over tool cards.
@@ -4801,19 +4968,28 @@ impl App {
     }
 
     /// Extract the selected text from the layout snapshot: cell-range slices
-    /// per line, trailing whitespace trimmed, joined with newlines.
+    /// per line, trailing whitespace trimmed, joined with newlines. The
+    /// snapshot is viewport-sized: a selection anchored above/below what the
+    /// frame showed (stale after scrolling) copies its visible part.
     pub fn selection_text(&self, sel: Selection) -> String {
         let lines = &self.chat_view.lines;
         if lines.is_empty() {
             return String::new();
         }
+        let top = self.chat_view.top;
         let (s, e) = sel.ordered();
-        let last = lines.len() - 1;
-        let (sl, el) = (s.line.min(last), e.line.min(last));
-        let mut out = Vec::with_capacity(el - sl + 1);
-        for (li, text) in lines.iter().enumerate().take(el + 1).skip(sl) {
-            let c0 = if li == sl { s.col } else { 0 };
-            let c1 = if li == el { e.col + 1 } else { usize::MAX };
+        if e.line < top {
+            return String::new(); // selection entirely above the viewport
+        }
+        let first = s.line.saturating_sub(top);
+        let last = (e.line - top).min(lines.len() - 1);
+        if first > last {
+            return String::new(); // starts below the captured viewport
+        }
+        let mut out = Vec::with_capacity(last - first + 1);
+        for (li, text) in lines.iter().enumerate().take(last + 1).skip(first) {
+            let c0 = if li + top == s.line { s.col } else { 0 };
+            let c1 = if li + top == e.line { e.col + 1 } else { usize::MAX };
             out.push(slice_by_cells(text, c0, c1).trim_end().to_string());
         }
         out.join("\n")
@@ -4822,7 +4998,7 @@ impl App {
     /// Double-click: select the whitespace-delimited word under the pointer
     /// and copy it right away (grok's word select & copy).
     fn select_word_at(&mut self, p: SelPoint) {
-        let Some(line) = self.chat_view.lines.get(p.line) else {
+        let Some(line) = self.chat_view.line_text(p.line) else {
             return;
         };
         let Some((col, width, word)) = word_span(line, p.col) else {
@@ -4930,8 +5106,7 @@ impl App {
         // viewport from the top of scrollback to just above the tail).
         let cur = if self.scroll_up == usize::MAX {
             self.chat_view
-                .lines
-                .len()
+                .total
                 .saturating_sub(self.chat_view.area.height as usize) as i64
         } else {
             self.scroll_up as i64
@@ -5125,19 +5300,12 @@ impl App {
             ));
         }
 
-        // Vim mode intercepts plain keys while it is active; overlays and
-        // forms keep their own key handling.
-        if self.vim.is_active()
-            && self.elicitation_ask.is_none()
-            && self.queue_edit.is_none()
-            && !self.slash_completion_open()
-        {
-            if self.vim.handle_key(&key, &mut self.input) {
-                self.reconcile_attachments();
-                self.refresh_file_menu();
-                return;
-            }
-        }
+        // Vim mode intercepts plain keys while it is active — but only
+        // once every modal has had its chance: overlays and forms keep
+        // their own key handling (the intercept therefore lives after the
+        // modal blocks, so a vim Insert-mode Esc cancels the ask/picker
+        // instead of toggling vim, and normal-mode letters never land in
+        // a hidden composer while a modal is up).
 
         if key.modifiers == KeyModifiers::ALT && !self.pending_cordis_approvals.is_empty() {
             let decision = match key.code {
@@ -5235,6 +5403,20 @@ impl App {
                 }
             }
             return;
+        }
+
+        // Vim mode: plain keys become vim commands, but only with no
+        // modal above (see the note at the top of this function).
+        if self.vim.is_active()
+            && self.elicitation_ask.is_none()
+            && self.queue_edit.is_none()
+            && !self.slash_completion_open()
+        {
+            if self.vim.handle_key(&key, &mut self.input) {
+                self.reconcile_attachments();
+                self.refresh_file_menu();
+                return;
+            }
         }
 
         // The @file browser owns its navigation keys while open; everything
@@ -6453,7 +6635,11 @@ impl App {
         if self.session_id != session.id {
             if let Some(tab) = self.tab_index_of(&session.id) {
                 // Already open in a tab — switching to it is the resume.
-                self.switch_to_session(tab);
+                // The view path (not the raw switch) releases compositor-
+                // owned overlays with their cancel events first, exactly
+                // like a tab click; a raw switch would leak the plugin's
+                // single-overlay slot and float the popup onto the tab.
+                self.switch_view_to_tab(tab, ctl);
                 self.resume_candidates = Vec::new();
                 self.transcript.push_notice(
                     NoticeLevel::Info,
@@ -6682,13 +6868,22 @@ impl App {
         // (composer chrome is tab-bound), and the same-session branch resets
         // its own fields.
         if self.session_id == id {
-            // Resuming the viewed session: reset its UI and re-stream.
+            // Resuming the viewed session: reset its UI and re-stream. The
+            // resume still re-binds on the ACP side (acp.rs emits
+            // SessionBound unconditionally), so this tab keeps a FIFO
+            // entry — without it a concurrent /new's SessionBound would
+            // be consumed by this bind and the tabs would cross-bind.
             self.reset_session_ui();
             self.session_id = id.to_string();
             self.transcript.set_root_session(id.to_string());
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: id.to_string(),
+                open: true,
+            });
         } else if let Some(tab) = self.tab_index_of(id) {
-            // Already open in a tab — switching to it is the resume.
-            self.switch_to_session(tab);
+            // Already open in a tab — switching to it is the resume. Same
+            // as the local path: release plugin overlays on the way out.
+            self.switch_view_to_tab(tab, ctl);
             return;
         } else {
             // Park the live session; the resumed session binds this fresh
@@ -8221,6 +8416,7 @@ impl App {
                     cells,
                     blocks: blocks.clone(),
                     requeue_front: true,
+                    gen: self.transcript.gen(),
                 },
             );
             self.show_tip(self.locale.tr(
@@ -8553,6 +8749,7 @@ impl App {
                     cells,
                     blocks: staged.clone(),
                     requeue_front: false,
+                    gen: self.transcript.gen(),
                 },
             );
         }
@@ -8693,6 +8890,7 @@ impl App {
                         cells: vec![cell],
                         blocks: vec![StagedBlock::Text(text.clone())],
                         requeue_front: false,
+                        gen: self.transcript.gen(),
                     },
                 );
                 Cmd::Steer {
@@ -8723,7 +8921,7 @@ impl App {
         let cell = self.transcript.push_shell(cmd.clone());
         // Tag the pending cell with its session: the worker is shared and
         // the user may switch tabs before the command settles.
-        self.shell_pending.push((id, self.session_id.clone(), cell));
+        self.shell_pending.push((id, self.session_id.clone(), cell, self.transcript.gen()));
         let request = ShellRequest { id, command: cmd };
         let worker = self.shell_worker.get_or_insert_with(|| {
             ShellWorker::spawn(self.cfg.workspace.clone(), self.bus_tx.clone())

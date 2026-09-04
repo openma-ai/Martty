@@ -81,8 +81,14 @@ pub enum CtlEvent {
     Starting { runtime: String },
     /// initialize returned.
     Ready { server: String },
-    /// session/prompt accepted into the durable inbox.
-    PromptQueued { message_id: String },
+    /// session/prompt accepted into the durable inbox. `session_id` names
+    /// the session the prompt belongs to when the sender knows it — the
+    /// App must not settle the viewed tab's state for another session's
+    /// prompt. Legacy attach transports (no session context) send `None`.
+    PromptQueued {
+        message_id: String,
+        session_id: Option<String>,
+    },
     /// A Send Now request settled. Rejected concurrent prompts degrade to
     /// the client FIFO without changing the active turn lifecycle.
     SteerSettled { message_id: u64, deferred: bool },
@@ -232,7 +238,7 @@ pub struct CatalogModel {
 /// One advertised composition choice (`agent` / `preset` / `agent-preset`,
 /// or the first extra uncategorized select). Demo seeds stock ids including
 /// `cordis`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CatalogPreset {
     pub id: String,
     pub name: String,

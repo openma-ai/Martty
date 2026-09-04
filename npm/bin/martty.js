@@ -14,11 +14,19 @@ const vendorDir = path.join(__dirname, '..', 'vendor')
 const binaryName = process.platform === 'win32' ? 'martty.exe' : 'martty'
 const packaged = path.join(vendorDir, platformKey, binaryName)
 const configuredBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
-const binaryPath = typeof configuredBin === 'string'
-  && configuredBin.length > 0
-  && fs.existsSync(configuredBin)
-  ? configuredBin
-  : packaged
+let binaryPath = packaged
+if (typeof configuredBin === 'string' && configuredBin.length > 0) {
+  if (fs.existsSync(configuredBin)) {
+    binaryPath = configuredBin
+  } else {
+    // Never silently fall back: the user believes they are running their
+    // own build (devlocalinstall.sh has caught this confusion before).
+    console.error(
+      `martty: ${configuredBin} (from ${process.env.MARTTY_BIN ? 'MARTTY_BIN' : 'DSH_TUI_BIN'})`
+        + ' does not exist — falling back to the bundled binary',
+    )
+  }
+}
 
 const argv = process.argv.slice(2)
 const wantDemoSkin = argv.includes('--demo-skin')
@@ -74,9 +82,14 @@ if (!fs.existsSync(binaryPath)) {
 }
 
 function exitFromSpawn(result) {
+  if (result.error) {
+    // A failed spawn (ENOENT, EACCES) sets status/signal to null; without
+    // a diagnostic the process would just exit 1 with no explanation.
+    console.error('martty: failed to launch the native binary: ' + result.error.message)
+  }
   process.exit(
-    result.status ??
-      (result.signal === 'SIGINT' ? 130 : result.signal === 'SIGTERM' ? 143 : 1),
+    result.status
+      ?? (result.signal === 'SIGINT' ? 130 : result.signal === 'SIGTERM' ? 143 : 1),
   )
 }
 

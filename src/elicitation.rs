@@ -429,8 +429,14 @@ impl ElicitationFormState {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ElicitationReply> {
         if key.code == KeyCode::Esc
-            || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+            || (key.code == KeyCode::Char('c')
+                && key
+                    .modifiers
+                    .contains(KeyModifiers::CONTROL)
+                && !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT))
         {
+            // Only plain ctrl+c cancels the form; ctrl+shift+c (copy
+            // selection) and other chorded variants must not wipe input.
             return Some(ElicitationReply::Cancelled);
         }
         if key.code == KeyCode::BackTab {

@@ -481,3 +481,32 @@ fn nested_blockquote_keeps_markers_together() {
         .flat_map(|l| l.spans.iter())
         .any(|s| { s.content == ">" && s.style.fg == Some(theme.fg_tertiary) }));
 }
+
+#[test]
+fn four_backtick_fences_survive_nested_backtick_content() {
+    // Regression: a ```` fence whose *content* contains ``` lines used to
+    // toggle the frame logic on the content lines, breaking the block into
+    // two frames with an unframed middle.
+    let text = "````\n```rust\nlet x = 1;\n```\nplain\n````\n";
+    let lines = render(text, &Theme::dark(), 40);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+
+    let tops = texts.iter().filter(|t| t.starts_with('┌')).count();
+    let bottoms = texts.iter().filter(|t| t.starts_with('└')).count();
+    assert_eq!(tops, 1, "exactly one frame opens: {texts:?}");
+    assert_eq!(bottoms, 1, "exactly one frame closes: {texts:?}");
+    // The frame holds every content line, including the literal ``` line.
+    assert!(texts.iter().any(|t| t.contains("let x = 1;")), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("```rust")),
+        "the ``` content line must render inside the frame: {texts:?}"
+    );
+    assert!(texts.iter().any(|t| t.contains("plain")), "{texts:?}");
+    // Order: top edge first, bottom edge last.
+    let top = texts.iter().position(|t| t.starts_with('┌')).unwrap();
+    let bottom = texts.iter().position(|t| t.starts_with('└')).unwrap();
+    assert!(top < bottom);
+}

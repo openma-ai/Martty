@@ -929,7 +929,7 @@ fn composer_draft_scroll_model_and_banner_are_bound_to_the_tab() {
 fn shell_output_lands_in_the_session_that_ran_it() {
     let (mut app, ctl, _rx) = test_app();
     app.run_local_shell("echo hello".into());
-    let (shell_id, session, _cell) = app.shell_pending[0].clone();
+    let (shell_id, session, _cell, _gen) = app.shell_pending[0].clone();
     assert_eq!(session, "dsh-test");
 
     // Switch away while the command is still running.
@@ -967,6 +967,7 @@ fn deferred_steer_settles_into_the_owning_parked_slot() {
             cells: Vec::new(),
             blocks: vec![StagedBlock::Text("steer me".into())],
             requeue_front: true,
+            gen: app.transcript.gen(),
         },
     );
     app.switch_to_session(1); // away again: entry parked with dsh-test
@@ -1003,6 +1004,7 @@ fn deferred_steer_settles_into_the_owning_parked_slot() {
         cells: Vec::new(),
         blocks: vec![StagedBlock::Text("ok".into())],
         requeue_front: true,
+        gen: app.transcript.gen(),
     });
     app.switch_to_session(1);
     app.handle(

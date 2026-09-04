@@ -125,6 +125,53 @@ pub fn denied_write() -> AcpError {
     AcpError::new(-32603, "user denied write")
 }
 
+/// Ask through the permission overlay before the agent may spawn a local
+/// process. `terminal/create` runs arbitrary `command + args + env` —
+/// strictly more powerful than the writes this module gates, so it always
+/// asks (cwd inside the workspace does not shrink the blast radius). The
+/// ask is tagged with `session_id` so it follows that session's tab.
+pub async fn confirm_terminal_spawn(
+    bus: &Sender<AppEvent>,
+    session_id: &str,
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let options = vec![
+        PermissionAskOption {
+            option_id: "deny".into(),
+            kind: "reject_once".into(),
+            name: "Deny".into(),
+        },
+        PermissionAskOption {
+            option_id: "allow".into(),
+            kind: "allow_once".into(),
+            name: "Allow command".into(),
+        },
+    ];
+    let mut shown = command.to_string();
+    if !args.is_empty() {
+        shown.push(' ');
+        shown.push_str(&args.join(" "));
+    }
+    if bus
+        .send(AppEvent::PermissionAsk {
+            session_id: session_id.into(),
+            title: format!("run {} · in {}", shown, cwd.display()),
+            options,
+            reply: tx,
+        })
+        .is_err()
+    {
+        return false;
+    }
+    matches!(
+        rx.await.unwrap_or(PermissionAskReply::Cancelled),
+        PermissionAskReply::Selected(id) if id == "allow"
+    )
+}
+
 fn io_err(err: std::io::Error) -> AcpError {
     AcpError::new(-32603, err.to_string())
 }
