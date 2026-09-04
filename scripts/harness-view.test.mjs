@@ -231,7 +231,7 @@ test('/harness find opens discovered ACP candidates inside the TUI', async () =>
       options: [{
         value: 'path-local-acp',
         label: 'local-acp',
-        description: `path · ${acp}`,
+        description: `found locally · configure · ${acp}`,
       }],
     })
     await ctx.tuiOverlay.dispatch({
@@ -272,7 +272,7 @@ test('/harness find shows an npx install step for a registry Harness that is not
       options: [{
         value: 'demo',
         label: 'Demo Harness',
-        description: 'not installed · run npx demo-harness-acp',
+        description: 'not installed · install npx demo-harness-acp',
       }],
     })
 
@@ -289,7 +289,76 @@ test('/harness find shows an npx install step for a registry Harness that is not
       nodes: [{
         id: 'instructions',
         kind: 'markdown',
-        text: 'Use /harness add demo to configure the registry fallback (`npx demo-harness-acp`). If that is not available, use /harness add demo --command <cmd>.',
+        text: 'Configure with /harness add demo; this saves the registry fallback (`npx demo-harness-acp`) as the launch command.\nThen choose Demo Harness from /harness. If that is not available, use /harness add demo --command <cmd>.',
+      }],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness find gives binary Harnesses an install, verify, and configure path', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-binary-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const ctx = makeCtx()
+    harnessView.apply(ctx, {
+      settingsPath,
+      pathValue: '',
+      registry: [{
+        id: 'brew-demo',
+        label: 'Brew Demo Harness',
+        commands: [{ command: 'brew-demo-acp', args: [] }],
+        install: { command: 'brew', args: ['install', 'brew-demo-acp'] },
+      }],
+      defaults: [],
+    })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find brew-demo' })
+    await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness-find',
+      event: 'submit',
+      value: 'brew-demo',
+    })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'view',
+      id: 'harness-find-install',
+      title: 'Brew Demo Harness is not installed',
+      nodes: [{
+        id: 'instructions',
+        kind: 'markdown',
+        text: '1. Install: `brew install brew-demo-acp`\n2. Verify: `command -v brew-demo-acp`\n3. Configure: run /harness find brew-demo again.\nIf brew-demo-acp is outside PATH, use /harness add brew-demo --command <path>.',
+      }],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness find shows saved Harnesses as configured candidates', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-configured-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    upsertHarness(settingsPath, {
+      id: 'local', label: 'Local ACP', command: 'local-acp', args: ['--stdio'],
+    })
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent() {},
+    })
+    harnessView.apply(ctx, { settingsPath, pathValue: '', registry: [], defaults: [] })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find' })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'select',
+      id: 'harness-find',
+      title: 'Find ACP Harnesses',
+      value: 'local',
+      options: [{
+        value: 'local',
+        label: 'Local ACP',
+        description: 'configured · switch · local-acp --stdio',
       }],
     })
   } finally {

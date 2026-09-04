@@ -74,10 +74,12 @@ martty harness add local --command local-acp --arg --stdio
 martty harness use local
 ```
 
-`harness find` checks commands declared by the npx registry on the local `PATH`
-first. A local match can be selected directly; a missing adapter shows its
-recommended `npx` install command, with manual `--command` configuration as the
-last fallback. The same flow is available in the TUI with `/harness find`.
+`harness find` discovers ACP launch commands; it is not an npm package search or
+an immediate switch. Saved entries are shown as `Configured`, then commands
+declared by the npx registry are checked on the local `PATH`. A local match can
+be selected directly; a missing adapter shows its recommended `npx` install
+command, with manual `--command` configuration as the last fallback. The same
+flow is available in the TUI with `/harness find`.
 Registry entries may also point to non-npx executables. Package-manager
 commands are shown only as install guidance; install them and run `harness find`
 again, or use the manual command fallback. Unregistered `*-acp` / `*_acp`

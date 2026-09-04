@@ -140,10 +140,11 @@ martty --check-runtime
 
 All three entry points share the same registry: edit `settings.json`, use the
 `martty harness` CLI above, or enter `/harness` in the running TUI for the
-native single-select form. `harness find` first checks the local PATH for commands
-declared by the npx registry, then shows the registry's recommended `npx` install
-command when an adapter is missing, and finally keeps the manual `--command`
-fallback available. `/harness find` offers the same flow in TUI and
+native single-select form. `harness find` discovers ACP launch commands; it is
+not an npm package search or an immediate switch. Saved entries are shown as
+`Configured`, then the local PATH is checked for commands declared by the npx
+registry. Missing adapters show the registry's recommended `npx` install
+command, with the manual `--command` fallback still available. `/harness find` offers the same flow in TUI and
 `/harness <id>` saves directly. TUI selection replaces the standalone ACP
 child immediately. If the current session has
 already received a prompt or was restored through `/session`, Martty confirms

@@ -238,6 +238,7 @@ test('non-npx registry install commands are guidance, not ACP launch commands', 
     })
     assert.equal(result.code, 0)
     assert.match(result.stdout, /^    Install  brew install brew-demo-acp$/m)
+    assert.match(result.stdout, /^    Verify   command -v brew-demo-acp$/m)
     assert.match(result.stdout, /^    After    martty harness find brew-demo$/m)
     assert.match(result.stdout, /^    Manual   martty harness add brew-demo --command <cmd>$/m)
     assert.doesNotMatch(result.stdout, /^    Config/m)
@@ -335,6 +336,30 @@ test('harness find lists executable ACP candidates and provides the use command'
     assert.match(result.stdout, /^  ○ local-acp$/m)
     assert.ok(result.stdout.includes(`    Command  ${acp}`))
     assert.match(result.stdout, /martty harness use path-local-acp/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('harness find keeps saved Harnesses visible instead of showing an empty result', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-configured-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    module.runHarnessCommand([
+      'add', 'local', '--label', 'Local ACP', '--command', 'local-acp', '--arg', '--stdio',
+    ], { settingsPath })
+    const result = module.runHarnessCommand(['find'], {
+      settingsPath,
+      pathValue: '',
+      registry: [],
+      defaults: [],
+    })
+    assert.equal(result.code, 0)
+    assert.match(result.stdout, /^ACP Harness candidates \(1\)$/m)
+    assert.match(result.stdout, /^  ○ Local ACP$/m)
+    assert.match(result.stdout, /^    Status   Configured$/m)
+    assert.match(result.stdout, /^    Use      martty harness use local$/m)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

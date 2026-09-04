@@ -40,7 +40,12 @@ All notable changes to this project are documented here. The project follows
   to its landing page; the switch result stays in the composer Tip instead of
   becoming transcript. Sessions never carry across Harnesses; profile-owned
   Host runtimes and sessions remain unchanged. `/harness` updates only the
-  saved `defaultHarness`, never the product forced value.
+  saved `defaultHarness`, never the product forced value. `harness find` and
+  `/harness find` keep saved entries visible as `Configured` candidates, so a
+  machine whose known Harnesses are already configured no longer presents an
+  empty discovery result. Binary-only registry entries now show install,
+  verify, and manual configure steps instead of implying that the installer
+  itself is an ACP launch command.
 - The `@file` mention browser now follows the typed query across the
   tree: the listing is live-filtered to matching names (exact > prefix >
   contains > subsequence, `../` always kept so a filtered view can back

@@ -238,9 +238,10 @@ martty --check-runtime
 
 三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
 `martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`harness find` 会先按 npx registry 中声明的命令检查本地 PATH；找到后直接显示可配置的
+`harness find` 是发现 ACP 启动命令，不是 npm 包搜索或即时切换：已保存的项会标为
+`Configured`，其余先按 npx registry 中声明的命令检查本地 PATH；找到后直接显示可配置的
 Harness ID 和完整路径。找不到时会显示推荐的 `npx` 安装命令；仍不适用时再使用手动
-`--command`。TUI 中的 `/harness find` 提供同样的选择和安装提示，`/harness <id>` 可直接切换。
+`--command`。TUI 中的 `/harness find` 提供同样的发现、配置和安装提示，`/harness <id>` 可直接切换。
 registry 也可以声明非 npx 的可执行文件和安装命令；安装命令只用于提示，安装完成后重新
 搜索，不会被误当作 ACP 启动命令。未收录但命名为 `*-acp` / `*_acp` 的本地程序也会被发现。
 TUI 选择会立即替换 standalone ACP 子进程；若当前会话

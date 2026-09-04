@@ -29,10 +29,14 @@ function findOptions(settingsPath, options, query = '') {
       value: entry.id,
       label: entry.label,
       description: entry.status === 'Not installed'
-        ? `not installed · run ${[entry.install?.command, ...(entry.install?.args ?? [])]
+        ? `not installed · install ${[entry.install?.command, ...(entry.install?.args ?? [])]
           .filter(Boolean)
           .join(' ')}`
-        : `${entry.source} · ${[entry.resolvedCommand ?? entry.command, ...entry.args]
+        : entry.status === 'Configured'
+          ? `configured · switch · ${[entry.command, ...entry.args]
+            .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
+            .join(' ')}`
+        : `found locally · configure · ${[entry.resolvedCommand ?? entry.command, ...entry.args]
         .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
         .join(' ')}`,
     }))
@@ -177,7 +181,7 @@ export function apply(ctx, options = {}) {
               id: 'notice',
               kind: 'notice',
               level: 'info',
-              text: 'No ACP Harnesses found in the local PATH or npx registry.',
+              text: 'No ACP Harnesses found in the local PATH, settings, or npx registry. Use /harness add <id> --command <cmd> for a manual ACP command.',
             }],
           })
           return undefined
@@ -196,15 +200,22 @@ export function apply(ctx, options = {}) {
                 .filter(Boolean)
                 .join(' ')
               const recommended = entry.fallback === undefined
-                ? `Run \`${install}\`, then run /harness find ${entry.id} again.`
-                : `Use /harness add ${entry.id} to configure the registry fallback (\`${install}\`).`
+                ? [
+                    `1. Install: \`${install}\``,
+                    `2. Verify: \`command -v ${entry.command}\``,
+                    `3. Configure: run /harness find ${entry.id} again.`,
+                    `If ${entry.command} is outside PATH, use /harness add ${entry.id} --command <path>.`,
+                  ].join('\n')
+                : `Configure with /harness add ${entry.id}; this saves the registry fallback (\`${install}\`) as the launch command.`
               ctx.tuiOverlay.openView({
                 id: 'harness-find-install',
                 title: `${entry.label} is not installed`,
                 nodes: [{
                   id: 'instructions',
                   kind: 'markdown',
-                  text: `${recommended} If that is not available, use /harness add ${entry.id} --command <cmd>.`,
+                  text: entry.fallback === undefined
+                    ? recommended
+                    : `${recommended}\nThen choose ${entry.label} from /harness. If that is not available, use /harness add ${entry.id} --command <cmd>.`,
                 }],
               })
               return undefined

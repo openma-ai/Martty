@@ -245,7 +245,7 @@ function formatHarnessFind(entries, query, options = {}) {
   if (entries.length === 0) {
     return `${paint('ACP Harness candidates', 'bold', color)}
 
-No ACP Harnesses found in the local PATH or npx registry.
+No ACP Harnesses found in the local PATH, settings, or npx registry.
 
   ${paint('Add one', 'dim', color)}   martty harness add <id> --command <cmd>
 `
@@ -267,6 +267,8 @@ No ACP Harnesses found in the local PATH or npx registry.
       lines.push(fieldLine('Install', formatCommand(entry.install, options), columns, color))
       if (entry.fallback !== undefined) {
         lines.push(fieldLine('Config', `martty harness add ${entry.id}`, columns, color))
+      } else {
+        lines.push(fieldLine('Verify', `command -v ${entry.command}`, columns, color))
       }
       lines.push(fieldLine('After', `martty harness find ${entry.id}`, columns, color))
       lines.push(fieldLine('Manual', `martty harness add ${entry.id} --command <cmd>`, columns, color))
@@ -670,8 +672,17 @@ function searchScore(entry, query = '') {
 }
 
 function findHarnessCandidates(settingsPath, options = {}, query = '') {
-  const configuredIds = new Set(configuredHarnesses(readSettings(settingsPath)).map(({ id }) => id))
+  const configured = configuredHarnesses(readSettings(settingsPath)).map((entry) => ({
+    ...entry,
+    source: 'configured',
+    status: 'Configured',
+  }))
+  const configuredIds = new Set(configured.map(({ id }) => id))
   const entries = [
+    // A configured Harness is still a useful find result: it explains why a
+    // machine with only saved entries must not look empty, and lets the user
+    // jump straight from discovery to switching.
+    ...configured,
     ...registryCandidates(options).filter((entry) => !configuredIds.has(entry.id)),
     ...discoverHarnesses(settingsPath, options).filter((entry) => entry.source !== 'configured'),
   ]
