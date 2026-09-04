@@ -21,7 +21,7 @@ export { installAcpClientEvents } from './acp-client-events.js'
 export const name = 'acp-client'
 export const inject = []
 
-/** @type {null | { command: string, args: string[], child: import('node:child_process').ChildProcess, stdin: import('node:stream').Writable, stdout: import('node:stream').Readable, kind: 'spawn' }} */
+/** @type {null | { command: string, args: string[], env?: Record<string, string>, child: import('node:child_process').ChildProcess, stdin: import('node:stream').Writable, stdout: import('node:stream').Readable, kind: 'spawn' }} */
 let liveAgent = null
 
 /**
@@ -77,6 +77,7 @@ export function apply(ctx, config = {}) {
     && liveAgent.child.exitCode === null
     && liveAgent.command === agent.command
     && JSON.stringify(liveAgent.args) === JSON.stringify(agent.args ?? [])
+    && JSON.stringify(liveAgent.env ?? {}) === JSON.stringify(agent.env ?? {})
   ) {
     provide(ctx, liveAgent)
     return
@@ -106,6 +107,7 @@ function spawnAgent(agent) {
     kind: 'spawn',
     command: agent.command,
     args: agent.args ?? [],
+    ...(agent.env !== undefined ? { env: { ...agent.env } } : {}),
     stdin: child.stdin,
     stdout: child.stdout,
     child,
@@ -149,6 +151,7 @@ function createSpawnService(agent) {
     kind: 'spawn',
     command: current.command,
     args: current.args,
+    ...(current.env !== undefined ? { env: current.env } : {}),
     stdin: input,
     stdout: output,
     child: current.child,
@@ -178,6 +181,7 @@ function createSpawnService(agent) {
       current = next
       service.command = next.command
       service.args = next.args
+      service.env = next.env
       service.child = next.child
       watchCurrent(next)
       try {

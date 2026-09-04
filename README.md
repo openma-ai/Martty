@@ -230,24 +230,25 @@ DSH_TUI_AGENT="<acp-command> [args...]" martty
 ```sh
 martty harness list
 martty harness find
-martty harness add codex
+martty harness add codex-acp
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
 ```
 
-三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
-`martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`harness find` 是发现 ACP 启动命令，不是 npm 包搜索或即时切换：已保存的项会标为
-`Configured`，其余先按 npx registry 中声明的命令检查本地 PATH；找到后直接显示可配置的
-Harness ID 和完整路径。找不到时会显示推荐的 `npx` 安装命令；仍不适用时再使用手动
-`--command`。TUI 中的 `/harness find` 提供同样的发现、配置和安装提示，`/harness <id>` 可直接切换。
-registry 也可以声明非 npx 的可执行文件和安装命令；安装命令只用于提示，安装完成后重新
-搜索，不会被误当作 ACP 启动命令。未收录但命名为 `*-acp` / `*_acp` 的本地程序也会被发现。
+三个入口共享同一份 ACP Registry：可以直接编辑 `settings.json`，使用上述
+`martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单。
+`harness find` 会读取官方目录
+（`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`），并把本地
+PATH 扫描结果作为补充；它不是 npm 包搜索，也不会在后台切换。Registry 的 `npx` / `uvx`
+分发会显示可直接配置的命令，不会添加 `--yes` 或 `--prefer-offline`。Registry 的
+`binary` 分发在选择后明确确认，并下载到 `$MARTTY_HOME/bin/<id>/<version>/<platform>`，
+校验 SHA-256 后再配置；不会写系统 PATH。TUI 中的 `/harness find` 提供同样的发现、配置、
+安装流程，`/harness <id>` 可直接切换。未收录但命名为 `*-acp` / `*_acp` 的本地程序也会被发现。
 TUI 选择会立即替换 standalone ACP 子进程；若当前会话
 已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
 
-`harness list` 会列出已保存项、包内置 DSH runtime，以及 registry 命令和 `PATH` 中名称以
+`harness list` 会列出已保存项、包内置 DSH runtime，以及已配置命令和 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
 `$MARTTY_HOME/settings.json` 的 `harnesses` 与 `defaultHarness`，并保留同文件中的主题、
 语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，启动时依次通过 ACP
@@ -255,7 +256,7 @@ TUI 选择会立即替换 standalone ACP 子进程；若当前会话
 Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
 
-运行中的 standalone TUI 也可以直接添加并切换：
+运行中的 standalone TUI 也可以直接添加并切换（Registry binary 会先确认安装）：
 
 ```text
 /harness add local --label "Local ACP" --command local-acp --arg --stdio

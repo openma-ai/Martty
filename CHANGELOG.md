@@ -18,10 +18,14 @@ All notable changes to this project are documented here. The project follows
   restores the shipped config). The npm bundles keep the fat-LTO release
   config untouched.
 
-- Standalone harness registry and discovery: `martty harness list` shows saved
-  entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
-  on `PATH`; `harness add` saves a named command and repeated arguments, while
-  `harness use` persists the default entry in `$MARTTY_HOME/settings.json`.
+- Standalone ACP Registry discovery and installation: `martty harness find` and
+  `/harness find` now fetch the official ACP Registry catalog and supplement it
+  with local `*-acp` / `*_acp` PATH discovery. `npx` / `uvx` distributions are
+  configured as launch recipes without implicit flags; platform `binary`
+  distributions are confirmed, SHA-256 checked, and installed under Martty's
+  own `$MARTTY_HOME/bin/<id>/<version>/<platform>` directory before switching.
+  `harness add` and `/harness add` use the same official records, while manual
+  `--command` remains available for unregistered agents.
   The built-in Client Plugin adds `/harness`, `/harness <id>`, and
   `/harness add <id> --command <cmd> [--arg <arg>]` as the third
   entry point, using the native TUI single-select overlay and the same registry.
@@ -43,9 +47,9 @@ All notable changes to this project are documented here. The project follows
   saved `defaultHarness`, never the product forced value. `harness find` and
   `/harness find` keep saved entries visible as `Configured` candidates, so a
   machine whose known Harnesses are already configured no longer presents an
-  empty discovery result. Binary-only registry entries now show install,
-  verify, and manual configure steps instead of implying that the installer
-  itself is an ACP launch command.
+  empty discovery result. Binary-only registry entries now offer managed
+  installation under `$MARTTY_HOME/bin` with checksum verification instead of
+  implying that an installer command is itself an ACP launch command.
 - The `@file` mention browser now follows the typed query across the
   tree: the listing is live-filtered to matching names (exact > prefix >
   contains > subsequence, `../` always kept so a filtered view can back
@@ -125,9 +129,10 @@ All notable changes to this project are documented here. The project follows
   local paths, and next-step hints instead of raw tab-separated rows. The
   Harness help surface now also accepts the conventional `-h` and `--help`
   aliases and includes commands, options, examples, and the new-session rule.
-  `harness add` now guides setup, while `harness find` resolves npx-registry
-  commands locally first, prints a recommended `npx` install fallback when
-  needed, and leaves manual command configuration as the final option.
+  `harness add` now guides setup, while `harness find` resolves official ACP
+  Registry distributions and local PATH commands; binary installation is
+  managed under Martty's own home and manual command configuration remains the
+  final option.
 - `/resume` now uses ACP `session/resume` when the agent advertises it, so long
   sessions can continue without replaying their full transcript into the TUI.
   Agents that only support the legacy `session/load` path keep working, and a

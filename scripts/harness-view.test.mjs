@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -195,7 +195,7 @@ test('/harness add without arguments opens guided setup in the native overlay', 
       nodes: [{
         id: 'instructions',
         kind: 'markdown',
-        text: 'Use /harness find to discover registry and PATH ACP commands. For a registry id, /harness add <id> configures the local command or npx fallback; otherwise use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
+        text: 'Use /harness find to discover the official ACP Registry and local PATH commands. Select a package distribution to configure it, or a binary distribution to install it into ~/.martty/bin. For anything else use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
       }],
     })
   } finally {
@@ -331,6 +331,81 @@ test('/harness find gives binary Harnesses an install, verify, and configure pat
         text: '1. Install: `brew install brew-demo-acp`\n2. Verify: `command -v brew-demo-acp`\n3. Configure: run /harness find brew-demo again.\nIf brew-demo-acp is outside PATH, use /harness add brew-demo --command <path>.',
       }],
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness find confirms managed binary installation before switching', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-install-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const switched = []
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent(agent) { switched.push(agent) },
+    })
+    harnessView.apply(ctx, {
+      settingsPath,
+      pathValue: '',
+      registry: [{
+        id: 'amp-acp',
+        label: 'Amp',
+        version: '0.9.0',
+        description: 'ACP wrapper',
+        distributions: [{
+          type: 'binary',
+          target: 'darwin-aarch64',
+          command: './amp-acp',
+          args: ['serve'],
+          env: {},
+          archive: 'https://example.test/amp-acp.tar.gz',
+        }],
+      }],
+      defaults: [],
+      extractArchive(_archivePath, destination) {
+        const executable = path.join(destination, 'amp-acp')
+        writeFileSync(executable, '#!/bin/sh\n')
+        chmodSync(executable, 0o755)
+      },
+      fetchImpl: async () => ({
+        ok: true,
+        headers: { get: () => '0' },
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }),
+    })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find amp' })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'select',
+      id: 'harness-find',
+      title: 'Find ACP Harnesses',
+      value: 'amp-acp',
+      options: [{
+        value: 'amp-acp',
+        label: 'Amp',
+        description: `available · install to ${path.join(root, 'bin', 'amp-acp', '0.9.0', 'darwin-aarch64')}`,
+      }],
+    })
+    await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness-find',
+      event: 'submit',
+      value: 'amp-acp',
+    })
+    assert.equal(ctx.tuiOverlay.active().kind, 'select')
+    assert.equal(ctx.tuiOverlay.active().id, 'harness-install-confirm')
+    await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness-install-confirm',
+      event: 'submit',
+      value: 'install',
+    })
+    assert.deepEqual(switched, [{
+      command: path.join(root, 'bin', 'amp-acp', '0.9.0', 'darwin-aarch64', 'amp-acp'),
+      args: ['serve'],
+      env: {},
+    }])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

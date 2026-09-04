@@ -69,21 +69,19 @@ ACP server. Named standalone harnesses can also be discovered, saved, and select
 ```sh
 martty harness list
 martty harness find
-martty harness add codex
+martty harness add codex-acp
 martty harness add local --command local-acp --arg --stdio
 martty harness use local
 ```
 
-`harness find` discovers ACP launch commands; it is not an npm package search or
-an immediate switch. Saved entries are shown as `Configured`, then commands
-declared by the npx registry are checked on the local `PATH`. A local match can
-be selected directly; a missing adapter shows its recommended `npx` install
-command, with manual `--command` configuration as the last fallback. The same
-flow is available in the TUI with `/harness find`.
-Registry entries may also point to non-npx executables. Package-manager
-commands are shown only as install guidance; install them and run `harness find`
-again, or use the manual command fallback. Unregistered `*-acp` / `*_acp`
-programs are discovered from `PATH` as well.
+`harness find` fetches the official ACP Registry from
+`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` and supplements it
+with local `*-acp` / `*_acp` PATH discovery; it is not an npm package search or an immediate
+switch. `npx` / `uvx` entries become launch recipes without implicit `--yes` or
+`--prefer-offline` flags. Selecting a binary distribution downloads it into
+`$MARTTY_HOME/bin/<id>/<version>/<platform>`, verifies its declared SHA-256, and configures
+the resulting executable without modifying the system PATH. The same flow is available in
+the TUI with `/harness find`; manual `--command` remains available for unregistered agents.
 
 The same registry is available through three entry points: edit
 `$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or

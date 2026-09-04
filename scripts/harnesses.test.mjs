@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -6,6 +7,212 @@ import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 const moduleUrl = new URL('../npm/lib/harnesses.js', import.meta.url)
+const registryModuleUrl = new URL('../npm/lib/harness-registry.js', import.meta.url)
+
+test('official ACP Registry distributions normalize for the current platform', async () => {
+  const registry = await import(registryModuleUrl).catch(() => ({}))
+  assert.equal(typeof registry.normalizeAcpRegistry, 'function')
+
+  const records = registry.normalizeAcpRegistry({
+    version: '1.0.0',
+    agents: [
+      {
+        id: 'codex-acp',
+        name: 'Codex',
+        version: '1.9.0',
+        description: 'ACP adapter for Codex',
+        distribution: {
+          npx: { package: '@agentclientprotocol/codex-acp@1.9.0' },
+        },
+      },
+      {
+        id: 'python-agent',
+        name: 'Python Agent',
+        version: '2.1.0',
+        distribution: {
+          uvx: { package: 'python-agent@2.1.0', args: ['--acp'] },
+        },
+      },
+      {
+        id: 'amp-acp',
+        name: 'Amp',
+        version: '0.9.0',
+        distribution: {
+          binary: {
+            'darwin-aarch64': {
+              archive: 'https://example.test/amp-acp.tar.gz',
+              cmd: './amp-acp',
+              args: ['serve'],
+              sha256: 'a'.repeat(64),
+            },
+          },
+        },
+      },
+    ],
+  }, { platform: 'darwin', arch: 'arm64' })
+
+  assert.deepEqual(records, [
+    {
+      id: 'codex-acp',
+      label: 'Codex',
+      version: '1.9.0',
+      description: 'ACP adapter for Codex',
+      distributions: [{
+        type: 'npx',
+        command: 'npx',
+        args: ['@agentclientprotocol/codex-acp@1.9.0'],
+        env: {},
+      }],
+    },
+    {
+      id: 'python-agent',
+      label: 'Python Agent',
+      version: '2.1.0',
+      description: '',
+      distributions: [{
+        type: 'uvx',
+        command: 'uvx',
+        args: ['python-agent@2.1.0', '--acp'],
+        env: {},
+      }],
+    },
+    {
+      id: 'amp-acp',
+      label: 'Amp',
+      version: '0.9.0',
+      description: '',
+      distributions: [{
+        type: 'binary',
+        target: 'darwin-aarch64',
+        command: './amp-acp',
+        args: ['serve'],
+        env: {},
+        archive: 'https://example.test/amp-acp.tar.gz',
+        sha256: 'a'.repeat(64),
+      }],
+    },
+  ])
+  assert.doesNotMatch(records[0].distributions[0].args.join(' '), /--yes|--prefer-offline/)
+})
+
+test('ACP Registry loader fetches the official catalog and filters locally', async () => {
+  const registry = await import(registryModuleUrl).catch(() => ({}))
+  assert.equal(typeof registry.fetchAcpRegistry, 'function')
+  const requested = []
+  const records = await registry.fetchAcpRegistry({
+    platform: 'linux',
+    arch: 'x64',
+    fetchImpl: async (url) => {
+      requested.push(url)
+      return {
+        ok: true,
+        async json() {
+          return {
+            version: '1.0.0',
+            agents: [{
+              id: 'demo-agent',
+              name: 'Demo Agent',
+              version: '1.0.0',
+              distribution: { npx: { package: 'demo-agent@1.0.0' } },
+            }],
+          }
+        },
+      }
+    },
+  })
+  assert.deepEqual(requested, [registry.ACP_REGISTRY_URL])
+  assert.equal(records[0].id, 'demo-agent')
+})
+
+test('official binary distributions install under the Martty home bin directory', async () => {
+  const registry = await import(registryModuleUrl).catch(() => ({}))
+  assert.equal(typeof registry.installRegistryBinary, 'function')
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-binary-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const archive = Buffer.from('fake archive bytes')
+  const sha256 = createHash('sha256').update(archive).digest('hex')
+  try {
+    const installed = await registry.installRegistryBinary({
+      id: 'amp-acp',
+      label: 'Amp',
+      version: '0.9.0',
+      distribution: {
+        type: 'binary',
+        target: 'darwin-aarch64',
+        command: './amp-acp',
+        args: ['serve'],
+        env: {},
+        archive: 'https://example.test/amp-acp.tar.gz',
+        sha256,
+      },
+    }, {
+      settingsPath,
+      fetchImpl: async () => ({
+        ok: true,
+        headers: { get: () => String(archive.length) },
+        arrayBuffer: async () => archive,
+      }),
+      extractArchive(_archivePath, destination) {
+        const executable = path.join(destination, 'amp-acp')
+        writeFileSync(executable, '#!/bin/sh\n')
+        chmodSync(executable, 0o755)
+      },
+    })
+
+    assert.equal(installed.command, path.join(
+      root, 'bin', 'amp-acp', '0.9.0', 'darwin-aarch64', 'amp-acp',
+    ))
+    assert.deepEqual(installed.args, ['serve'])
+    assert.equal(readFileSync(installed.command, 'utf8'), '#!/bin/sh\n')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('async harness add installs and persists an ACP Registry binary', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-async-binary-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const archive = Buffer.from('async fake archive')
+  const sha256 = createHash('sha256').update(archive).digest('hex')
+  try {
+    const result = await module.runHarnessCommandAsync(['add', 'amp-acp'], {
+      settingsPath,
+      registry: [{
+        id: 'amp-acp',
+        label: 'Amp',
+        version: '0.9.0',
+        description: '',
+        distributions: [{
+          type: 'binary',
+          target: 'darwin-aarch64',
+          command: './amp-acp',
+          args: [],
+          env: {},
+          archive: 'https://example.test/amp-acp.tar.gz',
+          sha256,
+        }],
+      }],
+      fetchImpl: async () => ({
+        ok: true,
+        headers: { get: () => String(archive.length) },
+        arrayBuffer: async () => archive,
+      }),
+      extractArchive(_archivePath, destination) {
+        const executable = path.join(destination, 'amp-acp')
+        writeFileSync(executable, '#!/bin/sh\n')
+        chmodSync(executable, 0o755)
+      },
+    })
+    assert.match(result.stdout, /^Saved Amp$/m)
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses[0]
+    assert.equal(saved.command, path.join(
+      root, 'bin', 'amp-acp', '0.9.0', 'darwin-aarch64', 'amp-acp',
+    ))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('named harnesses persist without overwriting existing Martty settings', async () => {
   const module = await import(moduleUrl).catch(() => ({}))
@@ -126,7 +333,7 @@ test('harness add without a Harness shows guided setup instead of validator erro
   assert.equal(result.code, 0)
   assert.equal(result.stderr, '')
   assert.match(result.stdout, /^Add a Harness$/m)
-  assert.match(result.stdout, /^Find an installed ACP Harness$/m)
+  assert.match(result.stdout, /^Find an ACP Harness$/m)
   assert.match(result.stdout, /martty harness find/)
   assert.match(result.stdout, /^Custom ACP command$/m)
   assert.match(result.stdout, /martty harness add <id> --command <cmd>/)
@@ -144,19 +351,37 @@ test('harness add without a Harness shows guided setup instead of validator erro
   )
 })
 
-test('harness add uses the registry npx fallback when a known Harness is missing locally', async () => {
+test('harness add uses the official ACP Registry npx distribution', async () => {
   const module = await import(moduleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-codex-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
-    const result = module.runHarnessCommand(['add', 'codex'], { settingsPath, pathValue: '' })
+    const result = await module.runHarnessCommandAsync(['add', 'codex-acp'], {
+      settingsPath,
+      pathValue: '',
+      platform: 'darwin',
+      arch: 'arm64',
+      fetchRegistry: async () => [{
+        id: 'codex-acp',
+        label: 'Codex',
+        version: '1.9.0',
+        description: 'ACP adapter for Codex',
+        distributions: [{
+          type: 'npx',
+          command: 'npx',
+          args: ['@agentclientprotocol/codex-acp@1.9.0'],
+          env: {},
+        }],
+      }],
+    })
     assert.equal(result.code, 0)
-    assert.match(result.stdout, /^Saved Codex Harness$/m)
+    assert.match(result.stdout, /^Saved Codex$/m)
     assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses, [{
-      id: 'codex',
-      label: 'Codex Harness',
+      id: 'codex-acp',
+      label: 'Codex',
       command: 'npx',
-      args: ['@agentclientprotocol/codex-acp'],
+      args: ['@agentclientprotocol/codex-acp@1.9.0'],
+      env: {},
     }])
   } finally {
     rmSync(root, { recursive: true, force: true })

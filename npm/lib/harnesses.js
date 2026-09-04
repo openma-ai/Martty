@@ -9,32 +9,21 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import {
+  fetchAcpRegistry,
+  installRegistryBinary,
+  managedBinaryPath,
+  normalizeAcpRegistry,
+} from './harness-registry.js'
+
+export { fetchAcpRegistry } from './harness-registry.js'
 
 const HARNESS_ID = /^[a-z0-9][a-z0-9-]*$/
 const ANSI = Object.freeze({ reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m' })
 
-/**
- * Published ACP adapters that can be resolved from the user's PATH.  The
- * registry is deliberately data-only: every adapter follows the same
- * local-first discovery and install-fallback flow.
- */
-export const HARNESS_REGISTRY = Object.freeze([
-  Object.freeze({
-    id: 'codex',
-    label: 'Codex Harness',
-    commands: Object.freeze([
-      Object.freeze({ command: 'codex-acp', args: Object.freeze([]) }),
-    ]),
-    install: Object.freeze({
-      command: 'npx',
-      args: Object.freeze(['@agentclientprotocol/codex-acp']),
-    }),
-    fallback: Object.freeze({
-      command: 'npx',
-      args: Object.freeze(['@agentclientprotocol/codex-acp']),
-    }),
-  }),
-])
+// Kept as a source-compatible empty export. The source of truth is the
+// official ACP Registry loaded by fetchAcpRegistry(), never a Martty table.
+export const HARNESS_REGISTRY = Object.freeze([])
 
 function paint(value, tone, color) {
   return color ? `${ANSI[tone]}${value}${ANSI.reset}` : value
@@ -102,15 +91,16 @@ function argumentText(args, options) {
 
 function sourceLabel(source) {
   if (source === 'configured') return 'Settings'
+  if (source === 'managed') return 'Martty bin'
   if (source === 'forced') return 'Forced'
   if (source === 'builtin') return 'Bundled'
   if (source === 'path') return 'PATH'
-  if (source === 'registry') return 'npx registry'
+  if (source === 'registry') return 'ACP Registry'
   return source
 }
 
 function fieldLine(name, value, columns, color, indent = 4) {
-  const prefix = `${' '.repeat(indent)}${name.padEnd(9)}`
+  const prefix = `${' '.repeat(indent)}${name.padEnd(Math.max(9, name.length + 1))}`
   return `${paint(prefix, 'dim', color)}${clip(value, columns - displayWidth(prefix))}`
 }
 
@@ -126,7 +116,7 @@ ${section('Usage')}
 
 ${section('Commands')}
   list              Show saved, bundled, and discovered Harnesses
-  find [query]      Find ACP Harnesses (local first, npx fallback)
+  find [query]      Find ACP Harnesses in ACP Registry and local PATH
   add <id>          Configure a registry Harness or save a command
   use <id>          Set the default Harness for the next standalone launch
   help              Show this help
@@ -139,13 +129,15 @@ ${section('Add options')}
 ${section('Examples')}
   ${command('martty harness list')}
   ${command('martty harness find')}
-  ${command('martty harness add codex')}
+  ${command('martty harness add codex-acp')}
   ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
   ${command('martty harness use local')}
   ${command('/harness add local --command local-acp --arg --stdio')}
 
 The selected Harness is saved as defaultHarness in Martty settings. It is
-used on the next standalone launch, which starts a new ACP session.
+used on the next standalone launch, which starts a new ACP session. Registry
+entries are fetched from the official ACP Registry only for find/add; list
+and switching an already configured Harness stay local and instant.
 `
 }
 
@@ -156,17 +148,16 @@ function addHarnessHelp(color = false) {
 
 Martty connects to ACP servers, not directly to agent CLIs.
 
-${section('Find an installed ACP Harness')}
+${section('Find an ACP Harness')}
   ${command('martty harness find')}
-  Checks known commands from the npx registry on PATH, then lists other
-  executable *-acp and *_acp commands found on PATH. Missing registry entries
-  include a recommended npx command; ${command('martty harness add <id>')} uses
-  that fallback automatically.
+  Fetches the official ACP Registry, then adds executable *-acp and *_acp
+  commands found on PATH. Package entries run through npx/uvx. Binary entries
+  are installed into ~/.martty/bin after you choose them.
 
 ${section('Custom ACP command')}
   ${command('martty harness add <id> --command <cmd> [options]')}
-  --command is only needed when the id is not in the npx registry or its
-  local/fallback recipes do not apply.
+  --command is only needed for an id outside the ACP Registry or when its
+  declared distribution does not apply to this machine.
 
 ${section('Options')}
   --command <cmd>   ACP server command to launch (manual fallback)
@@ -245,7 +236,7 @@ function formatHarnessFind(entries, query, options = {}) {
   if (entries.length === 0) {
     return `${paint('ACP Harness candidates', 'bold', color)}
 
-No ACP Harnesses found in the local PATH, settings, or npx registry.
+No ACP Harnesses found in the ACP Registry, local PATH, or settings.
 
   ${paint('Add one', 'dim', color)}   martty harness add <id> --command <cmd>
 `
@@ -263,7 +254,18 @@ No ACP Harnesses found in the local PATH, settings, or npx registry.
     // will provide.
     lines.push(`${' '.repeat(4)}Command  ${entry.resolvedCommand ?? entry.command}`)
     if (entry.args.length > 0) lines.push(`${' '.repeat(4)}Args     ${argumentText(entry.args, options)}`)
-    if (entry.status === 'Not installed') {
+    if (entry.distribution?.type !== undefined) {
+      lines.push(fieldLine('Distribution', entry.distribution.type, columns, color))
+    }
+    if (entry.status === 'Available to install') {
+      lines.push(fieldLine('Install', `martty harness add ${entry.id}`, columns, color))
+      if (entry.installPath !== undefined) {
+        lines.push(fieldLine('Location', compactPath(entry.installPath, options), columns, color))
+      }
+      lines.push(fieldLine('After', 'choose it from /harness (starts a new session)', columns, color))
+    } else if (entry.status === 'Needs npx' || entry.status === 'Needs uvx') {
+      lines.push(fieldLine('Setup', `Install ${entry.distribution.type} and run martty harness add ${entry.id}`, columns, color))
+    } else if (entry.status === 'Not installed') {
       lines.push(fieldLine('Install', formatCommand(entry.install, options), columns, color))
       if (entry.fallback !== undefined) {
         lines.push(fieldLine('Config', `martty harness add ${entry.id}`, columns, color))
@@ -321,6 +323,11 @@ function validateHarness(value) {
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
     throw new Error('harness args must be an array of strings')
   }
+  const env = value.env === undefined ? undefined : value.env
+  if (env !== undefined && (env === null || typeof env !== 'object' || Array.isArray(env)
+    || Object.entries(env).some(([key, item]) => key.length === 0 || typeof item !== 'string'))) {
+    throw new Error('harness env must be an object of strings')
+  }
   return {
     id: value.id,
     label: typeof value.label === 'string' && value.label.trim().length > 0
@@ -328,6 +335,7 @@ function validateHarness(value) {
       : value.id,
     command: value.command,
     args: [...args],
+    ...(env !== undefined ? { env: { ...env } } : {}),
   }
 }
 
@@ -445,15 +453,46 @@ function normalizeRegistryCommand(value) {
   if (typeof value.command !== 'string' || value.command.trim().length === 0) return undefined
   const args = value.args === undefined ? [] : value.args
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) return undefined
-  return { command: value.command, args: [...args] }
+  const env = value.env === undefined ? {} : value.env
+  if (env === null || typeof env !== 'object' || Array.isArray(env)
+    || Object.entries(env).some(([key, item]) => key.length === 0 || typeof item !== 'string')) return undefined
+  return { command: value.command, args: [...args], env: { ...env } }
 }
 
 function registryRecords(options = {}) {
-  const records = options.registry === undefined ? HARNESS_REGISTRY : options.registry
+  const rawRegistry = options.registry === undefined ? HARNESS_REGISTRY : options.registry
+  const records = rawRegistry !== null && typeof rawRegistry === 'object' && !Array.isArray(rawRegistry)
+    ? normalizeAcpRegistry(rawRegistry, options)
+    : rawRegistry
   if (!Array.isArray(records)) return []
   return records.flatMap((record) => {
     if (record === null || typeof record !== 'object' || Array.isArray(record)) return []
     if (typeof record.id !== 'string' || !HARNESS_ID.test(record.id)) return []
+    if (Array.isArray(record.distributions)) {
+      const distributions = record.distributions.filter((distribution) => (
+        distribution !== null
+        && typeof distribution === 'object'
+        && ['binary', 'npx', 'uvx'].includes(distribution.type)
+        && typeof distribution.command === 'string'
+        && Array.isArray(distribution.args)
+      )).map((distribution) => ({
+        ...distribution,
+        args: distribution.args.filter((arg) => typeof arg === 'string'),
+        env: distribution.env && typeof distribution.env === 'object' && !Array.isArray(distribution.env)
+          ? Object.fromEntries(Object.entries(distribution.env).filter(([, item]) => typeof item === 'string'))
+          : {},
+      }))
+      if (distributions.length === 0) return []
+      return [{
+        id: record.id,
+        label: typeof record.label === 'string' && record.label.trim().length > 0
+          ? record.label
+          : record.id,
+        version: typeof record.version === 'string' ? record.version : 'unversioned',
+        description: typeof record.description === 'string' ? record.description : '',
+        distributions,
+      }]
+    }
     const rawCommands = record.commands ?? (record.command === undefined ? [] : [
       { command: record.command, args: record.args },
     ])
@@ -475,8 +514,105 @@ function registryRecords(options = {}) {
   })
 }
 
+function registryPackageCandidate(record, distribution, options) {
+  const runner = resolvePathCommand(distribution.command, options.pathValue)
+  return {
+    id: record.id,
+    label: record.label,
+    version: record.version,
+    description: record.description,
+    command: distribution.command,
+    args: [...distribution.args],
+    env: { ...distribution.env },
+    source: 'registry',
+    status: runner === undefined ? `Needs ${distribution.type}` : `Ready via ${distribution.type}`,
+    registry: true,
+    distribution,
+    registryRecord: record,
+    runner,
+  }
+}
+
 function registryCandidates(options = {}) {
   return registryRecords(options).map((record) => {
+    if (Array.isArray(record.distributions)) {
+      const binary = record.distributions.find((distribution) => distribution.type === 'binary')
+      if (binary !== undefined) {
+        let managed
+        try {
+          const command = managedBinaryPath({ ...record, distribution: binary }, options)
+          if (command !== undefined && executableFile(command)) managed = command
+        } catch {
+          // Invalid registry paths are left as unavailable rather than escaping
+          // the managed install root.
+        }
+        if (managed !== undefined) {
+          return {
+            id: record.id,
+            label: record.label,
+            version: record.version,
+            description: record.description,
+            command: managed,
+            resolvedCommand: managed,
+            args: [...binary.args],
+            env: { ...binary.env },
+            source: 'managed',
+            status: 'Installed',
+            registry: true,
+            distribution: binary,
+            registryRecord: record,
+          }
+        }
+        const binaryName = path.basename(binary.command.replaceAll('\\', '/'))
+        const local = resolvePathCommand(binaryName, options.pathValue)
+        if (local !== undefined) {
+          return {
+            id: record.id,
+            label: record.label,
+            version: record.version,
+            description: record.description,
+            command: binaryName,
+            resolvedCommand: local,
+            args: [...binary.args],
+            env: { ...binary.env },
+            source: 'path',
+            status: 'Found locally',
+            registry: true,
+            distribution: binary,
+            registryRecord: record,
+          }
+        }
+      }
+      const packageDistribution = record.distributions.find((distribution) => (
+        distribution.type === 'npx' || distribution.type === 'uvx'
+      ))
+      if (packageDistribution !== undefined) {
+        return registryPackageCandidate(record, packageDistribution, options)
+      }
+      if (binary !== undefined) {
+        return {
+          id: record.id,
+          label: record.label,
+          version: record.version,
+          description: record.description,
+          command: binary.command,
+          args: [...binary.args],
+          env: { ...binary.env },
+          source: 'registry',
+          status: 'Available to install',
+          registry: true,
+          distribution: binary,
+          registryRecord: record,
+          installPath: (() => {
+            try {
+              const command = managedBinaryPath({ ...record, distribution: binary }, options)
+              return command === undefined ? undefined : path.dirname(command)
+            } catch { return undefined }
+          })(),
+        }
+      }
+      return undefined
+    }
     const local = record.commands
       .map((spec) => ({ spec, command: resolvePathCommand(spec.command, options.pathValue) }))
       .find(({ command }) => command !== undefined)
@@ -506,7 +642,7 @@ function registryCandidates(options = {}) {
       install: record.install,
       fallback: record.fallback,
     }
-  })
+  }).filter(Boolean)
 }
 
 function registryCandidate(id, options = {}) {
@@ -514,7 +650,9 @@ function registryCandidate(id, options = {}) {
 }
 
 export function discoverRegistryHarnesses(options = {}) {
-  return registryCandidates(options).filter((entry) => entry.status === 'Found locally')
+  return registryCandidates(options).filter((entry) => [
+    'Found locally', 'Installed', 'Ready via npx', 'Ready via uvx',
+  ].includes(entry.status))
 }
 
 export function addHarness(settingsPath, id, tokens = [], options = {}) {
@@ -548,13 +686,30 @@ export function addHarness(settingsPath, id, tokens = [], options = {}) {
   }
   if (typeof command !== 'string' || command.trim().length === 0) {
     const candidate = registryCandidate(id, options)
-    if (candidate?.status === 'Found locally') {
+    if (candidate !== undefined && [
+      'Found locally', 'Installed', 'Ready via npx', 'Ready via uvx',
+      'Needs npx', 'Needs uvx',
+    ].includes(candidate.status)) {
       return upsertHarness(settingsPath, {
         id: candidate.id,
         label: label ?? candidate.label,
-        command: candidate.resolvedCommand,
+        command: candidate.resolvedCommand ?? candidate.command,
         args: args.length > 0 ? args : candidate.args,
+        ...(candidate.env !== undefined ? { env: candidate.env } : {}),
       })
+    }
+    if (candidate?.status === 'Available to install') {
+      throw new HarnessUsageError(
+        `Harness ${JSON.stringify(id)} is a binary distribution.\n\n`
+        + `  Install into Martty with  martty harness add ${id}\n`
+        + `  Location                 ${candidate.installPath ?? '~/.martty/bin'}\n`,
+      )
+    }
+    if (candidate?.status === 'Needs npx' || candidate?.status === 'Needs uvx') {
+      throw new HarnessUsageError(
+        `Harness ${JSON.stringify(id)} needs ${candidate.distribution.type}.\n\n`
+        + `  Install ${candidate.distribution.type}, then run  martty harness add ${id}\n`,
+      )
     }
     if (candidate?.status === 'Not installed' && candidate.fallback !== undefined) {
       return upsertHarness(settingsPath, {
@@ -582,6 +737,25 @@ export function addHarness(settingsPath, id, tokens = [], options = {}) {
     )
   }
   return upsertHarness(settingsPath, { id, label, command, args })
+}
+
+/** Configure a registry entry, downloading a binary when that is its distribution. */
+export async function addHarnessAsync(settingsPath, id, tokens = [], options = {}) {
+  if (tokens.includes('--command')) return addHarness(settingsPath, id, tokens, options)
+  const candidate = registryCandidate(id, options)
+  if (candidate?.status !== 'Available to install') {
+    return addHarness(settingsPath, id, tokens, options)
+  }
+  const installed = await installRegistryBinary({
+    id: candidate.id,
+    label: candidate.label,
+    version: candidate.version,
+    distribution: candidate.distribution,
+  }, options)
+  return upsertHarness(settingsPath, {
+    ...installed,
+    label: candidate.label,
+  })
 }
 
 export function discoverPathHarnesses(pathValue = process.env.PATH ?? '') {
@@ -654,6 +828,9 @@ function searchFields(entry) {
     entry.resolvedCommand,
     entry.install?.command,
     ...(entry.install?.args ?? []),
+    entry.description,
+    entry.distribution?.type,
+    ...(entry.distribution?.args ?? []),
   ].filter((value) => typeof value === 'string').map((value) => value.toLowerCase())
 }
 
@@ -700,6 +877,50 @@ function findHarnessCandidates(settingsPath, options = {}, query = '') {
 
 export function discoverHarnessCandidates(settingsPath, options = {}, query = '') {
   return findHarnessCandidates(settingsPath, options, query)
+}
+
+async function resolveRegistry(options = {}) {
+  if (options.registry !== undefined) return options.registry
+  if (typeof options.fetchRegistry === 'function') return options.fetchRegistry(options)
+  return fetchAcpRegistry(options)
+}
+
+/** Async CLI entrypoint. Discovery is the only path that reaches the network. */
+export async function runHarnessCommandAsync(argv, options = {}) {
+  const action = argv[0]
+  const addId = argv[1]
+  const addHelp = addId === undefined || ['help', '-h', '--help'].includes(addId)
+    || (argv.length === 3 && ['-h', '--help'].includes(argv[2]))
+  const needsRegistry = action === 'find'
+    || (action === 'add' && !addHelp && !argv.slice(2).includes('--command'))
+  if (!needsRegistry) {
+    return runHarnessCommand(argv, options)
+  }
+  let registry = options.registry
+  try {
+    registry ??= await resolveRegistry(options)
+  } catch (error) {
+    if (action === 'find') {
+      const fallback = runHarnessCommand(argv, { ...options, registry: [] })
+      return {
+        ...fallback,
+        stderr: `warning: ${error instanceof Error ? error.message : String(error)}\n`,
+      }
+    }
+    throw error
+  }
+  const scoped = { ...options, registry }
+  if (action === 'add') {
+    const [_, id, ...tokens] = argv
+    const color = options.color === true
+    const wantsAddHelp = id === undefined
+      || ['help', '-h', '--help'].includes(id)
+      || (tokens.length === 1 && ['-h', '--help'].includes(tokens[0]))
+    if (wantsAddHelp) return runHarnessCommand(argv, scoped)
+    const harness = await addHarnessAsync(options.settingsPath, id, tokens, scoped)
+    return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
+  }
+  return runHarnessCommand(argv, scoped)
 }
 
 export function runHarnessCommand(argv, options) {

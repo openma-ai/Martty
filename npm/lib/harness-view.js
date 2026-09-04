@@ -1,9 +1,10 @@
 /** Built-in Client Plugin: switch the standalone ACP Harness with a fresh session. */
 
 import {
-  addHarness,
+  addHarnessAsync,
   discoverHarnessCandidates,
   discoverHarnesses,
+  fetchAcpRegistry,
   selectedHarness,
   setDefaultHarness,
   tokenizeHarnessArgs,
@@ -23,27 +24,57 @@ function entryOptions(settingsPath, options) {
   }))
 }
 
+function findDescription(entry) {
+  if (entry.status === 'Available to install') {
+    return `available · install to ${entry.installPath ?? '~/.martty/bin'}`
+  }
+  if (entry.status === 'Ready via npx' || entry.status === 'Ready via uvx') {
+    return `${entry.status.toLowerCase()} · configure`
+  }
+  if (entry.status === 'Needs npx' || entry.status === 'Needs uvx') {
+    return `${entry.status.toLowerCase()} · install ${entry.distribution.type}`
+  }
+  if (entry.status === 'Not installed') {
+    return `not installed · install ${[entry.install?.command, ...(entry.install?.args ?? [])]
+      .filter(Boolean)
+      .join(' ')}`
+  }
+  if (entry.status === 'Configured') {
+    return `configured · switch · ${[entry.command, ...entry.args]
+      .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
+      .join(' ')}`
+  }
+  return `found locally · configure · ${[entry.resolvedCommand ?? entry.command, ...entry.args]
+    .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
+    .join(' ')}`
+}
+
 function findOptions(settingsPath, options, query = '') {
   return discoverHarnessCandidates(settingsPath, options, query)
     .map((entry) => ({
       value: entry.id,
       label: entry.label,
-      description: entry.status === 'Not installed'
-        ? `not installed · install ${[entry.install?.command, ...(entry.install?.args ?? [])]
-          .filter(Boolean)
-          .join(' ')}`
-        : entry.status === 'Configured'
-          ? `configured · switch · ${[entry.command, ...entry.args]
-            .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
-            .join(' ')}`
-        : `found locally · configure · ${[entry.resolvedCommand ?? entry.command, ...entry.args]
-        .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
-        .join(' ')}`,
+      description: findDescription(entry),
     }))
 }
 
 export function apply(ctx, options = {}) {
   const settingsPath = options.settingsPath
+  let registryPromise
+  const loadRegistry = async () => {
+    if (options.registry !== undefined) return options.registry
+    if (registryPromise === undefined) {
+      registryPromise = (typeof options.fetchRegistry === 'function'
+        ? options.fetchRegistry(options)
+        : fetchAcpRegistry(options))
+    }
+    try {
+      return await registryPromise
+    } catch (error) {
+      registryPromise = undefined
+      throw error
+    }
+  }
   const choices = () => entryOptions(settingsPath, options)
   let commandRegistration
   const refreshCommandChoices = () => commandRegistration?.update({
@@ -56,7 +87,11 @@ export function apply(ctx, options = {}) {
     if (typeof ctx.acpClient?.switchAgent !== 'function') {
       throw new Error('Harness switching is unavailable on this ACP transport')
     }
-    await ctx.acpClient.switchAgent({ command: entry.command, args: entry.args })
+    await ctx.acpClient.switchAgent({
+      command: entry.command,
+      args: entry.args,
+      ...(entry.env !== undefined ? { env: entry.env } : {}),
+    })
     upsertHarness(settingsPath, entry)
     setDefaultHarness(settingsPath, entry.id)
     runningHarnessId = entry.id
@@ -68,6 +103,7 @@ export function apply(ctx, options = {}) {
         label: entry.label,
         command: entry.command,
         args: entry.args,
+        ...(entry.env !== undefined ? { env: entry.env } : {}),
       },
     }
   }
@@ -148,14 +184,17 @@ export function apply(ctx, options = {}) {
             nodes: [{
               id: 'instructions',
               kind: 'markdown',
-              text: 'Use /harness find to discover registry and PATH ACP commands. For a registry id, /harness add <id> configures the local command or npx fallback; otherwise use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
+              text: 'Use /harness find to discover the official ACP Registry and local PATH commands. Select a package distribution to configure it, or a binary distribution to install it into ~/.martty/bin. For anything else use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
             }],
           })
           return undefined
         }
         let entry
         try {
-          entry = addHarness(settingsPath, tokens[1], tokens.slice(2), options)
+          const addOptions = tokens.slice(2).includes('--command')
+            ? options
+            : { ...options, registry: await loadRegistry() }
+          entry = await addHarnessAsync(settingsPath, tokens[1], tokens.slice(2), addOptions)
         } catch (error) {
           ctx.tuiOverlay.openView({
             id: 'harness-add-error',
@@ -172,7 +211,24 @@ export function apply(ctx, options = {}) {
         return save(entry.id)
       }
       if (tokens[0] === 'find') {
-        const found = findOptions(settingsPath, options, tokens.slice(1).join(' '))
+        let findScoped
+        try {
+          findScoped = { ...options, registry: await loadRegistry() }
+        } catch (error) {
+          ctx.tuiOverlay.openView({
+            id: 'harness-find-error',
+            title: 'ACP Registry unavailable',
+            nodes: [{
+              id: 'notice',
+              kind: 'notice',
+              level: 'error',
+              text: `${error instanceof Error ? error.message : String(error)} Use /harness add <id> --command <path> for a local ACP command.`,
+            }],
+          })
+          return undefined
+        }
+        const query = tokens.slice(1).join(' ')
+        const found = findOptions(settingsPath, findScoped, query)
         if (found.length === 0) {
           ctx.tuiOverlay.openView({
             id: 'harness-find-empty',
@@ -181,7 +237,7 @@ export function apply(ctx, options = {}) {
               id: 'notice',
               kind: 'notice',
               level: 'info',
-              text: 'No ACP Harnesses found in the local PATH, settings, or npx registry. Use /harness add <id> --command <cmd> for a manual ACP command.',
+              text: 'No ACP Harnesses found in the ACP Registry, local PATH, or settings. Use /harness add <id> --command <cmd> for a manual ACP command.',
             }],
           })
           return undefined
@@ -192,9 +248,62 @@ export function apply(ctx, options = {}) {
           value: found[0].value,
           options: found,
         }, {
-          onSubmit(id) {
-            const entry = discoverHarnessCandidates(settingsPath, options)
+          async onSubmit(id) {
+            const entry = discoverHarnessCandidates(settingsPath, findScoped)
               .find((candidate) => candidate.id === id)
+            if (entry?.status === 'Available to install') {
+              ctx.tuiOverlay.openSelect({
+                id: 'harness-install-confirm',
+                title: `Install ${entry.label} in Martty?`,
+                value: 'install',
+                options: [
+                  {
+                    value: 'install',
+                    label: `Install ${entry.label}`,
+                    description: `download to ${entry.installPath ?? '~/.martty/bin'}`,
+                  },
+                  { value: 'cancel', label: 'Cancel', description: 'Stay in the current session' },
+                ],
+              }, {
+                async onSubmit(action) {
+                  if (action !== 'install') return undefined
+                  try {
+                    await addHarnessAsync(settingsPath, id, [], findScoped)
+                    return save(id)
+                  } catch (error) {
+                    ctx.tuiOverlay.openView({
+                      id: 'harness-install-error',
+                      title: `Could not install ${entry.label}`,
+                      nodes: [{
+                        id: 'error',
+                        kind: 'notice',
+                        level: 'error',
+                        text: error instanceof Error ? error.message : String(error),
+                      }],
+                    })
+                    return undefined
+                  }
+                },
+              })
+              return undefined
+            }
+            if (entry?.distribution !== undefined && entry.status !== 'Not installed') {
+              try {
+                await addHarnessAsync(settingsPath, id, [], findScoped)
+              } catch (error) {
+                ctx.tuiOverlay.openView({
+                  id: 'harness-add-error',
+                  title: 'Could not configure Harness',
+                  nodes: [{
+                    id: 'error',
+                    kind: 'notice',
+                    level: 'error',
+                    text: error instanceof Error ? error.message : String(error),
+                  }],
+                })
+                return undefined
+              }
+            }
             if (entry?.status === 'Not installed') {
               const install = [entry.install?.command, ...(entry.install?.args ?? [])]
                 .filter(Boolean)
@@ -236,7 +345,7 @@ export function apply(ctx, options = {}) {
         nodes: [{
           id: 'instructions',
           kind: 'markdown',
-          text: 'Use /harness find to discover registry and PATH ACP commands. For a registry id, /harness add <id> configures the local command or npx fallback; otherwise use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
+          text: 'Use /harness find to discover the official ACP Registry and local PATH commands. Select a package distribution to configure it, or a binary distribution to install it into ~/.martty/bin. For anything else use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
         }],
       })
       return undefined

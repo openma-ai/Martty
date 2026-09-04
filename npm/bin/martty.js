@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { resolveDependencyStack } from '../lib/agent.js'
 import { bootClient, parseClientArgv, painterArgs, uiSettingsPath } from '../lib/boot.js'
-import { runHarnessCommand } from '../lib/harnesses.js'
+import { runHarnessCommandAsync } from '../lib/harnesses.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const platformKey = process.platform + '-' + process.arch
@@ -40,7 +40,7 @@ if (argv[0] === 'harness') {
     // Source checkouts without installed dependencies still list PATH entries.
   }
   try {
-    const result = runHarnessCommand(argv.slice(1), {
+    const result = await runHarnessCommandAsync(argv.slice(1), {
       settingsPath: uiSettingsPath(),
       defaults,
       columns: process.stdout.columns,

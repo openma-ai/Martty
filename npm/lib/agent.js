@@ -10,7 +10,7 @@ import { selectedHarness } from './harnesses.js'
 /**
  * Resolve the ACP package and TUI's internal Creator overlay bundle.
  * @param {string | URL} [anchor]
- * @returns {{ command: string, args: string[] }}
+ * @returns {{ command: string, args: string[], env?: Record<string, string> }}
  */
 export function resolveDependencyStack(anchor = import.meta.url) {
   const req = createRequire(anchor)
@@ -52,12 +52,17 @@ export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
     return {
       command: configured.command,
       args: Array.isArray(configured.args) ? configured.args.map(String) : [],
+      ...(configured.env !== undefined ? { env: { ...configured.env } } : {}),
     }
   }
   if (typeof options.settingsPath === 'string') {
     const selected = selectedHarness(options.settingsPath)
     if (selected !== undefined) {
-      return { command: selected.command, args: selected.args }
+      return {
+        command: selected.command,
+        args: selected.args,
+        ...(selected.env !== undefined ? { env: { ...selected.env } } : {}),
+      }
     }
   }
   try {
