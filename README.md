@@ -229,7 +229,7 @@ DSH_TUI_AGENT="<acp-command> [args...]" martty
 
 ```sh
 martty harness list
-martty harness add codex
+martty harness find
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -237,7 +237,8 @@ martty --check-runtime
 
 三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
 `martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`/harness <id>` 可直接切换。TUI 选择会立即替换 standalone ACP 子进程；若当前会话
+`/harness find` 可在 TUI 内筛选 PATH 中发现的 ACP 命令；`/harness <id>` 可直接切换。
+TUI 选择会立即替换 standalone ACP 子进程；若当前会话
 已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
 
 `harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
@@ -247,9 +248,6 @@ martty --check-runtime
 `initialize` 与 `session/new` 连接选中的 Harness，因此欢迎页在首条消息前就能显示
 Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
-
-`martty harness add codex` 是快捷配方，会保存通过 `npx` 启动
-`@agentclientprotocol/codex-acp` 的配置；无需自己猜 Codex CLI 参数。
 
 运行中的 standalone TUI 也可以直接添加并切换：
 

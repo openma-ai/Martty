@@ -22,12 +22,27 @@ function entryOptions(settingsPath, options) {
   }))
 }
 
+function findOptions(settingsPath, options, query = '') {
+  const normalized = query.trim().toLowerCase()
+  return discoverHarnesses(settingsPath, options)
+    .filter((entry) => entry.source !== 'configured')
+    .filter((entry) => normalized.length === 0 || [entry.id, entry.label, entry.command]
+      .some((value) => value.toLowerCase().includes(normalized)))
+    .map((entry) => ({
+      value: entry.id,
+      label: entry.label,
+      description: `${entry.source} · ${[entry.command, ...entry.args]
+        .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
+        .join(' ')}`,
+    }))
+}
+
 export function apply(ctx, options = {}) {
   const settingsPath = options.settingsPath
   const choices = () => entryOptions(settingsPath, options)
   let commandRegistration
   const refreshCommandChoices = () => commandRegistration?.update({
-    input: { hint: '[id] or add <id> --command <cmd>', options: choices() },
+    input: { hint: '[id] | find [query] | add <id> --command <cmd>', options: choices() },
   })
   let runningHarnessId = typeof options.forcedHarness?.id === 'string'
     ? options.forcedHarness.id
@@ -100,7 +115,7 @@ export function apply(ctx, options = {}) {
   commandRegistration = ctx.tuiCommands.register({
     name: 'harness',
     description: 'Switch or add a Harness; switching starts a new session',
-    input: { hint: '[id] or add <id> --command <cmd>', options: choices() },
+    input: { hint: '[id] | find [query] | add <id> --command <cmd>', options: choices() },
   }, async (args) => {
     const requested = args.trim()
     if (requested.length > 0) {
@@ -128,7 +143,7 @@ export function apply(ctx, options = {}) {
             nodes: [{
               id: 'instructions',
               kind: 'markdown',
-              text: 'Use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+              text: 'Use /harness find to discover installed ACP commands, or /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
             }],
           })
           return undefined
@@ -151,6 +166,29 @@ export function apply(ctx, options = {}) {
         }
         return save(entry.id)
       }
+      if (tokens[0] === 'find') {
+        const found = findOptions(settingsPath, options, tokens.slice(1).join(' '))
+        if (found.length === 0) {
+          ctx.tuiOverlay.openView({
+            id: 'harness-find-empty',
+            title: 'Find ACP Harnesses',
+            nodes: [{
+              id: 'notice',
+              kind: 'notice',
+              level: 'info',
+              text: 'No executable ACP Harnesses found on PATH.',
+            }],
+          })
+          return undefined
+        }
+        ctx.tuiOverlay.openSelect({
+          id: 'harness-find',
+          title: 'Find ACP Harnesses',
+          value: found[0].value,
+          options: found,
+        }, { onSubmit: save })
+        return undefined
+      }
       return save(tokens[0])
     }
     const entries = choices()
@@ -162,7 +200,7 @@ export function apply(ctx, options = {}) {
         nodes: [{
           id: 'instructions',
           kind: 'markdown',
-          text: 'Use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+          text: 'Use /harness find to discover installed ACP commands, or /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
         }],
       })
       return undefined

@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Plan progress now labels the active `in progress` entry in the composer dock
+  and in `/plan-view`, instead of relying on bold text alone. The ACP update
+  path remains immediate; no debounce or delayed refresh was added.
+
 - Fast local build profile `devlocal` (debug codegen, incremental) for
   `scripts/devlocalinstall.sh`: the local install/build loop no longer
   pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
@@ -115,8 +119,8 @@ All notable changes to this project are documented here. The project follows
   local paths, and next-step hints instead of raw tab-separated rows. The
   Harness help surface now also accepts the conventional `-h` and `--help`
   aliases and includes commands, options, examples, and the new-session rule.
-  `harness add` now guides setup instead of leaking validation errors, and
-  `harness add codex` saves a ready-to-use Codex ACP adapter recipe.
+  `harness add` now guides setup, and `harness find` lists executable ACP
+  candidates before they are saved with the same generic command syntax.
 - `/resume` now uses ACP `session/resume` when the agent advertises it, so long
   sessions can continue without replaying their full transcript into the TUI.
   Agents that only support the legacy `session/load` path keep working, and a

@@ -63,7 +63,7 @@ test('/harness opens a native picker over configured and discovered entries', as
       name: 'harness',
       description: 'Switch or add a Harness; switching starts a new session',
       input: {
-        hint: '[id] or add <id> --command <cmd>',
+        hint: '[id] | find [query] | add <id> --command <cmd>',
         options: [
           { value: 'local', label: 'Local ACP', description: 'configured · local-acp --stdio' },
           { value: 'builtin-dsh', label: 'Bundled DeepSeek Harness', description: 'builtin · /pkg/dsh-acp' },
@@ -146,9 +146,52 @@ test('/harness add without arguments opens guided setup in the native overlay', 
       nodes: [{
         id: 'instructions',
         kind: 'markdown',
-        text: 'Use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+        text: 'Use /harness find to discover installed ACP commands, or /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
       }],
     })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness find opens discovered ACP candidates inside the TUI', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const bin = path.join(root, 'bin')
+  try {
+    const { mkdirSync, chmodSync, writeFileSync } = await import('node:fs')
+    mkdirSync(bin)
+    const acp = path.join(bin, 'local-acp')
+    writeFileSync(acp, '#!/bin/sh\n')
+    chmodSync(acp, 0o755)
+    const switched = []
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent(agent) {
+        switched.push(agent)
+      },
+    })
+    harnessView.apply(ctx, { settingsPath, pathValue: bin, defaults: [] })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find' })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'select',
+      id: 'harness-find',
+      title: 'Find ACP Harnesses',
+      value: 'path-local-acp',
+      options: [{
+        value: 'path-local-acp',
+        label: 'local-acp',
+        description: `path · ${acp}`,
+      }],
+    })
+    await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness-find',
+      event: 'submit',
+      value: 'path-local-acp',
+    })
+    assert.deepEqual(switched, [{ command: acp, args: [] }])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

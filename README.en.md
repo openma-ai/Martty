@@ -131,7 +131,7 @@ select which one the next launch uses:
 
 ```sh
 martty harness list
-martty harness add codex
+martty harness find
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -139,8 +139,9 @@ martty --check-runtime
 
 All three entry points share the same registry: edit `settings.json`, use the
 `martty harness` CLI above, or enter `/harness` in the running TUI for the
-native single-select form. `/harness <id>` saves directly. TUI selection also
-replaces the standalone ACP child immediately. If the current session has
+native single-select form. `/harness find` filters discovered PATH ACP commands
+and `/harness <id>` saves directly. TUI selection replaces the standalone ACP
+child immediately. If the current session has
 already received a prompt or was restored through `/session`, Martty confirms
 first and keeps that session available for navigation.
 
@@ -153,8 +154,6 @@ session. This makes the Agent's model and effort config available before the
 first prompt without starting a model turn. Sessions are never carried across Harnesses, and
 `dsh --profile martty` continues to use its Host-owned runtime.
 
-`martty harness add codex` is a shortcut that saves an `npx`
-`@agentclientprotocol/codex-acp` recipe, so no Codex CLI flags need to be guessed.
 Inside a running standalone TUI, `/harness add <id> --command <cmd> [--arg <arg>]`
 saves the recipe and switches to it immediately (with confirmation after a
 prompt has started).

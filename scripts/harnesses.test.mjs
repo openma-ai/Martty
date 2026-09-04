@@ -126,8 +126,8 @@ test('harness add without a Harness shows guided setup instead of validator erro
   assert.equal(result.code, 0)
   assert.equal(result.stderr, '')
   assert.match(result.stdout, /^Add a Harness$/m)
-  assert.match(result.stdout, /^Quick setup$/m)
-  assert.match(result.stdout, /martty harness add codex/)
+  assert.match(result.stdout, /^Find an installed ACP Harness$/m)
+  assert.match(result.stdout, /martty harness find/)
   assert.match(result.stdout, /^Custom ACP command$/m)
   assert.match(result.stdout, /martty harness add <id> --command <cmd>/)
   assert.deepEqual(
@@ -144,29 +144,44 @@ test('harness add without a Harness shows guided setup instead of validator erro
   )
 })
 
-test('harness add codex saves the official ACP adapter recipe and explains activation', async () => {
+test('harness add always requires an explicit ACP command', async () => {
   const module = await import(moduleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-codex-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
-    const result = module.runHarnessCommand(['add', 'codex'], { settingsPath })
-
-    assert.equal(result.code, 0)
-    assert.equal(result.stderr, '')
-    assert.match(result.stdout, /^Saved Codex Harness$/m)
-    assert.match(result.stdout, /^  Command  npx$/m)
-    assert.match(
-      result.stdout,
-      /^  Args     --yes --prefer-offline @agentclientprotocol\/codex-acp$/m,
+    assert.throws(
+      () => module.runHarnessCommand(['add', 'codex'], { settingsPath }),
+      (error) => {
+        assert.equal(error.exitCode, 2)
+        assert.match(error.message, /Missing --command for custom Harness "codex"\./)
+        return true
+      },
     )
-    assert.match(result.stdout, /martty harness use codex/)
-    assert.match(result.stdout, /restart martty/)
-    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses, [{
-      id: 'codex',
-      label: 'Codex Harness',
-      command: 'npx',
-      args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp'],
-    }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('harness find lists executable ACP candidates and provides the use command', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    const acp = path.join(bin, 'local-acp')
+    writeFileSync(acp, '#!/bin/sh\n')
+    chmodSync(acp, 0o755)
+    const result = module.runHarnessCommand(['find'], {
+      settingsPath,
+      pathValue: bin,
+      defaults: [],
+    })
+    assert.equal(result.code, 0)
+    assert.match(result.stdout, /^ACP Harness candidates \(1\)$/m)
+    assert.match(result.stdout, /^  ○ local-acp$/m)
+    assert.ok(result.stdout.includes(`    Command  ${acp}`))
+    assert.match(result.stdout, /martty harness use path-local-acp/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

@@ -102,6 +102,7 @@ ${section('Usage')}
 
 ${section('Commands')}
   list              Show saved, bundled, and PATH Harnesses
+  find [query]      Find ACP Harness commands on PATH
   add <id>          Save a named Harness command
   use <id>          Set the default Harness for the next standalone launch
   help              Show this help
@@ -113,7 +114,7 @@ ${section('Add options')}
 
 ${section('Examples')}
   ${command('martty harness list')}
-  ${command('martty harness add codex')}
+  ${command('martty harness find')}
   ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
   ${command('martty harness use local')}
   ${command('/harness add local --command local-acp --arg --stdio')}
@@ -130,9 +131,9 @@ function addHarnessHelp(color = false) {
 
 Martty connects to ACP servers, not directly to agent CLIs.
 
-${section('Quick setup')}
-  ${command('martty harness add codex')}
-  Saves the Codex ACP adapter recipe. No command flags needed.
+${section('Find an installed ACP Harness')}
+  ${command('martty harness find')}
+  Lists executable *-acp and *_acp commands found on PATH.
 
 ${section('Custom ACP command')}
   ${command('martty harness add <id> --command <cmd> [options]')}
@@ -203,6 +204,37 @@ No Harnesses found.
   lines.push(fieldLine('Default', defaultLabel, columns, color, 2))
   lines.push(fieldLine('Set', 'martty harness use <id>', columns, color, 2))
   lines.push(fieldLine('In TUI', '/harness', columns, color, 2))
+  return `${lines.join('\n')}\n`
+}
+
+function formatHarnessFind(entries, query, options = {}) {
+  const columns = Number.isInteger(options.columns) && options.columns > 0
+    ? options.columns
+    : 100
+  const color = options.color === true
+  if (entries.length === 0) {
+    return `${paint('ACP Harness candidates', 'bold', color)}
+
+No executable ACP Harnesses found on PATH.
+
+  ${paint('Add one', 'dim', color)}   martty harness add <id> --command <cmd>
+`
+  }
+  const lines = [paint(`ACP Harness candidates (${entries.length})`, 'bold', color)]
+  if (query.length > 0) lines.push(`Query   ${query}`)
+  lines.push('')
+  for (const entry of entries) {
+    lines.push(`  ○ ${clip(entry.label, columns - 6)}`)
+    lines.push(fieldLine('ID', entry.id, columns, color))
+    lines.push(fieldLine('Source', sourceLabel(entry.source), columns, color))
+    // Keep the discovered executable path copyable; unlike the catalog view,
+    // this command is primarily a diagnostic surface for locating a binary.
+    lines.push(`${' '.repeat(4)}Command  ${entry.command}`)
+    if (entry.args.length > 0) lines.push(`${' '.repeat(4)}Args     ${argumentText(entry.args, options)}`)
+    lines.push(fieldLine('Use', `martty harness use ${entry.id}`, columns, color))
+    lines.push('')
+  }
+  lines.push(fieldLine('Add', 'martty harness add <id> --command <cmd>', columns, color, 2))
   return `${lines.join('\n')}\n`
 }
 
@@ -346,14 +378,6 @@ export function addHarness(settingsPath, id, tokens = []) {
       `Invalid Harness id ${JSON.stringify(id)}. Use lowercase letters, numbers, and hyphens.`,
     )
   }
-  if (id === 'codex' && tokens.length === 0) {
-    return upsertHarness(settingsPath, {
-      id: 'codex',
-      label: 'Codex Harness',
-      command: 'npx',
-      args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp'],
-    })
-  }
   let command
   let label
   const args = []
@@ -446,6 +470,14 @@ export function runHarnessCommand(argv, options) {
   const [action, id, ...tokens] = argv
   if (['help', '-h', '--help'].includes(action) || action === undefined) {
     return { code: 0, stdout: harnessHelp(options.color === true), stderr: '' }
+  }
+  if (action === 'find') {
+    const query = [id, ...tokens].filter(Boolean).join(' ').trim()
+    const candidates = discoverHarnesses(settingsPath, options)
+      .filter((entry) => entry.source !== 'configured')
+      .filter((entry) => query.length === 0 || [entry.id, entry.label, entry.command]
+        .some((value) => value.toLowerCase().includes(query.toLowerCase())))
+    return { code: 0, stdout: formatHarnessFind(candidates, query, options), stderr: '' }
   }
   if (action === 'list') {
     const settings = readSettings(settingsPath)
