@@ -2,6 +2,7 @@
 
 import {
   addHarness,
+  discoverHarnessCandidates,
   discoverHarnesses,
   selectedHarness,
   setDefaultHarness,
@@ -23,15 +24,15 @@ function entryOptions(settingsPath, options) {
 }
 
 function findOptions(settingsPath, options, query = '') {
-  const normalized = query.trim().toLowerCase()
-  return discoverHarnesses(settingsPath, options)
-    .filter((entry) => entry.source !== 'configured')
-    .filter((entry) => normalized.length === 0 || [entry.id, entry.label, entry.command]
-      .some((value) => value.toLowerCase().includes(normalized)))
+  return discoverHarnessCandidates(settingsPath, options, query)
     .map((entry) => ({
       value: entry.id,
       label: entry.label,
-      description: `${entry.source} · ${[entry.command, ...entry.args]
+      description: entry.status === 'Not installed'
+        ? `not installed · run ${[entry.install?.command, ...(entry.install?.args ?? [])]
+          .filter(Boolean)
+          .join(' ')}`
+        : `${entry.source} · ${[entry.resolvedCommand ?? entry.command, ...entry.args]
         .map((part) => /\s/.test(part) ? JSON.stringify(part) : part)
         .join(' ')}`,
     }))
@@ -143,14 +144,14 @@ export function apply(ctx, options = {}) {
             nodes: [{
               id: 'instructions',
               kind: 'markdown',
-              text: 'Use /harness find to discover installed ACP commands, or /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+              text: 'Use /harness find to discover registry and PATH ACP commands. For a registry id, /harness add <id> configures the local command or npx fallback; otherwise use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
             }],
           })
           return undefined
         }
         let entry
         try {
-          entry = addHarness(settingsPath, tokens[1], tokens.slice(2))
+          entry = addHarness(settingsPath, tokens[1], tokens.slice(2), options)
         } catch (error) {
           ctx.tuiOverlay.openView({
             id: 'harness-add-error',
@@ -176,7 +177,7 @@ export function apply(ctx, options = {}) {
               id: 'notice',
               kind: 'notice',
               level: 'info',
-              text: 'No executable ACP Harnesses found on PATH.',
+              text: 'No ACP Harnesses found in the local PATH or npx registry.',
             }],
           })
           return undefined
@@ -186,7 +187,31 @@ export function apply(ctx, options = {}) {
           title: 'Find ACP Harnesses',
           value: found[0].value,
           options: found,
-        }, { onSubmit: save })
+        }, {
+          onSubmit(id) {
+            const entry = discoverHarnessCandidates(settingsPath, options)
+              .find((candidate) => candidate.id === id)
+            if (entry?.status === 'Not installed') {
+              const install = [entry.install?.command, ...(entry.install?.args ?? [])]
+                .filter(Boolean)
+                .join(' ')
+              const recommended = entry.fallback === undefined
+                ? `Run \`${install}\`, then run /harness find ${entry.id} again.`
+                : `Use /harness add ${entry.id} to configure the registry fallback (\`${install}\`).`
+              ctx.tuiOverlay.openView({
+                id: 'harness-find-install',
+                title: `${entry.label} is not installed`,
+                nodes: [{
+                  id: 'instructions',
+                  kind: 'markdown',
+                  text: `${recommended} If that is not available, use /harness add ${entry.id} --command <cmd>.`,
+                }],
+              })
+              return undefined
+            }
+            return save(id)
+          },
+        })
         return undefined
       }
       return save(tokens[0])
@@ -200,7 +225,7 @@ export function apply(ctx, options = {}) {
         nodes: [{
           id: 'instructions',
           kind: 'markdown',
-          text: 'Use /harness find to discover installed ACP commands, or /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+          text: 'Use /harness find to discover registry and PATH ACP commands. For a registry id, /harness add <id> configures the local command or npx fallback; otherwise use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
         }],
       })
       return undefined

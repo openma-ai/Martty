@@ -230,6 +230,7 @@ DSH_TUI_AGENT="<acp-command> [args...]" martty
 ```sh
 martty harness list
 martty harness find
+martty harness add codex
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -237,11 +238,15 @@ martty --check-runtime
 
 三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
 `martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`/harness find` 可在 TUI 内筛选 PATH 中发现的 ACP 命令；`/harness <id>` 可直接切换。
+`harness find` 会先按 npx registry 中声明的命令检查本地 PATH；找到后直接显示可配置的
+Harness ID 和完整路径。找不到时会显示推荐的 `npx` 安装命令；仍不适用时再使用手动
+`--command`。TUI 中的 `/harness find` 提供同样的选择和安装提示，`/harness <id>` 可直接切换。
+registry 也可以声明非 npx 的可执行文件和安装命令；安装命令只用于提示，安装完成后重新
+搜索，不会被误当作 ACP 启动命令。未收录但命名为 `*-acp` / `*_acp` 的本地程序也会被发现。
 TUI 选择会立即替换 standalone ACP 子进程；若当前会话
 已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
 
-`harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
+`harness list` 会列出已保存项、包内置 DSH runtime，以及 registry 命令和 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
 `$MARTTY_HOME/settings.json` 的 `harnesses` 与 `defaultHarness`，并保留同文件中的主题、
 语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，启动时依次通过 ACP

@@ -132,6 +132,7 @@ select which one the next launch uses:
 ```sh
 martty harness list
 martty harness find
+martty harness add codex
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -139,14 +140,22 @@ martty --check-runtime
 
 All three entry points share the same registry: edit `settings.json`, use the
 `martty harness` CLI above, or enter `/harness` in the running TUI for the
-native single-select form. `/harness find` filters discovered PATH ACP commands
-and `/harness <id>` saves directly. TUI selection replaces the standalone ACP
+native single-select form. `harness find` first checks the local PATH for commands
+declared by the npx registry, then shows the registry's recommended `npx` install
+command when an adapter is missing, and finally keeps the manual `--command`
+fallback available. `/harness find` offers the same flow in TUI and
+`/harness <id>` saves directly. TUI selection replaces the standalone ACP
 child immediately. If the current session has
 already received a prompt or was restored through `/session`, Martty confirms
 first and keeps that session available for navigation.
+Registry records may also describe non-npx executables and package-manager
+install commands. Install-only commands are shown as guidance and are never
+mistaken for ACP launch commands; after installing, run `harness find` again.
+Unregistered local binaries named `*-acp` or `*_acp` are still discovered.
 
-`harness list` includes saved entries, the bundled DSH runtime, and executable
-`*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks the default entry.
+`harness list` includes saved entries, the bundled DSH runtime, registry-resolved
+commands, and executable `*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks
+the default entry.
 `add` and `use` preserve the other fields in `$MARTTY_HOME/settings.json` while
 writing `harnesses` and `defaultHarness`. Selection applies to the **next
 standalone launch**, which initializes the selected Harness and binds an empty

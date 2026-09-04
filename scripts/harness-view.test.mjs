@@ -132,6 +132,55 @@ test('/harness add saves a custom ACP command and switches to it immediately', a
   }
 })
 
+test('/harness add uses a registry npx fallback when the local command is missing', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-registry-add-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const switched = []
+    const ctx = makeCtx({
+      kind: 'spawn',
+      async switchAgent(agent) {
+        switched.push(agent)
+      },
+    })
+    harnessView.apply(ctx, {
+      settingsPath,
+      pathValue: '',
+      registry: [{
+        id: 'demo',
+        label: 'Demo Harness',
+        commands: [{ command: 'demo-acp', args: [] }],
+        install: { command: 'npx', args: ['demo-harness-acp'] },
+      }],
+      defaults: [],
+    })
+
+    const result = await ctx.tuiCommands.dispatch({
+      protocol: 0,
+      name: 'harness',
+      args: 'add demo',
+    })
+    assert.deepEqual(switched, [{ command: 'npx', args: ['demo-harness-acp'] }])
+    assert.deepEqual(selectedHarness(settingsPath), {
+      id: 'demo',
+      label: 'Demo Harness',
+      command: 'npx',
+      args: ['demo-harness-acp'],
+    })
+    assert.deepEqual(result, {
+      action: 'harness-switched',
+      harness: {
+        id: 'demo',
+        label: 'Demo Harness',
+        command: 'npx',
+        args: ['demo-harness-acp'],
+      },
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('/harness add without arguments opens guided setup in the native overlay', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-add-help-'))
   const settingsPath = path.join(root, 'settings.json')
@@ -146,7 +195,7 @@ test('/harness add without arguments opens guided setup in the native overlay', 
       nodes: [{
         id: 'instructions',
         kind: 'markdown',
-        text: 'Use /harness find to discover installed ACP commands, or /harness add <id> --command <cmd> [--label <label>] [--arg <arg>] to save and switch to a custom ACP Harness.',
+        text: 'Use /harness find to discover registry and PATH ACP commands. For a registry id, /harness add <id> configures the local command or npx fallback; otherwise use /harness add <id> --command <cmd> [--label <label>] [--arg <arg>].',
       }],
     })
   } finally {
@@ -171,7 +220,7 @@ test('/harness find opens discovered ACP candidates inside the TUI', async () =>
         switched.push(agent)
       },
     })
-    harnessView.apply(ctx, { settingsPath, pathValue: bin, defaults: [] })
+    harnessView.apply(ctx, { settingsPath, pathValue: bin, registry: [], defaults: [] })
 
     await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find' })
     assert.deepEqual(ctx.tuiOverlay.active(), {
@@ -192,6 +241,57 @@ test('/harness find opens discovered ACP candidates inside the TUI', async () =>
       value: 'path-local-acp',
     })
     assert.deepEqual(switched, [{ command: acp, args: [] }])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/harness find shows an npx install step for a registry Harness that is not installed', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-install-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    const ctx = makeCtx()
+    harnessView.apply(ctx, {
+      settingsPath,
+      pathValue: '',
+      registry: [{
+        id: 'demo',
+        label: 'Demo Harness',
+        commands: [{ command: 'demo-acp', args: [] }],
+        install: { command: 'npx', args: ['demo-harness-acp'] },
+      }],
+      defaults: [],
+    })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find demo' })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'select',
+      id: 'harness-find',
+      title: 'Find ACP Harnesses',
+      value: 'demo',
+      options: [{
+        value: 'demo',
+        label: 'Demo Harness',
+        description: 'not installed · run npx demo-harness-acp',
+      }],
+    })
+
+    await ctx.tuiOverlay.dispatch({
+      protocol: 0,
+      id: 'harness-find',
+      event: 'submit',
+      value: 'demo',
+    })
+    assert.deepEqual(ctx.tuiOverlay.active(), {
+      kind: 'view',
+      id: 'harness-find-install',
+      title: 'Demo Harness is not installed',
+      nodes: [{
+        id: 'instructions',
+        kind: 'markdown',
+        text: 'Use /harness add demo to configure the registry fallback (`npx demo-harness-acp`). If that is not available, use /harness add demo --command <cmd>.',
+      }],
+    })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
