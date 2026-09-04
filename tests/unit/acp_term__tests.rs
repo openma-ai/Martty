@@ -111,7 +111,7 @@ async fn multi_byte_characters_split_across_reads_stay_intact() {
             cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
             cmd.spawn().expect("spawn true")
         }),
-        buf: Mutex::new(String::new()),
+        buf: Mutex::new(TerminalOutput::default()),
         truncated: AtomicBool::new(false),
         byte_limit: DEFAULT_BYTE_LIMIT,
         exit: Mutex::new(None),
@@ -120,7 +120,7 @@ async fn multi_byte_characters_split_across_reads_stay_intact() {
     spawn_reader(Arc::clone(&rec), OneByteAtATime(payload, 0));
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).snapshot();
         if output.contains("acp-term") {
             assert!(output.contains("你好"), "output: {output:?}");
             break;
@@ -140,4 +140,26 @@ async fn unknown_terminal_ids_error_instead_of_default_success() {
     assert!(broker.wait("term-missing").await.is_err());
     assert!(broker.kill("term-missing").is_err());
     assert!(broker.release("term-missing").is_err());
+}
+
+#[test]
+fn terminal_output_window_retains_utf8_and_compacts_old_prefixes() {
+    let mut output = TerminalOutput::default();
+    assert!(!output.append("abcd", 5));
+    assert!(output.append("é", 5));
+    // The window limit is measured in bytes, but the visible output remains
+    // valid UTF-8: dropping one byte from "abcdé" yields "bcdé".
+    assert_eq!(output.snapshot(), "bcdé");
+
+    // A long stream with a tiny output window must not retain the entire
+    // historical output just because physical compaction is amortized.
+    for _ in 0..8_192 {
+        let _ = output.append("1234", 16);
+    }
+    assert_eq!(output.snapshot(), "1234123412341234");
+    assert!(
+        output.text.len() <= 16 + 4096,
+        "old output should have been compacted: {} bytes retained",
+        output.text.len()
+    );
 }

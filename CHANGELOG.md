@@ -76,6 +76,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Long-running ACP `terminal/*` commands now evict old output with an
+  amortized buffer instead of shifting the full retained window for every
+  small read. The bounded tail and UTF-8-safe output are unchanged, while
+  high-volume command output avoids repeated near-limit memory copies.
+
 - Code-review sweep (2026-09-03):
 
   - **Terminal output integrity** — `terminal/output` no longer corrupts
