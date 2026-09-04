@@ -328,13 +328,16 @@ function validateHarness(value) {
     || Object.entries(env).some(([key, item]) => key.length === 0 || typeof item !== 'string'))) {
     throw new Error('harness env must be an object of strings')
   }
+  const normalizedArgs = value.command === 'npx'
+    ? [...args].filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
+    : [...args]
   return {
     id: value.id,
     label: typeof value.label === 'string' && value.label.trim().length > 0
       ? value.label
       : value.id,
     command: value.command,
-    args: [...args],
+    args: normalizedArgs,
     ...(env !== undefined ? { env: { ...env } } : {}),
   }
 }

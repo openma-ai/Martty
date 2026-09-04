@@ -274,6 +274,31 @@ test('writing a legacy active Harness migrates it to defaultHarness', async () =
   }
 })
 
+test('legacy npx flags are removed when a saved Harness is read', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-npx-flags-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    writeFileSync(settingsPath, JSON.stringify({
+      harnesses: [{
+        id: 'codex-acp',
+        label: 'Codex',
+        command: 'npx',
+        args: ['--yes', '--prefer-offline', '@agentclientprotocol/codex-acp@1.9.0'],
+      }],
+      defaultHarness: 'codex-acp',
+    }))
+    assert.deepEqual(module.selectedHarness(settingsPath), {
+      id: 'codex-acp',
+      label: 'Codex',
+      command: 'npx',
+      args: ['@agentclientprotocol/codex-acp@1.9.0'],
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('PATH discovery lists executable ACP entrypoints and ignores unrelated commands', async () => {
   const module = await import(moduleUrl)
   assert.equal(typeof module.discoverPathHarnesses, 'function')
