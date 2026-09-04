@@ -75,6 +75,115 @@ fn parked_session_events_land_in_their_slot_only() {
 }
 
 #[test]
+fn cancel_requested_only_closes_work_in_the_named_session() {
+    let (mut app, ctl, _rx) = test_app();
+    app.state = RunState::Running;
+    app.transcript.apply(crate::events::UiEvent::ToolCall {
+        session: "dsh-test".into(),
+        call_id: "old".into(),
+        name: "old-tool".into(),
+        arguments: "{}".into(),
+    });
+    app.open_new_session("s-two".into(), true);
+    app.state = RunState::Running;
+    app.transcript.apply(crate::events::UiEvent::ToolCall {
+        session: "s-two".into(),
+        call_id: "live".into(),
+        name: "live-tool".into(),
+        arguments: "{}".into(),
+    });
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::CancelRequested {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
+
+    assert_ne!(
+        app.state_note, "cancelling",
+        "the viewed tab stays untouched"
+    );
+    match &app.transcript.cells.last().unwrap().kind {
+        crate::transcript::CellKind::Tool { ok, .. } => assert_eq!(*ok, None),
+        other => panic!("expected live tool, got {other:?}"),
+    }
+    app.switch_to_session(0);
+    assert_eq!(app.state_note, "cancelling");
+    match &app.transcript.cells.last().unwrap().kind {
+        crate::transcript::CellKind::Tool { ok, error, .. } => {
+            assert_eq!(*ok, Some(false));
+            assert_eq!(error.as_deref(), Some("cancelled"));
+        }
+        other => panic!("expected cancelled tool, got {other:?}"),
+    }
+}
+
+#[test]
+fn session_catalogs_park_and_restore_with_their_tabs() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: Some("dsh-test".into()),
+            models: vec![crate::bus::CatalogModel {
+                provider: "provider-one".into(),
+                id: "model-one".into(),
+                name: "Model One".into(),
+                vision: false,
+            }],
+            presets: Vec::new(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Skills {
+            session_id: Some("dsh-test".into()),
+            skills: vec![crate::bus::SkillInfo {
+                name: "session-one-skill".into(),
+                description: String::new(),
+                input_hint: None,
+                config_action: None,
+                client_command: false,
+            }],
+        }),
+        &ctl,
+    );
+
+    assert!(app.last_models.is_empty());
+    assert!(app.skills.is_empty());
+    app.switch_to_session(0);
+    assert_eq!(app.last_models[0].id, "model-one");
+    assert_eq!(app.skills[0].name, "session-one-skill");
+}
+
+#[test]
+fn binding_the_visible_tab_publishes_the_active_session() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.session_bound = false;
+    app.startup_bound = false;
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "s-bound".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+
+    let sent: Vec<_> = commands.try_iter().collect();
+    assert!(sent.iter().any(|command| matches!(
+        command,
+        Cmd::ActiveSession {
+            session_id: Some(session_id)
+        } if session_id == "s-bound"
+    )));
+}
+
+#[test]
 fn unknown_session_events_never_reach_any_transcript() {
     let (mut app, _ctl, _rx) = test_app();
     app.open_new_session("s-two".into(), true);

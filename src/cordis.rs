@@ -14,6 +14,7 @@ pub const QUEUE_UPDATE: &str = "_dsh/cordis/tui/queue/update";
 pub const AGENTS_UPDATE: &str = "_dsh/cordis/tui/agents/update";
 pub const AGENTS_SELECT: &str = "_dsh/cordis/tui/agents/select";
 pub const AGENTS_NAVIGATE: &str = "_dsh/cordis/tui/agents/navigate";
+pub const SESSION_ACTIVE: &str = "_dsh/cordis/tui/session/active";
 pub const SESSION_CONFIG_SET: &str = "_dsh/cordis/tui/session-config/set";
 pub const APPROVALS_UPDATE: &str = "_dsh/cordis/tui/approvals/update";
 pub const APPROVAL_RESPOND: &str = "_dsh/cordis/tui/approvals/respond";

@@ -76,6 +76,16 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Multi-session state is now isolated end to end: background ACP updates no
+  longer replace the visible tab's config, plan, stats, status, model/skill/
+  permission catalogs, cancellation state, or `/resume` picker; stale prompt
+  completions also cannot release a newer turn after a session is rebound.
+
+- `dsh --profile martty` starts correctly with dsh 0.1.2: an intentional Client
+  `SIGTERM` during the initial profile recompose no longer exits the replacement
+  Host tree, and compatibility adapters cover the new scoped user-question and
+  subagent model-selection Host services.
+
 - Long-running ACP `terminal/*` commands now evict old output with an
   amortized buffer instead of shifting the full retained window for every
   small read. The bounded tail and UTF-8-safe output are unchanged, while

@@ -115,6 +115,82 @@ test('ACP Session config resolves standard semantic categories from each live sn
   assert.throws(() => service.byCategory(''), /non-empty string/)
 })
 
+test('ACP Session config keeps tab snapshots isolated and writes the selected Session', async () => {
+  const service = acpClient.installAcpSessionConfig(makeCtx())
+  service.observeClient({ jsonrpc: '2.0', id: 71, method: 'session/new', params: {} })
+  service.observeAgent({
+    jsonrpc: '2.0', id: 71,
+    result: { sessionId: 's-1', configOptions: initialOptions },
+  })
+  service.observeClient({
+    jsonrpc: '2.0', id: 72, method: 'session/resume', params: { sessionId: 's-2' },
+  })
+  service.observeAgent({
+    jsonrpc: '2.0', id: 72,
+    result: {
+      sessionId: 's-2',
+      configOptions: [{ ...initialOptions[0], currentValue: 'max' }],
+    },
+  })
+
+  service.selectSession('s-1')
+  service.observeAgent({
+    jsonrpc: '2.0', method: 'session/update', params: {
+      sessionId: 's-2',
+      update: {
+        sessionUpdate: 'config_option_update',
+        configOptions: [{ ...initialOptions[0], currentValue: 'off' }],
+      },
+    },
+  })
+  assert.equal(service.current('effort'), 'high', 'background updates stay cached off-screen')
+
+  const writes = []
+  service.bindTransport(async (_method, params) => {
+    writes.push(params)
+    return {
+      sessionId: params.sessionId,
+      configOptions: [{ ...initialOptions[0], currentValue: params.value }],
+    }
+  })
+  await service.set('effort', 'off')
+  assert.equal(writes[0].sessionId, 's-1')
+
+  service.selectSession('s-2')
+  assert.equal(service.current('effort'), 'off')
+})
+
+test('config transactions remain pinned to their originating Session across a tab switch', async () => {
+  const service = acpClient.installAcpSessionConfig(makeCtx())
+  for (const [id, sessionId, currentValue] of [[81, 's-1', 'high'], [82, 's-2', 'max']]) {
+    service.observeClient({ jsonrpc: '2.0', id, method: 'session/load', params: { sessionId } })
+    service.observeAgent({
+      jsonrpc: '2.0', id,
+      result: { sessionId, configOptions: [{ ...initialOptions[0], currentValue }] },
+    })
+  }
+  const writes = []
+  service.bindTransport(async (_method, params) => {
+    writes.push(params)
+    return {
+      sessionId: params.sessionId,
+      configOptions: [{ ...initialOptions[0], currentValue: params.value }],
+    }
+  })
+
+  service.selectSession('s-1')
+  const transaction = service.transaction({ id: 'effort' })
+  service.selectSession('s-2')
+  await transaction.preview('off')
+  await transaction.rollback()
+
+  assert.deepEqual(writes.map(({ sessionId, value }) => ({ sessionId, value })), [
+    { sessionId: 's-1', value: 'off' },
+    { sessionId: 's-1', value: 'high' },
+  ])
+  assert.equal(service.current('effort'), 'max')
+})
+
 test('dynamic Client resolves Session config by standard category through its restricted context', async () => {
   const service = acpClient.installAcpSessionConfig(makeCtx())
   service.observeClient({ jsonrpc: '2.0', id: 62, method: 'session/new', params: {} })

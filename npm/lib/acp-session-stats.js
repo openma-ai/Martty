@@ -5,7 +5,7 @@ import { Service } from '@deepseek-ai/cordis'
 export const name = 'acp-session-stats'
 export const inject = []
 
-const SETUP_METHODS = new Set(['session/new', 'session/load'])
+const SETUP_METHODS = new Set(['session/new', 'session/load', 'session/resume'])
 
 class AcpSessionStatsService extends Service {
   constructor(ctx, core) {
@@ -17,6 +17,7 @@ class AcpSessionStatsService extends Service {
   subscribe(listener) { return this.core.subscribe(this.ctx, listener) }
   observeClient(message) { return this.core.observeClient(message) }
   observeAgent(message) { return this.core.observeAgent(message) }
+  selectSession(sessionId) { return this.core.selectSession(sessionId) }
 }
 
 function zero(sessionId) {
@@ -44,20 +45,51 @@ export function installAcpSessionStats(ctx, options = {}) {
   const pendingPrompts = new Map()
   const activePrompts = new Map()
   const toolStarts = new Map()
-  let value = zero(undefined)
+  const values = new Map()
+  let sessionId
+  let selectionKnown = false
 
-  function current() { return structuredClone(value) }
+  function stateFor(targetSessionId) {
+    if (typeof targetSessionId !== 'string' || targetSessionId.length === 0) {
+      return zero(undefined)
+    }
+    let value = values.get(targetSessionId)
+    if (value === undefined) {
+      value = zero(targetSessionId)
+      values.set(targetSessionId, value)
+    }
+    return value
+  }
+
+  function current() { return structuredClone(stateFor(sessionId)) }
 
   function publish() {
     const snapshot = current()
     for (const listener of [...listeners]) listener(snapshot)
   }
 
-  function reset(sessionId) {
-    value = zero(sessionId)
-    activePrompts.clear()
-    pendingPrompts.clear()
-    toolStarts.clear()
+  function publishIf(targetSessionId) {
+    if (targetSessionId === sessionId) publish()
+  }
+
+  function reset(targetSessionId) {
+    if (typeof targetSessionId !== 'string' || targetSessionId.length === 0) return
+    values.set(targetSessionId, zero(targetSessionId))
+    activePrompts.delete(targetSessionId)
+    for (const [id, prompt] of pendingPrompts) {
+      if (prompt.sessionId === targetSessionId) pendingPrompts.delete(id)
+    }
+    for (const key of toolStarts.keys()) {
+      if (key.startsWith(`${targetSessionId}\u0000`)) toolStarts.delete(key)
+    }
+    publishIf(targetSessionId)
+  }
+
+  function selectSession(nextSessionId) {
+    selectionKnown = true
+    sessionId = typeof nextSessionId === 'string' && nextSessionId.length > 0
+      ? nextSessionId
+      : undefined
     publish()
   }
 
@@ -84,22 +116,26 @@ export function installAcpSessionStats(ctx, options = {}) {
     if (!object(message) || message.id === undefined || typeof message.method !== 'string') return
     if (SETUP_METHODS.has(message.method)) {
       pendingSetup.set(message.id, {
-        sessionId: message.method === 'session/load'
+        sessionId: message.method !== 'session/new'
           ? readString(message.params, 'sessionId', 'session_id')
           : undefined,
       })
       return
     }
     if (message.method !== 'session/prompt') return
-    const sessionId = readString(message.params, 'sessionId', 'session_id')
-    if (sessionId === undefined) return
-    if (value.sessionId === undefined) value.sessionId = sessionId
-    if (value.sessionId !== sessionId) return
-    const prompt = { sessionId, started: now(), firstToken: undefined, toolMillis: 0 }
+    const promptSessionId = readString(message.params, 'sessionId', 'session_id')
+    if (promptSessionId === undefined) return
+    if (!selectionKnown && sessionId === undefined) sessionId = promptSessionId
+    const prompt = {
+      sessionId: promptSessionId,
+      started: now(),
+      firstToken: undefined,
+      toolMillis: 0,
+    }
     pendingPrompts.set(message.id, prompt)
-    activePrompts.set(sessionId, prompt)
-    value.stats.turns += 1
-    publish()
+    activePrompts.set(promptSessionId, prompt)
+    stateFor(promptSessionId).stats.turns += 1
+    publishIf(promptSessionId)
   }
 
   function observeAgent(message) {
@@ -108,32 +144,36 @@ export function installAcpSessionStats(ctx, options = {}) {
       const tracked = pendingSetup.get(message.id)
       pendingSetup.delete(message.id)
       if (message.error !== undefined || !object(message.result)) return
-      reset(readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId)
+      const bound = readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId
+      if (!selectionKnown) sessionId = bound
+      reset(bound)
       return
     }
     if (message.id !== undefined && pendingPrompts.has(message.id)) {
       const prompt = pendingPrompts.get(message.id)
       pendingPrompts.delete(message.id)
       activePrompts.delete(prompt.sessionId)
+      const value = stateFor(prompt.sessionId)
       if (message.error === undefined && object(message.result)) {
-        addUsage(message.result.usage)
+        addUsage(value, message.result.usage)
       }
       const elapsed = Math.max(0, now() - prompt.started)
       value.stats.llmMillis += Math.max(0, elapsed - prompt.toolMillis)
-      publish()
+      publishIf(prompt.sessionId)
       return
     }
     if (message.method !== 'session/update' || !object(message.params)) return
-    const sessionId = readString(message.params, 'sessionId', 'session_id')
-    if (value.sessionId !== undefined && sessionId !== value.sessionId) return
-    if (value.sessionId === undefined) value.sessionId = sessionId
+    const updateSessionId = readString(message.params, 'sessionId', 'session_id')
+    if (updateSessionId === undefined) return
+    if (!selectionKnown && sessionId === undefined) sessionId = updateSessionId
+    const value = stateFor(updateSessionId)
     const update = message.params.update
     if (!object(update)) return
 
     const replay = update?._meta?.dsh
     if (object(replay) && replay.event === 'prompt/usage') {
       value.usage = usageOf(replay.usage)
-      publish()
+      publishIf(updateSessionId)
       return
     }
 
@@ -147,11 +187,11 @@ export function installAcpSessionStats(ctx, options = {}) {
       const size = number(update.size)
       if (size > 0) {
         value.context = { used: number(update.used), size }
-        publish()
+        publishIf(updateSessionId)
       }
       return
     }
-    const prompt = sessionId === undefined ? undefined : activePrompts.get(sessionId)
+    const prompt = activePrompts.get(updateSessionId)
     if (prompt !== undefined && prompt.firstToken === undefined
       && (type === 'agent_message_chunk' || type === 'agent_thought_chunk')
       && textOf(update.content).length > 0) {
@@ -162,28 +202,28 @@ export function installAcpSessionStats(ctx, options = {}) {
     if (type === 'agent_message_chunk'
       && update?._meta?.dsh?.event === 'assistant_message') {
       value.stats.steps += 1
-      publish()
+      publishIf(updateSessionId)
       return
     }
     const callId = readString(update, 'toolCallId', 'tool_call_id')
     if (type === 'tool_call' && callId !== undefined) {
-      toolStarts.set(`${sessionId ?? ''}\u0000${callId}`, now())
+      toolStarts.set(`${updateSessionId}\u0000${callId}`, now())
       return
     }
     if (type === 'tool_call_update' && callId !== undefined
       && ['completed', 'failed'].includes(update.status)) {
-      const key = `${sessionId ?? ''}\u0000${callId}`
+      const key = `${updateSessionId}\u0000${callId}`
       const started = toolStarts.get(key)
       toolStarts.delete(key)
       if (started === undefined) return
       const duration = Math.max(0, now() - started)
       value.stats.toolMillis += duration
       if (prompt !== undefined) prompt.toolMillis += duration
-      publish()
+      publishIf(updateSessionId)
     }
   }
 
-  function addUsage(usage) {
+  function addUsage(value, usage) {
     const next = usageOf(usage)
     value.usage.input += next.input
     value.usage.output += next.output
@@ -193,7 +233,7 @@ export function installAcpSessionStats(ctx, options = {}) {
     value.usage.reasoning += next.reasoning
   }
 
-  const core = { current, subscribe, observeClient, observeAgent }
+  const core = { current, subscribe, observeClient, observeAgent, selectSession }
   const service = typeof ctx.provide === 'function'
     ? new AcpSessionStatsService(ctx, core)
     : {
@@ -201,6 +241,7 @@ export function installAcpSessionStats(ctx, options = {}) {
         subscribe(listener) { return subscribe(ctx, listener) },
         observeClient,
         observeAgent,
+        selectSession,
       }
   if (typeof ctx.provide !== 'function') ctx.acpSessionStats = service
   return service

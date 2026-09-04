@@ -5,7 +5,7 @@ import { Service } from '@deepseek-ai/cordis'
 export const name = 'acp-session-plan'
 export const inject = []
 
-const SETUP_METHODS = new Set(['session/new', 'session/load'])
+const SETUP_METHODS = new Set(['session/new', 'session/load', 'session/resume'])
 
 class AcpSessionPlanService extends Service {
   constructor(ctx, core) {
@@ -32,21 +32,30 @@ class AcpSessionPlanService extends Service {
   observeAgent(message) {
     return this.core.observeAgent(message)
   }
+
+  selectSession(sessionId) {
+    return this.core.selectSession(sessionId)
+  }
 }
 
 /** Install `ctx.acpSessionPlan`, backed only by standard ACP traffic. */
 export function installAcpSessionPlan(ctx) {
   let sessionId
-  const plans = new Map()
+  let selectionKnown = false
+  const plansBySession = new Map()
   const pending = new Map()
   const listeners = new Set()
 
+  function activePlans() {
+    return plansBySession.get(sessionId) ?? new Map()
+  }
+
   function list() {
-    return cloneJson([...plans.values()])
+    return cloneJson([...activePlans().values()])
   }
 
   function current() {
-    return cloneJson([...plans.values()].at(-1) ?? null)
+    return cloneJson([...activePlans().values()].at(-1) ?? null)
   }
 
   function snapshot() {
@@ -58,9 +67,17 @@ export function installAcpSessionPlan(ctx) {
     for (const listener of [...listeners]) listener(next)
   }
 
-  function reset(nextSessionId) {
-    sessionId = nextSessionId
-    plans.clear()
+  function reset(targetSessionId) {
+    if (typeof targetSessionId !== 'string' || targetSessionId.length === 0) return
+    plansBySession.set(targetSessionId, new Map())
+    if (targetSessionId === sessionId) publish()
+  }
+
+  function selectSession(nextSessionId) {
+    selectionKnown = true
+    sessionId = typeof nextSessionId === 'string' && nextSessionId.length > 0
+      ? nextSessionId
+      : undefined
     publish()
   }
 
@@ -86,7 +103,7 @@ export function installAcpSessionPlan(ctx) {
   function observeClient(message) {
     if (!isObject(message) || message.id === undefined || !SETUP_METHODS.has(message.method)) return
     pending.set(message.id, {
-      sessionId: message.method === 'session/load'
+      sessionId: message.method !== 'session/new'
         ? readString(message.params, 'sessionId', 'session_id')
         : undefined,
     })
@@ -98,13 +115,20 @@ export function installAcpSessionPlan(ctx) {
       const tracked = pending.get(message.id)
       pending.delete(message.id)
       if (message.error !== undefined || !isObject(message.result)) return
-      reset(readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId)
+      const bound = readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId
+      if (!selectionKnown) sessionId = bound
+      reset(bound)
       return
     }
     if (message.method !== 'session/update' || !isObject(message.params)) return
     const updatedSession = readString(message.params, 'sessionId', 'session_id')
-    if (sessionId !== undefined && updatedSession !== sessionId) return
-    if (sessionId === undefined && updatedSession !== undefined) sessionId = updatedSession
+    if (updatedSession === undefined) return
+    if (!selectionKnown && sessionId === undefined) sessionId = updatedSession
+    let plans = plansBySession.get(updatedSession)
+    if (plans === undefined) {
+      plans = new Map()
+      plansBySession.set(updatedSession, plans)
+    }
     const update = message.params.update
     if (!isObject(update)) return
     const type = readString(update, 'sessionUpdate', 'session_update')
@@ -112,7 +136,7 @@ export function installAcpSessionPlan(ctx) {
       const id = readString(update, 'planId', 'plan_id')
       if (id === undefined) plans.clear()
       else plans.delete(id)
-      publish()
+      if (updatedSession === sessionId) publish()
       return
     }
     if (type !== 'plan' && type !== 'plan_update') return
@@ -124,10 +148,10 @@ export function installAcpSessionPlan(ctx) {
       plans.delete(plan.id)
       plans.set(plan.id, plan)
     }
-    publish()
+    if (updatedSession === sessionId) publish()
   }
 
-  const core = { list, current, subscribe, observeClient, observeAgent }
+  const core = { list, current, subscribe, observeClient, observeAgent, selectSession }
   const service = typeof ctx.provide === 'function'
     ? new AcpSessionPlanService(ctx, core)
     : {
@@ -138,6 +162,7 @@ export function installAcpSessionPlan(ctx) {
         },
         observeClient,
         observeAgent,
+        selectSession,
       }
   if (typeof ctx.provide !== 'function') ctx.acpSessionPlan = service
   return service

@@ -63,7 +63,7 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
   }, { permissionMode: 'workspace-write' })
 
   assert.equal(wrapperResult, undefined)
-  assert.deepEqual(acpHost.inject, ['loader'])
+  assert.deepEqual(acpHost.inject, ['loader', 'userQuestions'])
   assert.deepEqual(mounted, [{
     plugin: loader.unwrapExports(ownAcpPluginExports),
     config: { permissionMode: 'workspace-write' },
@@ -90,4 +90,44 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
   assert.deepEqual(imports, [
     ownAcpBridgeUrl,
   ])
+})
+
+test('ACP Host adapts the legacy user-question provider to the scoped waterfall', async () => {
+  const listeners = []
+  const effects = []
+  const userQuestions = {}
+  const acpHost = await import(
+    pathToFileURL(path.join(packageLib, 'acp-host.js')).href
+  )
+  const ctx = {
+    userQuestions,
+    get(name) {
+      return name === 'userQuestions' ? userQuestions : undefined
+    },
+    on(name, listener) {
+      listeners.push({ name, listener })
+      return () => listeners.splice(
+        listeners.findIndex((entry) => entry.listener === listener),
+        1,
+      )
+    },
+    effect(callback) {
+      effects.push(callback())
+    },
+  }
+
+  assert.equal(acpHost.installUserQuestionsCompatibility(ctx), true)
+  const unregister = userQuestions.registerProvider({
+    ask: async (request) => ({ answer: request.question }),
+  })
+  assert.equal(listeners[0].name, 'user-questions/request')
+  assert.deepEqual(
+    await listeners[0].listener({ question: 'continue?' }),
+    { answer: 'continue?' },
+  )
+
+  unregister()
+  assert.equal(listeners.length, 0)
+  await Promise.all(effects.map((dispose) => dispose()))
+  assert.equal(userQuestions.registerProvider, undefined)
 })

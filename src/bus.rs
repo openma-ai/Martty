@@ -96,18 +96,22 @@ pub enum CtlEvent {
     Error(String),
     /// Backchat `session.cancel_requested`: user stop accepted; `session/cancel`
     /// is on the wire. The in-flight `session/prompt` has not unwound yet.
-    CancelRequested,
+    CancelRequested { session_id: String },
     /// Backchat `session.cancelled`: the prompt future settled after abort.
     /// `session_id` names the session whose turn was interrupted; one
     /// connection can run turns for several sessions concurrently.
     Interrupted { session_id: String },
     /// Host model catalog + advertised composition select.
     Catalog {
+        session_id: Option<String>,
         models: Vec<CatalogModel>,
         presets: Vec<CatalogPreset>,
     },
     /// Host skill catalog arrived (`available_commands_update`).
-    Skills { skills: Vec<SkillInfo> },
+    Skills {
+        session_id: Option<String>,
+        skills: Vec<SkillInfo>,
+    },
     /// Read-only Loader inventory, matching the Web plugin list.
     StaticPlugins { plugins: Vec<StaticPluginItem> },
     /// Dynamic Cordis plugins owned by the current Host Agent.
@@ -125,6 +129,7 @@ pub enum CtlEvent {
     },
     /// Selectable reasoning efforts for the current model.
     Efforts {
+        session_id: Option<String>,
         efforts: Vec<String>,
         default: Option<String>,
     },
@@ -165,6 +170,7 @@ pub enum CtlEvent {
     /// Rows from ACP `session/list`, plus the `/resume n` limit carried by
     /// the request (applied after the current session is filtered out).
     SessionList {
+        requester_session_id: String,
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
         limit: usize,
@@ -172,6 +178,7 @@ pub enum CtlEvent {
     /// `session/list` missing or failed; UI falls back to local JSONL with
     /// the same `limit` the request carried.
     SessionListUnavailable {
+        requester_session_id: String,
         prefix: Option<String>,
         limit: usize,
         error: String,
@@ -354,9 +361,13 @@ pub enum Cmd {
         model: Option<String>,
         effort: Option<String>,
     },
-    FetchCatalog,
+    FetchCatalog {
+        session_id: String,
+    },
     /// Fetch user-invocable host skills for the slash menu.
-    FetchSkills,
+    FetchSkills {
+        session_id: String,
+    },
     /// Fetch the Host's read-only Loader inventory.
     FetchStaticPlugins,
     /// Fetch dynamic Cordis plugins owned by this Agent from the Host registry.
@@ -389,6 +400,11 @@ pub enum Cmd {
     AgentsSnapshot {
         snapshot: AgentsSnapshot,
     },
+    /// Publish the currently visible native tab into the Client-side
+    /// per-session projections. `None` means the tab is awaiting a bind.
+    ActiveSession {
+        session_id: Option<String>,
+    },
     /// A native `/theme` or picker selection committed on the Client tree.
     PluginThemeSelected {
         agent_id: String,
@@ -407,6 +423,7 @@ pub enum Cmd {
         value: Option<Value>,
     },
     FetchEfforts {
+        session_id: String,
         provider: String,
         model: String,
     },
@@ -437,6 +454,7 @@ pub enum Cmd {
     /// Live ACP `/resume` listing (`session/list`). `prefix` is the typed id;
     /// `limit` caps how many entries come back (`/resume n`).
     ListSessions {
+        requester_session_id: String,
         prefix: Option<String>,
         limit: usize,
     },

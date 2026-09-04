@@ -54,6 +54,11 @@ Queue 标题位于 composer 顶沿，全部等待条目始终在同一个 compos
 `Send Now` 的并发 prompt 若被 agent 拒绝，ACP transport
 只向 Client 回报 deferred，由同一 Client FIFO 接管，不在 transport 内保留第二份重试队列。
 
+原生 tab 是当前可见会话的唯一选择源。每次 bind 或 tab 切换，Rust 通过
+`_dsh/cordis/tui/session/active` request 把 session id（未绑定时为 `null`）投影到 Client tree；
+`acpSessionConfig`、`acpSessionPlan`、`acpSessionStats` 和 `acpSessionStatus` 只发布该会话的
+缓存快照，后台会话的 ACP 更新只更新各自缓存，不能覆盖可见 tab。
+
 Agent/subagent 导航也走同一条 Client compositor 边界：Rust painter 把主会话与子会话的
 只读快照送到内置 `tuiAgents` service，`agents-view` Client Plugin 再把紧凑导航注册到
 `conversation.navigation.dock`。这个 slot 位于 composer 内部，输入区与 `Standard`

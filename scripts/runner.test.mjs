@@ -259,6 +259,36 @@ test('Client exit requests app shutdown before ACP cleanup settles', async () =>
   }
 })
 
+test('Host fiber disposal does not turn its Client SIGTERM into app failure', async () => {
+  await runner.resetProfileRunnerForTests?.()
+  profileHarness.reset()
+  const effects = []
+  const exitCodes = []
+  const ctx = {
+    loader: {
+      async import() {
+        return { nodeAcpStream: profileHarness.nodeAcpStream }
+      },
+    },
+    acpServer: profileHarness.makeServer('host-plugin'),
+    cmdlineArgs: { get: () => [] },
+    tuiClientPlugins: { list: () => [] },
+    appExit: (code) => exitCodes.push(code),
+    effect(callback) {
+      effects.push(callback())
+    },
+  }
+
+  await runner.apply(ctx)
+  const child = profileHarness.state.clientSpawns[0].child
+  await Promise.all(effects.map((dispose) => dispose()))
+  child.emit('exit', null, 'SIGTERM')
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(child.killedWith, 'SIGTERM')
+  assert.deepEqual(exitCodes, [])
+})
+
 test('painter SIGTERM (fiber dispose) is not a process quit', () => {
   assert.equal(shouldQuitOnPainterExit(null), true)
   assert.equal(shouldQuitOnPainterExit('SIGINT'), true)

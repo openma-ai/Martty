@@ -453,6 +453,7 @@ fn cordis_protocol_id_is_rendered_as_creator() {
     let (ctl, _commands) = crate::controller::tests::test_controller();
     app.handle(
         crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Catalog {
+            session_id: None,
             models: Vec::new(),
             presets: vec![crate::bus::CatalogPreset {
                 id: "cordis".into(),

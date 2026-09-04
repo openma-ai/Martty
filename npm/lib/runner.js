@@ -79,7 +79,11 @@ export async function apply(ctx) {
     void release()
   })
   child.once('exit', (code, signal) => {
-    requestExit(code ?? (signal === 'SIGINT' ? 130 : 1))
+    // Profile patch watching can recompose the Host tree immediately after
+    // startup. In that path our disposer deliberately terminates this Client
+    // process; its resulting SIGTERM belongs to the old fiber and must not
+    // tear down the replacement tree through appExit(1).
+    if (!released) requestExit(code ?? (signal === 'SIGINT' ? 130 : 1))
     void release()
   })
   process.once('exit', onProcessExit)
