@@ -67,7 +67,8 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * @param {{ stdin: import('node:stream').Writable, stdout: import('node:stream').Readable, child?: import('node:child_process').ChildProcess }} [options.stream]
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
  * @param {string} [options.settingsPath]
- * @param {{ id: string, label: string, command: string, args?: string[] }} [options.defaultHarness]
+ * Internal product initialization default; null means no pinned default.
+ * @param {{ id: string, label: string, command: string, args?: string[] } | null} [options.defaultHarness]
  * @param {string} [options.artifactRoot]
  * @param {Array<{ id: string, label: string, command: string, args?: string[], source?: string }>} [options.harnessDefaults]
  * @param {string} [options.harnessPathValue]
@@ -77,12 +78,13 @@ export async function bootClient(options = {}) {
   const { Context } = await import('@deepseek-ai/cordis')
   const ctx = new Context()
   const settingsPath = options.settingsPath ?? uiSettingsPath(options.extraArgs ?? [])
+  const defaultHarness = options.defaultHarness ?? null
   const acpConfig = options.stream !== undefined
     ? { stream: options.stream }
     : {
         agent: options.agent ?? resolveStackedAgent(import.meta.url, {
           settingsPath,
-          defaultHarness: options.defaultHarness,
+          defaultHarness,
         }),
       }
   if (options.settingsPath === undefined) {
@@ -102,14 +104,14 @@ export async function bootClient(options = {}) {
       harnessDefaults = []
     }
   }
-  if (options.defaultHarness !== undefined
-    && !harnessDefaults.some(({ id }) => id === options.defaultHarness.id)) {
-    harnessDefaults = [{ ...options.defaultHarness, source: 'default' }, ...harnessDefaults]
+  if (defaultHarness !== null
+    && !harnessDefaults.some(({ id }) => id === defaultHarness.id)) {
+    harnessDefaults = [{ ...defaultHarness, source: 'default' }, ...harnessDefaults]
   }
   const harnessConfig = {
     settingsPath,
     defaults: harnessDefaults,
-    defaultHarness: options.defaultHarness,
+    defaultHarness,
     pathValue: options.harnessPathValue,
     hostOwned: options.stream !== undefined,
   }
@@ -303,10 +305,12 @@ export function migrateLegacyUiSettings(settingsPath, legacyPaths) {
 
 /**
  * Parse `--agent` / `--agent-arg` from argv. Remaining flags pass through to Rust.
+ * `defaultHarness` is an internal product initialization value, not a CLI
+ * argument; null/omitted means that no product default is pinned.
  * `--agent` is also forwarded via {@link painterArgs} so Terminal Auth can
  * re-exec the same command.
  * @param {string[]} argv
- * @param {{ settingsPath?: string, defaultHarness?: { id: string, label: string, command: string, args?: string[] } }} [options]
+ * @param {{ settingsPath?: string, defaultHarness?: { id: string, label: string, command: string, args?: string[] } | null }} [options]
  * @returns {{ agent: { command: string, args: string[] }, rustArgs: string[] }}
  */
 export function parseClientArgv(argv, options = {}) {

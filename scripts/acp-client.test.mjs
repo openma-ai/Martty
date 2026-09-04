@@ -89,6 +89,33 @@ test('a product default Harness wins the last active Harness at startup', () => 
   }
 })
 
+test('an empty product default Harness falls back to the last active Harness', () => {
+  const previous = process.env.DSH_TUI_AGENT
+  delete process.env.DSH_TUI_AGENT
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-empty-default-harness-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    writeFileSync(settingsPath, JSON.stringify({
+      harnesses: [{
+        id: 'last-used',
+        label: 'Last Used',
+        command: 'last-used-acp',
+        args: [],
+      }],
+      activeHarness: 'last-used',
+    }))
+
+    assert.deepEqual(
+      parseClientArgv([], { settingsPath, defaultHarness: null }).agent,
+      { command: 'last-used-acp', args: [] },
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    if (previous === undefined) delete process.env.DSH_TUI_AGENT
+    else process.env.DSH_TUI_AGENT = previous
+  }
+})
+
 test('parseClientArgv strips agent flags for the painter', () => {
   const parsed = parseClientArgv([
     '--theme',

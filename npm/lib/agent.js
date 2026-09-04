@@ -31,8 +31,10 @@ export function resolveDependencyStack(anchor = import.meta.url) {
 
 /**
  * Resolve the standalone ACP command without affecting the profile path.
+ * `defaultHarness` is an internal product initialization value, not a CLI
+ * argument; null/omitted means that no product default is pinned.
  * @param {string | URL} [anchor]
- * @param {{ settingsPath?: string, defaultHarness?: { id: string, label: string, command: string, args?: string[] } }} [options]
+ * @param {{ settingsPath?: string, defaultHarness?: { id: string, label: string, command: string, args?: string[] } | null }} [options]
  * @returns {{ command: string, args: string[] }}
  */
 export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
@@ -41,9 +43,9 @@ export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
     const tokens = envCmd.trim().split(/\s+/)
     return { command: tokens[0], args: tokens.slice(1) }
   }
-  if (options.defaultHarness !== undefined) {
+  if (options.defaultHarness !== undefined && options.defaultHarness !== null) {
     const configured = options.defaultHarness
-    if (configured === null || typeof configured !== 'object' || Array.isArray(configured)
+    if (typeof configured !== 'object' || Array.isArray(configured)
       || typeof configured.command !== 'string' || configured.command.trim().length === 0) {
       throw new Error('defaultHarness must declare a non-empty command')
     }

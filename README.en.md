@@ -156,9 +156,11 @@ first prompt without starting a model turn. Sessions are never carried across Ha
 `martty harness add codex` is a shortcut that saves an `npx`
 `@agentclientprotocol/codex-acp` recipe, so no Codex CLI flags need to be guessed.
 
-Standalone precedence is `--agent`, `DSH_TUI_AGENT`, a product-supplied
-`defaultHarness`, the persisted `activeHarness`, then the bundled fallback.
-`/harness` updates only `activeHarness`; it never changes the product default.
+Standalone precedence is explicit `--agent`, `DSH_TUI_AGENT`, the product's
+internal initialization `defaultHarness` (empty by default), the persisted
+`activeHarness`, then the bundled fallback. `defaultHarness` is not a CLI or
+user startup argument. `/harness` updates only `activeHarness`; it never
+changes the product default.
 A one-run `--agent` override never changes the saved choice.
 
 Cordis embedding uses `config.agent: { command, args }` to spawn a server, or

@@ -19,8 +19,8 @@ All notable changes to this project are documented here. The project follows
   `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
   The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
   entry point, using the native TUI single-select overlay and the same registry.
-  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → a
-  product-owned `defaultHarness` (when supplied) → the saved `activeHarness`
+  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → an internal,
+  product-owned `defaultHarness` (empty by default, when supplied) → the saved `activeHarness`
   → the bundled fallback. CLI/settings selection applies on the next
   standalone launch when the product does not pin a default. In a running
   standalone TUI, `/harness` replaces the ACP child immediately while no
