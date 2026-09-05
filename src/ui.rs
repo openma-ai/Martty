@@ -14,6 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, RunState};
 use crate::logo;
+use crate::markdown::ToneMode;
 use crate::pet::{SPRITE_H, SPRITE_W, WHALE_XS};
 use crate::theme::{lerp, Mode, Theme};
 
@@ -823,6 +824,7 @@ fn force_full_rewrite(f: &mut Frame, area: Rect) {
 
 fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     let theme = app.theme;
+    let tone = app.tone_mode;
     let Some(view) = app.view_overlay.as_mut() else {
         return;
     };
@@ -838,7 +840,7 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     // continuation lines stay aligned.
     const POPUP_INDENT: u16 = 2;
     let inner_width = width.saturating_sub(2 + POPUP_INDENT) as usize;
-    let mut lines = crate::slots::render_nodes(&view.nodes, &theme, inner_width);
+    let mut lines = crate::slots::render_nodes(&view.nodes, &theme, tone, inner_width);
     let indent = " ".repeat(POPUP_INDENT as usize);
     for line in &mut lines {
         line.spans.insert(0, Span::raw(indent.clone()));
@@ -1004,7 +1006,7 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
     };
     let theme = app.theme;
     let inner_width = area.width.saturating_sub(4) as usize;
-    let lines = crate::slots::render(snapshot, &theme, inner_width);
+    let lines = crate::slots::render(snapshot, &theme, app.tone_mode, inner_width);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1222,8 +1224,8 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
         .nodes
         .iter()
         .filter_map(|node| {
-            compact_node_spans(node, &theme, area.width as usize, app.spinner()).map(|spans| {
-                CompactSlotSection {
+            compact_node_spans(node, &theme, app.tone_mode, area.width as usize, app.spinner())
+                .map(|spans| CompactSlotSection {
                     spans,
                     action: node.action().cloned(),
                     essential: matches!(
@@ -1233,8 +1235,7 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
                             ..
                         } if matches!(tone.as_str(), "brand" | "brand_soft")
                     ),
-                }
-            })
+                })
         })
         .collect::<Vec<_>>();
     if sections.is_empty() {
@@ -2007,6 +2008,7 @@ struct CompactSlotSection {
 fn compact_slot_sections(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Vec<CompactSlotSection> {
@@ -2014,7 +2016,7 @@ fn compact_slot_sections(
         .nodes
         .iter()
         .filter_map(|node| {
-            compact_node_spans(node, theme, width, spinner).map(|spans| CompactSlotSection {
+            compact_node_spans(node, theme, tone, width, spinner).map(|spans| CompactSlotSection {
                 spans,
                 action: node.action().cloned(),
                 essential: false,
@@ -2038,6 +2040,7 @@ fn compact_slot_sections(
 fn compact_input_dock_sections(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Vec<CompactSlotSection> {
@@ -2046,7 +2049,7 @@ fn compact_input_dock_sections(
         .iter()
         .filter(|node| matches!(node, crate::slots::TuiNode::Generic { .. }))
         .filter_map(|node| {
-            compact_node_spans(node, theme, width, spinner).map(|spans| CompactSlotSection {
+            compact_node_spans(node, theme, tone, width, spinner).map(|spans| CompactSlotSection {
                 spans,
                 action: node.action().cloned(),
                 essential: false,
@@ -2077,7 +2080,7 @@ fn input_dock_body_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         .filter(|node| !matches!(node, crate::slots::TuiNode::Generic { .. }))
         .cloned()
         .collect::<Vec<_>>();
-    crate::slots::render_nodes(&nodes, &app.theme, width)
+    crate::slots::render_nodes(&nodes, &app.theme, app.tone_mode, width)
 }
 
 /// The composer stats dock below the box: one compact row of plugin
@@ -2105,6 +2108,7 @@ fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
         Paragraph::new(compact_slot_line(
             snapshot,
             &theme,
+            app.tone_mode,
             inner.width as usize,
             app.spinner(),
         )),
@@ -2115,10 +2119,11 @@ fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
 fn compact_slot_line(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Line<'static> {
-    let sections = compact_slot_sections(snapshot, theme, width, spinner);
+    let sections = compact_slot_sections(snapshot, theme, tone, width, spinner);
     compact_slot_sections_line(&sections, theme)
 }
 
@@ -2163,6 +2168,7 @@ fn running_progress_color(theme: &Theme, spinner: char) -> ratatui::style::Color
 fn compact_node_spans(
     node: &crate::slots::TuiNode,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Option<Vec<Span<'static>>> {
@@ -2230,7 +2236,7 @@ fn compact_node_spans(
         spans.push(Span::styled(title.clone(), title_style));
         return Some(spans);
     }
-    crate::slots::render_nodes(std::slice::from_ref(node), theme, width)
+    crate::slots::render_nodes(std::slice::from_ref(node), theme, tone, width)
         .into_iter()
         .next()
         .map(|line| line.spans)
@@ -2257,9 +2263,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let thumbs = crate::pet::kitty_supported();
     let spinner = app.spinner();
+    let tone = app.tone_mode;
     let layout = app
         .displayed_transcript_mut()
-        .layout(&theme, inner.width, spinner, thumbs);
+        .layout(&theme, tone, inner.width, spinner, thumbs);
     if app.show_banner && lines.len() < inner.height as usize {
         let remaining = inner.height as usize - lines.len();
         let top = remaining / 2;
@@ -2620,7 +2627,9 @@ fn draw_composer_box(
     let dock_sections = has_input_dock
         .then(|| app.slot_snapshots.get("conversation.input.dock"))
         .flatten()
-        .map(|snapshot| compact_input_dock_sections(snapshot, &theme, title_budget, app.spinner()));
+        .map(|snapshot| {
+            compact_input_dock_sections(snapshot, &theme, app.tone_mode, title_budget, app.spinner())
+        });
     let dock_line = dock_sections
         .as_ref()
         .map(|sections| compact_input_dock_sections_line(sections, &theme));
@@ -3582,7 +3591,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
         .field
         .description
         .as_ref()
-        .map(|text| crate::markdown::render(text, &theme, content_width));
+        .map(|text| crate::markdown::render(text, &theme, app.tone_mode, content_width));
     let mut bottom = Vec::new();
     bottom.push(Line::default());
     let mut field_cursor = None;
@@ -3789,6 +3798,7 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         out.extend(crate::slots::render_welcome_hero(
             hero,
             theme,
+            app.tone_mode,
             width as usize,
         ));
     } else if app.ui_preset == "deepseek" {
@@ -3831,7 +3841,7 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ) {
             out.extend(welcome_info_lines(app));
         } else {
-            out.extend(crate::slots::render(info, theme, width as usize));
+            out.extend(crate::slots::render(info, theme, app.tone_mode, width as usize));
         }
     } else {
         out.extend(welcome_info_lines(app));

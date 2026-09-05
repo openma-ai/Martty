@@ -38,7 +38,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
 
 fn transcript_text(transcript: &mut Transcript) -> String {
     transcript
-        .lines(&Theme::dark(), 80, ' ')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, ' ')
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
         .collect()

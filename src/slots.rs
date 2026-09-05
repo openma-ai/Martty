@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
+use crate::markdown::ToneMode;
 use crate::theme::Theme;
 use crate::transcript::wrap;
 
@@ -337,7 +338,7 @@ fn indent(lines: Vec<Line<'static>>, prefix: &str, color: Color) -> Vec<Line<'st
         .collect()
 }
 
-fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn render_node(node: &TuiNode, theme: &Theme, tone: ToneMode, width: usize) -> Vec<Line<'static>> {
     match node {
         TuiNode::Ascii { lines, tone, .. } => styled_wrapped(
             &lines.join("\n"),
@@ -364,11 +365,11 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
         ),
         TuiNode::Group {
             title,
-            tone,
+            tone: accent_tone,
             children,
             ..
         } => {
-            let accent = tone
+            let accent = accent_tone
                 .as_deref()
                 .map(|name| token_color(theme, name))
                 .unwrap_or(theme.brand);
@@ -384,7 +385,7 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
             }
             for child in children {
                 lines.extend(indent(
-                    render_node(child, theme, width.saturating_sub(2)),
+                    render_node(child, theme, tone, width.saturating_sub(2)),
                     "  ",
                     theme.border,
                 ));
@@ -394,7 +395,7 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
         TuiNode::Markdown {
             text, streaming, ..
         } => {
-            let mut lines = crate::markdown::render(text, theme, width);
+            let mut lines = crate::markdown::render(text, theme, tone, width);
             if *streaming {
                 lines.push(Line::from(Span::styled(
                     "…",
@@ -610,19 +611,24 @@ fn render_node(node: &TuiNode, theme: &Theme, width: usize) -> Vec<Line<'static>
     }
 }
 
-pub fn render_nodes(nodes: &[TuiNode], theme: &Theme, width: usize) -> Vec<Line<'static>> {
+pub fn render_nodes(
+    nodes: &[TuiNode],
+    theme: &Theme,
+    tone: ToneMode,
+    width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         if index > 0 {
             lines.push(Line::default());
         }
-        lines.extend(render_node(node, theme, width));
+        lines.extend(render_node(node, theme, tone, width));
     }
     lines
 }
 
-pub fn render(snapshot: &SlotSnapshot, theme: &Theme, width: usize) -> Vec<Line<'static>> {
-    render_nodes(&snapshot.nodes, theme, width)
+pub fn render(snapshot: &SlotSnapshot, theme: &Theme, tone: ToneMode, width: usize) -> Vec<Line<'static>> {
+    render_nodes(&snapshot.nodes, theme, tone, width)
 }
 
 fn centered(width: usize, mut line: Line<'static>) -> Line<'static> {
@@ -644,15 +650,16 @@ fn centered(width: usize, mut line: Line<'static>) -> Line<'static> {
 pub fn render_welcome_hero(
     snapshot: &SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
 ) -> Vec<Line<'static>> {
     let [logo, hint] = snapshot.nodes.as_slice() else {
         return Vec::new();
     };
-    let mut lines = render_node(logo, theme, width);
+    let mut lines = render_node(logo, theme, tone, width);
     lines.push(Line::default());
     lines.extend(
-        render_node(hint, theme, width)
+        render_node(hint, theme, tone, width)
             .into_iter()
             .map(|line| centered(width, line)),
     );

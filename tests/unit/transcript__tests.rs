@@ -60,7 +60,7 @@ fn streaming_assistant_keeps_its_cursor_without_a_fallback_loading_icon() {
     });
 
     let mut rendered = |spinner| {
-        tr.lines(&Theme::dark(), 80, spinner)
+        tr.lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, spinner)
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>()
@@ -223,7 +223,7 @@ fn user_bubble_stays_within_the_pane_width() {
     tr.push_user("深度求索深度求索深度求索深度求索深度求索".into(), false);
     let theme = Theme::dark();
     for width in [20u16, 40, 80] {
-        for (i, line) in tr.lines(&theme, width, '⠋').iter().enumerate() {
+        for (i, line) in tr.lines(&theme, crate::markdown::ToneMode::Single, width, '⠋').iter().enumerate() {
             assert!(
                 line_width(line) <= width as usize,
                 "line {i} at pane width {width} paints {} cells: {line:?}",
@@ -282,7 +282,7 @@ fn write_tool_tab_indented_body_fits_terminal_width() {
     });
     let theme = Theme::dark();
     let width = 120u16;
-    let layout = tr.layout(&theme, width, ' ', false);
+    let layout = tr.layout(&theme, crate::markdown::ToneMode::Single, width, ' ', false);
     for (i, line) in layout.lines.iter().enumerate() {
         let w = line_width(line);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -295,6 +295,42 @@ fn write_tool_tab_indented_body_fits_terminal_width() {
 }
 
 #[test]
+fn assistant_body_rerenders_when_the_tone_changes() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "你好 world".into(),
+    });
+    tr.apply(UiEvent::AssistantFinal {
+        session: "s".into(),
+        text: "你好 world".into(),
+        model: Some("m".into()),
+    });
+    let theme = Theme::dark();
+    let mut fg_of = |tone: ToneMode| -> (Option<ratatui::style::Color>, Option<ratatui::style::Color>) {
+        let lines = tr.lines(&theme, tone, 60, ' ');
+        let segs: Vec<&ratatui::text::Span> =
+            lines.iter().flat_map(|l| l.spans.iter()).collect();
+        let cjk = segs
+            .iter()
+            .find(|s| s.content.contains("你好"))
+            .expect("cjk run");
+        let latin = segs
+            .iter()
+            .find(|s| s.content.contains("world"))
+            .expect("latin run");
+        (cjk.style.fg, latin.style.fg)
+    };
+    let (cjk_single, latin_single) = fg_of(ToneMode::Single);
+    assert_eq!(cjk_single, Some(theme.fg), "single tone colors CJK with fg");
+    assert_eq!(latin_single, Some(theme.fg), "single tone colors Latin with fg");
+    let (cjk_two, latin_two) = fg_of(ToneMode::Two);
+    assert_eq!(cjk_two, Some(theme.fg_secondary), "two-tone dims CJK");
+    assert_eq!(latin_two, Some(theme.fg), "two-tone keeps Latin bright");
+    assert_ne!(cjk_single, cjk_two, "tone change invalidates the render cache");
+}
+
+#[test]
 fn render_smoke() {
     let mut tr = t("s");
     tr.push_user("hi".into(), false);
@@ -303,7 +339,7 @@ fn render_smoke() {
         text: "yo".into(),
     });
     let theme = Theme::dark();
-    let lines = tr.lines(&theme, 40, '⠋');
+    let lines = tr.lines(&theme, crate::markdown::ToneMode::Single, 40, '⠋');
     assert!(lines.len() >= 3);
 }
 
@@ -369,7 +405,7 @@ fn plan_snapshots_replace_the_existing_plan_in_place() {
         "a full plan snapshot updates one client-side view instead of appending chat history"
     );
     let rendered = tr
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -390,7 +426,7 @@ fn empty_plan_snapshot_hides_the_existing_plan() {
     });
 
     let rendered = tr
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -424,7 +460,7 @@ fn tool_preview_shows_a_fixed_tail_and_expand_all_opens_it() {
     };
 
     // Default: a fixed 4-line tail preview (l5..l8) + expand hint.
-    let lines = tr.lines(&theme, 40, ' ');
+    let lines = tr.lines(&theme, crate::markdown::ToneMode::Single, 40, ' ');
     let p = plain(&lines);
     assert!(
         p.contains("last 4/8 lines"),
@@ -439,7 +475,7 @@ fn tool_preview_shows_a_fixed_tail_and_expand_all_opens_it() {
 
     // expand_all (ctrl+o) opens the whole body and drops the footer.
     tr.expand_all = true;
-    let lines = tr.lines(&theme, 40, ' ');
+    let lines = tr.lines(&theme, crate::markdown::ToneMode::Single, 40, ' ');
     let p = plain(&lines);
     assert!(p.contains("l1"), "expand_all shows the top: {p}");
     assert!(
@@ -465,7 +501,7 @@ fn image_cell_reserves_thumbnail_or_falls_back_to_path() {
     let theme = Theme::dark();
 
     // Thumbnails on: reserve blank lines and report the placement.
-    let layout = tr.layout(&theme, 40, ' ', true);
+    let layout = tr.layout(&theme, crate::markdown::ToneMode::Single, 40, ' ', true);
     assert_eq!(layout.images.len(), 1, "PNG image reports one shot");
     let shot = &layout.images[0];
     assert_eq!(shot.cols, 24);
@@ -485,7 +521,7 @@ fn image_cell_reserves_thumbnail_or_falls_back_to_path() {
     );
 
     // Thumbnails off: no reservation, path shown as the fallback.
-    let layout = tr.layout(&theme, 40, ' ', false);
+    let layout = tr.layout(&theme, crate::markdown::ToneMode::Single, 40, ' ', false);
     assert!(layout.images.is_empty());
     let text: String = layout
         .lines

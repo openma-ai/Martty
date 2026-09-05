@@ -154,6 +154,10 @@ pub struct UiSettings {
     /// `tuiTheme` service.
     #[serde(rename = "themeMode")]
     pub theme_mode: Option<String>,
+    /// Persisted markdown body tone (`single` | `two`). Absent → the
+    /// builtin default (`single`: CJK and Latin share the main `fg`).
+    #[serde(rename = "markdownTone")]
+    pub markdown_tone: Option<String>,
 }
 
 impl Default for UiSettings {
@@ -162,6 +166,7 @@ impl Default for UiSettings {
             language: Locale::default(),
             ui_preset: default_ui_preset(),
             theme_mode: None,
+            markdown_tone: None,
         }
     }
 }

@@ -26,6 +26,7 @@ use crate::controller::Controller;
 use crate::events::parse_notification;
 use crate::input::{Action, VimMode};
 use crate::locale::{Locale, UiSettings};
+use crate::markdown::ToneMode;
 use crate::runtime::{legacy_settings_path, settings_path, RuntimeConfig};
 use crate::theme::Theme;
 use crate::transcript::{clamp_str, NoticeLevel, Transcript};
@@ -1234,6 +1235,10 @@ fn shell_output(bytes: Vec<u8>) -> String {
 pub struct App {
     pub theme: Theme,
     pub locale: Locale,
+    /// Markdown body-color scheme: single (default, one color for CJK and
+    /// Latin) or two-tone. A deliberately quiet preference — no command or
+    /// picker surface; set `markdownTone` in settings.json (`two`) to opt in.
+    pub tone_mode: ToneMode,
     pub palettes: Vec<crate::theme::PalettePack>,
     pub active_palette_id: String,
     /// Persisted UI Preset id. The Client compositor owns activation; Rust
@@ -1765,9 +1770,16 @@ impl App {
             .unwrap_or(crate::theme::Mode::Dark);
         let theme = palettes[0].theme(mode);
         let locale = settings.language;
+        // Persisted markdown body tone (`single` | `two`); absent → single.
+        let tone_mode = settings
+            .markdown_tone
+            .as_deref()
+            .and_then(ToneMode::parse)
+            .unwrap_or_default();
         let mut app = App {
             theme,
             locale,
+            tone_mode,
             palettes,
             active_palette_id: "default".into(),
             ui_preset: settings.ui_preset,
@@ -4785,9 +4797,13 @@ impl App {
         }
         let theme = self.theme;
         let spinner = self.spinner();
-        let layout = self
-            .transcript
-            .layout(&theme, area.width, spinner, crate::pet::kitty_supported());
+        let layout = self.transcript.layout(
+            &theme,
+            self.tone_mode,
+            area.width,
+            spinner,
+            crate::pet::kitty_supported(),
+        );
         if layout.users.is_empty() {
             self.show_tip(self.locale.tr(
                 "no user prompts yet — ↥ finds them once you send one",
@@ -5182,6 +5198,7 @@ impl App {
             .unwrap_or_else(|| serde_json::json!({}));
         current["language"] = serde_json::json!(self.locale);
         current["themeMode"] = serde_json::json!(self.theme.mode.as_str());
+        current["markdownTone"] = serde_json::json!(self.tone_mode.as_str());
         if let Ok(text) = serde_json::to_string_pretty(&current) {
             let _ = std::fs::write(path, text);
         }
