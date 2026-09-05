@@ -74,6 +74,20 @@ All notable changes to this project are documented here. The project follows
   releases compositor overlays with their cancel events before parking
   the session. Overflowing tab bars show an overflow counter (`+N`).
 
+### Changed
+
+- Markdown tables wider than the chat width no longer truncate cells with
+  an ellipsis. The transcript buffers each table block whole and re-lays
+  it out: columns shrink proportionally (narrow columns keep their
+  natural width, wide ones share what remains), and cell text soft-wraps
+  across extra box rows — `│`-framed continuation lines, `├─┼─┤`
+  junctions still between body rows — so every character stays readable.
+  Source column alignment (`:---`/`---:`/`:---:`) survives the re-layout
+  for cells that fit on one line, and tables inside blockquotes or list
+  items keep their `>` marker / continuation indent on every frame line
+  instead of being wrapped apart like prose. Tables that already fit the
+  width are painted unchanged.
+
 ### Fixed
 
 - Multi-session state is now isolated end to end: background ACP updates no

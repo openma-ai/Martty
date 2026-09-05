@@ -391,15 +391,85 @@ fn table_alignment_pads_right_and_center_columns() {
     assert!(text.contains("│  z  │"), "center-aligned: {text}");
 }
 
+/// Tables wider than the viewport no longer truncate to an ellipsis:
+/// columns shrink (narrow ones keep their natural width) and each cell's
+/// text soft-wraps across box rows, so every character stays readable.
 #[test]
-fn overwide_table_truncates_with_ellipsis() {
-    let md = "| column | another |\n|---|---|\n| aaaaaaaaaa | bbbbbbbbbb |";
+fn overwide_table_soft_wraps_cell_text() {
+    // x/y never appear in the header, so surviving-character counts are exact.
+    let md = "| column | another |\n|---|---|\n| xxxxxxxxxx | yyyyyyyyyy |";
     let lines = render_dark(md, 16);
     let text = plain(&lines);
-    assert!(text.contains('…'), "truncated: {text}");
+    assert!(!text.contains('…'), "no ellipsis: {text}");
     for l in &lines {
         assert!(line_width(l) <= 16, "fits: {l:?}");
     }
+    assert_eq!(text.chars().filter(|c| *c == 'x').count(), 10, "{text}");
+    assert_eq!(text.chars().filter(|c| *c == 'y').count(), 10, "{text}");
+    assert!(text.contains('┌'), "frame kept: {text}");
+    assert!(text.contains('├'), "header separator kept: {text}");
+    assert!(text.contains('└'), "bottom border kept: {text}");
+}
+
+/// A wrapped table's frame geometry survives the re-layout: every line
+/// shares the shrunk box width and the junction rows between body rows meet
+/// the columns exactly.
+#[test]
+fn wrapped_table_junctions_match_the_shrunk_box() {
+    let md = "| c | d |\n|---|---|\n| aaaaaaaaaa | x |\n| bbbbbbbbbb | y |";
+    let lines = render_dark(md, 16);
+    let texts: Vec<String> = lines.iter().map(|l| plain(std::slice::from_ref(l))).collect();
+    let width = UnicodeWidthStr::width(texts[0].as_str());
+    assert!(width <= 16, "box fits: {texts:?}");
+    for t in &texts {
+        assert_eq!(
+            UnicodeWidthStr::width(t.as_str()),
+            width,
+            "shared frame width: {t}"
+        );
+    }
+    // Header separator plus one junction between the two body rows.
+    let junctions: Vec<&String> = texts.iter().filter(|t| t.starts_with('├')).collect();
+    assert_eq!(junctions.len(), 2, "{texts:?}");
+    for j in junctions {
+        assert!(j.contains('┼'), "junction crosses columns: {j}");
+    }
+}
+
+/// Column alignment survives the re-layout: the source's right-aligned
+/// column still pads its short cells to the right even after another
+/// column's text wraps.
+#[test]
+fn wrapped_table_keeps_column_alignment() {
+    let md = "| name | score |\n|---|---:|\n| averylongname!! | 420 |\n| short | 7 |";
+    let lines = render_dark(md, 24);
+    let text = plain(&lines);
+    assert!(!text.contains('…'), "no ellipsis: {text}");
+    for l in &lines {
+        assert!(line_width(l) <= 24, "fits: {l:?}");
+    }
+    // Right-aligned short cell sits against the column border…
+    assert!(text.contains("   7 │"), "right-aligned: {text}");
+    // …while the wide cell wraps across rows without losing characters.
+    assert!(text.contains("averylongname!"), "wrapped cell: {text}");
+    assert!(text.contains("│ ! "), "wrap tail: {text}");
+}
+
+/// Tables inside blockquotes are laid out whole: every frame line keeps the
+/// `>` prefix and the box stays intact instead of being wrapped apart
+/// line-by-line like prose.
+#[test]
+fn quoted_table_keeps_prefix_and_frame() {
+    let md = "> | A |\n> |---|\n> | 1 |\n> | 2 |";
+    let lines = render_dark(md, 40);
+    let texts: Vec<String> = lines.iter().map(|l| plain(std::slice::from_ref(l))).collect();
+    for t in &texts {
+        assert!(t.starts_with("> "), "prefix: {t}");
+    }
+    assert!(texts.iter().any(|t| t.contains("│ A │")), "{texts:?}");
+    // Junction between the two body rows, prefixed like the rest of the box.
+    assert!(texts.iter().any(|t| t.starts_with("> ├───┤")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.starts_with("> └───┘")), "{texts:?}");
 }
 
 #[test]

@@ -15,7 +15,9 @@
 //!   renders in upright light gray;
 //! - GFM tables keep tui-markdown's box-drawing layout, with a `├─┼─┤`
 //!   junction between every pair of body rows; tables wider than the viewport
-//!   are truncated with an ellipsis (wrapping would break the box).
+//!   shrink their columns — narrow ones keep their natural width, wide ones
+//!   share what remains proportionally — and cell text soft-wraps across box
+//!   rows, so long cells stay readable instead of truncating with an ellipsis.
 //!
 //! Colors stay inside the DeepSeek palette: grayscale body text, brand-blue
 //! accents for links and headings, red still reserved for errors.
@@ -39,7 +41,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
 
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
-    let mut prev_table_row = false;
+    let mut table: Option<TableBuffer> = None;
     for line in parsed.lines {
         // Flatten the line-level base style (blockquote, code block, …) into
         // each span so wrapping can move spans freely without losing it.
@@ -68,6 +70,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             segs.iter().all(|s| s.style.bg == Some(theme.panel))
         };
         if is_code {
+            flush_table(&mut table, &mut out, theme, width);
             let text: String = segs.iter().map(|s| s.text.as_str()).collect();
             // Delimiters are sentinel-prefixed (see `code_block_fence`);
             // literal ```` ``` ```` content lines — including inside longer
@@ -110,10 +113,12 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             continue;
         }
         if segs.is_empty() {
+            flush_table(&mut table, &mut out, theme, width);
             out.push(Line::default());
             continue;
         }
         if is_plain_rule(&segs) {
+            flush_table(&mut table, &mut out, theme, width);
             out.push(Line::from(Span::styled(
                 "─".repeat(width.min(120)),
                 Style::default().fg(theme.border),
@@ -121,38 +126,47 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        if is_table_line(&segs) {
-            let row = truncate_line(two_tone(segs, theme), width, theme);
-            // Data rows get their own frame line: tui-markdown only draws
-            // the header separator, so insert a `├─┼─┤` junction whenever a
-            // `│` row follows another `│` row (i.e. between body rows).
-            let is_data_row = row.spans.first().and_then(|s| s.content.chars().next()) == Some('│');
-            if is_data_row && prev_table_row {
-                out.push(table_row_separator(&row, theme));
-            }
-            prev_table_row = is_data_row;
-            out.push(row);
-            continue;
-        }
-        prev_table_row = false;
-
-        let segs = collapse_autolinks(segs);
-
         // Hanging indent: quote (`>`) and list (`- ` / `1. `) prefixes stay on
         // the first wrapped line; continuations align under the body text.
         // Prefixes keep their block style — the two-tone split applies to the
         // body only, so markers don't turn into bright Latin runs.
+        let segs = collapse_autolinks(segs);
         let (prefix, body) = split_prefix(segs);
+        // Table frames are buffered whole: tui-markdown sizes every column
+        // to its widest cell with no viewport knowledge, so fitting the
+        // table to the chat width (soft-wrapping cell text across box rows)
+        // needs all rows before the layout is known. Quote/list prefixes are
+        // split off first and re-applied as a paint-time indent.
+        if let Some((lead, first)) = table_lead(&body) {
+            let indent = prefix_width(&prefix) + lead;
+            let mut prefix_spans: Vec<Span<'static>> = prefix
+                .iter()
+                .map(|s| Span::styled(s.text.clone(), s.style))
+                .collect();
+            if lead > 0 {
+                prefix_spans.push(Span::raw(" ".repeat(lead)));
+            }
+            let line = TableLine { prefix: prefix_spans, segs: strip_lead_spaces(body) };
+            if first == '┌' {
+                flush_table(&mut table, &mut out, theme, width);
+                table = Some(TableBuffer { indent: Some(indent), lines: vec![line] });
+            } else {
+                let buf = table
+                    .get_or_insert_with(|| TableBuffer { indent: None, lines: Vec::new() });
+                buf.indent.get_or_insert(indent);
+                buf.lines.push(line);
+            }
+            continue;
+        }
+        flush_table(&mut table, &mut out, theme, width);
+
         // Task-list checkboxes render as status glyphs instead of literal
         // `[x]` / `[ ]` markers, so lists read as rendered UI rather than
         // raw markdown source.
         let prefix = task_list_glyphs(prefix, theme);
         let body = two_tone(body, theme);
-        let indent: usize = prefix
-            .iter()
-            .map(|s| UnicodeWidthStr::width(s.text.as_str()))
-            .sum();
-        let mut wrapped = wrap_segments(body, width.saturating_sub(indent));
+        let indent = prefix_width(&prefix);
+        let mut wrapped = wrap_segments(body, width.saturating_sub(indent).max(4));
         if wrapped.is_empty() && !prefix.is_empty() {
             wrapped.push(Line::default());
         }
@@ -167,6 +181,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             out.push(Line::from(spans));
         }
     }
+    flush_table(&mut table, &mut out, theme, width);
     out
 }
 
@@ -296,12 +311,383 @@ fn is_plain_rule(segs: &[Seg]) -> bool {
     segs.len() == 1 && segs[0].text == "---" && segs[0].style == Style::default()
 }
 
-/// Table lines start with a box-drawing border character.
-fn is_table_line(segs: &[Seg]) -> bool {
-    segs.first()
-        .and_then(|s| s.text.chars().next())
-        .map(|c| matches!(c, '┌' | '├' | '└' | '│'))
-        .unwrap_or(false)
+/// A buffered table block: tui-markdown sizes columns to their widest cell
+/// with no viewport knowledge, so the whole frame is collected before the
+/// block can be fitted to the chat width. `indent` is the leading column
+/// count shared by every line (set by the first line of the block).
+struct TableBuffer {
+    indent: Option<usize>,
+    lines: Vec<TableLine>,
+}
+
+/// One buffered frame line: the quote/list prefix spans are kept verbatim
+/// (a `>` marker must survive; list continuations carry plain spaces) and
+/// re-applied at paint time, while leading spaces are stripped from the
+/// frame body itself.
+struct TableLine {
+    prefix: Vec<Span<'static>>,
+    segs: Vec<Seg>,
+}
+
+/// One parsed logical row plus the prefix spans to re-apply on each of its
+/// painted lines.
+struct TableRow {
+    prefix: Vec<Span<'static>>,
+    cells: Vec<TableCell>,
+}
+
+/// One parsed cell: its styled runs plus the widths of the stripped edge
+/// padding spans (the alignment signal).
+struct TableCell {
+    segs: Vec<Seg>,
+    lead: usize,
+    trail: usize,
+}
+
+/// Column alignment, recovered from the original padding spans.
+#[derive(Clone, Copy)]
+enum TAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// Paint and drop a buffered table block; called when any non-table line
+/// (or the end of the text) interrupts the block.
+fn flush_table(
+    table: &mut Option<TableBuffer>,
+    out: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    width: usize,
+) {
+    if let Some(buf) = table.take() {
+        out.extend(render_table(buf, theme, width));
+    }
+}
+
+/// Leading display columns before the first non-space character of a line,
+/// when that character opens a table frame line (`┌`/`│`/`├`/`└`). The
+/// spaces are tui-markdown's list-continuation indent; blockquote/list
+/// markers were already split off by `split_prefix`.
+fn table_lead(body: &[Seg]) -> Option<(usize, char)> {
+    let mut lead = 0usize;
+    for seg in body {
+        for c in seg.text.chars() {
+            if c == ' ' {
+                lead += 1;
+            } else {
+                return match c {
+                    '┌' | '│' | '├' | '└' => Some((lead, c)),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
+/// Drop the leading all-space spans of a buffered table line (list
+/// continuation indent); the width is re-applied from `TableLine::prefix`
+/// at paint time.
+fn strip_lead_spaces(mut segs: Vec<Seg>) -> Vec<Seg> {
+    let mut i = 0;
+    while segs.get(i).is_some_and(|s| s.text.chars().all(|c| c == ' ')) {
+        i += 1;
+    }
+    segs.drain(..i);
+    if let Some(first) = segs.first_mut() {
+        let lead = first.text.len() - first.text.trim_start_matches(' ').len();
+        if lead > 0 {
+            first.text = first.text.split_off(lead);
+        }
+    }
+    segs
+}
+
+/// Total display width of the split-off prefix spans (quote/list markers).
+fn prefix_width(prefix: &[Seg]) -> usize {
+    prefix.iter().map(|s| UnicodeWidthStr::width(s.text.as_str())).sum()
+}
+
+/// Lay out one buffered table block. When the block fits the available
+/// width it is repainted as tui-markdown drew it (two-tone cells, `├─┼─┤`
+/// junctions between body rows); otherwise the columns shrink and each
+/// cell's text soft-wraps across box rows, so long cells read in full
+/// instead of truncating with an ellipsis.
+fn render_table(buf: TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let Some((header, body)) = parse_table(&buf.lines) else {
+        return paint_fit(&buf, theme, width);
+    };
+    let cols = header.iter().chain(&body).map(|r| r.cells.len()).max().unwrap_or(0);
+    let mut natural = vec![1usize; cols];
+    for row in header.iter().chain(&body) {
+        for (i, cell) in row.cells.iter().enumerate() {
+            natural[i] = natural[i].max(cell_width(&cell.segs));
+        }
+    }
+    let avail = width.saturating_sub(buf.indent.unwrap_or(0));
+    // (cols+1) border columns plus the fixed one-space padding on both
+    // sides of every cell.
+    let overhead = 3 * cols + 1;
+    if overhead + natural.iter().sum::<usize>() <= avail {
+        return paint_fit(&buf, theme, width);
+    }
+
+    // Column alignment is recovered from the original padding spans: the
+    // fixed one-space pad sits on the alignment's short side, so leading
+    // padding wider than one space means right-aligned, and vice versa.
+    let mut aligns = vec![TAlign::Left; cols];
+    for (i, align) in aligns.iter_mut().enumerate() {
+        for row in header.iter().chain(&body) {
+            let Some(cell) = row.cells.get(i) else { continue };
+            let sig = match (cell.lead, cell.trail) {
+                (l, t) if l >= 2 && t >= 2 => TAlign::Center,
+                (l, _) if l >= 2 => TAlign::Right,
+                (_, t) if t >= 2 => TAlign::Left,
+                _ => continue,
+            };
+            *align = sig;
+            break;
+        }
+    }
+
+    let widths = shrink_columns(&natural, avail.saturating_sub(overhead));
+    let border = Style::default().fg(theme.border);
+    // The frame is rebuilt, so generated lines take the quote/list prefix of
+    // their source line; synthesized separators take the continuation form
+    // (the last buffered line — a `└` edge — never sits on the marker line).
+    let empty: Vec<Span<'static>> = Vec::new();
+    let cont_prefix = buf.lines.last().map(|l| &l.prefix).unwrap_or(&empty);
+    let mut lines = Vec::new();
+    lines.push(prefix_line(
+        frame_edge('┌', '┬', '┐', &widths, border),
+        &buf.lines.first().map(|l| &l.prefix).unwrap_or(&empty),
+    ));
+    for row in &header {
+        lines.extend(paint_row(row, &widths, &aligns, theme, false));
+    }
+    lines.push(prefix_line(frame_edge('├', '┼', '┤', &widths, border), cont_prefix));
+    for (i, row) in body.iter().enumerate() {
+        if i > 0 {
+            lines.push(prefix_line(frame_edge('├', '┼', '┤', &widths, border), cont_prefix));
+        }
+        lines.extend(paint_row(row, &widths, &aligns, theme, true));
+    }
+    lines.push(prefix_line(frame_edge('└', '┴', '┘', &widths, border), cont_prefix));
+    lines
+}
+
+/// Prepend the quote/list prefix spans to a painted table line.
+fn prefix_line(mut line: Line<'static>, prefix: &[Span<'static>]) -> Line<'static> {
+    if !prefix.is_empty() {
+        line.spans.splice(0..0, prefix.iter().cloned());
+    }
+    line
+}
+
+/// Parse the buffered frame lines into header and body rows: `│` lines are
+/// rows (one physical line each — tui-markdown never wraps cells), and the
+/// first `├` closes the header. Returns `None` when the block is not a
+/// well-formed frame (no `┌` opener), falling back to the verbatim paint.
+fn parse_table(lines: &[TableLine]) -> Option<(Vec<TableRow>, Vec<TableRow>)> {
+    let mut header: Vec<TableRow> = Vec::new();
+    let mut body: Vec<TableRow> = Vec::new();
+    let mut in_body = false;
+    let mut opened = false;
+    for line in lines {
+        match line.segs.first().and_then(|s| s.text.chars().next()) {
+            Some('┌') => opened = true,
+            Some('├') => in_body = true,
+            Some('│') => {
+                let row = TableRow {
+                    prefix: line.prefix.clone(),
+                    cells: parse_row(&line.segs),
+                };
+                if in_body {
+                    body.push(row);
+                } else {
+                    header.push(row);
+                }
+            }
+            _ => {}
+        }
+    }
+    opened.then_some((header, body))
+}
+
+/// Split one rendered row into cells: spans of bare `│` delimit cells; the
+/// all-space padding spans at each cell edge are stripped but measured —
+/// together they reveal the column's source alignment.
+fn parse_row(segs: &[Seg]) -> Vec<TableCell> {
+    let mut cells: Vec<TableCell> = Vec::new();
+    let mut cur: Vec<Seg> = Vec::new();
+    let mut in_cell = false;
+    for seg in segs {
+        if !seg.text.is_empty() && seg.text.chars().all(|c| c == '│') {
+            if in_cell {
+                cells.push(finish_cell(&mut cur));
+            }
+            in_cell = true;
+            cur.clear();
+        } else if in_cell {
+            cur.push(seg.clone());
+        }
+    }
+    cells
+}
+
+fn finish_cell(cur: &mut Vec<Seg>) -> TableCell {
+    let is_space = |s: &Seg| s.text.chars().all(|c| c == ' ');
+    let mut lead = 0;
+    while cur.first().is_some_and(is_space) {
+        lead += UnicodeWidthStr::width(cur[0].text.as_str());
+        cur.remove(0);
+    }
+    let mut trail = 0;
+    while cur.last().is_some_and(is_space) {
+        trail += UnicodeWidthStr::width(cur.last().unwrap().text.as_str());
+        cur.pop();
+    }
+    TableCell {
+        segs: std::mem::take(cur),
+        lead,
+        trail,
+    }
+}
+
+fn cell_width(cell: &[Seg]) -> usize {
+    cell.iter().map(|s| UnicodeWidthStr::width(s.text.as_str())).sum()
+}
+
+/// Shrink natural column widths to a `budget` of content columns: every
+/// column keeps at least one, narrow columns reach their natural width
+/// first, and the wide ones share what remains proportionally.
+fn shrink_columns(natural: &[usize], budget: usize) -> Vec<usize> {
+    let mut widths = vec![1usize; natural.len()];
+    let mut remaining = budget.saturating_sub(natural.len());
+    while remaining > 0 {
+        let slack: usize = natural.iter().zip(&widths).map(|(n, w)| n.saturating_sub(*w)).sum();
+        if slack == 0 {
+            break;
+        }
+        let mut gave = 0;
+        for i in 0..natural.len() {
+            if remaining == 0 {
+                break;
+            }
+            let slack_i = natural[i].saturating_sub(widths[i]);
+            if slack_i == 0 {
+                continue;
+            }
+            let give = (remaining * slack_i / slack).max(1).min(slack_i).min(remaining);
+            widths[i] += give;
+            remaining -= give;
+            gave += give;
+        }
+        if gave == 0 {
+            break;
+        }
+    }
+    widths
+}
+
+/// A frame edge line (`┌─┬─┐` / `├─┼─┤` / `└─┴─┘`) for the given content
+/// column widths, matching tui-markdown's two-space cell padding.
+fn frame_edge(left: char, cross: char, right: char, widths: &[usize], border: Style) -> Line<'static> {
+    let mut s = String::with_capacity(widths.iter().sum::<usize>() + widths.len() + 2);
+    s.push(left);
+    for (i, w) in widths.iter().enumerate() {
+        for _ in 0..w + 2 {
+            s.push('─');
+        }
+        if i + 1 < widths.len() {
+            s.push(cross);
+        }
+    }
+    s.push(right);
+    Line::from(Span::styled(s, border))
+}
+
+/// Paint one logical row as one or more `│ … │` lines: each cell's styled
+/// runs are two-toned and soft-wrapped to its column width; cells that fit
+/// on one line keep the column's alignment, wrapped ones left-align. Every
+/// physical line re-applies the row's quote/list prefix.
+fn paint_row(
+    row: &TableRow,
+    widths: &[usize],
+    aligns: &[TAlign],
+    theme: &Theme,
+    body: bool,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme.border);
+    let pad = if body {
+        Style::default().fg(theme.fg_secondary)
+    } else {
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+    };
+    let cells = &row.cells;
+    let wrapped: Vec<Vec<Line<'static>>> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let segs = cells
+                .get(i)
+                .map(|c| two_tone(c.segs.clone(), theme))
+                .unwrap_or_default();
+            wrap_segments(segs, *w)
+        })
+        .collect();
+    let height = wrapped.iter().map(|ls| ls.len().max(1)).max().unwrap_or(1);
+    let mut lines = Vec::with_capacity(height);
+    for k in 0..height {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled("│".to_string(), border)];
+        for (i, w) in widths.iter().enumerate() {
+            let (line, filled, align) = match wrapped[i].get(k) {
+                Some(l) => {
+                    let filled: usize = l.spans.iter().map(|s| s.content.width()).sum();
+                    let align = if wrapped[i].len() == 1 { aligns[i] } else { TAlign::Left };
+                    (l.clone(), filled, align)
+                }
+                None => (Line::default(), 0, TAlign::Left),
+            };
+            let (pl, pr) = pad_split(align, w.saturating_sub(filled));
+            spans.push(Span::styled(" ".repeat(pl + 1), pad));
+            spans.extend(line.spans);
+            spans.push(Span::styled(" ".repeat(pr + 1), pad));
+            spans.push(Span::styled("│".to_string(), border));
+        }
+        lines.push(prefix_line(Line::from(spans), &row.prefix));
+    }
+    lines
+}
+
+/// Split `free` padding columns across the alignment's two sides.
+fn pad_split(align: TAlign, free: usize) -> (usize, usize) {
+    match align {
+        TAlign::Left => (0, free),
+        TAlign::Center => (free / 2, free - free / 2),
+        TAlign::Right => (free, 0),
+    }
+}
+
+/// Repaint the buffered block as tui-markdown drew it: two-tone body,
+/// `├─┼─┤` junctions between consecutive body rows, and — when the block is
+/// not a well-formed frame (degenerate fallback) — ellipsis truncation.
+/// Each line re-applies its own quote/list prefix.
+fn paint_fit(buf: &TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let mut prev_row = false;
+    for line in &buf.lines {
+        let row = truncate_line(two_tone(line.segs.clone(), theme), width, theme);
+        let is_row = row.spans.first().and_then(|s| s.content.chars().next()) == Some('│');
+        if is_row && prev_row {
+            let sep = table_row_separator(&row, theme);
+            out.push(prefix_line(sep, &line.prefix));
+        }
+        prev_row = is_row;
+        out.push(prefix_line(row, &line.prefix));
+    }
+    out
 }
 
 /// The `├─┼─┤` junction between table body rows, derived from the row's own
@@ -723,8 +1109,10 @@ fn heading_style(theme: &Theme, level: usize) -> Style {
 /// Word-boundary wrap that keeps per-segment styles across soft line breaks.
 /// Whitespace is collapsed at the margin the same way the plain-text `wrap`
 /// does, and over-long words (URLs, CJK runs) are hard-broken without panic.
+/// The width is exact: callers that need a floor apply it themselves (the
+/// table layout must not exceed the shrunk column widths).
 fn wrap_segments(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(4);
+    let width = width.max(1);
     let mut out: Vec<Line> = Vec::new();
     let mut line: Vec<Span> = Vec::new();
     let mut w = 0usize;
