@@ -1317,7 +1317,7 @@ fn seed_prompt_history(app: &mut App, n: usize) -> Vec<usize> {
         .collect()
 }
 
-/// The first line the `⌕` jump anchors for `cell`, mirroring
+/// The first line the `↥` jump anchors for `cell`, mirroring
 /// `App::jump_to_user_prompt` (layout at the recorded chat width).
 fn prompt_jump_anchor(app: &mut App, cell: usize) -> usize {
     let area = app.chat_view.area;
@@ -1338,9 +1338,9 @@ fn prompt_jump_anchor(app: &mut App, cell: usize) -> usize {
     line.min(layout.lines.len().saturating_sub(area.height as usize))
 }
 
-/// Left-click the `⌕` button recorded by the last frame.
+/// Left-click the `↥` button recorded by the last frame.
 fn click_prompt_jump(app: &mut App, ctl: &Controller) {
-    let jump = app.prompt_jump_btn.expect("⌕ button rect recorded");
+    let jump = app.prompt_jump_btn.expect("↥ button rect recorded");
     app.handle_mouse(
         crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(
@@ -1410,7 +1410,7 @@ fn prompt_jump_without_user_prompts_tips_instead_of_jumping() {
     click_prompt_jump(&mut app, &ctl);
 
     assert!(app.prompt_jump_cell.is_none());
-    assert!(app.tip.is_some(), "no prompts → a tip explains ⌕");
+    assert!(app.tip.is_some(), "no prompts → a tip explains ↥");
     assert_eq!(app.chat_view.top, 0, "no jump happened");
 }
 

@@ -580,3 +580,70 @@ fn four_backtick_fences_survive_nested_backtick_content() {
     let bottom = texts.iter().position(|t| t.starts_with('└')).unwrap();
     assert!(top < bottom);
 }
+
+#[test]
+fn quoted_code_preserves_frames_indentation_and_literal_markers() {
+    let md = "> > ```python\n> > if yes:\n> >     run()\n> > >\n> > \n> > ```";
+    let lines = render_dark(md, 24);
+    let text = plain(&lines);
+    assert!(!text.contains('\0'), "internal fence sentinel escaped: {text:?}");
+    assert!(text.contains("┌─ python"), "{text}");
+    assert!(text.contains("│     run()"), "indentation survives: {text}");
+    assert!(text.contains("│ >"), "literal code marker survives: {text}");
+    assert!(text.contains('└'));
+    for line in &lines { assert!(line.width() <= 24, "{line:?}"); }
+}
+
+#[test]
+fn exact_width_table_keeps_its_right_border() {
+    let md = "| a | b |\n|---|---|\n| c | d |";
+    let lines = render_dark(md, 9);
+    assert!(!plain(&lines).contains('…'));
+    assert!(plain(&lines).contains("│ c │ d │"));
+    assert!(render_dark(md, 8).iter().any(|line| plain(std::slice::from_ref(line)).contains('…')));
+}
+
+#[test]
+fn table_followed_by_quoted_code_keeps_order_and_frames() {
+    let md = "| title |\n|---|\n| table text wraps here |\n\n> ```rust\n> let x = 1;\n> ```";
+    let lines = render_dark(md, 14);
+    let text = plain(&lines);
+    assert!(text.find("table").unwrap() < text.find("rust").unwrap(), "{text}");
+    assert_eq!(text.matches('┌').count(), 2, "{text}");
+    assert_eq!(text.matches('└').count(), 2, "{text}");
+    assert!(!text.contains('\0'));
+    assert!(lines.iter().all(|line| line.width() <= 14), "{text}");
+}
+
+#[test]
+fn grapheme_clusters_survive_code_prose_and_table_wrapping() {
+    let family = "👨‍👩‍👧‍👦";
+    let flag = "🇨🇳";
+    for md in [format!("```\n12345{family}{flag}end\n```"),
+        format!("abcdefghijkl{family}{flag}abcdefghijkl"),
+        format!("| x |\n|---|\n| 123{family}{flag}end |")]
+    {
+        let lines = render_dark(&md, 12);
+        for line in &lines {
+            let text = plain(std::slice::from_ref(line));
+            if text.contains('👨') || text.contains('👩') || text.contains('👧') || text.contains('👦') {
+                assert!(text.contains(family), "split grapheme: {text:?}");
+            }
+            if text.contains('🇨') || text.contains('🇳') {
+                assert!(text.contains(flag), "split flag: {text:?}");
+            }
+            assert!(line.width() <= 12, "{line:?}");
+        }
+    }
+}
+
+#[test]
+fn deeply_nested_lists_keep_the_body_inside_the_viewport() {
+    let md = "- a\n  - b\n    - c\n      - longwordlongword";
+    for width in [8, 10, 12, 16, 40] {
+        let lines = render_dark(md, width);
+        for line in &lines { assert!(line.width() <= width, "width={width}: {line:?}"); }
+        assert!(plain(&lines).contains('c'));
+        assert!(plain(&lines).contains("long"));
+    }
+}

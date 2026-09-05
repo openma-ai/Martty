@@ -17,7 +17,7 @@ All notable changes to this project are documented here. The project follows
   same way: they open on the effective model/effort, ✓-mark it, and list
   the effective model even when it is not in the host catalog.
 
-- `⌕` user-prompt jump button on the composer cap row, between the project
+- `↥` user-prompt jump button on the composer cap row, between the project
   path and the `⛶` expand glyph (issue #103): hovering highlights it and
   clicking scrolls the chat to the newest user prompt; each further click
   walks one prompt back, and the oldest prompt wraps to the newest again.
@@ -89,6 +89,19 @@ All notable changes to this project are documented here. The project follows
   width are painted unchanged.
 
 ### Fixed
+
+- Preserve queue selection and edits across session tabs, including pausing
+  background delivery until an edit is saved or cancelled. Failed session
+  configuration operations no longer mark a running prompt idle.
+- Keep prompts and cancellations responsive while session creation, restore,
+  configuration or plugin requests are pending. Configuration changes retain
+  their order within a session; prompts and Send Now requests can run longer
+  than the 120-second control-request deadline.
+- Preserve replayed Plan and usage snapshots when session/load completes,
+  and keep concurrent Send Now responses from overwriting turn statistics.
+- Render code inside Markdown quotes with intact frames, newlines and
+  indentation; preserve grapheme clusters during wrapping; keep exact-width
+  table borders and deeply nested list content within the viewport.
 
 - Multi-session state is now isolated end to end: background ACP updates no
   longer replace the visible tab's config, plan, stats, status, model/skill/

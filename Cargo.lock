@@ -531,6 +531,7 @@ dependencies = [
  "futures",
  "image",
  "libc",
+ "pulldown-cmark",
  "ratatui",
  "ratatui-explorer",
  "ratatui-textarea",

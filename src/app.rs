@@ -42,7 +42,7 @@ struct CtrlCQuitChord {
     required: u8,
 }
 const TIP_TTL: Duration = Duration::from_secs(4);
-/// How long the `⌕` jump flash keeps the jumped user prompt background-
+/// How long the `↥` jump flash keeps the jumped user prompt background-
 /// washed before it restores to normal (issue #103).
 pub(crate) const PROMPT_FLASH_TTL: Duration = Duration::from_secs(5);
 /// How often the composer cap re-checks the workspace git branch (tick
@@ -817,6 +817,8 @@ pub struct SessionSlot {
     /// Finished while parked → tab badge until the user views the tab.
     pub completed_unseen: bool,
     pub prompt_queue: VecDeque<ClientQueuedPrompt>,
+    queue_selection: Option<usize>,
+    queue_edit: Option<QueueEditState>,
     pub prompt_pending: bool,
     pub modes: Modes,
     pub skills: Vec<crate::bus::SkillInfo>,
@@ -872,6 +874,8 @@ impl SessionSlot {
             running: false,
             completed_unseen: false,
             prompt_queue: VecDeque::new(),
+            queue_selection: None,
+            queue_edit: None,
             prompt_pending: false,
             modes: Modes::default(),
             skills: Vec::new(),
@@ -1281,18 +1285,18 @@ pub struct App {
     /// True while the pointer rests on the expand button; only then does
     /// the frame painter show it (`needs_redraw` on change).
     pub(crate) hover_expand_btn: bool,
-    /// Screen rect of the mouse-only `⌕` user-prompt jump button (issue
+    /// Screen rect of the mouse-only `↥` user-prompt jump button (issue
     /// #103) from the latest frame — one cell left of the expand glyph on
     /// the composer card's top-right.
     pub(crate) prompt_jump_btn: Option<ratatui::layout::Rect>,
-    /// True while the pointer rests on the `⌕` button (`needs_redraw` on
+    /// True while the pointer rests on the `↥` button (`needs_redraw` on
     /// change, same hover policy as the expand button).
     pub(crate) hover_prompt_jump_btn: bool,
-    /// Transcript cell of the user prompt the last `⌕` click jumped to
+    /// Transcript cell of the user prompt the last `↥` click jumped to
     /// (issue #103). The next click walks one prompt back; the oldest
     /// wraps to the newest. In-memory only — never persisted.
     pub(crate) prompt_jump_cell: Option<usize>,
-    /// The `⌕` jump flash (issue #103): the transcript cell of the prompt
+    /// The `↥` jump flash (issue #103): the transcript cell of the prompt
     /// that was just jumped to, with the instant the highlight (chip
     /// background wash + brand text) expires, 5 s after the click.
     /// `App::tick` clears it on expiry; the painter resolves the cell to
@@ -1928,6 +1932,8 @@ impl App {
             running: self.state != RunState::Idle || self.prompt_pending,
             completed_unseen: false,
             prompt_queue: std::mem::take(&mut self.prompt_queue),
+            queue_selection: self.queue_selection.take(),
+            queue_edit: self.queue_edit.take(),
             prompt_pending: std::mem::take(&mut self.prompt_pending),
             modes: std::mem::take(&mut self.modes),
             skills: std::mem::take(&mut self.skills),
@@ -1963,6 +1969,8 @@ impl App {
         self.transcript = slot.transcript;
         self.queued = slot.prompt_queue.len();
         self.prompt_queue = slot.prompt_queue;
+        self.queue_selection = slot.queue_selection;
+        self.queue_edit = slot.queue_edit;
         self.prompt_pending = slot.prompt_pending;
         self.modes = slot.modes;
         self.skills = slot.skills;
@@ -2024,10 +2032,8 @@ impl App {
         self.input_sel = None;
         self.input_selecting = false;
         self.picker = None;
-        self.queue_selection = None;
-        self.queue_edit = None;
         self.vim.reset_pending();
-        // The ⌕ jump cursor indexes this session's transcript cells, and
+        // The ↥ jump cursor indexes this session's transcript cells, and
         // the flash must not carry over to another session's view.
         self.prompt_jump_cell = None;
         self.prompt_flash = None;
@@ -2239,6 +2245,9 @@ impl App {
         let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) else {
             return;
         };
+        if slot.queue_selection.is_some() || slot.queue_edit.is_some() {
+            return;
+        }
         if !slot.session_bound {
             // Mirror of the live path's guard (dispatch_next_queued): an
             // unbound placeholder must never burn its queue — the prompts
@@ -2361,7 +2370,7 @@ impl App {
                 self.needs_redraw = true;
             }
         }
-        // The ⌕ jump flash restores the prompt to normal after its 5 s.
+        // The ↥ jump flash restores the prompt to normal after its 5 s.
         if let Some((_, until)) = &self.prompt_flash {
             if Instant::now() >= *until {
                 self.prompt_flash = None;
@@ -3498,6 +3507,8 @@ impl App {
                     slot.running = false;
                     slot.prompt_pending = false;
                     slot.prompt_queue.clear();
+                    slot.queue_selection = None;
+                    slot.queue_edit = None;
                     slot.pending_steer_cells.clear();
                 }
                 if self.state != RunState::Idle {
@@ -3576,6 +3587,15 @@ impl App {
                         self.run_started = None;
                         self.transcript.push_notice(NoticeLevel::Error, err);
                         self.dispatch_next_queued(ctl);
+                    }
+                    CtlEvent::SessionOpFailed { session_id, message } => {
+                        if session_id == self.session_id {
+                            self.transcript.push_notice(NoticeLevel::Error, message);
+                        } else if let Some(slot) = self.parked.iter_mut()
+                            .find(|slot| slot.id == session_id)
+                        {
+                            slot.transcript.push_notice(NoticeLevel::Error, message);
+                        }
                     }
                     CtlEvent::SessionError {
                         session_id,
@@ -4533,7 +4553,7 @@ impl App {
                     self.toggle_tool(ci);
                     return;
                 }
-                // The ⌕ prompt-jump button (issue #103) wins over caret
+                // The ↥ prompt-jump button (issue #103) wins over caret
                 // placement: each click walks the chat view to the previous
                 // user prompt (newest first, wrapping at the oldest).
                 if self.elicitation_ask.is_none()
@@ -4743,7 +4763,7 @@ impl App {
         })
     }
 
-    /// Hit-test the mouse-only `⌕` user-prompt jump button (issue #103).
+    /// Hit-test the mouse-only `↥` user-prompt jump button (issue #103).
     fn prompt_jump_btn_hit(&self, col: u16, row: u16) -> bool {
         self.prompt_jump_btn.is_some_and(|r| {
             col >= r.x
@@ -4753,7 +4773,7 @@ impl App {
         })
     }
 
-    /// `⌕` click (issue #103): jump the chat view to a user prompt. The
+    /// `↥` click (issue #103): jump the chat view to a user prompt. The
     /// first click goes to the newest prompt, each further click walks one
     /// prompt back, and the oldest wraps to the newest again. The last
     /// target is remembered in memory only (never persisted) and rides
@@ -4770,8 +4790,8 @@ impl App {
             .layout(&theme, area.width, spinner, crate::pet::kitty_supported());
         if layout.users.is_empty() {
             self.show_tip(self.locale.tr(
-                "no user prompts yet — ⌕ finds them once you send one",
-                "还没有用户输入 —— 发送后 ⌕ 即可跳转",
+                "no user prompts yet — ↥ finds them once you send one",
+                "还没有用户输入 —— 发送后 ↥ 即可跳转",
             ));
             return;
         }
@@ -4810,8 +4830,8 @@ impl App {
         self.prompt_flash = Some((target.cell, Instant::now() + PROMPT_FLASH_TTL));
         self.needs_redraw = true;
         self.show_tip(self.locale.trf(
-            "⌕ user prompt {k}/{n} · newest first",
-            "⌕ 用户输入 {k}/{n} · 从最新往前",
+            "↥ user prompt {k}/{n} · newest first",
+            "↥ 用户输入 {k}/{n} · 从最新往前",
             &[from_newest.to_string(), layout.users.len().to_string()],
         ));
     }

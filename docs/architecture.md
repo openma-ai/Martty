@@ -54,6 +54,13 @@ Queue 标题位于 composer 顶沿，全部等待条目始终在同一个 compos
 `Send Now` 的并发 prompt 若被 agent 拒绝，ACP transport
 只向 Client 回报 deferred，由同一 Client FIFO 接管，不在 transport 内保留第二份重试队列。
 
+ACP 的 prompt 调度与慢控制请求分开执行：`src/acp.rs` 持有每个 session
+的轮次和发送队列，`src/acp/control.rs` 执行控制请求。创建/恢复共用一个串行队列，
+使绑定结果保持与 Rust tab 的等待 FIFO 同序；配置操作按 session 分别串行，
+该 session 的下一轮 prompt 等待先前配置完成，其他 session 的 prompt、完成事件、
+取消和关闭继续处理。短控制请求保留 120 秒 deadline，整轮 prompt 与 steer 不使用
+这个总时长限制。Queue 的选择和编辑状态随 session 保存，后台会话同样遵守暂停规则。
+
 原生 tab 是当前可见会话的唯一选择源。每次 bind 或 tab 切换，Rust 通过
 `_dsh/cordis/tui/session/active` request 把 session id（未绑定时为 `null`）投影到 Client tree；
 `acpSessionConfig`、`acpSessionPlan`、`acpSessionStats` 和 `acpSessionStatus` 只发布该会话的

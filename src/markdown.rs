@@ -25,7 +25,8 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::{AlertKind, ImageFallback, Options, StyleSheet};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::{
     Theme, DEEPSEEK_200, DEEPSEEK_300, DEEPSEEK_400, DEEPSEEK_450, DEEPSEEK_500, DEEPSEEK_600,
@@ -42,6 +43,8 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
     let mut table: Option<TableBuffer> = None;
+    let mut code_prefix: Vec<Seg> = Vec::new();
+    let mut code_blocks = None;
     for line in parsed.lines {
         // Flatten the line-level base style (blockquote, code block, …) into
         // each span so wrapping can move spans freely without losing it.
@@ -56,60 +59,43 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             })
             .collect();
 
-        // Code blocks become framed boxes: fence delimiter lines turn into
-        // the top/bottom edges (the top one carries the language label),
-        // content rows get `│` side borders and a padded panel background.
-        // Content hard-wraps without collapsing whitespace so indentation and
-        // ASCII art survive; empty lines inside a block still carry the code
-        // line style, so they join the box instead of punching a hole in it.
-        // Checked before the rule/table heuristics — a fenced `---` or a line
-        // starting with a box-drawing char is code, not a rule or table.
-        let is_code = if segs.is_empty() {
-            line.style.bg == Some(theme.panel)
-        } else {
-            segs.iter().all(|s| s.style.bg == Some(theme.panel))
-        };
-        if is_code {
+        // Fence sentinels are structural spans, even when a quote prefix
+        // precedes them. Track that prefix separately from code content;
+        // colors alone cannot distinguish nested blocks from inline code.
+        if let Some(fence) = segs.iter().position(|s| s.text.starts_with(CODE_FENCE_SENTINEL)) {
             flush_table(&mut table, &mut out, theme, width);
-            let text: String = segs.iter().map(|s| s.text.as_str()).collect();
-            // Delimiters are sentinel-prefixed (see `code_block_fence`);
-            // literal ```` ``` ```` content lines — including inside longer
-            // fences — never toggle the frame anymore.
-            if !segs.is_empty() && text.starts_with(CODE_FENCE_SENTINEL) {
-                if in_code {
-                    out.push(code_frame_bottom(width, theme));
-                    in_code = false;
-                } else {
-                    out.push(code_frame_top(
-                        text.strip_prefix(CODE_FENCE_SENTINEL)
-                            .unwrap_or("")
-                            .trim(),
-                        width,
-                        theme,
-                    ));
-                    in_code = true;
-                }
-                continue;
-            }
             if in_code {
-                let inner = width.saturating_sub(4).max(1);
-                let rows = if segs.is_empty() {
-                    vec![Line::default()]
-                } else {
-                    wrap_pre(segs, inner)
-                };
-                for row in rows {
-                    out.push(code_frame_row(row, inner, theme));
-                }
+                let frame_width = width - segments_width(&code_prefix);
+                out.push(with_prefix(&code_prefix, code_frame_bottom(frame_width, theme)));
+                in_code = false;
             } else {
-                // A code-styled line outside any fence (e.g. a paragraph that
-                // is one inline-code span): preformatted, but no frame.
-                if segs.is_empty() {
-                    out.push(Line::default());
-                } else {
-                    out.extend(wrap_pre(segs, width));
+                let lang = segs[fence].text[CODE_FENCE_SENTINEL.len()..].trim();
+                code_prefix = fit_prefix(segs[..fence].to_vec(), width.saturating_sub(8), theme);
+                let frame_width = width - segments_width(&code_prefix);
+                out.push(with_prefix(&code_prefix, code_frame_top(lang, frame_width, theme)));
+                // tui-markdown joins separate Text events in quoted code.
+                // Preserve their exact newlines from the parser instead.
+                let content = code_blocks.get_or_insert_with(|| code_block_texts(text))
+                    .pop_front().unwrap_or_default();
+                let inner = frame_width - 4;
+                for raw in content.lines() {
+                    let mut rows = wrap_pre(vec![Seg {
+                        text: raw.to_string(), style: DeepSeekStyleSheet(*theme).code(),
+                    }], inner);
+                    if rows.is_empty() { rows.push(Line::default()); }
+                    for row in rows {
+                        out.push(with_prefix(&code_prefix, code_frame_row(row, inner, theme)));
+                    }
                 }
+                in_code = true;
             }
+            continue;
+        }
+        if in_code { continue; }
+        // A standalone inline-code paragraph remains preformatted.
+        if !segs.is_empty() && segs.iter().all(|s| s.style.bg == Some(theme.panel)) {
+            flush_table(&mut table, &mut out, theme, width);
+            out.extend(wrap_pre(segs, width));
             continue;
         }
         if segs.is_empty() {
@@ -163,7 +149,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         // Task-list checkboxes render as status glyphs instead of literal
         // `[x]` / `[ ]` markers, so lists read as rendered UI rather than
         // raw markdown source.
-        let prefix = task_list_glyphs(prefix, theme);
+        let prefix = fit_prefix(task_list_glyphs(prefix, theme), width.saturating_sub(4), theme);
         let body = two_tone(body, theme);
         let indent = prefix_width(&prefix);
         let mut wrapped = wrap_segments(body, width.saturating_sub(indent).max(4));
@@ -305,6 +291,56 @@ struct Seg {
     style: Style,
 }
 
+/// Match tui-markdown's parser extensions so code-block order agrees even
+/// inside footnotes, metadata, alerts, lists, and incomplete streamed fences.
+fn code_block_texts(text: &str) -> std::collections::VecDeque<String> {
+    use pulldown_cmark::{Event, Options as ParseOptions, Parser, Tag, TagEnd};
+    let options = ParseOptions::ENABLE_STRIKETHROUGH | ParseOptions::ENABLE_TASKLISTS
+        | ParseOptions::ENABLE_HEADING_ATTRIBUTES | ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | ParseOptions::ENABLE_SUPERSCRIPT | ParseOptions::ENABLE_SUBSCRIPT
+        | ParseOptions::ENABLE_MATH | ParseOptions::ENABLE_FOOTNOTES
+        | ParseOptions::ENABLE_DEFINITION_LIST | ParseOptions::ENABLE_GFM | ParseOptions::ENABLE_TABLES;
+    let mut blocks = std::collections::VecDeque::new();
+    let mut code = None;
+    for event in Parser::new_ext(text, options) {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => code = Some(String::new()),
+            Event::Text(text) => if let Some(code) = &mut code { code.push_str(&text); },
+            Event::End(TagEnd::CodeBlock) => if let Some(code) = code.take() { blocks.push_back(code); },
+            _ => {}
+        }
+    }
+    blocks
+}
+
+fn segments_width(segs: &[Seg]) -> usize {
+    segs.iter().map(|s| s.text.width()).sum()
+}
+
+fn with_prefix(prefix: &[Seg], mut line: Line<'static>) -> Line<'static> {
+    let mut spans: Vec<_> = prefix.iter().map(|s| Span::styled(s.text.clone(), s.style)).collect();
+    spans.append(&mut line.spans);
+    Line::from(spans)
+}
+
+/// Compress excessive nesting before clipping a marker. Always leave room
+/// for the body so a narrow view cannot place all content off screen.
+fn fit_prefix(mut prefix: Vec<Seg>, budget: usize, theme: &Theme) -> Vec<Seg> {
+    if budget == 0 { return Vec::new(); }
+    let mut excess = segments_width(&prefix).saturating_sub(budget);
+    for seg in &mut prefix {
+        let leading = seg.text.len() - seg.text.trim_start_matches(' ').len();
+        let only_spaces = leading == seg.text.len();
+        let remove = excess.min(leading);
+        seg.text.drain(..remove);
+        excess -= remove;
+        if !only_spaces || excess == 0 { break; }
+    }
+    truncate_line(prefix, budget, theme).spans.into_iter().map(|s| Seg {
+        text: s.content.into_owned(), style: s.style,
+    }).collect()
+}
+
 /// A lone `---` line with no styling is a horizontal rule (metadata-block
 /// delimiters carry the metadata style, so they are excluded).
 fn is_plain_rule(segs: &[Seg]) -> bool {
@@ -429,7 +465,9 @@ fn render_table(buf: TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'stat
     // (cols+1) border columns plus the fixed one-space padding on both
     // sides of every cell.
     let overhead = 3 * cols + 1;
-    if overhead + natural.iter().sum::<usize>() <= avail {
+    // If even one content column per cell cannot fit, retain the clipped
+    // fallback rather than drawing a frame wider than the viewport.
+    if overhead + cols > avail || overhead + natural.iter().sum::<usize>() <= avail {
         return paint_fit(&buf, theme, width);
     }
 
@@ -678,7 +716,8 @@ fn paint_fit(buf: &TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'static
     let mut out = Vec::new();
     let mut prev_row = false;
     for line in &buf.lines {
-        let row = truncate_line(two_tone(line.segs.clone(), theme), width, theme);
+        let available = width.saturating_sub(line.prefix.iter().map(Span::width).sum::<usize>());
+        let row = truncate_line(two_tone(line.segs.clone(), theme), available, theme);
         let is_row = row.spans.first().and_then(|s| s.content.chars().next()) == Some('│');
         if is_row && prev_row {
             let sep = table_row_separator(&row, theme);
@@ -698,11 +737,11 @@ fn table_row_separator(row: &Line, theme: &Theme) -> Line<'static> {
     let mut bars: Vec<usize> = Vec::new();
     let mut w = 0usize;
     for s in &row.spans {
-        for c in s.content.chars() {
-            if c == '│' {
+        for c in s.content.graphemes(true) {
+            if c == "│" {
                 bars.push(w);
             }
-            w += UnicodeWidthChar::width(c).unwrap_or(0);
+            w += UnicodeWidthStr::width(c);
         }
     }
     let mut sep = String::with_capacity(w);
@@ -899,13 +938,13 @@ fn code_frame_top(lang: &str, width: usize, theme: &Theme) -> Line<'static> {
         let max = width.saturating_sub(8);
         let mut cut = 0usize;
         let mut used = 0usize;
-        for c in lang.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        for c in lang.graphemes(true) {
+            let cw = UnicodeWidthStr::width(c);
             if used + cw > max {
                 break;
             }
             used += cw;
-            cut += c.len_utf8();
+            cut += c.len();
         }
         format!("─ {} ", &lang[..cut])
     };
@@ -956,8 +995,8 @@ fn wrap_pre(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
     let mut style = segs.first().map(|s| s.style).unwrap_or_default();
     let mut w = 0usize;
     for seg in segs {
-        for c in seg.text.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        for c in seg.text.graphemes(true) {
+            let cw = UnicodeWidthStr::width(c);
             if w + cw > width && w > 0 {
                 if !buf.is_empty() {
                     spans.push(Span::styled(std::mem::take(&mut buf), style));
@@ -974,7 +1013,7 @@ fn wrap_pre(segs: Vec<Seg>, width: usize) -> Vec<Line<'static>> {
                 }
                 style = seg.style;
             }
-            buf.push(c);
+            buf.push_str(c);
             w += cw;
         }
     }
@@ -1011,20 +1050,21 @@ fn collapse_autolinks(mut segs: Vec<Seg>) -> Vec<Seg> {
 /// Truncate a line to `width` columns, appending an ellipsis when content was
 /// dropped. Used for table lines, where wrapping would break the box.
 fn truncate_line(segs: Vec<Seg>, width: usize, theme: &Theme) -> Line<'static> {
-    let budget = width.saturating_sub(1);
+    let fits = segments_width(&segs) <= width;
+    let budget = if fits { width } else { width.saturating_sub(1) };
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut w = 0usize;
     let mut stopped = false;
     for seg in segs {
         let mut buf = String::new();
-        for c in seg.text.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        for c in seg.text.graphemes(true) {
+            let cw = UnicodeWidthStr::width(c);
             if w + cw > budget {
                 stopped = true;
                 break;
             }
             w += cw;
-            buf.push(c);
+            buf.push_str(c);
         }
         if !buf.is_empty() {
             spans.push(Span::styled(buf, seg.style));
@@ -1200,8 +1240,8 @@ fn chunk_str(s: &str, width: usize) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0usize;
     let mut w = 0usize;
-    for (i, ch) in s.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (i, ch) in s.grapheme_indices(true) {
+        let cw = UnicodeWidthStr::width(ch);
         if w + cw > width && w > 0 {
             out.push(&s[start..i]);
             start = i;

@@ -1466,3 +1466,48 @@ fn strip_offset_snaps_to_the_head_once_everything_fits_again() {
     assert_eq!(strip_window(&mut app), vec![0, 1]);
     assert_eq!(app.tab_strip_offset, 0, "no scroll state when nothing overflows");
 }
+
+#[test]
+fn queue_edit_survives_tab_switch_and_keeps_background_queue_paused() {
+    let (mut app, _demo, _) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.state = RunState::Running;
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id: 991,
+        blocks: vec![StagedBlock::Text("original".into())],
+    });
+    app.begin_queue_edit_at(0);
+    app.input.set("edited".into());
+    app.open_new_session("second".into(), true);
+    app.handle(AppEvent::Ui(crate::events::UiEvent::SessionStatus {
+        session: "dsh-test".into(), running: false,
+    }), &ctl);
+    assert!(!commands.try_iter().any(|cmd| matches!(cmd, Cmd::Prompt { .. })),
+        "the background queue stays paused until the edit is saved or cancelled");
+    app.switch_view_to_tab(0, &ctl);
+    assert_eq!(app.input.buf(), "edited");
+    assert!(app.queue_editing());
+    app.save_queue_edit(&ctl);
+    let prompts: Vec<_> = commands.try_iter().filter_map(|cmd| match cmd {
+        Cmd::Prompt { session_id, text } => Some((session_id, text)),
+        _ => None,
+    }).collect();
+    assert_eq!(prompts, vec![("dsh-test".into(), "edited".into())]);
+}
+
+#[test]
+fn operation_failure_does_not_finish_live_or_parked_prompts() {
+    let (mut app, ctl, _) = test_app();
+    app.state = RunState::Running;
+    app.open_new_session("second".into(), true);
+    app.state = RunState::Running;
+    for session in ["dsh-test", "second"] {
+        app.handle(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+            session_id: session.into(), message: "unsupported config option".into(),
+        }), &ctl);
+    }
+    assert_eq!(app.state, RunState::Running);
+    assert!(app.parked[0].running);
+    assert!(transcript_text(&mut app.parked[0].transcript).contains("unsupported config option"));
+    assert!(transcript_text(&mut app.transcript).contains("unsupported config option"));
+}

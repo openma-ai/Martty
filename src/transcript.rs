@@ -360,7 +360,7 @@ pub struct ImageShot {
 /// One user prompt in a rendered transcript: the transcript cell index and
 /// the half-open line span `[line, end)` its bubble occupies (the leading
 /// blank separator row is not counted; `end` covers wrapped text lines and,
-/// for image prompts, the thumbnail rows). The ⌕ composer button walks
+/// for image prompts, the thumbnail rows). The ↥ composer button walks
 /// these from the newest one back and flashes the jumped span (issue #103).
 #[derive(Clone, Copy, Debug)]
 pub struct UserPromptLine {

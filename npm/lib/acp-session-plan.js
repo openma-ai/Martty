@@ -107,6 +107,7 @@ export function installAcpSessionPlan(ctx) {
         ? readString(message.params, 'sessionId', 'session_id')
         : undefined,
     })
+    if (message.method === 'session/load') reset(readString(message.params, 'sessionId', 'session_id'))
   }
 
   function observeAgent(message) {
@@ -117,7 +118,9 @@ export function installAcpSessionPlan(ctx) {
       if (message.error !== undefined || !isObject(message.result)) return
       const bound = readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId
       if (!selectionKnown) sessionId = bound
-      reset(bound)
+      // Replay notifications precede the setup response. Preserve their state.
+      if (!plansBySession.has(bound)) reset(bound)
+      else if (bound === sessionId) publish()
       return
     }
     if (message.method !== 'session/update' || !isObject(message.params)) return

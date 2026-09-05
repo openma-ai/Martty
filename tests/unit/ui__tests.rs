@@ -2070,7 +2070,7 @@ fn model_picker_marks_only_the_current_provider_model_pair() {
     );
 }
 
-/// The ⌕ jump flash (issue #103): for ~5 s after a jump the jumped
+/// The ↥ jump flash (issue #103): for ~5 s after a jump the jumped
 /// prompt's bubble rows are highlighted like a picker's selected row —
 /// chip background wash and the text in the brand tone; after the window
 /// the next tick clears it and the next frame restores the normal bubble.
@@ -3325,7 +3325,7 @@ fn expand_button_survives_a_full_draft() {
     assert_ne!(buf[(btn.x + 2, app.input_area.y)].symbol(), "⛶");
 }
 
-/// The ⌕ user-prompt jump button (issue #103) renders between the project
+/// The ↥ user-prompt jump button (issue #103) renders between the project
 /// path and the ⛶ expand glyph — spaces on both sides — and hovers the
 /// same way: quiet caption tone idle, brightest foreground on hover.
 #[test]
@@ -3343,17 +3343,17 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
     let expand = app.expand_btn.expect("expand rect");
     let jump = app.prompt_jump_btn.expect("jump rect");
 
-    // Geometry: ⌕ (space) ⛶ (space) ╮ — the jump glyph one cell left of
+    // Geometry: ↥ (space) ⛶ (space) ╮ — the jump glyph one cell left of
     // the expand glyph with a space in between, and a space before it.
     assert_eq!(jump.y, expand.y, "both buttons share the cap row");
     assert_eq!(jump.x + jump.width, expand.x, "jump rect tucked left of expand");
-    assert_eq!(buf[(jump.x + 1, jump.y)].symbol(), "⌕");
-    assert_eq!(buf[(expand.x - 2, expand.y)].symbol(), " ", "space before ⌕");
-    assert_eq!(buf[(expand.x, expand.y)].symbol(), " ", "space between ⌕ and ⛶");
+    assert_eq!(buf[(jump.x + 1, jump.y)].symbol(), "↥");
+    assert_eq!(buf[(expand.x - 2, expand.y)].symbol(), " ", "space before ↥");
+    assert_eq!(buf[(expand.x, expand.y)].symbol(), " ", "space between ↥ and ⛶");
     assert_eq!(buf[(expand.x + 1, expand.y)].symbol(), "⛶");
     assert_eq!(buf[(jump.x + 1, jump.y)].fg, theme.caption, "idle tone");
 
-    // Hover brightens the ⌕ glyph.
+    // Hover brightens the ↥ glyph.
     app.handle_mouse(mouse(MouseEventKind::Moved, jump.x + 1, jump.y), &ctl);
     assert!(app.hover_prompt_jump_btn);
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
@@ -3361,7 +3361,7 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
     assert_eq!(
         buf[(jump.x + 1, jump.y)].fg,
         theme.fg,
-        "hover brightens the ⌕ glyph"
+        "hover brightens the ↥ glyph"
     );
     // Leaving restores the quiet glyph.
     app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);

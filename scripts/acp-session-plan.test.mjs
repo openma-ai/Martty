@@ -88,3 +88,24 @@ test('plan snapshots follow explicit native tab selection', () => {
   plan.selectSession('s-2')
   assert.equal(plan.current().content, 'two')
 })
+
+test('load replay survives its response and resume preserves the cached plan', () => {
+  const plan = planModule.installAcpSessionPlan(makeCtx())
+  const update = (sessionId, content) => plan.observeAgent({
+    method: 'session/update', params: {
+      sessionId, update: { sessionUpdate: 'plan', entries: [{ content, status: 'pending' }] },
+    },
+  })
+  update('background', 'background plan')
+  plan.selectSession('restored')
+  update('restored', 'stale plan')
+  plan.observeClient({ id: 1, method: 'session/load', params: { sessionId: 'restored' } })
+  update('restored', 'replayed plan')
+  plan.observeAgent({ id: 1, result: {} })
+  assert.equal(plan.current().entries[0].content, 'replayed plan')
+  plan.observeClient({ id: 2, method: 'session/resume', params: { sessionId: 'restored' } })
+  plan.observeAgent({ id: 2, result: {} })
+  assert.equal(plan.current().entries[0].content, 'replayed plan')
+  plan.selectSession('background')
+  assert.equal(plan.current().entries[0].content, 'background plan')
+})
