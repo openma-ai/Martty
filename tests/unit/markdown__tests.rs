@@ -8,7 +8,7 @@ fn plain(lines: &[Line]) -> String {
 }
 
 fn render_dark(md: &str, width: usize) -> Vec<Line<'static>> {
-    render(md, &Theme::dark(), width)
+    render(md, &Theme::dark(), ToneMode::Single, width)
 }
 
 fn line_width(line: &Line) -> usize {
@@ -18,7 +18,7 @@ fn line_width(line: &Line) -> usize {
 #[test]
 fn inline_emphasis_styles_runs() {
     let theme = Theme::dark();
-    let lines = render("a **bold** b *it* c `code` d ~~x~~", &theme, 60);
+    let lines = render("a **bold** b *it* c `code` d ~~x~~", &theme, ToneMode::Single, 60);
     let text = plain(&lines);
     assert_eq!(text, "a bold b it c code d x");
     let spans: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
@@ -52,7 +52,7 @@ fn link_and_image_render_with_urls() {
 #[test]
 fn code_block_renders_as_framed_box_with_lang_label() {
     let theme = Theme::dark();
-    let lines = render("before\n\n```rust\nlet x = 1;\n```\n\nafter", &theme, 40);
+    let lines = render("before\n\n```rust\nlet x = 1;\n```\n\nafter", &theme, ToneMode::Single, 40);
     let text = plain(&lines);
     assert!(text.contains("let x = 1;"), "{text}");
     // Fence delimiters become frame edges; the top one names the language.
@@ -81,7 +81,7 @@ fn code_block_renders_as_framed_box_with_lang_label() {
 fn code_line_with_box_chars_is_not_mistaken_for_a_table() {
     let theme = Theme::dark();
     let md = "```\n│ diagram text that runs well past the wrap column\n```";
-    let lines = render(md, &theme, 20);
+    let lines = render(md, &theme, ToneMode::Single, 20);
     let text = plain(&lines);
     // Box-drawing code content wraps (mid-word if needed) instead of
     // truncating…
@@ -102,7 +102,7 @@ fn code_line_with_box_chars_is_not_mistaken_for_a_table() {
 #[test]
 fn blockquote_gets_prefix_and_italic() {
     let theme = Theme::dark();
-    let lines = render("> quoted", &theme, 40);
+    let lines = render("> quoted", &theme, ToneMode::Single, 40);
     let text = plain(&lines);
     assert!(text.contains("> quoted"), "{text}");
     let spans: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
@@ -112,7 +112,8 @@ fn blockquote_gets_prefix_and_italic() {
             && s.style.fg == Some(theme.fg_tertiary)
             && s.style.add_modifier.contains(Modifier::ITALIC)
     }));
-    // …while Latin body text takes the brighter two-tone foreground.
+    // …while body text takes the brighter foreground (single tone keeps
+    // CJK and Latin alike).
     assert!(spans.iter().any(|s| {
         s.content.contains("quoted")
             && s.style.fg == Some(theme.fg)
@@ -144,7 +145,7 @@ fn list_wrap_hangs_under_marker() {
 #[test]
 fn task_list_checkboxes_render_as_status_glyphs() {
     let theme = Theme::dark();
-    let lines = render("- [x] done\n- [ ] pending\n- [X] also done", &theme, 40);
+    let lines = render("- [x] done\n- [ ] pending\n- [X] also done", &theme, ToneMode::Single, 40);
     let text = plain(&lines);
     assert!(text.contains("✓ done"), "checked:\n{text}");
     assert!(text.contains("○ pending"), "open:\n{text}");
@@ -195,7 +196,7 @@ fn task_list_continuations_hang_under_the_glyph_prefix() {
 #[test]
 fn rule_renders_full_width() {
     let theme = Theme::dark();
-    let lines = render("above\n\n---\n\nbelow", &theme, 30);
+    let lines = render("above\n\n---\n\nbelow", &theme, ToneMode::Single, 30);
     let rule = lines
         .iter()
         .find(|l| l.spans.iter().any(|s| s.content.contains('─')))
@@ -235,10 +236,13 @@ fn heading_levels_have_distinct_colors() {
         .all(|l| l.spans[0].style.add_modifier.contains(Modifier::BOLD)));
 }
 
+/// The opt-in two-tone mode splits plain body runs into CJK vs
+/// Latin/digit runs: CJK keeps the muted body gray, Latin/digits take the
+/// brighter `fg`.
 #[test]
-fn cjk_and_latin_body_use_different_colors() {
+fn two_tone_body_cjk_and_latin_use_different_colors() {
     let theme = Theme::dark();
-    let lines = render("你好 world 123", &theme, 40);
+    let lines = render("你好 world 123", &theme, ToneMode::Two, 40);
     let segs: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
     let cjk = segs
         .iter()
@@ -261,11 +265,29 @@ fn cjk_and_latin_body_use_different_colors() {
     assert_ne!(cjk.style.fg, latin.style.fg);
 }
 
+/// Default single tone: CJK and Latin/digits share the main `fg` — one
+/// body color, no script split (the two-tone pass is opt-in).
+#[test]
+fn single_tone_body_colors_cjk_and_latin_alike() {
+    let theme = Theme::dark();
+    let lines = render("你好 world 123", &theme, ToneMode::Single, 40);
+    let segs: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+    let body: Vec<&Span> = segs
+        .iter()
+        .copied()
+        .filter(|s| s.content.contains("你好") || s.content.contains("world"))
+        .collect();
+    assert!(!body.is_empty(), "body spans present: {segs:?}");
+    for span in body {
+        assert_eq!(span.style.fg, Some(theme.fg), "uniform body fg: {span:?}");
+    }
+}
+
 #[test]
 fn table_renders_as_box_with_header_and_rows() {
     let theme = Theme::dark();
     let md = "| 样式 | 语法 |\n|------|------|\n| 粗体 | `**b**` |";
-    let lines = render(md, &theme, 40);
+    let lines = render(md, &theme, ToneMode::Single, 40);
     let text = plain(&lines);
     assert!(text.contains('┌'), "top border: {text}");
     assert!(text.contains('├'), "header separator: {text}");
@@ -294,7 +316,7 @@ fn table_borders_keep_border_color_when_a_palette_aliases_it() {
     let mut theme = Theme::dark();
     theme.border = theme.fg_secondary;
     let md = "| A |\n|---|\n| 1 |\n| 2 |";
-    let lines = render(md, &theme, 40);
+    let lines = render(md, &theme, ToneMode::Two, 40);
     for l in &lines {
         for s in &l.spans {
             let box_drawing = s
@@ -330,7 +352,7 @@ fn table_borders_keep_border_color_when_a_palette_aliases_it() {
 fn table_body_rows_are_separated_by_frame_lines() {
     let theme = Theme::dark();
     let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |";
-    let lines = render(md, &theme, 40);
+    let lines = render(md, &theme, ToneMode::Single, 40);
     let texts: Vec<String> = lines
         .iter()
         .map(|l| plain(std::slice::from_ref(l)))
@@ -543,7 +565,7 @@ fn autolink_is_not_duplicated() {
 #[test]
 fn nested_blockquote_keeps_markers_together() {
     let theme = Theme::dark();
-    let lines = render("> outer\n> > inner", &theme, 60);
+    let lines = render("> outer\n> > inner", &theme, ToneMode::Single, 60);
     let text = plain(&lines);
     assert!(text.contains(">> inner"), "nested markers: {text}");
     assert!(lines
@@ -558,7 +580,7 @@ fn four_backtick_fences_survive_nested_backtick_content() {
     // toggle the frame logic on the content lines, breaking the block into
     // two frames with an unframed middle.
     let text = "````\n```rust\nlet x = 1;\n```\nplain\n````\n";
-    let lines = render(text, &Theme::dark(), 40);
+    let lines = render(text, &Theme::dark(), ToneMode::Single, 40);
     let texts: Vec<String> = lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())

@@ -4,8 +4,10 @@
 //! structure; this module maps its output onto the DeepSeek palette through a
 //! custom `StyleSheet`, then post-processes the rendered lines:
 //!
-//! - body runs are split into CJK vs Latin/digit runs so Chinese and English
-//!   take two different foreground colors (the transcript's two-tone body);
+//! - body runs follow the caller's [`ToneMode`]: the default single tone
+//!   paints CJK and Latin/digit runs alike with the main `fg`, while the
+//!   optional two-tone split gives Chinese a muted gray and English a
+//!   brighter foreground;
 //! - lines wrap to the chat width, keeping hanging indents under list markers
 //!   and blockquote prefixes;
 //! - `---` rules are redrawn as full-width `─` lines;
@@ -20,7 +22,9 @@
 //!   rows, so long cells stay readable instead of truncating with an ellipsis.
 //!
 //! Colors stay inside the DeepSeek palette: grayscale body text, brand-blue
-//! accents for links and headings, red still reserved for errors.
+//! accents for links and headings, red reserved for errors. The two-tone
+//! body pass is an opt-in [`ToneMode::Two`]; the default single tone
+//! renders every body run in the main `fg`.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -33,8 +37,38 @@ use crate::theme::{
     DEEPSEEK_800, DEEPSEEK_900,
 };
 
+/// Body-color scheme for rendered markdown: whether CJK and Latin/digit
+/// runs take different foreground colors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToneMode {
+    /// Whole body in one color — CJK and Latin/digits both use `fg`.
+    #[default]
+    Single,
+    /// Two-tone: CJK keeps the muted body gray, Latin/digits take `fg`.
+    Two,
+}
+
+impl ToneMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "single" | "one" | "1" => Some(Self::Single),
+            "two" | "2" => Some(Self::Two),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Two => "two",
+        }
+    }
+
+}
+
 /// Render markdown `text` to wrapped, styled lines for `width` columns.
-pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+/// `tone` picks the body-color scheme (see [`ToneMode`]).
+pub fn render(text: &str, theme: &Theme, tone: ToneMode, width: usize) -> Vec<Line<'static>> {
     let width = width.max(8);
     let options =
         Options::new(DeepSeekStyleSheet(*theme)).image_fallback(ImageFallback::AltTextAndUrl);
@@ -63,7 +97,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         // precedes them. Track that prefix separately from code content;
         // colors alone cannot distinguish nested blocks from inline code.
         if let Some(fence) = segs.iter().position(|s| s.text.starts_with(CODE_FENCE_SENTINEL)) {
-            flush_table(&mut table, &mut out, theme, width);
+            flush_table(&mut table, &mut out, theme, tone, width);
             if in_code {
                 let frame_width = width - segments_width(&code_prefix);
                 out.push(with_prefix(&code_prefix, code_frame_bottom(frame_width, theme)));
@@ -94,17 +128,17 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
         if in_code { continue; }
         // A standalone inline-code paragraph remains preformatted.
         if !segs.is_empty() && segs.iter().all(|s| s.style.bg == Some(theme.panel)) {
-            flush_table(&mut table, &mut out, theme, width);
+            flush_table(&mut table, &mut out, theme, tone, width);
             out.extend(wrap_pre(segs, width));
             continue;
         }
         if segs.is_empty() {
-            flush_table(&mut table, &mut out, theme, width);
+            flush_table(&mut table, &mut out, theme, tone, width);
             out.push(Line::default());
             continue;
         }
         if is_plain_rule(&segs) {
-            flush_table(&mut table, &mut out, theme, width);
+            flush_table(&mut table, &mut out, theme, tone, width);
             out.push(Line::from(Span::styled(
                 "─".repeat(width.min(120)),
                 Style::default().fg(theme.border),
@@ -114,8 +148,8 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
 
         // Hanging indent: quote (`>`) and list (`- ` / `1. `) prefixes stay on
         // the first wrapped line; continuations align under the body text.
-        // Prefixes keep their block style — the two-tone split applies to the
-        // body only, so markers don't turn into bright Latin runs.
+        // Prefixes keep their block style — the tone pass applies to the
+        // body only, so markers don't turn into bright runs.
         let segs = collapse_autolinks(segs);
         let (prefix, body) = split_prefix(segs);
         // Table frames are buffered whole: tui-markdown sizes every column
@@ -134,7 +168,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             }
             let line = TableLine { prefix: prefix_spans, segs: strip_lead_spaces(body) };
             if first == '┌' {
-                flush_table(&mut table, &mut out, theme, width);
+                flush_table(&mut table, &mut out, theme, tone, width);
                 table = Some(TableBuffer { indent: Some(indent), lines: vec![line] });
             } else {
                 let buf = table
@@ -144,13 +178,13 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             }
             continue;
         }
-        flush_table(&mut table, &mut out, theme, width);
+        flush_table(&mut table, &mut out, theme, tone, width);
 
         // Task-list checkboxes render as status glyphs instead of literal
         // `[x]` / `[ ]` markers, so lists read as rendered UI rather than
         // raw markdown source.
         let prefix = fit_prefix(task_list_glyphs(prefix, theme), width.saturating_sub(4), theme);
-        let body = two_tone(body, theme);
+        let body = body_tone(body, theme, tone);
         let indent = prefix_width(&prefix);
         let mut wrapped = wrap_segments(body, width.saturating_sub(indent).max(4));
         if wrapped.is_empty() && !prefix.is_empty() {
@@ -167,7 +201,7 @@ pub fn render(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
             out.push(Line::from(spans));
         }
     }
-    flush_table(&mut table, &mut out, theme, width);
+    flush_table(&mut table, &mut out, theme, tone, width);
     out
 }
 
@@ -394,10 +428,11 @@ fn flush_table(
     table: &mut Option<TableBuffer>,
     out: &mut Vec<Line<'static>>,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
 ) {
     if let Some(buf) = table.take() {
-        out.extend(render_table(buf, theme, width));
+        out.extend(render_table(buf, theme, tone, width));
     }
 }
 
@@ -446,13 +481,18 @@ fn prefix_width(prefix: &[Seg]) -> usize {
 }
 
 /// Lay out one buffered table block. When the block fits the available
-/// width it is repainted as tui-markdown drew it (two-tone cells, `├─┼─┤`
-/// junctions between body rows); otherwise the columns shrink and each
-/// cell's text soft-wraps across box rows, so long cells read in full
+/// width it is repainted as tui-markdown drew it (tone-colored cells,
+/// `├─┼─┤` junctions between body rows); otherwise the columns shrink and
+/// each cell's text soft-wraps across box rows, so long cells read in full
 /// instead of truncating with an ellipsis.
-fn render_table(buf: TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn render_table(
+    buf: TableBuffer,
+    theme: &Theme,
+    tone: ToneMode,
+    width: usize,
+) -> Vec<Line<'static>> {
     let Some((header, body)) = parse_table(&buf.lines) else {
-        return paint_fit(&buf, theme, width);
+        return paint_fit(&buf, theme, tone, width);
     };
     let cols = header.iter().chain(&body).map(|r| r.cells.len()).max().unwrap_or(0);
     let mut natural = vec![1usize; cols];
@@ -468,7 +508,7 @@ fn render_table(buf: TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'stat
     // If even one content column per cell cannot fit, retain the clipped
     // fallback rather than drawing a frame wider than the viewport.
     if overhead + cols > avail || overhead + natural.iter().sum::<usize>() <= avail {
-        return paint_fit(&buf, theme, width);
+        return paint_fit(&buf, theme, tone, width);
     }
 
     // Column alignment is recovered from the original padding spans: the
@@ -502,14 +542,14 @@ fn render_table(buf: TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'stat
         &buf.lines.first().map(|l| &l.prefix).unwrap_or(&empty),
     ));
     for row in &header {
-        lines.extend(paint_row(row, &widths, &aligns, theme, false));
+        lines.extend(paint_row(row, &widths, &aligns, theme, tone, false));
     }
     lines.push(prefix_line(frame_edge('├', '┼', '┤', &widths, border), cont_prefix));
     for (i, row) in body.iter().enumerate() {
         if i > 0 {
             lines.push(prefix_line(frame_edge('├', '┼', '┤', &widths, border), cont_prefix));
         }
-        lines.extend(paint_row(row, &widths, &aligns, theme, true));
+        lines.extend(paint_row(row, &widths, &aligns, theme, tone, true));
     }
     lines.push(prefix_line(frame_edge('└', '┴', '┘', &widths, border), cont_prefix));
     lines
@@ -647,14 +687,16 @@ fn frame_edge(left: char, cross: char, right: char, widths: &[usize], border: St
 }
 
 /// Paint one logical row as one or more `│ … │` lines: each cell's styled
-/// runs are two-toned and soft-wrapped to its column width; cells that fit
-/// on one line keep the column's alignment, wrapped ones left-align. Every
-/// physical line re-applies the row's quote/list prefix.
+/// runs are tone-colored (see [`ToneMode`]) and soft-wrapped to its column
+/// width; cells that fit on one line keep the column's alignment, wrapped
+/// ones left-align. Every physical line re-applies the row's quote/list
+/// prefix.
 fn paint_row(
     row: &TableRow,
     widths: &[usize],
     aligns: &[TAlign],
     theme: &Theme,
+    tone: ToneMode,
     body: bool,
 ) -> Vec<Line<'static>> {
     let border = Style::default().fg(theme.border);
@@ -670,7 +712,7 @@ fn paint_row(
         .map(|(i, w)| {
             let segs = cells
                 .get(i)
-                .map(|c| two_tone(c.segs.clone(), theme))
+                .map(|c| body_tone(c.segs.clone(), theme, tone))
                 .unwrap_or_default();
             wrap_segments(segs, *w)
         })
@@ -708,16 +750,16 @@ fn pad_split(align: TAlign, free: usize) -> (usize, usize) {
     }
 }
 
-/// Repaint the buffered block as tui-markdown drew it: two-tone body,
+/// Repaint the buffered block as tui-markdown drew it: tone-colored body,
 /// `├─┼─┤` junctions between consecutive body rows, and — when the block is
 /// not a well-formed frame (degenerate fallback) — ellipsis truncation.
 /// Each line re-applies its own quote/list prefix.
-fn paint_fit(buf: &TableBuffer, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn paint_fit(buf: &TableBuffer, theme: &Theme, tone: ToneMode, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut prev_row = false;
     for line in &buf.lines {
         let available = width.saturating_sub(line.prefix.iter().map(Span::width).sum::<usize>());
-        let row = truncate_line(two_tone(line.segs.clone(), theme), available, theme);
+        let row = truncate_line(body_tone(line.segs.clone(), theme, tone), available, theme);
         let is_row = row.spans.first().and_then(|s| s.content.chars().next()) == Some('│');
         if is_row && prev_row {
             let sep = table_row_separator(&row, theme);
@@ -867,11 +909,39 @@ fn task_list_glyphs(prefix: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
     out
 }
 
+/// Tint plain body runs according to the chosen [`ToneMode`] — the body is
+/// paragraph/list/table-cell text, including blockquote italic. Spans that
+/// already carry an accent (headings, links, code, captions) are left
+/// untouched.
+fn body_tone(segs: Vec<Seg>, theme: &Theme, mode: ToneMode) -> Vec<Seg> {
+    match mode {
+        ToneMode::Single => single_tone(segs, theme),
+        ToneMode::Two => two_tone(segs, theme),
+    }
+}
+
+/// Single-tone body coloring: every plain body run is repainted with the
+/// main `fg` — CJK and Latin/digits share one color, no script split.
+fn single_tone(segs: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
+    segs.into_iter()
+        .map(|seg| {
+            // Box-drawing characters are structural borders, never body text:
+            // keep their own style (see the note in `two_tone`).
+            if is_body_style(seg.style, theme) && !is_box_drawing(&seg.text) {
+                Seg {
+                    text: seg.text,
+                    style: seg.style.fg(theme.fg),
+                }
+            } else {
+                seg
+            }
+        })
+        .collect()
+}
+
 /// Two-tone body coloring: plain body runs (paragraph/list/table-cell text,
 /// including blockquote italic) are split into CJK vs Latin/digit runs, CJK
 /// keeping the muted body gray and Latin/digits taking the brighter `fg`.
-/// Spans that already carry an accent (headings, links, code, captions) are
-/// left untouched.
 fn two_tone(segs: Vec<Seg>, theme: &Theme) -> Vec<Seg> {
     let mut out = Vec::new();
     for seg in segs {

@@ -2884,7 +2884,7 @@ fn composer_dock_title_uses_the_tertiary_tone() {
         selected: false,
         action: None,
     };
-    let spans = compact_node_spans(&node, &theme, 60, '⣋').expect("generic spans");
+    let spans = compact_node_spans(&node, &theme, crate::markdown::ToneMode::Single, 60, '⣋').expect("generic spans");
     let title = spans
         .iter()
         .find(|s| s.content == "1.2k tokens")
@@ -2981,8 +2981,8 @@ fn compact_running_progress_pulses_without_a_spinner_prefix() {
         action: None,
     };
 
-    let soft = compact_node_spans(&node, &app.theme, 60, '⠋').expect("generic spans");
-    let bright = compact_node_spans(&node, &app.theme, 60, '⠴').expect("generic spans");
+    let soft = compact_node_spans(&node, &app.theme, crate::markdown::ToneMode::Single, 60, '⠋').expect("generic spans");
+    let bright = compact_node_spans(&node, &app.theme, crate::markdown::ToneMode::Single, 60, '⠴').expect("generic spans");
     let text = |spans: &[Span]| {
         spans
             .iter()

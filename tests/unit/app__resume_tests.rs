@@ -57,7 +57,7 @@ fn resume_replays_transcript_modes_and_usage() {
     assert_eq!(app.transcript.usage.output, 5);
     let text = app
         .transcript
-        .lines(&Theme::dark(), 80, ' ')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, ' ')
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
         .collect::<String>();

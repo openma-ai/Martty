@@ -15,6 +15,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::events::UiEvent;
 use crate::locale::Locale;
+use crate::markdown::ToneMode;
 use crate::theme::Theme;
 
 /// Collapsed tool preview height; click toggles full expansion. Mouse wheel
@@ -109,6 +110,7 @@ struct CellRender {
     version: u64,
     width: u16,
     theme: Theme,
+    tone: ToneMode,
     expanded: bool,
     thumbs: bool,
     locale: Locale,
@@ -136,12 +138,13 @@ impl Cell {
     }
 
     /// Return the cached body render, rebuilding it when the cell content
-    /// version or any layout input (width/theme/expanded/thumbs/locale)
+    /// version or any layout input (width/theme/tone/expanded/thumbs/locale)
     /// drifted. `expanded` is the *effective* value including the
     /// transcript-wide `expand_all`; it decides Tool/Shell/Reasoning layout.
     fn ensure_render(
         &mut self,
         theme: &Theme,
+        tone: ToneMode,
         width: u16,
         expanded: bool,
         thumbs: bool,
@@ -152,6 +155,7 @@ impl Cell {
                 r.version != self.version
                     || r.width != width
                     || r.theme != *theme
+                    || r.tone != tone
                     || r.expanded != expanded
                     || r.thumbs != thumbs
                     || r.locale != locale
@@ -159,12 +163,20 @@ impl Cell {
             None => true,
         };
         if stale {
-            let (body, meta) =
-                build_body(&self.kind, theme, width as usize, expanded, thumbs, locale);
+            let (body, meta) = build_body(
+                &self.kind,
+                theme,
+                tone,
+                width as usize,
+                expanded,
+                thumbs,
+                locale,
+            );
             self.render = Some(CellRender {
                 version: self.version,
                 width,
                 theme: *theme,
+                tone,
                 expanded,
                 thumbs,
                 locale,
@@ -183,6 +195,7 @@ impl Cell {
 fn build_body(
     kind: &CellKind,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     expanded: bool,
     _thumbs: bool,
@@ -210,7 +223,7 @@ fn build_body(
             if text.trim().is_empty() {
                 return (Vec::new(), 0);
             }
-            (crate::markdown::render(text, theme, width), 0)
+            (crate::markdown::render(text, theme, tone, width), 0)
         }
         CellKind::Tool {
             request, result, ok, error, ..
@@ -1057,8 +1070,14 @@ impl Transcript {
 
     /// Render every cell to wrapped, styled lines for `width` columns.
     #[allow(dead_code)] // kept for tests; the UI uses `layout` for ownership
-    pub fn lines(&mut self, theme: &Theme, width: u16, spinner: char) -> Vec<Line<'static>> {
-        self.layout(theme, width, spinner, false).lines
+    pub fn lines(
+        &mut self,
+        theme: &Theme,
+        tone: ToneMode,
+        width: u16,
+        spinner: char,
+    ) -> Vec<Line<'static>> {
+        self.layout(theme, tone, width, spinner, false).lines
     }
 
     /// Render every cell to wrapped, styled lines, plus per-line ownership so
@@ -1068,6 +1087,7 @@ impl Transcript {
     pub fn layout(
         &mut self,
         theme: &Theme,
+        tone: ToneMode,
         width: u16,
         spinner: char,
         thumbs: bool,
@@ -1093,7 +1113,7 @@ impl Transcript {
                     | CellKind::Tool { .. }
                     | CellKind::Shell { .. }
             ) {
-                cell.ensure_render(theme, width as u16, expanded, thumbs, self.locale);
+                cell.ensure_render(theme, tone, width as u16, expanded, thumbs, self.locale);
             }
             match &cell.kind {
                 CellKind::User { text, queued } => {

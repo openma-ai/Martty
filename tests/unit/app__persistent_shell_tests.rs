@@ -30,7 +30,7 @@ fn wait_for_shell(rx: &Receiver<AppEvent>) -> (Option<i32>, String) {
 
 fn transcript_text(transcript: &mut crate::transcript::Transcript) -> String {
     transcript
-        .lines(&Theme::dark(), 80, ' ')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, ' ')
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
         .collect()

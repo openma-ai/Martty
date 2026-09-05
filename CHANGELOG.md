@@ -76,6 +76,15 @@ All notable changes to this project are documented here. The project follows
 
 ### Changed
 
+- Markdown body text is now single-tone by default: CJK and Latin/digit
+  runs share one foreground color (`fg`) instead of the previous always-on
+  CJK/Latin split. The two-tone look (Chinese on the muted body gray,
+  English brighter) remains available as a deliberately quiet preference —
+  no command or picker surface for now: set `markdownTone` to `"two"` in
+  the UI settings file (settings.json, next to `themeMode`) to opt in. The
+  choice applies everywhere markdown paints — assistant messages, tables,
+  plugin slot content, and overlay/plan descriptions.
+
 - Markdown tables wider than the chat width no longer truncate cells with
   an ellipsis. The transcript buffers each table block whole and re-lays
   it out: columns shrink proportionally (narrow columns keep their

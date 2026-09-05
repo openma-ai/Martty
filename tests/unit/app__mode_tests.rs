@@ -181,6 +181,29 @@ fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
     );
 }
 
+/// The markdown body tone is a quiet, settings-only preference: no command
+/// surface. Absent `markdownTone` → single (the default look); `"two"`
+/// opts back into the two-tone CJK/Latin body.
+#[test]
+fn tone_defaults_to_single_and_loads_the_hidden_markdown_tone_setting() {
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let app = App::new(Some(Theme::dark()), cfg.clone(), "s1".into(), true, false, tx.clone());
+    assert_eq!(app.tone_mode, ToneMode::Single, "single tone is the default");
+
+    // Seed the hidden opt-in: a fresh App over the same session root picks
+    // the two-tone scheme from settings.json without any command.
+    let settings = std::path::Path::new(&cfg.session_root).join("settings.json");
+    std::fs::write(&settings, r#"{"markdownTone":"two"}"#).expect("seed settings");
+    let opted = App::new(Some(Theme::dark()), cfg.clone(), "s2".into(), true, false, tx.clone());
+    assert_eq!(opted.tone_mode, ToneMode::Two, "markdownTone:two opts in");
+
+    // Unknown values fall back to the single-tone default.
+    std::fs::write(&settings, r#"{"markdownTone":"bogus"}"#).expect("seed settings");
+    let bogus = App::new(Some(Theme::dark()), cfg.clone(), "s3".into(), true, false, tx.clone());
+    assert_eq!(bogus.tone_mode, ToneMode::Single, "unparsable markdownTone keeps the default");
+}
+
 #[test]
 fn liang_toggle_is_transient_and_keeps_the_empty_welcome_centered() {
     let (mut app, ctl, _rx) = test_app();
@@ -435,7 +458,7 @@ fn child_session_updates_do_not_enter_the_parent_transcript() {
 
     let rendered = app
         .transcript
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -458,7 +481,7 @@ fn subagent_started_updates_navigation_without_a_timeline_notice() {
     assert!(app.subagents[0].running);
     let rendered = app
         .transcript
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -484,7 +507,7 @@ fn subagent_finished_updates_navigation_without_a_timeline_notice() {
     assert!(!app.subagents[0].running);
     let rendered = app
         .transcript
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -1325,6 +1348,7 @@ fn prompt_jump_anchor(app: &mut App, cell: usize) -> usize {
     let spinner = app.spinner();
     let layout = app.transcript.layout(
         &theme,
+        crate::markdown::ToneMode::Single,
         area.width,
         spinner,
         crate::pet::kitty_supported(),
