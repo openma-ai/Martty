@@ -99,6 +99,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Fix `dsh --profile martty` startup against dsh 0.1.2 hosts: the embedded
+  ACP plugin now resolves agent presets from a self-shipping
+  `@deepseek-ai/dsh-agent-presets` instead of requiring the legacy
+  `@deepseek-ai/dsh/config/agent-presets` layout removed in dsh 0.1.2-rc.1
+  (bump `@openma/deepseek-harness-acp` to 0.4.29).
 - Preserve queue selection and edits across session tabs, including pausing
   background delivery until an edit is saved or cancelled. Failed session
   configuration operations no longer mark a running prompt idle.
