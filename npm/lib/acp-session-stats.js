@@ -120,6 +120,7 @@ export function installAcpSessionStats(ctx, options = {}) {
           ? readString(message.params, 'sessionId', 'session_id')
           : undefined,
       })
+      if (message.method === 'session/load') reset(readString(message.params, 'sessionId', 'session_id'))
       return
     }
     if (message.method !== 'session/prompt') return
@@ -128,13 +129,16 @@ export function installAcpSessionStats(ctx, options = {}) {
     if (!selectionKnown && sessionId === undefined) sessionId = promptSessionId
     const prompt = {
       sessionId: promptSessionId,
+      primary: !activePrompts.has(promptSessionId),
       started: now(),
       firstToken: undefined,
       toolMillis: 0,
     }
     pendingPrompts.set(message.id, prompt)
-    activePrompts.set(promptSessionId, prompt)
-    stateFor(promptSessionId).stats.turns += 1
+    if (prompt.primary) {
+      activePrompts.set(promptSessionId, prompt)
+      stateFor(promptSessionId).stats.turns += 1
+    }
     publishIf(promptSessionId)
   }
 
@@ -146,19 +150,21 @@ export function installAcpSessionStats(ctx, options = {}) {
       if (message.error !== undefined || !object(message.result)) return
       const bound = readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId
       if (!selectionKnown) sessionId = bound
-      reset(bound)
+      // Replay notifications precede the setup response. Preserve their state.
+      if (!values.has(bound)) reset(bound)
+      else if (bound === sessionId) publish()
       return
     }
     if (message.id !== undefined && pendingPrompts.has(message.id)) {
       const prompt = pendingPrompts.get(message.id)
       pendingPrompts.delete(message.id)
-      activePrompts.delete(prompt.sessionId)
+      if (activePrompts.get(prompt.sessionId) === prompt) activePrompts.delete(prompt.sessionId)
       const value = stateFor(prompt.sessionId)
       if (message.error === undefined && object(message.result)) {
         addUsage(value, message.result.usage)
       }
       const elapsed = Math.max(0, now() - prompt.started)
-      value.stats.llmMillis += Math.max(0, elapsed - prompt.toolMillis)
+      if (prompt.primary) value.stats.llmMillis += Math.max(0, elapsed - prompt.toolMillis)
       publishIf(prompt.sessionId)
       return
     }

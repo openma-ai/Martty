@@ -133,10 +133,12 @@ pub enum CtlEvent {
         efforts: Vec<String>,
         default: Option<String>,
     },
-    /// A command failed for one specific session (prompt, steer, config
-    /// select, …). The UI routes the notice into that session's own
-    /// transcript — parked sessions no longer spill their errors onto the
-    /// viewed tab.
+    /// A failed session operation that does not finish the active prompt.
+    SessionOpFailed {
+        session_id: String,
+        message: String,
+    },
+    /// A failed prompt: settle this session's delivery state and report the error.
     SessionError {
         session_id: String,
         message: String,
