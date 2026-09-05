@@ -360,6 +360,7 @@ test('harness add without a Harness shows guided setup instead of validator erro
   assert.match(result.stdout, /^Add a Harness$/m)
   assert.match(result.stdout, /^Find an ACP Harness$/m)
   assert.match(result.stdout, /martty harness find/)
+  assert.doesNotMatch(result.stdout, /martty harness find codex/)
   assert.match(result.stdout, /^Custom ACP command$/m)
   assert.match(result.stdout, /martty harness add <id> --command <cmd>/)
   assert.deepEqual(
@@ -374,6 +375,17 @@ test('harness add without a Harness shows guided setup instead of validator erro
     }),
     result,
   )
+})
+
+test('harness help does not require knowing a Registry id before discovery', async () => {
+  const module = await import(moduleUrl)
+  const result = module.runHarnessCommand(['help'], {
+    settingsPath: '/unused/settings.json',
+  })
+
+  assert.match(result.stdout, /martty harness find/)
+  assert.doesNotMatch(result.stdout, /martty harness find codex/)
+  assert.doesNotMatch(result.stdout, /martty harness add codex-acp/)
 })
 
 test('harness add uses the official ACP Registry npx distribution', async () => {
@@ -438,7 +450,7 @@ test('registry commands resolve to a named local Harness before PATH fallback en
     assert.match(result.stdout, /^  ○ Demo Harness$/m)
     assert.match(result.stdout, /^    Status   Found locally$/m)
     assert.ok(result.stdout.includes(`    Command  ${command}`))
-    assert.match(result.stdout, /^    Use      martty harness use demo$/m)
+    assert.match(result.stdout, /^    Add      martty harness add demo$/m)
     assert.doesNotMatch(result.stdout, /path-demo-acp/)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -530,6 +542,38 @@ test('harness find searches registry labels and package arguments by all query t
   assert.equal(result.code, 0)
   assert.match(result.stdout, /^ACP Harness candidates \(1\)$/m)
   assert.match(result.stdout, /^  ○ Demo Harness$/m)
+})
+
+test('harness find tells users to add an unconfigured Registry package before use', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-npx-'))
+  try {
+    const npx = path.join(root, 'npx')
+    writeFileSync(npx, '#!/bin/sh\n')
+    chmodSync(npx, 0o755)
+    const result = module.runHarnessCommand(['find'], {
+      settingsPath: path.join(root, 'settings.json'),
+      pathValue: root,
+      registry: [{
+        id: 'demo',
+        label: 'Demo Harness',
+        version: '1.0.0',
+        description: 'Demo ACP adapter',
+        distributions: [{
+          type: 'npx',
+          command: 'npx',
+          args: ['demo-acp@1.0.0'],
+          env: {},
+        }],
+      }],
+      defaults: [],
+    })
+
+    assert.match(result.stdout, /^    Add      martty harness add demo$/m)
+    assert.doesNotMatch(result.stdout, /^    Use      martty harness use demo$/m)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('registry Harness add saves the resolved local command without asking for a path', async () => {

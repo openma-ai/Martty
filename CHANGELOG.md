@@ -26,6 +26,10 @@ All notable changes to this project are documented here. The project follows
   own `$MARTTY_HOME/bin/<id>/<version>/<platform>` directory before switching.
   `harness add` and `/harness add` use the same official records, while manual
   `--command` remains available for unregistered agents.
+  Unqualified `harness find` is the primary discovery path and lists the full
+  catalog without requiring an agent name; query text is only an optional
+  filter. Unconfigured Registry results now point to `harness add <id>` instead
+  of incorrectly suggesting the local-only `harness use <id>` path.
   The built-in Client Plugin adds `/harness`, `/harness <id>`, and
   `/harness add <id> --command <cmd> [--arg <arg>]` as the third
   entry point, using the native TUI single-select overlay and the same registry.

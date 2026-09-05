@@ -132,7 +132,6 @@ select which one the next launch uses:
 ```sh
 martty harness list
 martty harness find
-martty harness add codex-acp
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -151,6 +150,9 @@ directly. TUI selection replaces the standalone ACP child immediately. If the cu
 already received a prompt or was restored through `/session`, Martty confirms
 first and keeps that session available for navigation.
 Unregistered local binaries named `*-acp` or `*_acp` are still discovered.
+Running `harness find` without a query browses the full catalog, so users do not need to know
+the name of Codex or any other Harness in advance. Extra words are only optional filters for a
+known target. Each unconfigured CLI result prints its copyable `martty harness add <id>` command.
 
 `harness list` includes saved entries, the bundled DSH runtime, and executable
 `*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks

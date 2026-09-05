@@ -129,10 +129,12 @@ ${section('Add options')}
 ${section('Examples')}
   ${command('martty harness list')}
   ${command('martty harness find')}
-  ${command('martty harness add codex-acp')}
   ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
   ${command('martty harness use local')}
   ${command('/harness add local --command local-acp --arg --stdio')}
+
+Run find without a query to browse every official Registry entry. A query is
+only an optional filter after you already know what you are looking for.
 
 The selected Harness is saved as defaultHarness in Martty settings. It is
 used on the next standalone launch, which starts a new ACP session. Registry
@@ -274,6 +276,8 @@ No ACP Harnesses found in the ACP Registry, local PATH, or settings.
       }
       lines.push(fieldLine('After', `martty harness find ${entry.id}`, columns, color))
       lines.push(fieldLine('Manual', `martty harness add ${entry.id} --command <cmd>`, columns, color))
+    } else if (entry.registry === true && entry.source !== 'configured') {
+      lines.push(fieldLine('Add', `martty harness add ${entry.id}`, columns, color))
     } else {
       lines.push(fieldLine('Use', `martty harness use ${entry.id}`, columns, color))
     }

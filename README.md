@@ -230,7 +230,6 @@ DSH_TUI_AGENT="<acp-command> [args...]" martty
 ```sh
 martty harness list
 martty harness find
-martty harness add codex-acp
 martty harness add local --label "Local ACP" --command local-acp --arg --stdio
 martty harness use local
 martty --check-runtime
@@ -245,6 +244,9 @@ PATH 扫描结果作为补充；它不是 npm 包搜索，也不会在后台切�
 `binary` 分发在选择后明确确认，并下载到 `$MARTTY_HOME/bin/<id>/<version>/<platform>`，
 校验 SHA-256 后再配置；不会写系统 PATH。TUI 中的 `/harness find` 提供同样的发现、配置、
 安装流程，`/harness <id>` 可直接切换。未收录但命名为 `*-acp` / `*_acp` 的本地程序也会被发现。
+无参 `harness find` 会展示完整目录，用户不需要预先知道 Codex 或任何其他 Harness 的名字；
+只有在已经知道目标时才把后续文字作为可选过滤条件。CLI 会在每个未配置候选下直接给出
+可复制的 `martty harness add <id>` 命令。
 TUI 选择会立即替换 standalone ACP 子进程；若当前会话
 已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
 

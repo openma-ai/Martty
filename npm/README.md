@@ -69,7 +69,6 @@ ACP server. Named standalone harnesses can also be discovered, saved, and select
 ```sh
 martty harness list
 martty harness find
-martty harness add codex-acp
 martty harness add local --command local-acp --arg --stdio
 martty harness use local
 ```
@@ -82,6 +81,9 @@ switch. `npx` / `uvx` entries become launch recipes without implicit `--yes` or
 `$MARTTY_HOME/bin/<id>/<version>/<platform>`, verifies its declared SHA-256, and configures
 the resulting executable without modifying the system PATH. The same flow is available in
 the TUI with `/harness find`; manual `--command` remains available for unregistered agents.
+Run `harness find` without a query to browse the full catalog; users do not need to know an
+agent name in advance. Query text is only an optional filter, and every unconfigured CLI result
+prints the corresponding `martty harness add <id>` command.
 
 The same registry is available through three entry points: edit
 `$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or
