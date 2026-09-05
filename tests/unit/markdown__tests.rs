@@ -306,6 +306,81 @@ fn table_renders_as_box_with_header_and_rows() {
         .any(|s| { s.content.contains("**b**") && s.style.bg == Some(theme.panel) })));
 }
 
+#[test]
+fn table_bold_text_follows_body_tone_and_keeps_emphasis() {
+    use crate::theme::{Mode, PalettePack};
+
+    let one = PalettePack::from_json(
+        &serde_json::from_str(include_str!("../../docs/fixtures/one.v0.json")).unwrap(),
+    ).unwrap();
+    let risk = "8 年内三次大额减损";
+    let debt = "含第 4 回 CB 3.0B（2026-06-30 已转股）后基本均衡";
+    let plan = "中期计划 FY2027";
+    let md = format!(
+        "| Metric | Result |\n|---|---|\n\
+         | Risk | **{risk}**（FY2021 70.4 亿） |\n\
+         | Debt | **{debt}** 普通文字 |\n\
+         | Plan | ***{plan}*** tail |"
+    );
+    for theme in [Theme::dark(), Theme::light(), one.theme(Mode::Dark), one.theme(Mode::Light)] {
+        for tone in [ToneMode::Single, ToneMode::Two] {
+            // Exercise both the original table layout and wrapped cells.
+            for width in [40, 220] {
+                let lines = render(&md, &theme, tone, width);
+                let spans: Vec<_> = lines.iter().flat_map(|l| &l.spans).collect();
+                for span in &spans {
+                    for ch in span.content.chars().filter(|c| c.is_alphanumeric()) {
+                        let fg = if tone == ToneMode::Two && !ch.is_ascii() {
+                            theme.fg_secondary
+                        } else {
+                            theme.fg
+                        };
+                        assert_eq!(span.style.fg, Some(fg), "{tone:?}, width={width}: {span:?}");
+                    }
+                    if is_box_drawing(&span.content) {
+                        assert_eq!(span.style.fg, Some(theme.border));
+                    }
+                }
+                let bold: String = spans.iter()
+                    .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+                    .flat_map(|s| s.content.chars().filter(|c| !c.is_whitespace()))
+                    .collect();
+                for phrase in [risk, debt, plan] {
+                    let expected: String = phrase.chars().filter(|c| !c.is_whitespace()).collect();
+                    assert!(bold.contains(&expected), "emphasis survives wrapping: {bold}");
+                }
+                let italic: String = spans.iter()
+                    .filter(|s| s.style.add_modifier.contains(Modifier::BOLD | Modifier::ITALIC))
+                    .flat_map(|s| s.content.chars().filter(|c| !c.is_whitespace()))
+                    .collect();
+                assert_eq!(italic, "中期计划FY2027");
+            }
+        }
+    }
+}
+
+#[test]
+fn bold_headings_links_and_code_keep_their_styles() {
+    let mut theme = Theme::dark();
+    // Even a link accent aliased to a body gray must retain its color.
+    theme.brand_soft = theme.fg_secondary;
+    for tone in [ToneMode::Single, ToneMode::Two] {
+        let lines = render("# **Heading**\n\n**[docs](https://x.dev)** and **`code`**", &theme, tone, 80);
+        let spans: Vec<_> = lines.iter().flat_map(|l| &l.spans).collect();
+        let heading = spans.iter().find(|s| s.content == "Heading").unwrap();
+        assert_eq!(heading.style.fg, Some(DEEPSEEK_200));
+        assert!(heading.style.add_modifier.contains(Modifier::BOLD));
+        let link = spans.iter().find(|s| s.content == "docs").unwrap();
+        assert_eq!(link.style.fg, Some(theme.brand_soft));
+        assert!(link.style.add_modifier.contains(Modifier::BOLD | Modifier::UNDERLINED));
+        let code = spans.iter().find(|s| s.content == "code").unwrap();
+        assert_eq!(code.style.fg, Some(theme.fg));
+        assert_eq!(code.style.bg, Some(theme.panel));
+        // Inline code uses its own upright style, even inside emphasis.
+        assert!(code.style.add_modifier.is_empty());
+    }
+}
+
 /// Palettes that alias `border` onto a body gray (Ayu: border ==
 /// fg_secondary == #686868) must not get their table frames repainted by
 /// the two-tone pass: every box-drawing span keeps the border color, so the

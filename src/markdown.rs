@@ -984,15 +984,18 @@ fn is_box_drawing(s: &str) -> bool {
     })
 }
 
-/// "Plain body" styles: no background, body-gray or tertiary foreground, and
-/// at most italics (blockquotes). Anything with an accent color or stronger
-/// modifier keeps its own styling.
+/// Body styles may carry bold and/or italics while still inheriting a body
+/// foreground (notably inside table cells). Recolor these runs without
+/// dropping their emphasis; accents, code backgrounds, and other modifiers
+/// such as link underlines keep their own styling.
 fn is_body_style(style: Style, theme: &Theme) -> bool {
     let fg_ok = match style.fg {
         None => true,
         Some(fg) => fg == theme.fg_secondary || fg == theme.fg_tertiary,
     };
-    style.bg.is_none() && fg_ok && style.add_modifier.difference(Modifier::ITALIC).is_empty()
+    style.bg.is_none()
+        && fg_ok
+        && style.add_modifier.difference(Modifier::BOLD | Modifier::ITALIC).is_empty()
 }
 
 /// Code block frame: top edge with an optional language label
