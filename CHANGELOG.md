@@ -99,6 +99,9 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Bold Markdown table text now follows the selected body color mode while
+  retaining its emphasis, fixing emphasized text appearing darker than
+  surrounding text in single-tone mode, especially with the One theme.
 - Fix `dsh --profile martty` startup against dsh 0.1.2 hosts: the embedded
   ACP plugin now resolves agent presets from a self-shipping
   `@deepseek-ai/dsh-agent-presets` instead of requiring the legacy
