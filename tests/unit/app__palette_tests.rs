@@ -369,13 +369,13 @@ fn theme_picker_can_leave_and_return_to_a_dynamic_plugin_pack() {
     );
     assert_eq!(picker.sel, 1, "the active dynamic pack is preselected");
 
-    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &ctl);
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))), &ctl);
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))), &ctl);
     assert_eq!(app.active_palette_id, "default");
 
     app.run_slash("theme", "", &ctl);
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))), &ctl);
     assert_eq!(app.active_palette_id, "ember");
     assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
 }
@@ -426,6 +426,242 @@ fn invalid_palette_keeps_previous_theme() {
     );
     assert_eq!(app.active_palette_id, "default");
     assert_eq!(app.theme.brand, DEEPSEEK_450);
+}
+
+#[test]
+fn theme_dialog_arrows_preview_and_only_enter_commits() {
+    let (mut app, ctl, _rx) = test_app();
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: ember_params(false),
+        },
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: gallery_params("ayu", false),
+        },
+        &ctl,
+    );
+    app.run_slash("theme", "", &ctl);
+    let picker = app.picker.as_ref().expect("theme picker opens");
+    assert_eq!(
+        picker
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["default", "ember", "ayu"]
+    );
+    assert_eq!(app.active_palette_id, "default");
+
+    // One ↓ lands on ember: the painter previews ember immediately, but the
+    // committed theme is still "default" — arrows never confirm.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60)); // ember dark brand
+    assert_eq!(
+        app.active_palette_id, "default",
+        "arrows only preview; the committed theme must stay default"
+    );
+    assert!(
+        app.picker.is_some(),
+        "preview must keep the dialog open for further browsing"
+    );
+
+    // ↓ again → ayu preview, still uncommitted.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.active_palette_id, "default");
+    assert!(app.picker.is_some());
+
+    // Home jumps back onto the committed row → the preview is gone.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, DEEPSEEK_450);
+    assert_eq!(app.active_palette_id, "default");
+
+    // ↓ to ember, then Enter confirms: dialog closes and ember commits.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    assert_eq!(app.active_palette_id, "default", "still only previewed");
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))), &ctl);
+    assert!(app.picker.is_none());
+    assert_eq!(app.active_palette_id, "ember");
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+}
+
+#[test]
+fn theme_dialog_esc_reverts_the_preview_to_the_committed_theme() {
+    let (mut app, ctl, _rx) = test_app();
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: ember_params(false),
+        },
+        &ctl,
+    );
+    app.run_slash("theme", "", &ctl);
+    assert_eq!(app.theme.brand, DEEPSEEK_450);
+
+    // Preview ember with ↓ and with the wheel…
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, DEEPSEEK_450);
+    app.handle(
+        AppEvent::Term(Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 40,
+            row: 10,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })),
+        &ctl,
+    );
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    assert!(app.picker.is_some(), "wheel preview keeps the dialog open");
+
+    // …Esc closes without confirming: the committed theme comes back.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))), &ctl);
+    assert!(app.picker.is_none());
+    assert_eq!(app.active_palette_id, "default");
+    assert_eq!(
+        app.theme.brand, DEEPSEEK_450,
+        "Esc must revert the preview — arrows never confirm"
+    );
+}
+
+#[test]
+fn slash_theme_popup_previews_and_reverts_without_enter() {
+    let (mut app, ctl, _rx) = test_app();
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: ember_params(false),
+        },
+        &ctl,
+    );
+    app.input.set("/theme ".into());
+    app.snap_slash_sel();
+    assert!(
+        app.slash_completion_open(),
+        "the /theme candidate popup must be open"
+    );
+    assert_eq!(app.slash_sel, 1, "default row is the current theme");
+    assert_eq!(app.active_palette_id, "default");
+
+    // ↓ to ember → preview only; draft and popup stay, theme uncommitted.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    assert_eq!(app.active_palette_id, "default");
+    assert!(
+        app.slash_completion_open(),
+        "preview must not consume the draft"
+    );
+
+    // ↓ wraps to the dark/light toggle row — no theme highlighted, so the
+    // committed theme shows again.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, DEEPSEEK_450);
+    assert_eq!(app.active_palette_id, "default");
+
+    // ↓↓ back onto ember, then Esc dismisses the popup and reverts too.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))), &ctl);
+    assert!(!app.slash_completion_open());
+    assert_eq!(
+        app.theme.brand, DEEPSEEK_450,
+        "Esc must revert the popup preview"
+    );
+}
+
+#[test]
+fn slash_theme_popup_enter_commits_the_previewed_palette() {
+    let (mut app, ctl, _rx) = test_app();
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: ember_params(false),
+        },
+        &ctl,
+    );
+    app.input.set("/theme ".into());
+    app.snap_slash_sel();
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    assert_eq!(app.active_palette_id, "default");
+
+    // Enter on the highlighted ember row is the confirmation.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))), &ctl);
+    assert_eq!(app.active_palette_id, "ember");
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    assert!(
+        app.input.is_empty(),
+        "Enter on a candidate runs the command and clears the draft"
+    );
+}
+
+#[test]
+fn dialog_stopped_pack_preview_is_transient_and_enter_holds_it_while_loading() {
+    let (mut app, ctl, _rx) = test_app();
+    let mut loaded = ember_params(false);
+    loaded["owner"] = json!({ "pluginId": "night-lime-1" });
+    loaded["loaded"] = json!(true);
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: loaded,
+        },
+        &ctl,
+    );
+    let mut stopped = ember_params(false);
+    stopped["owner"] = json!({ "pluginId": "night-lime-1" });
+    stopped["loaded"] = json!(false);
+    app.handle(
+        AppEvent::Rpc {
+            method: crate::cordis::THEME_UPDATE.into(),
+            params: stopped,
+        },
+        &ctl,
+    );
+    let (client_ctl, commands) = crate::controller::tests::test_controller();
+    app.run_slash("theme", "", &client_ctl);
+
+    // The stopped pack's stored token map previews while the Plugin stays
+    // stopped — arrows need no client round trip and confirm nothing.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &client_ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    assert_eq!(app.active_palette_id, "default");
+    assert!(
+        commands
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err(),
+        "preview alone must not ask the client Theme registry"
+    );
+
+    // Esc without Enter reverts the preview.
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))), &client_ctl);
+    assert!(app.picker.is_none());
+    assert_eq!(app.theme.brand, DEEPSEEK_450);
+
+    // Enter confirms: the client registry is asked, and the previewed
+    // colors stay on screen while the Plugin loads (no flash to default).
+    app.run_slash("theme", "", &client_ctl);
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))), &client_ctl);
+    assert_eq!(app.theme.brand, Color::Rgb(247, 140, 60));
+    app.handle(AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))), &client_ctl);
+    assert!(app.picker.is_none());
+    assert_eq!(app.active_palette_id, "default");
+    assert_eq!(
+        app.theme.brand, Color::Rgb(247, 140, 60),
+        "the confirmed pack must not flash back while its Plugin loads"
+    );
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::PluginThemeSelected { agent_id, id })
+            if agent_id == app.session_id && id == "ember"
+    ));
 }
 
 #[test]
