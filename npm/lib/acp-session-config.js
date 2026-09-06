@@ -60,6 +60,7 @@ class AcpSessionConfigService extends Service {
 /** Install the `ctx.acpSessionConfig` standard ACP state service. */
 export function installAcpSessionConfig(ctx) {
   let sessionId
+  let sessionGeneration = 0
   let options = []
   let requestTui
   const pending = new Map()
@@ -119,6 +120,13 @@ export function installAcpSessionConfig(ctx) {
 
   function observeClient(message) {
     if (!isObject(message) || message.id === undefined || typeof message.method !== 'string') return
+    if (message.method === 'initialize') {
+      sessionGeneration++
+      pending.clear()
+      sessionId = undefined
+      publish(undefined, [])
+      return
+    }
     if (SETUP_METHODS.has(message.method)) {
       const requested = message.method === 'session/load'
         ? readString(message.params, 'sessionId', 'session_id')
@@ -143,6 +151,7 @@ export function installAcpSessionConfig(ctx) {
       const bound = readString(message.result, 'sessionId', 'session_id') ?? tracked.sessionId
       const next = readOptions(message.result)
       if (tracked.kind === 'setup') {
+        sessionGeneration++
         sessionId = bound
         publish(bound, next ?? [])
       } else if (bound === undefined || bound === sessionId) {
@@ -185,22 +194,33 @@ export function installAcpSessionConfig(ctx) {
       throw new Error(`acpSessionConfig.set: option "${id}" is not advertised by the current Session`)
     }
     validateValue(option, value)
+    const requestedSession = sessionId
+    const requestedGeneration = sessionGeneration
     const result = await requestTui(CORDIS_METHODS.sessionConfigSet, {
       protocol: CORDIS_PROTOCOL,
-      sessionId,
+      sessionId: requestedSession,
       configId: id,
       value,
     })
+    assertSession(requestedSession, requestedGeneration)
     if (!isObject(result)) {
       throw new Error('acpSessionConfig.set: native ACP client returned an invalid response')
     }
-    const resultSession = readString(result, 'sessionId', 'session_id') ?? sessionId
+    const resultSession = readString(result, 'sessionId', 'session_id') ?? requestedSession
     publish(resultSession, readOptions(result))
     return list()
   }
 
+  function assertSession(expectedSession, expectedGeneration) {
+    if (sessionId !== expectedSession || sessionGeneration !== expectedGeneration) {
+      throw new Error('acpSessionConfig: Session changed while configuring options')
+    }
+  }
+
   function transaction(selector) {
     const option = resolveTransactionOption(selector, options)
+    const originalSession = sessionId
+    const originalGeneration = sessionGeneration
     const original = cloneJson(option.currentValue ?? option.current_value)
     if (original === undefined) {
       throw new Error(
@@ -215,6 +235,7 @@ export function installAcpSessionConfig(ctx) {
     let settled = false
 
     const write = async (value) => {
+      assertSession(originalSession, originalGeneration)
       const result = await set(option.id, value)
       applied = cloneJson(value)
       return result
@@ -236,6 +257,7 @@ export function installAcpSessionConfig(ctx) {
       if (finalizing) return finalizing
       desired = cloneJson(value)
       const settle = async () => {
+        assertSession(originalSession, originalGeneration)
         if (!Object.is(applied, desired)) await write(desired)
         settled = true
         return list()

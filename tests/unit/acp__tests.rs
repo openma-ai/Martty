@@ -860,6 +860,209 @@ async fn harness_switch_reinitializes_the_agent_and_binds_an_empty_session() {
     let _ = client.await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overlay_cancel_reaches_the_compositor_while_submit_is_pending() {
+    use agent_client_protocol::schema::v1::{InitializeResponse, NewSessionResponse};
+    use std::time::Duration;
+
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("slow-client-compositor")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, cx| {
+                responder.respond(InitializeResponse::new(init.protocol_version))?;
+                cx.send_notification(UntypedMessage::new(
+                    crate::cordis::COMMANDS_UPDATE,
+                    json!({"protocol":0,"commands":[{"name":"harness","description":"Harness"}]}),
+                )?)
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("initial")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let release = Arc::clone(&release);
+                async move |request: UntypedMessage, responder, cx| {
+                    let event = request.params()["event"].as_str().unwrap_or("").to_string();
+                    let _ = events_tx.send(event.clone());
+                    if event == "submit" {
+                        let release = Arc::clone(&release);
+                        cx.spawn(async move {
+                            release.notified().await;
+                            let _ = responder.respond(json!({"ok":true}));
+                            Ok(())
+                        })?;
+                        return Ok(());
+                    }
+                    responder.respond(json!({"ok":true}))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(), max_tokens: None, base_url: None, api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if matches!(bus_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. }))) { break; }
+    }
+    cmd_tx.send(Cmd::PluginOverlayEvent {
+        id: "install".into(), event: "submit".into(), value: None,
+    }).unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(2), events_rx.recv()).await.unwrap().as_deref(), Some("submit"));
+    cmd_tx.send(Cmd::PluginOverlayEvent {
+        id: "install".into(), event: "cancel".into(), value: None,
+    }).unwrap();
+    let cancel = tokio::time::timeout(Duration::from_secs(1), events_rx.recv()).await;
+    // Always release the fixture and shut down, including the failing baseline.
+    release.notify_one();
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(2), client).await;
+    assert_eq!(cancel.expect("cancel must arrive before submit resolves").as_deref(), Some("cancel"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_operation_defers_agent_requests_and_queued_prompts_until_complete() {
+    use agent_client_protocol::schema::v1::{
+        InitializeResponse, NewSessionResponse, PromptResponse, SetSessionConfigOptionResponse,
+        StopReason,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let release_operation = Arc::new(tokio::sync::Notify::new());
+    let release_prompt = Arc::new(tokio::sync::Notify::new());
+    let primary_pending = Arc::new(AtomicBool::new(false));
+    let leaked_request = Arc::new(AtomicBool::new(false));
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent.builder().name("handoff-window-fixture")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, cx| {
+                responder.respond(InitializeResponse::new(init.protocol_version))?;
+                cx.send_notification(UntypedMessage::new(crate::cordis::COMMANDS_UPDATE,
+                    json!({"protocol":0,"commands":[{"name":"harness","description":"Harness"}]}))?)
+            }, on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("initial")))
+            }, on_receive_request!(),
+        )
+        .on_receive_request({
+            let events_tx = events_tx.clone();
+            let release_prompt = Arc::clone(&release_prompt);
+            let primary_pending = Arc::clone(&primary_pending);
+            let leaked_request = Arc::clone(&leaked_request);
+            async move |request: PromptRequest, responder, cx| {
+                let text = request.prompt.iter().find_map(|block| match block {
+                    ContentBlock::Text(text) => Some(text.text.clone()), _ => None,
+                }).unwrap_or_default();
+                if primary_pending.load(Ordering::SeqCst) {
+                    leaked_request.store(true, Ordering::SeqCst);
+                }
+                let _ = events_tx.send(format!("prompt:{text}"));
+                if text == "first" {
+                    let release_prompt = Arc::clone(&release_prompt);
+                    cx.spawn(async move {
+                        release_prompt.notified().await;
+                        let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
+                        Ok(())
+                    })?;
+                    return Ok(());
+                }
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            }
+        }, on_receive_request!())
+        .on_receive_request({
+            let events_tx = events_tx.clone();
+            let primary_pending = Arc::clone(&primary_pending);
+            let leaked_request = Arc::clone(&leaked_request);
+            async move |_request: SetSessionConfigOptionRequest, responder, _cx| {
+                if primary_pending.load(Ordering::SeqCst) {
+                    leaked_request.store(true, Ordering::SeqCst);
+                }
+                let _ = events_tx.send("model".to_string());
+                responder.respond(SetSessionConfigOptionResponse::new(vec![]))
+            }
+        }, on_receive_request!())
+        .on_receive_request({
+            let release_operation = Arc::clone(&release_operation);
+            let primary_pending = Arc::clone(&primary_pending);
+            async move |request: UntypedMessage, responder, cx| {
+                let event = request.params()["event"].as_str().unwrap_or("").to_string();
+                if event == "submit" { primary_pending.store(true, Ordering::SeqCst); }
+                let _ = events_tx.send(event.clone());
+                if event == "submit" {
+                    let release_operation = Arc::clone(&release_operation);
+                    let primary_pending = Arc::clone(&primary_pending);
+                    cx.spawn(async move {
+                        release_operation.notified().await;
+                        primary_pending.store(false, Ordering::SeqCst);
+                        let _ = responder.respond(json!({"ok":true}));
+                        Ok(())
+                    })?;
+                    return Ok(());
+                }
+                responder.respond(json!({"ok":true}))
+            }
+        }, on_receive_request!());
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(), max_tokens: None, base_url: None, api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if matches!(bus_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. }))) { break; }
+    }
+    cmd_tx.send(Cmd::Prompt { session_id: "initial".into(), text: "first".into() }).unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(2), events_rx.recv()).await.unwrap().as_deref(), Some("prompt:first"));
+    cmd_tx.send(Cmd::Prompt { session_id: "initial".into(), text: "queued".into() }).unwrap();
+    cmd_tx.send(Cmd::PluginOverlayEvent { id: "install".into(), event: "submit".into(), value: None }).unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(2), events_rx.recv()).await.unwrap().as_deref(), Some("submit"));
+
+    // Completing an existing turn must not drain its prompt FIFO into a child
+    // that may already be handed off but has not yet been initialized.
+    release_prompt.notify_one();
+    cmd_tx.send(Cmd::SelectModel { session_id: "initial".into(), provider: None, model: Some("next-model".into()), effort: None }).unwrap();
+    cmd_tx.send(Cmd::Prompt { session_id: "initial".into(), text: "late".into() }).unwrap();
+    cmd_tx.send(Cmd::PluginOverlayEvent { id: "install".into(), event: "cancel".into(), value: None }).unwrap();
+    let first_during_operation = tokio::time::timeout(Duration::from_secs(1), events_rx.recv()).await;
+    release_operation.notify_one();
+
+    let mut observed = std::collections::BTreeSet::new();
+    if let Ok(Some(event)) = &first_during_operation { observed.insert(event.clone()); }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !(observed.contains("model") && observed.contains("prompt:queued") && observed.contains("prompt:late")) {
+        match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+            Ok(Some(event)) => { observed.insert(event); }
+            _ => break,
+        }
+    }
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(2), client).await;
+    assert_eq!(first_during_operation.unwrap().as_deref(), Some("cancel"), "only cancel may bypass an active primary operation");
+    assert!(!leaked_request.load(Ordering::SeqCst), "an Agent request escaped during the handoff window");
+    assert!(observed.contains("model") && observed.contains("prompt:queued") && observed.contains("prompt:late"), "deferred requests must resume after completion: {observed:?}");
+}
+
 #[test]
 fn prompt_image_flag_reads_initialize_payload() {
     assert!(prompt_image_supported(&json!({
@@ -1067,12 +1270,16 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut auth_status = None;
+    let mut inferred_method = None;
     let mut opened_auth = false;
     let mut ready = false;
     while Instant::now() < deadline && !ready {
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
             Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) => {
                 auth_status = Some(snapshot.status);
+                if snapshot.status == AuthStatus::Configured {
+                    inferred_method = snapshot.method_id;
+                }
             }
             Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => opened_auth = true,
             Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
@@ -1088,6 +1295,7 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     }
 
     assert_eq!(auth_status, Some(AuthStatus::Configured));
+    assert_eq!(inferred_method, None, "session/new must not claim the first advertised login method was used");
     assert!(ready, "startup should become ready after session/new");
     assert!(
         !opened_auth,
@@ -2333,6 +2541,180 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticate_rejection_reports_failure_instead_of_another_sign_in_hint() {
+    use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent, InitializeRequest,
+        InitializeResponse, NewSessionRequest};
+    use std::time::{Duration, Instant};
+    let reason = "Onboarding failed: account is not eligible in your location";
+    let agent = Agent.builder().name("auth-rejection")
+        .on_receive_request(async move |init: InitializeRequest, responder, _cx| {
+            responder.respond(InitializeResponse::new(init.protocol_version)
+                .agent_info(Implementation::new("auth-rejection", "0"))
+                .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new("oauth-personal", "Google"))]))
+        }, on_receive_request!())
+        .on_receive_request(async move |_req: NewSessionRequest, responder, _cx| {
+            responder.respond_with_error(AcpError::new(-32000, "Authentication required"))
+        }, on_receive_request!())
+        .on_receive_request(async move |req: AuthenticateRequest, responder, _cx| {
+            assert_eq!(req.method_id.to_string(), "oauth-personal");
+            responder.respond_with_error(AcpError::new(-32000, reason))
+        }, on_receive_request!());
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(), max_tokens: None, base_url: None, api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        if matches!(bus_rx.recv_timeout(Duration::from_millis(20)), Ok(AppEvent::Ctl(CtlEvent::Ready { .. }))) {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready);
+    cmd_tx.send(Cmd::Authenticate { method_id: "oauth-personal".into(), values: Default::default() }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut failure = None;
+    while Instant::now() < deadline {
+        if let Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) = bus_rx.recv_timeout(Duration::from_millis(20)) {
+            if snapshot.message.as_deref() == Some(reason) {
+                failure = Some(snapshot);
+                break;
+            }
+        }
+    }
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+    let failure = failure.expect("the agent's failure reason must reach the UI");
+    assert_eq!(format!("{:?}", failure.status), "Failed");
+    assert_eq!(failure.method_id.as_deref(), Some("oauth-personal"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authentication_is_visible_before_session_new_completes() {
+    assert_authentication_before_session_setup(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_session_setup_error_does_not_restore_needs_auth() {
+    assert_authentication_before_session_setup(Some(-32603)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_session_setup_auth_required_restores_needs_auth() {
+    assert_authentication_before_session_setup(Some(-32000)).await;
+}
+
+async fn assert_authentication_before_session_setup(setup_error: Option<i32>) {
+    use agent_client_protocol::schema::v1::{
+        AuthMethod, AuthMethodAgent, AuthenticateResponse, InitializeRequest,
+        InitializeResponse, NewSessionRequest, NewSessionResponse,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let authenticated = Arc::new(AtomicBool::new(false));
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let agent = Agent.builder().name("auth-session-boundary")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(InitializeResponse::new(init.protocol_version)
+                    .agent_info(Implementation::new("auth-session-boundary", "0"))
+                    .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new("login", "Login"))]))
+            }, on_receive_request!(),
+        )
+        .on_receive_request({
+            let authenticated = Arc::clone(&authenticated);
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                authenticated.store(true, Ordering::SeqCst);
+                responder.respond(AuthenticateResponse::new())
+            }
+        }, on_receive_request!())
+        .on_receive_request({
+            let authenticated = Arc::clone(&authenticated);
+            async move |_req: NewSessionRequest, responder, cx| {
+                if !authenticated.load(Ordering::SeqCst) {
+                    return responder.respond_with_error(AcpError::new(-32000, "authentication required"));
+                }
+                let release = release_rx.lock().unwrap().take().expect("one setup retry");
+                cx.spawn(async move {
+                    let _ = release.await;
+                    match setup_error {
+                        Some(code) => responder.respond_with_error(AcpError::new(code, "setup rejected")),
+                        None => responder.respond(NewSessionResponse::new(SessionId::new("authenticated-session"))),
+                    }
+                })?;
+                Ok(())
+            }
+        }, on_receive_request!());
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(), max_tokens: None, base_url: None, api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        if matches!(bus_rx.recv_timeout(Duration::from_millis(20)), Ok(AppEvent::Ctl(CtlEvent::Ready { .. }))) {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready, "startup must finish with authentication required");
+    cmd_tx.send(Cmd::Authenticate { method_id: "login".into(), values: Default::default() }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut configured_before_setup = false;
+    while Instant::now() < deadline {
+        if let Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) = bus_rx.recv_timeout(Duration::from_millis(20)) {
+            if snapshot.status == AuthStatus::Configured {
+                configured_before_setup = true;
+                break;
+            }
+        }
+    }
+    // Release even on regression so the client can shut down cleanly.
+    release_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut final_status = if configured_before_setup { AuthStatus::Configured } else { AuthStatus::NeedsAuth };
+    let mut setup_finished = false;
+    while Instant::now() < deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) => {
+                final_status = snapshot.status;
+                if setup_error == Some(-32000) && final_status == AuthStatus::NeedsAuth {
+                    setup_finished = true;
+                    break;
+                }
+            }
+            Ok(AppEvent::Ctl(CtlEvent::Error(message))) if message.contains("session/new after authenticate") => {
+                assert_eq!(setup_error, Some(-32603));
+                setup_finished = true;
+                break;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpDone(message))) if message == "signed in" => {
+                assert_eq!(setup_error, None);
+                setup_finished = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+    assert!(configured_before_setup, "authenticate success must update auth while session/new is still pending");
+    assert!(setup_finished, "session setup must have an independent outcome");
+    assert_eq!(final_status, if setup_error == Some(-32000) { AuthStatus::NeedsAuth } else { AuthStatus::Configured });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

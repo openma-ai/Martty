@@ -273,6 +273,44 @@ test('ACP Session config set stays on the Rust-owned standard request path and f
   assert.equal(requests.at(-1).params.value, false)
 })
 
+test('an old asynchronous config result cannot overwrite a replaced session', async () => {
+  const service = acpClient.installAcpSessionConfig(makeCtx())
+  const bind = (id, sessionId) => {
+    service.observeClient({ id, method: 'session/new' })
+    service.observeAgent({ id, result: { sessionId, configOptions: initialOptions } })
+  }
+  bind('new-old', 'old')
+  let resolve
+  service.bindTransport(() => new Promise((done) => { resolve = done }))
+  const write = service.set('effort', 'off')
+  service.observeClient({ id: 'init-new', method: 'initialize' })
+  // An Agent may reuse its own session ids across process lifetimes.
+  bind('new-current', 'old')
+  resolve({ sessionId: 'old', configOptions: [{ ...initialOptions[0], currentValue: 'off' }] })
+  await assert.rejects(write, /Session changed/)
+  assert.equal(service.current('effort'), 'high')
+})
+
+test('an old config transaction cannot roll back options in a new session', async () => {
+  const service = acpClient.installAcpSessionConfig(makeCtx())
+  const bind = (id, sessionId) => {
+    service.observeClient({ id, method: 'session/new' })
+    service.observeAgent({ id, result: { sessionId, configOptions: initialOptions } })
+  }
+  bind('old-new', 'old')
+  const writes = []
+  service.bindTransport(async (_method, params) => {
+    writes.push(params)
+    return { sessionId: params.sessionId, configOptions: [{ ...initialOptions[0], currentValue: params.value }] }
+  })
+  const transaction = service.transaction({ id: 'effort' })
+  await transaction.preview('max')
+  bind('current-new', 'current')
+  await assert.rejects(transaction.rollback(), /Session changed/)
+  assert.equal(writes.length, 1)
+  assert.equal(service.current('effort'), 'high')
+})
+
 test('dynamic Client subscriptions are disposed with their Plugin run', async () => {
   assert.equal(typeof acpClient.installAcpSessionConfig, 'function')
   if (typeof acpClient.installAcpSessionConfig !== 'function') return

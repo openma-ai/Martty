@@ -3,17 +3,20 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+export { tokenizeCommandArgs as tokenizeHarnessArgs } from './command-args.js'
 import {
   fetchAcpRegistry,
   installRegistryBinary,
   managedBinaryPath,
   normalizeAcpRegistry,
+  readAcpRegistrySnapshot,
 } from './harness-registry.js'
 
 export { fetchAcpRegistry } from './harness-registry.js'
@@ -119,6 +122,7 @@ ${section('Commands')}
   find [query]      Find ACP Harnesses in ACP Registry and local PATH
   add <id>          Configure a registry Harness or save a command
   use <id>          Set the default Harness for the next standalone launch
+  remove <id>       Remove saved configuration (asks for confirmation)
   help              Show this help
 
 ${section('Add options')}
@@ -131,15 +135,23 @@ ${section('Examples')}
   ${command('martty harness find')}
   ${command('martty harness add local --label "Local ACP" --command local-acp --arg --stdio')}
   ${command('martty harness use local')}
+  ${command('martty harness find --refresh')}
+  ${command('martty harness remove local --dry-run')}
   ${command('/harness add local --command local-acp --arg --stdio')}
 
 Run find without a query to browse every official Registry entry. A query is
 only an optional filter after you already know what you are looking for.
 
-The selected Harness is saved as defaultHarness in Martty settings. It is
-used on the next standalone launch, which starts a new ACP session. Registry
-entries are fetched from the official ACP Registry only for find/add; list
-and switching an already configured Harness stay local and instant.
+Find reads the cached or bundled official Registry immediately. Use --refresh
+to fetch its latest catalog; offline refresh retains the local catalog.
+Add reuses saved recipes/local installations and saves configuration only.
+Use saves defaultHarness for the next standalone launch; it does not start an agent.
+That launch starts a new ACP session.
+
+Remove keeps installed files by default. --cleanup also deletes only an exclusive
+Martty-owned binary installation; global programs, shared caches, history and
+credentials are kept. --dry-run previews exact paths. --yes confirms without a
+terminal prompt. Stop other Martty instances using the target before cleanup.
 `
 }
 
@@ -152,9 +164,9 @@ Martty connects to ACP servers, not directly to agent CLIs.
 
 ${section('Find an ACP Harness')}
   ${command('martty harness find')}
-  Fetches the official ACP Registry, then adds executable *-acp and *_acp
+  Reads the cached/bundled ACP Registry, then adds executable *-acp and *_acp
   commands found on PATH. Package entries run through npx/uvx. Binary entries
-  are installed into ~/.martty/bin after you choose them.
+  are installed into Martty's private bin directory after you choose them.
 
 ${section('Custom ACP command')}
   ${command('martty harness add <id> --command <cmd> [options]')}
@@ -266,7 +278,10 @@ No ACP Harnesses found in the ACP Registry, local PATH, or settings.
       }
       lines.push(fieldLine('After', 'choose it from /harness (starts a new session)', columns, color))
     } else if (entry.status === 'Needs npx' || entry.status === 'Needs uvx') {
-      lines.push(fieldLine('Setup', `Install ${entry.distribution.type} and run martty harness add ${entry.id}`, columns, color))
+      const runtime = entry.distribution.type === 'npx'
+        ? 'Node.js/npm (provides npx)'
+        : 'uv (provides uvx)'
+      lines.push(fieldLine('Setup', `Install ${runtime}, then run martty harness add ${entry.id}`, columns, color))
     } else if (entry.status === 'Not installed') {
       lines.push(fieldLine('Install', formatCommand(entry.install, options), columns, color))
       if (entry.fallback !== undefined) {
@@ -332,7 +347,7 @@ function validateHarness(value) {
     || Object.entries(env).some(([key, item]) => key.length === 0 || typeof item !== 'string'))) {
     throw new Error('harness env must be an object of strings')
   }
-  const normalizedArgs = value.command === 'npx'
+  const normalizedArgs = /^npx(?:\.(?:cmd|bat|exe))?$/i.test(path.win32.basename(value.command))
     ? [...args].filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
     : [...args]
   return {
@@ -389,6 +404,20 @@ export function setDefaultHarness(settingsPath, id) {
   writeSettings(settingsPath, { ...withoutLegacyActive(settings), harnesses, defaultHarness: id })
 }
 
+export function savedHarnesses(settingsPath) {
+  return configuredHarnesses(readSettings(settingsPath))
+}
+
+export function removeHarnessConfiguration(settingsPath, expected) {
+  const settings = withoutLegacyActive(readSettings(settingsPath))
+  const harnesses = configuredHarnesses(settings)
+  const current = harnesses.find(({ id }) => id === expected.id)
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Harness configuration changed; review removal again')
+  settings.harnesses = harnesses.filter(({ id }) => id !== expected.id)
+  if (settings.defaultHarness === expected.id) delete settings.defaultHarness
+  writeSettings(settingsPath, settings)
+}
+
 // Kept as a source-compatible alias for integrations compiled against 0.2.30.
 // Persisted settings use only `defaultHarness`.
 export const activateHarness = setDefaultHarness
@@ -398,37 +427,6 @@ export function selectedHarness(settingsPath) {
   const id = persistedDefaultId(settings)
   if (typeof id !== 'string') return undefined
   return configuredHarnesses(settings).find((harness) => harness.id === id)
-}
-
-export function tokenizeHarnessArgs(value) {
-  const tokens = []
-  let token = ''
-  let quote
-  let escaped = false
-  for (const char of String(value ?? '')) {
-    if (escaped) {
-      token += char
-      escaped = false
-    } else if (char === '\\') {
-      escaped = true
-    } else if (quote !== undefined) {
-      if (char === quote) quote = undefined
-      else token += char
-    } else if (char === '"' || char === "'") {
-      quote = char
-    } else if (/\s/.test(char)) {
-      if (token.length > 0) {
-        tokens.push(token)
-        token = ''
-      }
-    } else {
-      token += char
-    }
-  }
-  if (escaped) token += '\\'
-  if (quote !== undefined) throw new HarnessUsageError(`Unclosed ${quote} quote in Harness command`)
-  if (token.length > 0) tokens.push(token)
-  return tokens
 }
 
 function executableFile(command) {
@@ -441,15 +439,26 @@ function executableFile(command) {
   }
 }
 
-function resolvePathCommand(command, pathValue = process.env.PATH ?? '') {
+function commandNames(command, options = {}) {
+  const platform = options.platform ?? process.platform
+  if (platform !== 'win32' || path.extname(command).length > 0) return [command]
+  const pathExt = options.pathExt ?? process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD'
+  const extensions = String(pathExt).split(';')
+    .map((extension) => extension.trim())
+    .filter(Boolean)
+    .map((extension) => extension.startsWith('.') ? extension : `.${extension}`)
+  return [command, ...extensions.map((extension) => `${command}${extension}`)]
+}
+
+function resolvePathCommand(command, pathValue = process.env.PATH ?? '', options = {}) {
   if (typeof command !== 'string' || command.trim().length === 0) return undefined
+  const names = commandNames(command, options)
   if (path.isAbsolute(command) || command.includes(path.sep)) {
-    const resolved = path.resolve(command)
-    return executableFile(resolved) ? resolved : undefined
+    return names.map((name) => path.resolve(name)).find(executableFile)
   }
   for (const directory of String(pathValue ?? '').split(path.delimiter).filter(Boolean)) {
-    const resolved = path.resolve(directory, command)
-    if (executableFile(resolved)) return resolved
+    const resolved = names.map((name) => path.resolve(directory, name)).find(executableFile)
+    if (resolved !== undefined) return resolved
   }
   return undefined
 }
@@ -521,18 +530,22 @@ function registryRecords(options = {}) {
   })
 }
 
-function registryPackageCandidate(record, distribution, options) {
-  const runner = resolvePathCommand(distribution.command, options.pathValue)
+function registryPackageCandidate(record, distribution, options, localPackages) {
+  const runner = resolvePathCommand(distribution.command, options.pathValue, options)
+  const local = distribution.type === 'npx' ? localNpmExecutable(distribution, options)
+    : localPythonExecutable(distribution, options, localPackages)
   return {
     id: record.id,
     label: record.label,
     version: record.version,
     description: record.description,
-    command: distribution.command,
-    args: [...distribution.args],
+    command: local?.command ?? runner ?? distribution.command,
+    ...(local !== undefined ? { resolvedCommand: local.command, installedVersion: local.version } : {}),
+    args: local === undefined ? [...distribution.args] : distribution.args.slice(1),
     env: { ...distribution.env },
-    source: 'registry',
-    status: runner === undefined ? `Needs ${distribution.type}` : `Ready via ${distribution.type}`,
+    source: local === undefined ? 'registry' : 'path',
+    status: local !== undefined ? 'Found locally'
+      : runner === undefined ? `Needs ${distribution.type}` : `Available via ${distribution.type}`,
     registry: true,
     distribution,
     registryRecord: record,
@@ -540,8 +553,136 @@ function registryPackageCandidate(record, distribution, options) {
   }
 }
 
-function registryCandidates(options = {}) {
-  return registryRecords(options).map((record) => {
+/** Resolve an installed npm package's declared bin, never a guessed CLI name. */
+function localNpmExecutable(distribution, options) {
+  const spec = distribution.args[0]
+  if (typeof spec !== 'string') return undefined
+  const packageName = /^(@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)(?:@[^\s/]+)?$/i.exec(spec)?.[1]
+  if (packageName === undefined || packageName.split('/').some((part) => part === '.' || part === '..')) {
+    return undefined
+  }
+  const directories = String(options.pathValue ?? process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
+  for (const directory of directories) {
+    // npm global prefixes use lib/node_modules on Unix and node_modules on
+    // Windows. A project may explicitly put node_modules/.bin on its PATH.
+    const roots = [
+      path.resolve(directory, '..', 'lib', 'node_modules', packageName),
+      path.resolve(directory, 'node_modules', packageName),
+      ...(path.basename(directory) === '.bin' ? [path.resolve(directory, '..', packageName)] : []),
+    ]
+    for (const root of roots) {
+      try {
+        const metadata = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+        if (metadata.name !== packageName) continue
+        const binValues = typeof metadata.bin === 'string' ? [metadata.bin]
+          : metadata.bin !== null && typeof metadata.bin === 'object' && !Array.isArray(metadata.bin)
+            ? Object.values(metadata.bin) : []
+        const targets = [...new Set(binValues)]
+        // Multiple different entrypoints require an explicit command. Picking
+        // one could turn a package's management CLI into an ACP launch recipe.
+        if (targets.length !== 1 || typeof targets[0] !== 'string') continue
+        const packageRoot = realpathSync(root)
+        const target = realpathSync(path.resolve(root, targets[0]))
+        const relative = path.relative(packageRoot, target)
+        if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) continue
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (!entry.isSymbolicLink()) continue
+          const command = path.resolve(directory, entry.name)
+          if (executableFile(command) && realpathSync(command) === target) {
+            return { command, version: typeof metadata.version === 'string' ? metadata.version : undefined }
+          }
+        }
+      } catch {
+        // Missing, malformed, or stale package metadata is not proof that a
+        // same-named executable belongs to this Registry package.
+      }
+    }
+  }
+  return undefined
+}
+
+function readDirectory(directory) {
+  try { return readdirSync(directory, { withFileTypes: true }) } catch { return [] }
+}
+
+function pythonPackageName(value) {
+  return value.toLowerCase().replace(/[-_.]+/g, '-')
+}
+
+/** Inspect installed tool environments reached from PATH; never run uv/pip. */
+function localPythonExecutable(distribution, options, cache) {
+  const spec = distribution.args[0]
+  const name = typeof spec === 'string'
+    ? /^([a-z0-9][a-z0-9._-]*)(?:@[^\s/]+|==[^\s/]+)?$/i.exec(spec)?.[1] : undefined
+  if (name === undefined) return undefined
+  if (!cache.has('python')) {
+    const packages = new Map()
+    const environments = new Map()
+    const directories = String(options.pathValue ?? process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
+    for (const directory of directories) {
+      for (const entry of readDirectory(directory)) {
+        if (!entry.isSymbolicLink() && !entry.isFile()) continue
+        const command = path.resolve(directory, entry.name)
+        try {
+          const target = realpathSync(command)
+          const targetDirectory = path.dirname(target)
+          if (!['bin', 'scripts'].includes(path.basename(targetDirectory).toLowerCase())) continue
+          const root = path.dirname(targetDirectory)
+          if (!existsSync(path.join(root, 'pyvenv.cfg')) || !executableFile(command)) continue
+          const commands = environments.get(root) ?? []
+          commands.push({ command, target })
+          environments.set(root, commands)
+        } catch { /* Broken PATH links do not prove an installed tool. */ }
+      }
+    }
+    for (const [root, commands] of environments) {
+      const sites = [path.join(root, 'Lib', 'site-packages')]
+      for (const entry of readDirectory(path.join(root, 'lib'))) {
+        if (entry.isDirectory() && /^python\d+\.\d+$/.test(entry.name)) {
+          sites.push(path.join(root, 'lib', entry.name, 'site-packages'))
+        }
+      }
+      for (const site of sites) {
+        for (const entry of readDirectory(site)) {
+          if (!entry.isDirectory() || !entry.name.endsWith('.dist-info')) continue
+          try {
+            const info = path.join(site, entry.name)
+            const metadata = readFileSync(path.join(info, 'METADATA'), 'utf8')
+            const packageName = /^Name:[ \t]*(\S+)[ \t]*$/mi.exec(metadata)?.[1]
+            if (packageName === undefined) continue
+            const scripts = []
+            let section
+            for (const line of readFileSync(path.join(info, 'entry_points.txt'), 'utf8').split(/\r?\n/)) {
+              const heading = /^\s*\[([^\]]+)\]\s*$/.exec(line)
+              if (heading) section = heading[1]
+              else if (section === 'console_scripts') {
+                const script = /^\s*([^\s=]+)\s*=\s*\S+/.exec(line)?.[1]
+                if (script !== undefined) scripts.push(script)
+              }
+            }
+            if (scripts.length !== 1) continue
+            const local = commands.find(({ target }) => (
+              path.basename(target).replace(/\.exe$/i, '') === scripts[0]
+            ))
+            const key = pythonPackageName(packageName)
+            if (local !== undefined && !packages.has(key)) {
+              packages.set(key, {
+                command: local.command,
+                version: /^Version:[ \t]*(\S+)[ \t]*$/mi.exec(metadata)?.[1],
+              })
+            }
+          } catch { /* Incomplete or stale distribution metadata: use the recipe. */ }
+        }
+      }
+    }
+    cache.set('python', packages)
+  }
+  return cache.get('python').get(pythonPackageName(name))
+}
+
+function registryCandidates(options = {}, records = registryRecords(options)) {
+  const localPackages = new Map()
+  return records.map((record) => {
     if (Array.isArray(record.distributions)) {
       const binary = record.distributions.find((distribution) => distribution.type === 'binary')
       if (binary !== undefined) {
@@ -571,7 +712,7 @@ function registryCandidates(options = {}) {
           }
         }
         const binaryName = path.basename(binary.command.replaceAll('\\', '/'))
-        const local = resolvePathCommand(binaryName, options.pathValue)
+        const local = resolvePathCommand(binaryName, options.pathValue, options)
         if (local !== undefined) {
           return {
             id: record.id,
@@ -590,11 +731,16 @@ function registryCandidates(options = {}) {
           }
         }
       }
-      const packageDistribution = record.distributions.find((distribution) => (
+      const packageDistributions = record.distributions.filter((distribution) => (
         distribution.type === 'npx' || distribution.type === 'uvx'
       ))
-      if (packageDistribution !== undefined) {
-        return registryPackageCandidate(record, packageDistribution, options)
+      const packageCandidates = packageDistributions
+        .map((distribution) => registryPackageCandidate(record, distribution, options, localPackages))
+      const localPackage = packageCandidates.find(({ status }) => status === 'Found locally')
+      if (localPackage !== undefined) return localPackage
+      const availablePackage = packageCandidates.find(({ status }) => status.startsWith('Available via '))
+      if (availablePackage !== undefined) {
+        return availablePackage
       }
       if (binary !== undefined) {
         return {
@@ -618,10 +764,14 @@ function registryCandidates(options = {}) {
           })(),
         }
       }
+      if (packageCandidates.length > 0) return packageCandidates[0]
       return undefined
     }
     const local = record.commands
-      .map((spec) => ({ spec, command: resolvePathCommand(spec.command, options.pathValue) }))
+      .map((spec) => ({
+        spec,
+        command: resolvePathCommand(spec.command, options.pathValue, options),
+      }))
       .find(({ command }) => command !== undefined)
     if (local !== undefined) {
       return {
@@ -653,16 +803,31 @@ function registryCandidates(options = {}) {
 }
 
 function registryCandidate(id, options = {}) {
-  return registryCandidates(options).find((entry) => entry.id === id)
+  // Normalize the catalog, but probe local installations only for this id.
+  return registryCandidates(options, registryRecords(options).filter((record) => record.id === id))[0]
+}
+
+function runnableRegistryCandidate(entry) {
+  return [
+    'Found locally', 'Installed', 'Available via npx', 'Available via uvx',
+  ].includes(entry.status)
 }
 
 export function discoverRegistryHarnesses(options = {}) {
-  return registryCandidates(options).filter((entry) => [
-    'Found locally', 'Installed', 'Ready via npx', 'Ready via uvx',
-  ].includes(entry.status))
+  return registryCandidates(options).filter(runnableRegistryCandidate)
+}
+
+function finishHarnessConfiguration(settingsPath, harness, options) {
+  // Setup and runtime are independent. persist:false lets callers prepare a
+  // recipe before explicitly saving it; neither path initializes an ACP session.
+  return options.persist === false ? validateHarness(harness) : upsertHarness(settingsPath, harness)
 }
 
 export function addHarness(settingsPath, id, tokens = [], options = {}) {
+  return configureHarness(settingsPath, id, tokens, options, () => registryCandidate(id, options))
+}
+
+function parseHarnessAdd(id, tokens) {
   const color = false
   if (id === undefined || ['help', '-h', '--help'].includes(id)) {
     throw new HarnessUsageError(addHarnessHelp(color))
@@ -681,6 +846,7 @@ export function addHarness(settingsPath, id, tokens = [], options = {}) {
     if (value === undefined) {
       throw new HarnessUsageError(`${token} needs a value.\n\n${addHarnessHelp(color)}`)
     }
+    if (token === '--command' && !value.trim()) throw new HarnessUsageError('--command needs a non-empty value')
     if (token === '--command') command = value
     else if (token === '--label') label = value
     else if (token === '--arg') args.push(value)
@@ -691,35 +857,40 @@ export function addHarness(settingsPath, id, tokens = [], options = {}) {
     }
     index += 1
   }
+  return { command, label, args }
+}
+
+function configureHarness(settingsPath, id, tokens, options, lookupCandidate) {
+  const { command, label, args } = parseHarnessAdd(id, tokens)
   if (typeof command !== 'string' || command.trim().length === 0) {
-    const candidate = registryCandidate(id, options)
+    const candidate = lookupCandidate()
     if (candidate !== undefined && [
-      'Found locally', 'Installed', 'Ready via npx', 'Ready via uvx',
-      'Needs npx', 'Needs uvx',
+      'Found locally', 'Installed', 'Available via npx', 'Available via uvx',
     ].includes(candidate.status)) {
-      return upsertHarness(settingsPath, {
+      return finishHarnessConfiguration(settingsPath, {
         id: candidate.id,
         label: label ?? candidate.label,
         command: candidate.resolvedCommand ?? candidate.command,
         args: args.length > 0 ? args : candidate.args,
         ...(candidate.env !== undefined ? { env: candidate.env } : {}),
-      })
+      }, options)
     }
     if (candidate?.status === 'Available to install') {
       throw new HarnessUsageError(
         `Harness ${JSON.stringify(id)} is a binary distribution.\n\n`
         + `  Install into Martty with  martty harness add ${id}\n`
-        + `  Location                 ${candidate.installPath ?? '~/.martty/bin'}\n`,
+        + `  Location                 ${candidate.installPath ?? "Martty's private bin directory"}\n`,
       )
     }
     if (candidate?.status === 'Needs npx' || candidate?.status === 'Needs uvx') {
+      const runtime = candidate.distribution.type === 'npx' ? 'Node.js/npm' : 'uv'
       throw new HarnessUsageError(
         `Harness ${JSON.stringify(id)} needs ${candidate.distribution.type}.\n\n`
-        + `  Install ${candidate.distribution.type}, then run  martty harness add ${id}\n`,
+        + `  Install ${runtime} to provide ${candidate.distribution.type}, then run  martty harness add ${id}\n`,
       )
     }
     if (candidate?.status === 'Not installed' && candidate.fallback !== undefined) {
-      return upsertHarness(settingsPath, {
+      return finishHarnessConfiguration(settingsPath, {
         id: candidate.id,
         label: label ?? candidate.label,
         command: candidate.fallback.command,
@@ -727,7 +898,7 @@ export function addHarness(settingsPath, id, tokens = [], options = {}) {
           ...candidate.fallback.args,
           ...args,
         ],
-      })
+      }, options)
     }
     if (candidate?.status === 'Not installed' && candidate.install !== undefined) {
       throw new HarnessUsageError(
@@ -743,26 +914,31 @@ export function addHarness(settingsPath, id, tokens = [], options = {}) {
       + 'The command must start an ACP-compatible server on stdin/stdout.',
     )
   }
-  return upsertHarness(settingsPath, { id, label, command, args })
+  return finishHarnessConfiguration(settingsPath, { id, label, command, args }, options)
 }
 
-/** Configure a registry entry, downloading a binary when that is its distribution. */
+/** Configure a registry entry; persist:false prepares it without writing settings. */
 export async function addHarnessAsync(settingsPath, id, tokens = [], options = {}) {
+  parseHarnessAdd(id, tokens)
   if (tokens.includes('--command')) return addHarness(settingsPath, id, tokens, options)
   const candidate = registryCandidate(id, options)
   if (candidate?.status !== 'Available to install') {
-    return addHarness(settingsPath, id, tokens, options)
+    return configureHarness(settingsPath, id, tokens, options, () => candidate)
   }
+  // Validate every option and preserve overrides before any download can start.
+  const prepared = configureHarness(settingsPath, id, tokens, { ...options, persist: false },
+    () => ({ ...candidate, status: 'Installed' }))
   const installed = await installRegistryBinary({
     id: candidate.id,
     label: candidate.label,
     version: candidate.version,
     distribution: candidate.distribution,
   }, options)
-  return upsertHarness(settingsPath, {
+  return finishHarnessConfiguration(settingsPath, {
     ...installed,
-    label: candidate.label,
-  })
+    label: prepared.label,
+    args: prepared.args,
+  }, options)
 }
 
 export function discoverPathHarnesses(pathValue = process.env.PATH ?? '') {
@@ -801,6 +977,10 @@ export function discoverPathHarnesses(pathValue = process.env.PATH ?? '') {
 }
 
 export function discoverHarnesses(settingsPath, options = {}) {
+  return discoverHarnessEntries(settingsPath, options, registryCandidates(options))
+}
+
+function discoverHarnessEntries(settingsPath, options, registryEntries) {
   const configured = configuredHarnesses(readSettings(settingsPath))
     .map((harness) => ({ ...harness, source: 'configured' }))
   const defaults = (options.defaults ?? []).map((entry) => ({
@@ -812,17 +992,29 @@ export function discoverHarnesses(settingsPath, options = {}) {
   // when a user has a saved recipe with the same id.
   const forced = defaults.filter((entry) => entry.source === 'forced')
   const ordinaryDefaults = defaults.filter((entry) => entry.source !== 'forced')
-  const registry = discoverRegistryHarnesses(options).map((entry) => ({
+  const registry = registryEntries.filter(runnableRegistryCandidate).map((entry) => ({
     ...entry,
-    command: entry.resolvedCommand,
+    command: entry.resolvedCommand ?? entry.command,
   }))
   const seen = new Set()
+  const seenRecipes = new Set()
   const seenCommands = new Set()
+  const inferredPathEntries = new Set(pathEntries)
   return [...forced, ...configured, ...ordinaryDefaults, ...registry, ...pathEntries].filter((entry) => {
     if (seen.has(entry.id)) return false
-    if (seenCommands.has(entry.command)) return false
+    const command = resolvePathCommand(entry.command, options.pathValue, options) ?? entry.command
+    // A bare PATH guess is not a second recipe when settings/the Registry
+    // already describe this command's required ACP arguments.
+    if (inferredPathEntries.has(entry) && seenCommands.has(command)) return false
+    const recipe = JSON.stringify([
+      command,
+      entry.args ?? [],
+      Object.entries(entry.env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    ])
+    if (seenRecipes.has(recipe)) return false
     seen.add(entry.id)
-    seenCommands.add(entry.command)
+    seenRecipes.add(recipe)
+    seenCommands.add(command)
     return true
   })
 }
@@ -862,13 +1054,14 @@ function findHarnessCandidates(settingsPath, options = {}, query = '') {
     status: 'Configured',
   }))
   const configuredIds = new Set(configured.map(({ id }) => id))
+  const registry = registryCandidates(options)
   const entries = [
     // A configured Harness is still a useful find result: it explains why a
     // machine with only saved entries must not look empty, and lets the user
     // jump straight from discovery to switching.
     ...configured,
-    ...registryCandidates(options).filter((entry) => !configuredIds.has(entry.id)),
-    ...discoverHarnesses(settingsPath, options).filter((entry) => entry.source !== 'configured'),
+    ...registry.filter((entry) => !configuredIds.has(entry.id)),
+    ...discoverHarnessEntries(settingsPath, options, registry).filter((entry) => entry.source !== 'configured'),
   ]
   const seen = new Set()
   return entries.map((entry, index) => ({ entry, index, score: searchScore(entry, query) }))
@@ -892,29 +1085,71 @@ async function resolveRegistry(options = {}) {
   return fetchAcpRegistry(options)
 }
 
-/** Async CLI entrypoint. Discovery is the only path that reaches the network. */
+function validateCliArgs(argv) {
+  const [action, id, ...tokens] = argv
+  const help = ['help', '-h', '--help']
+  if (action === undefined || help.includes(action)) return
+  if (!['list', 'find', 'add', 'use', 'remove'].includes(action)) throw new HarnessUsageError(`Unknown Harness command ${JSON.stringify(action)}`)
+  if (id === '--help' || id === '-h') return
+  if (action === 'add') {
+    if (id === undefined || id === 'help' || (tokens.length === 1 && help.includes(tokens[0]))) return
+    parseHarnessAdd(id, tokens)
+  } else if (action === 'list' && id !== undefined) throw new HarnessUsageError('Usage: martty harness list')
+  else if (action === 'use' && (!id || tokens.length)) throw new HarnessUsageError('Usage: martty harness use <id>')
+  else if (action === 'find') {
+    for (const token of argv.slice(1)) if (token.startsWith('-') && token !== '--refresh') throw new HarnessUsageError(`Unknown find option ${JSON.stringify(token)}`)
+  } else if (action === 'remove') {
+    if (!id || !HARNESS_ID.test(id) || tokens.some(token => !['--cleanup', '--yes', '--dry-run'].includes(token))) {
+      throw new HarnessUsageError('Usage: martty harness remove <id> [--cleanup] [--yes] [--dry-run]')
+    }
+  }
+}
+
+/** CLI setup persists recipes only; runtime/session/auth belong to explicit launch. */
 export async function runHarnessCommandAsync(argv, options = {}) {
+  validateCliArgs(argv)
   const action = argv[0]
+  if (action !== 'add' && ['--help', '-h'].includes(argv[1])) return runHarnessCommand(['help'], options)
+  if (action === 'remove') {
+    const { planHarnessRemoval, removeHarness } = await import('./harness-removal.js')
+    const id = argv[1], cleanup = argv.includes('--cleanup')
+    const plan = planHarnessRemoval(options.settingsPath, id, options)
+    if (cleanup && plan.cleanupReason) throw new HarnessUsageError(plan.cleanupReason)
+    const preview = `Remove ${plan.entry.label} (${id})\nConfiguration: ${options.settingsPath}\n`
+      + (cleanup ? `Delete private installation:\n${plan.resources.map(resource => `  ${resource}`).join('\n')}\n` : 'Installed files will be kept.\n')
+      + 'Its saved default reference will be cleared. History, credentials and shared caches are kept.\n'
+    if (argv.includes('--dry-run')) return { code: 0, stdout: preview, stderr: '' }
+    if (!argv.includes('--yes')) {
+      if (typeof options.confirmRemoval !== 'function') return { code: 2, stdout: preview, stderr: 'Confirmation required. Rerun with --yes, or use an interactive terminal.\n' }
+      if (!await options.confirmRemoval(preview)) return { code: 0, stdout: 'Removal cancelled; nothing changed.\n', stderr: '' }
+    }
+    options.signal?.throwIfAborted()
+    const result = removeHarness(options.settingsPath, plan, { ...options, cleanup })
+    return { code: 0, stdout: preview + `Removed ${id}.` + (result.removed.length ? '\nPrivate installation deleted.\n' : '\n'), stderr: '' }
+  }
   const addId = argv[1]
   const addHelp = addId === undefined || ['help', '-h', '--help'].includes(addId)
     || (argv.length === 3 && ['-h', '--help'].includes(argv[2]))
+  const saved = action === 'add' && savedHarnesses(options.settingsPath).find(entry => entry.id === addId)
   const needsRegistry = action === 'find'
-    || (action === 'add' && !addHelp && !argv.slice(2).includes('--command'))
+    || (action === 'add' && !addHelp && !saved && !argv.slice(2).includes('--command'))
   if (!needsRegistry) {
+    if (action === 'add' && saved && !addHelp) {
+      const harness = configureHarness(options.settingsPath, addId, argv.slice(2), options, () => ({ ...saved, status: 'Installed' }))
+      return { code: 0, stdout: savedHarnessOutput(harness, options.color === true), stderr: '' }
+    }
     return runHarnessCommand(argv, options)
   }
-  let registry = options.registry
-  try {
-    registry ??= await resolveRegistry(options)
-  } catch (error) {
-    if (action === 'find') {
-      const fallback = runHarnessCommand(argv, { ...options, registry: [] })
-      return {
-        ...fallback,
-        stderr: `warning: ${error instanceof Error ? error.message : String(error)}\n`,
-      }
+  let registry = options.registry ?? readAcpRegistrySnapshot(options)
+  let warning = ''
+  if (options.registry === undefined && (argv.includes('--refresh')
+      || (action === 'add' && !registry.some(entry => entry.id === addId)))) {
+    try { registry = await resolveRegistry(options) }
+    catch (error) {
+      options.signal?.throwIfAborted()
+      warning = `warning: Registry refresh failed; using local catalog. ${error instanceof Error ? error.message : String(error)}\n`
+      if (action === 'add' && !registry.some(entry => entry.id === addId)) throw new Error(warning.trim())
     }
-    throw error
   }
   const scoped = { ...options, registry }
   if (action === 'add') {
@@ -925,12 +1160,14 @@ export async function runHarnessCommandAsync(argv, options = {}) {
       || (tokens.length === 1 && ['-h', '--help'].includes(tokens[0]))
     if (wantsAddHelp) return runHarnessCommand(argv, scoped)
     const harness = await addHarnessAsync(options.settingsPath, id, tokens, scoped)
-    return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: '' }
+    return { code: 0, stdout: savedHarnessOutput(harness, color), stderr: warning }
   }
-  return runHarnessCommand(argv, scoped)
+  const result = runHarnessCommand(argv.filter(token => token !== '--refresh'), scoped)
+  return { ...result, stderr: warning + result.stderr }
 }
 
 export function runHarnessCommand(argv, options) {
+  validateCliArgs(argv)
   const settingsPath = options?.settingsPath
   if (typeof settingsPath !== 'string' || settingsPath.length === 0) {
     throw new Error('harness command needs a settings path')

@@ -74,7 +74,11 @@ pub enum CtlEvent {
     /// Spawning + initializing the runtime.
     Starting { runtime: String },
     /// initialize returned.
+    Initialized { server: String },
+    /// Initial session setup finished (possibly awaiting authentication).
     Ready { server: String },
+    /// Connection/session setup failed, distinct from an individual prompt error.
+    ConnectionFailed { target: String, error: String },
     /// session/prompt accepted into the durable inbox.
     PromptQueued { message_id: String },
     /// A Send Now request settled. Rejected concurrent prompts degrade to

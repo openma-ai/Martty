@@ -126,20 +126,39 @@ standalone launch, configure `DSH_TUI_AGENT`:
 DSH_TUI_AGENT="<acp-command> [args...]" martty
 ```
 
-Standalone launches can also keep named ACP harnesses in Martty settings and
-select which one the next launch uses:
+### Harness CLI quick start
+
+Run these commands in your system terminal. Browse first, then replace `<id>` with the
+target ID printed by `find`, not its display name; do not type the angle brackets literally.
+
+```sh
+martty harness find         # Browse Registry and local candidates
+martty harness add <id>     # Install/save configuration
+martty harness use <id>     # Set the next-launch default
+martty                     # Start the TUI in the current directory
+```
+
+Neither `add` nor `use` switches an already running TUI. Use `/harness` inside that TUI instead.
+To inspect, refresh, or remove configuration:
 
 ```sh
 martty harness list
-martty harness find
-martty harness add local --label "Local ACP" --command local-acp --arg --stdio
-martty harness use local
-martty --check-runtime
+martty harness find --refresh
+martty harness remove <id> --cleanup --dry-run  # Preview only
+martty harness remove <id>                     # Confirm configuration-only removal
+martty harness remove <id> --cleanup           # Also delete exclusive private binaries
 ```
+
+If `martty` is not on PATH, run `node npm/bin/martty.js harness --help` from the repository
+root, replacing `martty` with `node npm/bin/martty.js` in the other commands too.
+See the [Harness CLI guide (Chinese)](docs/harness-cli.md) for a temporary shell entrypoint,
+manual configuration, and removal boundaries.
+
+### Registry and TUI setup
 
 All three entry points share the official ACP Registry: edit `settings.json`, use the
 `martty harness` CLI above, or enter `/harness` in the running TUI for the
-native single-select form. `harness find` fetches
+native single-select form. `harness find` reads a cached/bundled snapshot of
 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` and supplements it with
 local PATH discovery; it is not an npm package search or an immediate switch. `npx` and `uvx`
 distributions are launch recipes without implicit `--yes` or `--prefer-offline` flags. Selecting
@@ -150,9 +169,64 @@ directly. TUI selection replaces the standalone ACP child immediately. If the cu
 already received a prompt or was restored through `/session`, Martty confirms
 first and keeps that session available for navigation.
 Unregistered local binaries named `*-acp` or `*_acp` are still discovered.
+On Windows, managed binaries live under
+`%MARTTY_HOME%\bin\<id>\<version>\<platform>` (`windows-x86_64` or `windows-aarch64`), and `PATHEXT`
+resolves launchers such as `npx.cmd` and `uvx.exe`. If a record also provides a binary for the
+current platform, a missing npx/uvx runner falls back to the managed binary installer. A
+package-only record instead explains how to install Node.js/npm or uv and is not saved unusably.
 Running `harness find` without a query browses the full catalog, so users do not need to know
 the name of Codex or any other Harness in advance. Extra words are only optional filters for a
 known target. Each unconfigured CLI result prints its copyable `martty harness add <id>` command.
+
+Use `harness find --refresh` to fetch the latest catalog; offline refresh keeps the local
+snapshot. CLI `add` only installs/saves configuration and reuses saved recipes; `use <id>`
+sets the next-launch default without starting/authenticating an agent.
+`martty harness remove <id>` previews its scope and asks for confirmation. It keeps installed
+files unless `--cleanup` is specified; `--dry-run` previews only and non-interactive removal
+requires `--yes`. Cleanup is limited to exclusive private binary installations, preserving
+global programs, shared npx/uvx caches, history and credentials. Stop other Martty instances
+using the target before cleanup. Downloads report progress on stderr; Ctrl-C cancels,
+cleans staging files and leaves settings unchanged.
+
+### Harness TUI workflow
+
+Enter `/harness` in Martty. The `(current)` item is pinned first and cannot be selected again.
+Select another configured item and press Enter to use the normal switch flow, or choose **+ Add Harness…**.
+
+![Harness switch menu with the current item first](assets/screenshots/harness-switch.png)
+
+The Add panel supports search and separates installed/configured entries from those not downloaded.
+
+![Searchable Add Harness catalog with installation groups](assets/screenshots/harness-add.png)
+
+Press Delete on a saved item in the switch menu to remove its configuration, optionally including
+exclusive private binaries; the current item is protected. Escape returns from removal confirmation
+to removal mode, then to the list, preserving selection. Use `/auth` to sign in and `/status` to
+inspect state. Error panels show details directly; Enter retries. See the
+[TUI guide (Chinese)](docs/harness-tui.md) for the full flow.
+
+Choose **+ Add Harness** from `/harness`, or run `/harness add`, to browse and search without
+knowing a Registry ID. Verified local npm/uv entrypoints take priority over package runners.
+`Available via npx/uvx` describes an available recipe, not a verified ACP connection. Missing
+dependencies offer installation guidance and recheck; an offline Registry keeps local choices.
+npx/uvx preparation and binary download/extract/verify run in a progress panel. Enter keeps an
+unfinished download open; Escape hides the panel while the job continues as long as Martty
+is running. Completion and failure appear in the composer. Installation automatically saves
+configuration; Enter on completion uses the normal `/harness` switch flow, while Escape only
+closes the panel and Enter retries failures. Add/Install/Connect do not automatically switch or
+authenticate. Switch explicitly with Enter on completion or by selecting the configured Harness in `/harness`. Quitting
+Martty stops unfinished jobs. Installer output is captured rather than written over the terminal,
+with deadlines covering preparation and extraction. A TUI switch updates `defaultHarness`
+only after the real `initialize` and `session/new` succeed; failures retain the previous default
+and offer retry.
+
+Local filesystem discovery runs in a background worker alongside the Registry request.
+Results fill progressively without resetting search or selection. Non-selectable dividers
+separate `Installed / configured` from `Not downloaded`; saved recipes are not proof of
+downloaded packages. Binary transfers have connection and idle limits, not a total deadline.
+In a source checkout, run `node scripts/harness-discovery-scenario.mjs --check` for six
+isolated probe states, or use `--tui` and `/harness add` for manual testing with fake ACP
+replies, no real downloads, and no changes to your Harness settings.
 
 `harness list` includes saved entries, the bundled DSH runtime, and executable
 `*-acp` / `*_acp` entrypoints found on `PATH`; `*` marks

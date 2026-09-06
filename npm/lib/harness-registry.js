@@ -1,20 +1,55 @@
 /** ACP Registry loading, normalization, and managed binary installation. */
 
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   chmodSync,
+  createReadStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
   rmSync,
   statSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import { downloadFile } from './download.js'
 
 export const ACP_REGISTRY_URL = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json'
+
+function registryCachePath(options) {
+  return typeof options.settingsPath === 'string'
+    ? path.join(path.dirname(options.settingsPath), 'cache', 'acp-registry.json') : undefined
+}
+
+/** Last validated catalog, or the official bundled snapshot on first/offline launch. */
+export function readAcpRegistrySnapshot(options = {}) {
+  const cachePath = registryCachePath(options)
+  if (cachePath !== undefined) {
+    try {
+      if (statSync(cachePath).size > 16 * 1024 * 1024) throw new Error('oversized cache')
+      const cached = JSON.parse(readFileSync(cachePath, 'utf8'))
+      if (cached.source === (options.registryUrl ?? ACP_REGISTRY_URL) && Array.isArray(cached.catalog?.agents)) {
+        return normalizeAcpRegistry(cached.catalog, options)
+      }
+    } catch { /* Missing/corrupt cache cannot block the bundled catalog. */ }
+  }
+  return normalizeAcpRegistry(JSON.parse(readFileSync(new URL('./acp-registry.snapshot.json', import.meta.url), 'utf8')), options)
+}
+
+function cacheRegistry(value, options) {
+  const cachePath = registryCachePath(options)
+  if (cachePath === undefined) return
+  const temporary = `${cachePath}.${randomUUID()}.tmp`
+  try {
+    mkdirSync(path.dirname(cachePath), { recursive: true })
+    writeFileSync(temporary, JSON.stringify({ source: options.registryUrl ?? ACP_REGISTRY_URL, catalog: value }))
+    renameSync(temporary, cachePath)
+  } catch { /* Read-only storage must not discard a successful network result. */ }
+  finally { try { rmSync(temporary, { force: true }) } catch { /* best effort */ } }
+}
 
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 const TARGETS = Object.freeze({
@@ -100,43 +135,118 @@ export function normalizeAcpRegistry(value, options = {}) {
   })
 }
 
-function timeoutSignal(timeoutMs) {
+function timeoutSignal(timeoutMs, externalSignal, operation) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  timer.unref?.()
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) }
+  const cancel = () => {
+    const error = new Error(`${operation} cancelled`)
+    error.name = 'AbortError'
+    controller.abort(error)
+  }
+  if (externalSignal?.aborted) cancel()
+  else externalSignal?.addEventListener('abort', cancel, { once: true })
+  let timer
+  const reset = (duration = timeoutMs) => {
+    clearTimeout(timer)
+    if (duration !== undefined && !controller.signal.aborted) {
+      timer = setTimeout(() => controller.abort(new Error(`${operation} timed out`)), duration)
+    }
+  }
+  reset()
+  return {
+    signal: controller.signal,
+    reset,
+    cancel() {
+      clearTimeout(timer)
+      externalSignal?.removeEventListener('abort', cancel)
+    },
+  }
+}
+
+function abortable(promise, signal) {
+  if (signal.aborted) {
+    // The operation may synchronously abort its owner and return an already
+    // rejected promise. Consume it even though cancellation wins the race.
+    Promise.resolve(promise).catch(() => {})
+    return Promise.reject(signal.reason)
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    Promise.resolve(promise).then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort)
+    })
+  })
+}
+
+async function* responseChunks(response, signal) {
+  if (typeof response.body?.getReader !== 'function') {
+    signal.throwIfAborted()
+    yield Buffer.from(await abortable(response.arrayBuffer(), signal))
+    return
+  }
+  const reader = response.body.getReader()
+  try {
+    for (;;) {
+      signal.throwIfAborted()
+      const { done, value } = await abortable(reader.read(), signal)
+      if (done) return
+      yield Buffer.from(value)
+    }
+  } finally {
+    // Cancel the body as well as the request: injected fetch implementations may
+    // return a Response whose stream is not connected to the request signal.
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
 }
 
 export async function fetchAcpRegistry(options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch
   if (typeof fetchImpl !== 'function') throw new Error('ACP Registry requires fetch support')
-  const timeout = timeoutSignal(options.timeoutMs ?? 8_000)
-  let response
+  const timeout = timeoutSignal(options.timeoutMs ?? 8_000, options.signal, 'ACP Registry request')
   try {
-    response = await fetchImpl(options.registryUrl ?? ACP_REGISTRY_URL, {
+    timeout.signal.throwIfAborted()
+    const response = await abortable(fetchImpl(options.registryUrl ?? ACP_REGISTRY_URL, {
       headers: { accept: 'application/json' },
       signal: timeout.signal,
-    })
+    }), timeout.signal)
+    if (response?.ok !== true) {
+      throw new Error(`ACP Registry returned HTTP ${response?.status ?? 'error'}`)
+    }
+    let value
+    try {
+      if (typeof response.body?.getReader === 'function') {
+        const chunks = []
+        let size = 0
+        for await (const chunk of responseChunks(response, timeout.signal)) {
+          size += chunk.length
+          if (size > 16 * 1024 * 1024) throw new Error('catalog is larger than 16 MiB')
+          chunks.push(chunk)
+        }
+        value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      } else {
+        value = await abortable(response.json(), timeout.signal)
+      }
+    } catch (error) {
+      throw new Error(`ACP Registry returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (!Array.isArray(value?.agents)) throw new Error('ACP Registry returned an invalid catalog')
+    const records = normalizeAcpRegistry(value, options)
+    if (records.length === 0 && Array.isArray(value?.agents) && value.agents.length > 0) {
+      throw new Error('ACP Registry has no distributions for this platform')
+    }
+    cacheRegistry(value, options)
+    return records
   } catch (error) {
-    if (timeout.signal.aborted) throw new Error('ACP Registry request timed out')
+    if (timeout.signal.aborted) throw timeout.signal.reason
+    if (error instanceof Error && error.message.startsWith('ACP Registry')) throw error
     throw new Error(`could not fetch ACP Registry: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     timeout.cancel()
   }
-  if (response?.ok !== true) {
-    throw new Error(`ACP Registry returned HTTP ${response?.status ?? 'error'}`)
-  }
-  let value
-  try {
-    value = await response.json()
-  } catch (error) {
-    throw new Error(`ACP Registry returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  const records = normalizeAcpRegistry(value, options)
-  if (records.length === 0 && Array.isArray(value?.agents) && value.agents.length > 0) {
-    throw new Error('ACP Registry has no distributions for this platform')
-  }
-  return records
 }
 
 function safeComponent(value, label) {
@@ -191,13 +301,34 @@ function archiveSuffix(url) {
   throw new Error('binary distribution uses an unsupported archive format')
 }
 
-function runArchiveTool(command, args, action) {
-  const result = spawnSync(command, args, { encoding: 'utf8' })
-  if (result.error !== undefined || result.status !== 0) {
-    const detail = result.error?.message ?? result.stderr?.trim() ?? `exit ${result.status}`
-    throw new Error(`could not ${action} binary archive: ${detail}`)
-  }
-  return result.stdout
+function runArchiveTool(command, args, action, signal) {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    let stdout = ''
+    let stderr = ''
+    let failure
+    const stop = () => child.kill('SIGKILL')
+    signal.addEventListener('abort', stop, { once: true })
+    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+      stdout += chunk
+      if (stdout.length > 4 * 1024 * 1024) {
+        failure = new Error('archive file listing is too large')
+        stop()
+      }
+    })
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      stderr = (stderr + chunk).slice(-65_536)
+    })
+    child.on('error', (error) => { failure = error })
+    child.on('close', (code) => {
+      signal.removeEventListener('abort', stop)
+      if (signal.aborted) reject(signal.reason)
+      else if (failure !== undefined || code !== 0) {
+        reject(new Error(`could not ${action} binary archive: ${failure?.message ?? (stderr.trim() || `exit ${code}`)}`))
+      } else resolve(stdout)
+    })
+  })
 }
 
 function validateArchiveEntries(entries) {
@@ -210,16 +341,16 @@ function validateArchiveEntries(entries) {
   }
 }
 
-function defaultExtractArchive(archivePath, destination, archiveUrl) {
+async function defaultExtractArchive(archivePath, destination, archiveUrl, { signal }) {
   const suffix = archiveSuffix(archiveUrl)
   if (suffix === '.zip' && process.platform !== 'win32') {
-    validateArchiveEntries(runArchiveTool('unzip', ['-Z1', archivePath], 'inspect'))
-    runArchiveTool('unzip', ['-q', archivePath, '-d', destination], 'extract')
+    validateArchiveEntries(await runArchiveTool('unzip', ['-Z1', archivePath], 'inspect', signal))
+    await runArchiveTool('unzip', ['-q', archivePath, '-d', destination], 'extract', signal)
     return
   }
   const tar = process.platform === 'win32' ? 'tar.exe' : 'tar'
-  validateArchiveEntries(runArchiveTool(tar, ['-tf', archivePath], 'inspect'))
-  runArchiveTool(tar, ['-xf', archivePath, '-C', destination], 'extract')
+  validateArchiveEntries(await runArchiveTool(tar, ['-tf', archivePath], 'inspect', signal))
+  await runArchiveTool(tar, ['-xf', archivePath, '-C', destination], 'extract', signal)
 }
 
 function executable(command) {
@@ -235,6 +366,11 @@ function executable(command) {
  * The settings path anchors the default at $MARTTY_HOME/bin.
  */
 export async function installRegistryBinary(entry, options = {}) {
+  if (options.signal?.aborted) {
+    const error = new Error('binary installation cancelled')
+    error.name = 'AbortError'
+    throw error
+  }
   const distribution = entry?.distribution
   if (distribution?.type !== 'binary') throw new Error('registry entry is not a binary distribution')
   if (typeof options.settingsPath !== 'string' || options.settingsPath.length === 0) {
@@ -248,6 +384,7 @@ export async function installRegistryBinary(entry, options = {}) {
   const installDir = path.join(installRoot, id, version, target)
   const installedCommand = containedPath(installDir, commandParts)
   if (executable(installedCommand)) {
+    options.onProgress?.({ phase: 'complete' })
     return {
       id: entry.id,
       label: entry.label,
@@ -260,52 +397,67 @@ export async function installRegistryBinary(entry, options = {}) {
     throw new Error(`incomplete binary installation already exists at ${installDir}`)
   }
 
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch
-  if (typeof fetchImpl !== 'function') throw new Error('binary installation requires fetch support')
-  const timeout = timeoutSignal(options.timeoutMs ?? 60_000)
-  let response
-  try {
-    response = await fetchImpl(distribution.archive, { signal: timeout.signal })
-  } catch (error) {
-    if (timeout.signal.aborted) throw new Error('binary download timed out')
-    throw new Error(`could not download binary: ${error instanceof Error ? error.message : String(error)}`)
-  } finally {
-    timeout.cancel()
-  }
-  if (response?.ok !== true) throw new Error(`binary download returned HTTP ${response?.status ?? 'error'}`)
-  const declaredSize = Number(response.headers?.get?.('content-length'))
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_ARCHIVE_BYTES) {
-    throw new Error('binary archive is larger than 512 MiB')
-  }
-  const archive = Buffer.from(await response.arrayBuffer())
-  if (archive.length > MAX_ARCHIVE_BYTES) throw new Error('binary archive is larger than 512 MiB')
-  if (typeof distribution.sha256 === 'string') {
-    const actual = createHash('sha256').update(archive).digest('hex')
-    if (actual !== distribution.sha256.toLowerCase()) {
-      throw new Error(`binary checksum mismatch: expected ${distribution.sha256}, received ${actual}`)
-    }
-  }
-
+  const suffix = archiveSuffix(distribution.archive)
   const parent = path.dirname(installDir)
   mkdirSync(parent, { recursive: true })
   const temporary = mkdtempSync(path.join(parent, '.install-'))
   try {
-    const archivePath = path.join(temporary, `download${archiveSuffix(distribution.archive)}`)
+    const archivePath = path.join(temporary, `download${suffix}`)
+    await (options.downloadFile ?? downloadFile)(distribution.archive, archivePath, {
+      signal: options.signal,
+      onProgress: options.onProgress,
+      connectTimeoutMs: options.connectTimeoutMs ?? options.timeoutMs ?? 30_000,
+      idleTimeoutMs: options.idleTimeoutMs ?? options.timeoutMs ?? 60_000,
+      maxBytes: MAX_ARCHIVE_BYTES,
+    })
+    options.signal?.throwIfAborted()
+    // Validate independently of the transport before trusting an archive.
+    if (statSync(archivePath).size > MAX_ARCHIVE_BYTES) throw new Error('binary archive is larger than 512 MiB')
+    if (typeof distribution.sha256 === 'string') {
+      const hash = createHash('sha256')
+      for await (const chunk of createReadStream(archivePath, { signal: options.signal })) hash.update(chunk)
+      const actual = hash.digest('hex')
+      if (actual !== distribution.sha256.toLowerCase()) {
+        throw new Error(`binary checksum mismatch: expected ${distribution.sha256}, received ${actual}`)
+      }
+    }
+
     const extracted = path.join(temporary, 'payload')
     mkdirSync(extracted)
-    writeFileSync(archivePath, archive, { mode: 0o600 })
-    const extract = options.extractArchive ?? defaultExtractArchive
-    await extract(archivePath, extracted, distribution.archive)
-    const extractedCommand = containedPath(extracted, commandParts)
-    if (!existsSync(extractedCommand)) {
-      throw new Error(`binary archive does not contain ${distribution.command}`)
+    // Archive inspection and extraction share a ten-minute default deadline;
+    // callers can override it, and cancellation still interrupts the extractor.
+    const extraction = timeoutSignal(options.extractTimeoutMs ?? 10 * 60_000, options.signal, 'binary extraction')
+    try {
+      options.onProgress?.({ phase: 'extract' })
+      extraction.signal.throwIfAborted()
+      if (options.extractArchive !== undefined) {
+        await abortable(options.extractArchive(archivePath, extracted, distribution.archive, {
+          signal: extraction.signal,
+        }), extraction.signal)
+      } else {
+        // The native extractor waits for the terminated child to close before
+        // cleanup, including on Windows where open files cannot be removed.
+        await defaultExtractArchive(archivePath, extracted, distribution.archive, { signal: extraction.signal })
+      }
+      options.onProgress?.({ phase: 'verify' })
+      extraction.signal.throwIfAborted()
+      const extractedCommand = containedPath(extracted, commandParts)
+      if (!existsSync(extractedCommand)) {
+        throw new Error(`binary archive does not contain ${distribution.command}`)
+      }
+      if (process.platform !== 'win32') chmodSync(extractedCommand, 0o755)
+      if (!executable(extractedCommand)) throw new Error('binary command is not an executable file')
+      renameSync(extracted, installDir)
+    } catch (error) {
+      if (extraction.signal.aborted) throw extraction.signal.reason
+      throw error
+    } finally {
+      extraction.cancel()
     }
-    if (process.platform !== 'win32') chmodSync(extractedCommand, 0o755)
-    if (!executable(extractedCommand)) throw new Error('binary command is not an executable file')
-    renameSync(extracted, installDir)
   } finally {
     rmSync(temporary, { recursive: true, force: true })
   }
+  options.onProgress?.({ phase: 'complete' })
   return {
     id: entry.id,
     label: entry.label,

@@ -72,7 +72,7 @@ export function apply(ctx) {
 `conversation.input.dock` 显示当前
 进度摘要，并注册本地 `/plan-view`，通过 `tuiOverlay.openView()` 打开审阅清单——
 条目以单条 markdown **任务列表**节点呈现（`## Plan · 完成/总数` 标题、
-`- [x]`/`- [ ]` 状态框、进行中加粗、取消/失败删除线、priority 后缀），
+`- [x]`/`- [ ]` 状态框、进行中使用 `◐` 图标并标注 `in progress`（dock 使用动态运行标记）、取消/失败删除线、priority 后缀），
 由转录的 markdown 管线完整渲染；宽终端上审阅面板可扩到 2/3 屏宽。
 `/plan` 仍由 agent 的标准 command / mode 语义处理，两者不冲突。
 
@@ -271,6 +271,18 @@ contribution 内稳定即可，聚合器会用 contribution id 做命名空间�
 普通单选表单；`openView({ id, title, nodes })` 提供只读 `TuiNode[]` 弹窗。三者共享
 一个 modal 席位，返回的 `close()` 和插件 Fiber 同生命周期。View 支持上下翻阅，
 Enter 提交、Esc 取消；它是通用节点视图，不认识 Plan。
+
+Select 的 `options[].group?: string` 是单行装饰性分组标题，带分割线，不是可选项，
+不参与导航或提交。同 id 的 `openSelect` 可原地刷新候选和 handlers，不先关闭面板；
+Rust 保留搜索文字和仍然可见的选中值。旧 controller 不会关闭刷新后的面板。
+
+`options[].disabled?: boolean` 保留行的显示但禁止提交；本地命令 input 候选也
+接受 disabled，Enter / Tab 不会提交或补全禁用项。
+
+Select 可通过 `options[].deletable?: boolean` 和 `handlers.onDelete(value)`
+声明行删除动作。Delete 关闭当前表单并派发独立的 `delete` 事件，不等同于提交；
+未声明、禁用项或没有 handler 时不执行。非搜索表单也接受 Backspace（Mac Delete）；
+搜索表单的 Backspace 仍只编辑搜索词。业务插件负责展示确认和执行删除。
 
 本地命令可在 `tuiCommands.register` 的 options 中声明
 `input: { hint, options: [{ value, label, description }] }`。用户输入 `/name ` 后，Rust

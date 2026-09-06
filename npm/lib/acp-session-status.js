@@ -62,9 +62,11 @@ export function installAcpSessionStatus(ctx, options = {}) {
   const listeners = new Set()
   let value = zero()
   let initializeId
+  let authMethods = []
   let pendingAuthenticate = new Set()
   const pendingSetup = new Map()
   const pendingPrompts = new Map()
+  const pendingRequests = new Set()
   let permissionPreset
   let sandboxMode
 
@@ -97,11 +99,25 @@ export function installAcpSessionStatus(ctx, options = {}) {
   function observeClient(message) {
     if (!object(message) || typeof message.method !== 'string') return
     if (message.method === 'initialize' && message.id !== undefined) {
+      pendingRequests.clear()
+      value = zero()
+      authMethods = []
+      pendingAuthenticate.clear()
+      pendingSetup.clear()
+      pendingPrompts.clear()
+      permissionPreset = undefined
+      sandboxMode = undefined
       initializeId = message.id
+      publish()
       return
     }
+    if (message.id !== undefined) pendingRequests.add(message.id)
     if (message.method === 'authenticate' && message.id !== undefined) {
       pendingAuthenticate.add(message.id)
+      const methodId = readString(message.params, 'methodId')
+      const method = authMethods.find((candidate) => candidate?.id === methodId)
+      if (methodId !== undefined) value.auth.method = readString(method, 'name', 'label') ?? methodId
+      delete value.auth.message
       value.auth.status = 'signing in'
       publish()
       return
@@ -135,26 +151,28 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (!object(message)) return
     if (message.id !== undefined && message.id === initializeId) {
       initializeId = undefined
-      value.connection = 'attached'
+      value.connection = message.error === undefined ? 'attached' : 'failed'
+      value.error = message.error?.message
       const result = object(message.result) ? message.result : undefined
       value.server = readString(result?.agentInfo, 'name')
       const methods = Array.isArray(result?.authMethods) ? result.authMethods : []
-      const method = methods.find((candidate) => object(candidate)
-        && typeof candidate.id === 'string' && candidate.id.length > 0)
-      if (method !== undefined && value.auth.status === undefined) {
-        value.auth.method = readString(method, 'name', 'label') ?? method.id
-      }
+      authMethods = methods
+      // initialize advertises choices, not the credential used by this process.
       publish()
       return
     }
+    // Unknown replies can belong to a replaced Agent. Never let them restore
+    // its authentication or run state in the new connection.
+    if (response(message) && !pendingRequests.delete(message.id)) return
     if (message.id !== undefined && pendingAuthenticate.has(message.id)) {
       pendingAuthenticate.delete(message.id)
       if (message.error === undefined) {
         value.auth.status = 'configured'
-      } else if (isAuthRequired(message.error)) {
-        value.auth.status = 'needs sign-in'
+        delete value.auth.message
       } else {
-        value.auth.status = undefined
+        value.auth.status = 'sign-in failed'
+        value.auth.message = readString(message.error?.data, 'details', 'message')
+          ?? readString(message.error, 'message') ?? 'Authentication failed'
       }
       publish()
       return
@@ -164,9 +182,23 @@ export function installAcpSessionStatus(ctx, options = {}) {
       pendingSetup.delete(message.id)
       if (message.error !== undefined) {
         if (isAuthRequired(message.error)) value.auth.status = 'needs sign-in'
+        else {
+          value.connection = 'failed'
+          value.error = readString(message.error, 'message') ?? 'Session setup failed'
+          value.state = 'idle'
+          value.auth = { status: undefined, method: undefined }
+          value.model = undefined
+          value.effort = undefined
+        }
         value.session = { sessionId: setup.sessionId, bound: false, started: false }
       } else {
+        value.connection = 'attached'
+        delete value.error
         const sessionId = readString(message.result, 'sessionId', 'session_id') ?? setup.sessionId
+        if (sessionId !== undefined && authMethods.length > 0) {
+          value.auth.status = 'configured'
+          delete value.auth.message
+        }
         value.session = {
           sessionId,
           bound: sessionId !== undefined,
@@ -260,14 +292,15 @@ export function installAcpSessionStatus(ctx, options = {}) {
       && value.session.sessionId === undefined) {
       value.session = { sessionId: snapshot.sessionId, bound: true, started: false }
     }
-    value.model = optionValue(snapshot.options, 'model') ?? value.model
-    value.effort = optionValue(snapshot.options, 'effort') ?? value.effort
+    value.model = optionValue(snapshot.options, 'model', 'model')
+    value.effort = optionValue(snapshot.options, 'thought_level', 'effort')
     publish()
   }
 
-  function optionValue(options, id) {
+  function optionValue(options, category, id) {
     if (!Array.isArray(options)) return undefined
-    const option = options.find((candidate) => candidate?.id === id)
+    const option = options.find((candidate) => candidate?.category === category)
+      ?? options.find((candidate) => candidate?.id === id)
     if (option === undefined) return undefined
     const raw = option.currentValue ?? option.current_value
     return typeof raw === 'string' ? raw : undefined

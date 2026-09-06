@@ -43,7 +43,7 @@ function dockNodes(plan) {
     const total = plan.entries.length
     if (total === 0) return []
     const completed = plan.entries.filter((entry) => entry.status === 'completed').length
-    const focus = plan.entries.find((entry) => entry.status === 'in_progress')
+    const focus = plan.entries.find((entry) => isInProgress(entry.status))
       ?? plan.entries.find((entry) => entry.status !== 'completed')
       ?? plan.entries.at(-1)
     const action = { kind: 'command', name: 'plan-view', args: '' }
@@ -53,7 +53,10 @@ function dockNodes(plan) {
         tone: 'caption', status: completed === total ? 'done' : 'running', action,
       },
       ...(focus ? [{
-        id: 'focus', kind: 'generic', title: focus.content, body: '', tone: 'caption', action,
+        id: 'focus', kind: 'generic', title: focus.content,
+        body: statusLabel(focus.status),
+        ...(isInProgress(focus.status) ? { status: 'running' } : {}),
+        tone: 'caption', action,
       }] : []),
     ]
   }
@@ -100,10 +103,22 @@ function viewNodes(plan) {
     } else if (entry.status === 'cancelled' || entry.status === 'failed') {
       item = `- [ ] ~~${content}~~`
     } else {
-      item = entry.status === 'in_progress' ? `- [ ] **${content}**` : `- [ ] ${content}`
+      item = isInProgress(entry.status) ? `- ◐ **${content}** · in progress` : `- [ ] ${content}`
     }
     if (entry.priority) item += ` · priority · ${entry.priority}`
     lines.push(item)
   }
   return [{ id: 'content', kind: 'markdown', text: lines.join('\n') }]
+}
+
+function isInProgress(status) {
+  return status === 'in_progress' || status === 'in-progress'
+}
+
+function statusLabel(status) {
+  if (isInProgress(status)) return 'in progress'
+  if (status === 'completed') return 'completed'
+  if (status === 'cancelled') return 'cancelled'
+  if (status === 'failed') return 'failed'
+  return 'pending'
 }

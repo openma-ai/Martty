@@ -114,6 +114,32 @@ Base；TUI bundle 从自己的运行时依赖挂 ACP plugin 与 Creator Host ove
 Host runner。runner 不再 spawn `dsh-acp`，只启动独立 TUI Client 进程并连接标准
 ACP stdio。Client root 由该进程自行创建，Host bundle rows 不等于 Client fibers。
 
+## Harness catalog startup
+
+Add / Install / Connect 只准备和保存 Harness recipe，不启动 ACP、不认证、
+不切换当前会话。安装成功后自动写入 `settings.json` 并刷新已配置列表，完成面板
+Enter 复用 `/harness` 的正常切换入口（包括已有会话确认）；Esc 只关闭，不切换。
+后台安装也自动保存，但不抢焦点。安装本身到配置完成为止。
+只有用户在完成面板按 Enter，或在 `/harness` 切换列表、Add / Find 目录明确选择已配置项时，
+才启动目标 Harness 和新会话；已配置项不再走重复配置提示。
+已配置的 npx/uvx recipe 直接启动，由 runner 复用自身缓存，不再根据内存标记
+重复进入 Add 下载流程。当前项按实际运行命令、参数和环境匹配并禁用重复选择，
+而不是从持久化 defaultHarness 推断。
+`defaultHarness` id 不因安装或添加改变；同 id 的显式配置替换会更新其 recipe，
+旧后台下载不能覆盖更新的配置意图。
+
+`harness-view` 先从 `settings.json` 同级的 `cache/acp-registry.json` 读取上次
+验证成功的官方目录；没有缓存时使用随 npm `lib` 发布的
+`acp-registry.snapshot.json`。快照来自官方
+`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，当前随包
+快照获取于 2026-09-05，不是手写 Harness 名单。发布时应更新该官方原始快照。
+
+打开 Add Harness 立即返回可搜索的目录，不等待网络或 PATH 探测。目录刷新与
+本地探测在后台执行，同 id 的 select 原位更新且保留搜索/选择；离线时保留已显示
+目录。尚未探测的条目标为 `Catalog`，不能提前声称已安装或未下载；选择它时只
+探测对应 recipe，再进入本地配置或下载确认。成功刷新以临时文件加 rename 更新
+磁盘缓存，失败不覆盖旧缓存；关闭面板后的异步结果不抢回焦点。
+
 ## Creator skill overlay
 
 Creator 的 skill 属于 agent Host，不属于 TUI Client 树。TUI 主包内部的
@@ -191,6 +217,20 @@ Bright、light=Tomorrow）、`everforest` / `iceberg` /
 以 sibling insert 行注册，`/theme` 直接可切。
 
 ## 控制面与绘制面
+
+Agent 登录以 ACP `authenticate` response 为准：请求进行中显示 `SigningIn`，
+成功响应后更新认证状态并继续缺失的 `session/new`；失败（包括返回
+`auth_required` 的账号资格拒绝）显示 `Failed` 与 Agent 的具体原因。浏览器
+OAuth 完成页不是 ACP 登录成功的证据。失败面板在 landing 页也可见，
+`/auth` 可再次选择认证方式；等待期间不重复发送登录请求。
+`initialize.authMethods` 只声明可选认证方式，不证明当前凭据来源；只有实际
+提交的 `authenticate` 才记录所用 method。已有凭据使 `session/new` 成功时，
+只显示就绪、来源未上报。每次新的 initialize 清空旧连接的 config、status、
+plan、stats 及待处理请求；初始化返回的 Agent 名称先于会话创建完成显示，
+切换期间不回退到启动时的 DSH 信息。
+配置 set 与预览事务绑定发起时的会话代次，旧响应与旧插件回滚不能修改新会话。
+真实运行的 model/effort 来自 ACP 配置或事件；状态服务优先按 `model` /
+`thought_level` category 识别，只有 demo 使用静态模型默认值。
 
 控制面走 ACP 已有方法（含 `authenticate`，对标 Backchat 的 probe / 登录面板：表单走 `_meta`，Terminal Auth 占 TTY）。Client `initialize` 声明 `fs.readTextFile` / `fs.writeTextFile` 与 `terminal`（createTerminal，有别于 `auth.terminal`）；会话中途 `auth_required` 打开 client `/auth`，不要让用户去敲 `/login`。Transcript 来自 `session/update`。配色是 **client 树** 上的 `tuiTheme.register`；送到 Rust 画布的是 `_dsh/cordis/tui/theme/update` notification，不是第三方插件 API。`_meta.dsh.cordis` 只协商能力，chrome 数据必须走扩展 notification。
 

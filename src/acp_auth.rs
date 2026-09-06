@@ -20,6 +20,8 @@ pub const ACP_AUTH_REQUIRED_CODE: i32 = -32000;
 pub enum AuthStatus {
     Configured,
     NeedsAuth,
+    SigningIn,
+    Failed,
     None,
     Unknown,
 }
@@ -91,13 +93,10 @@ impl AuthSnapshot {
     pub fn notice(&self) -> Option<(crate::transcript::NoticeLevel, String)> {
         use crate::transcript::NoticeLevel;
         match self.status {
-            AuthStatus::Configured | AuthStatus::None => None,
-            AuthStatus::Unknown => Some((
-                NoticeLevel::Warn,
-                self.message
-                    .clone()
-                    .unwrap_or_else(|| "no supported ACP auth method is available".into()),
-            )),
+            AuthStatus::Configured | AuthStatus::None | AuthStatus::SigningIn => None,
+            AuthStatus::Failed => Some((NoticeLevel::Error,
+                self.message.clone().unwrap_or_else(|| "ACP sign-in failed".into()))),
+            AuthStatus::Unknown => self.message.clone().map(|message| (NoticeLevel::Warn, message)),
             AuthStatus::NeedsAuth => Some((NoticeLevel::Warn, needs_auth_notice(self))),
         }
     }
@@ -223,9 +222,9 @@ pub fn snapshot_from_methods(
         return needs_auth_snapshot(methods, Some(&method), None);
     }
     AuthSnapshot {
-        status: AuthStatus::Configured,
-        method_id: Some(method.id.clone()),
-        method_name: method.name.clone(),
+        status: AuthStatus::Unknown,
+        method_id: None,
+        method_name: None,
         methods,
         message: None,
     }

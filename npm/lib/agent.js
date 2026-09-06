@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectedHarness } from './harnesses.js'
+import { tokenizeCommandArgs } from './command-args.js'
 
 /**
  * Resolve the ACP package and TUI's internal Creator overlay bundle.
@@ -40,7 +41,8 @@ export function resolveDependencyStack(anchor = import.meta.url) {
 export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
   const envCmd = process.env.DSH_TUI_AGENT
   if (typeof envCmd === 'string' && envCmd.trim().length > 0) {
-    const tokens = envCmd.trim().split(/\s+/)
+    const tokens = tokenizeCommandArgs(envCmd)
+    if (!tokens[0]) throw new Error('DSH_TUI_AGENT needs a non-empty command')
     return { command: tokens[0], args: tokens.slice(1) }
   }
   if (options.forcedHarness !== undefined && options.forcedHarness !== null) {

@@ -5,7 +5,81 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Enter on download completion now uses the existing Harness switch flow, including
+  session confirmation and ACP readiness; Escape still closes without switching.
+- Harness removal panels now use Esc to return one menu level, preserving the
+  selected Harness and removal mode without changing configuration or files.
+- Harness connection errors show the actual reason, structured error data and
+  captured stderr together in a scrollable panel; Enter retries directly, without
+  a recovery/details menu. Failed setup no longer leaves landing in a pending state.
+- Current Harness is pinned first in the switch picker, slash completions and
+  Add catalog, while preserving the relative order of other entries.
+- Selecting a configured Harness now switches directly instead of repeating the
+  Add/download flow. Current Harness choices are marked from the live recipe and
+  disabled in both the picker and slash completions.
+- New ACP initialization clears old session config, status, plan and statistics;
+  late request replies cannot restore old authentication state. Landing shows the
+  initialized Agent before session setup finishes, without old-runtime fallback.
+- Session configuration writes and preview rollbacks are scoped to their original
+  session generation. Status resolves model/effort by ACP category; live landing
+  no longer substitutes startup DeepSeek defaults for unreported model data.
+- Current Harness completions refresh at process handoff, including while login
+  is pending. Exited processes remain selectable for recovery.
+- Advertised authentication methods no longer masquerade as the active credential
+  source. Successful session setup without an explicit login leaves the source
+  unreported; welcome credential labels have a separating space.
+
 ### Added
+
+- Harness CLI walkthrough and README quick starts now cover source-checkout entrypoints,
+  Registry IDs, next-launch defaults, and configuration/private-resource removal.
+- TUI walkthrough and README screenshots cover switching, Registry discovery, downloads,
+  authentication, errors, and deletion with stepwise back navigation.
+- CLI Harness management now supports confirmed removal, private-resource cleanup and
+  dry runs. Discovery uses the local official Registry snapshot with explicit `find --refresh`;
+  saved recipes are reused offline. Binary setup preserves command-option overrides,
+  validates arguments before downloading, reports progress and cleans staging on Ctrl-C.
+  Missing standalone `--agent` / `--agent-arg` values fail before TUI startup.
+
+- `/harness` supports Delete on the selected saved row (also the Mac Delete key),
+  without a separate Remove Harness menu entry, with configuration-only removal or
+  confirmed cleanup of an exclusive private binary installation. Running/forced
+  Harnesses, shared caches, credentials, history and symlinked resources are protected;
+  pending downloads are cancelled and awaited before removal.
+- Managed Harness binary downloads now use the lightweight
+  `node-downloader-helper` SDK in the existing JS client. Transfers retain
+  connection/idle limits, panel progress, background completion notices,
+  checksum verification, and atomic installation under Martty's own directory.
+  Cancellation waits for file handles to close before cleaning up; failed or
+  incomplete transfers remain retryable from the panel.
+
+- Harness discovery now opens immediately, probes local commands in a background
+  worker alongside the Registry request, and progressively fills a grouped picker
+  (`Installed / configured` and `Not downloaded`). Refreshes preserve search and
+  selection; selecting an entry reuses its displayed recipe. Binary downloads use
+  connection and no-progress timeouts instead of a fixed total 60-second limit.
+  An offline `scripts/harness-discovery-scenario.mjs` playground covers six local,
+  managed, downloadable, and missing-runner states without real agents or installs.
+
+- Harness setup now has a visible Add action and searchable Registry picker,
+  verified local npm/uv command reuse, offline local choices and retry/recheck
+  actions. Package preparation and binary downloads share a progress panel:
+  Enter keeps unfinished jobs open; Escape hides the panel while downloading
+  continues in the background, with completion/failure notices in the composer
+  and a reopen/connect/retry path in `/harness`. Downloads never switch the
+  current session; quitting Martty stops unfinished work. Stalled transfers and
+  package preparation have timeouts; extraction has a cancellable ten-minute
+  default deadline. Child stderr is captured
+  as bounded, sanitized diagnostics instead of overwriting the TUI. TUI selection becomes the
+  persisted default only after actual ACP initialization and session creation;
+  Add/Install/Connect end after saving configuration, without switching or
+  starting sign-in/session setup. Completed foreground and background installs
+  automatically join the configured list; Enter/Esc only dismiss completion.
+  Switching requires a later explicit selection from /harness. Older background
+  downloads cannot overwrite newer configuration choices. Failed connections remain retryable. Windows batch
+  launchers use cross-spawn.
 
 - Plan progress now marks the active `in progress` entry with an animated
   running marker in the composer dock and a distinct `◐` icon plus label in
@@ -30,6 +104,10 @@ All notable changes to this project are documented here. The project follows
   catalog without requiring an agent name; query text is only an optional
   filter. Unconfigured Registry results now point to `harness add <id>` instead
   of incorrectly suggesting the local-only `harness use <id>` path.
+  Windows discovery now honors `PATHEXT` for launchers such as `npx.cmd`
+  and `uvx.exe`. If those package runners are unavailable, a platform
+  binary distribution takes precedence; package-only entries show the required
+  Node.js/npm or uv setup without persisting an unusable Harness.
   The built-in Client Plugin adds `/harness`, `/harness <id>`, and
   `/harness add <id> --command <cmd> [--arg <arg>]` as the third
   entry point, using the native TUI single-select overlay and the same registry.
@@ -109,6 +187,41 @@ All notable changes to this project are documented here. The project follows
   packs and both UI presets apply.
 
 ### Fixed
+
+- ACP sign-in now distinguishes a pending authenticate request, a rejected login,
+  and success. Agent failure reasons (including OAuth account eligibility errors)
+  appear in a visible dialog on the landing page and in `/status`, instead of
+  being hidden behind a generic sign-in hint. Retries clear stale errors and
+  retain the selected authentication method; browser authorization is not treated
+  as ACP authentication success.
+- Selecting an already-configured Harness in Add/Find switches it through the
+  normal session boundary instead of showing another configuration-complete notice.
+
+- ACP authentication success now clears the sign-in warning immediately, before
+  waiting for session creation. Session setup failures remain separate errors;
+  only an explicit authentication-required response restores the sign-in state.
+
+- Add Harness opens directly from a bundled official ACP Registry snapshot or
+  the last validated disk cache, without a blocking Loading panel. Catalog
+  refresh and local probes run in the background; offline refreshes retain the
+  existing list, and selecting an unprobed recipe checks its local command first.
+
+- Harness switch connection/setup now defaults to a twenty-minute timeout
+  instead of 60 seconds; explicit caller timeouts remain supported.
+
+- Harness switching no longer applies its machine setup deadline while a user
+  is completing ACP authentication. The deadline resumes after authentication
+  returns, so browser sign-in does not kill the new Harness after 60 seconds.
+
+- Binary archive inspection/extraction now has a ten-minute default deadline,
+  increased from 60 seconds. Explicit caller deadlines and cancellation still
+  terminate the extractor and clean staging.
+
+- Harness connection/setup failures now show the agent's reason once in a
+  readable error panel, preserving the ACP method, error code, and error data.
+  Captured stderr is available separately in diagnostic details; recovery
+  actions offer retry, another Harness, or manual configuration without
+  replacing the saved default on failure.
 
 - Harness switching now reclaims raw-mode ownership if the retiring ACP child
   restores the TTY to cooked mode, and repeated `Ctrl+C` cannot trigger the

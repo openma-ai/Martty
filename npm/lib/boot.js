@@ -322,12 +322,16 @@ export function parseClientArgv(argv, options = {}) {
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]
     if (token === '--agent') {
+      if (!argv[i + 1]?.trim() || argv[i + 1].startsWith('--')) {
+        throw Object.assign(new Error('--agent needs a value'), { exitCode: 2 })
+      }
       command = argv[i + 1]
       i += 1
       continue
     }
     if (token === '--agent-arg') {
-      args.push(argv[i + 1] ?? '')
+      if (argv[i + 1] === undefined) throw Object.assign(new Error('--agent-arg needs a value'), { exitCode: 2 })
+      args.push(argv[i + 1])
       i += 1
       continue
     }

@@ -151,17 +151,31 @@ function validateSelect(input) {
     if (option.description !== undefined && typeof option.description !== 'string') {
       throw new Error(`tuiOverlay.openSelect: options[${index}].description must be a string`)
     }
+    if (option.disabled !== undefined && typeof option.disabled !== 'boolean') {
+      throw new Error(`tuiOverlay.openSelect: options[${index}].disabled must be a boolean`)
+    }
+    if (option.deletable !== undefined && typeof option.deletable !== 'boolean') {
+      throw new Error(`tuiOverlay.openSelect: options[${index}].deletable must be a boolean`)
+    }
+    if (option.group !== undefined && (typeof option.group !== 'string'
+      || option.group.trim().length === 0 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(option.group))) {
+      throw new Error(`tuiOverlay.openSelect: options[${index}].group must be a non-empty single-line string`)
+    }
     return {
       value: option.value,
       label: option.label,
+      ...(option.disabled === undefined ? {} : { disabled: option.disabled }),
+      ...(option.deletable === undefined ? {} : { deletable: option.deletable }),
       ...(option.description === undefined ? {} : { description: option.description }),
+      ...(option.group === undefined ? {} : { group: option.group }),
     }
   })
   const value = input.value === undefined ? options[0].value : input.value
   if (typeof value !== 'string' || !values.has(value)) {
     throw new Error('tuiOverlay.openSelect: value must match one option')
   }
-  return { kind: 'select', id: input.id, title: input.title, value, options }
+  return { kind: 'select', id: input.id, title: input.title, value, options,
+    ...(input.searchable === true ? { searchable: true } : {}) }
 }
 
 /**
@@ -213,10 +227,15 @@ export function installTuiOverlay(ctx, options = {}) {
   }
 
   function openSelect(options, handlers = {}) {
-    if (current !== null) {
-      throw new Error(`tuiOverlay.openSelect: overlay "${current.overlay.id}" is already open`)
-    }
     const select = validateSelect(options)
+    if (current !== null) {
+      if (current.overlay.kind !== 'select' || current.overlay.id !== select.id) {
+        throw new Error(`tuiOverlay.openSelect: overlay "${current.overlay.id}" is already open`)
+      }
+      // A background catalog refresh replaces only this modal's snapshot.
+      // Retire its old handles so an earlier async callback cannot close it.
+      current.closed = true
+    }
     const entry = { overlay: select, handlers, closed: false }
     current = entry
     publish(structuredClone(select))
@@ -265,7 +284,7 @@ export function installTuiOverlay(ctx, options = {}) {
     }
 
     if (entry.overlay.kind === 'select') {
-      if (!['change', 'submit', 'cancel'].includes(params.event)) {
+      if (!['change', 'submit', 'cancel', 'delete'].includes(params.event)) {
         throw new Error(`tuiOverlay.dispatch: unknown select event "${String(params.event)}"`)
       }
       if (params.event !== 'cancel') {
@@ -273,6 +292,9 @@ export function installTuiOverlay(ctx, options = {}) {
           || !entry.overlay.options.some((option) => option.value === params.value)) {
           throw new Error('tuiOverlay.dispatch: select value is not an option')
         }
+        if (entry.overlay.options.find((option) => option.value === params.value)?.disabled) return
+        if (params.event === 'delete' && (!entry.overlay.options.find(option => option.value === params.value)?.deletable
+          || typeof entry.handlers.onDelete !== 'function')) return
         entry.overlay.value = params.value
       }
       if (params.event === 'change') {
@@ -280,7 +302,7 @@ export function installTuiOverlay(ctx, options = {}) {
       }
       const handler = params.event === 'submit'
         ? entry.handlers.onSubmit
-        : entry.handlers.onCancel
+        : params.event === 'delete' ? entry.handlers.onDelete : entry.handlers.onCancel
       entry.closed = true
       if (current === entry) {
         current = null

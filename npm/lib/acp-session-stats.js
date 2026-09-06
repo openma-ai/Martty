@@ -82,6 +82,11 @@ export function installAcpSessionStats(ctx, options = {}) {
 
   function observeClient(message) {
     if (!object(message) || message.id === undefined || typeof message.method !== 'string') return
+    if (message.method === 'initialize') {
+      pendingSetup.clear()
+      reset(undefined)
+      return
+    }
     if (SETUP_METHODS.has(message.method)) {
       pendingSetup.set(message.id, {
         sessionId: message.method === 'session/load'

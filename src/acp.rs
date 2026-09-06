@@ -176,7 +176,8 @@ pub fn run_blocking(
         }
     };
     if let Err(err) = runtime.block_on(run(cfg, endpoint, bus.clone(), cmd_rx)) {
-        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!("{err:#}"))));
+        // The painter retains the latest initialized identity, not cfg.bin from a previous Harness.
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed { target: String::new(), error: format!("{err:#}") }));
     }
 }
 
@@ -940,6 +941,30 @@ async fn call_tui_extension(
     cx.send_request(request).block_task().await
 }
 
+struct PluginOperation {
+    method: &'static str,
+    params: Value,
+    context: &'static str,
+}
+
+struct PluginOperationFinish {
+    context: &'static str,
+    result: std::result::Result<Value, AcpError>,
+}
+
+fn spawn_plugin_operation(
+    tasks: &mut tokio::task::JoinSet<PluginOperationFinish>,
+    cx: ConnectionTo<Agent>,
+    operation: PluginOperation,
+) -> tokio::task::Id {
+    tasks.spawn(async move {
+        PluginOperationFinish {
+            context: operation.context,
+            result: call_tui_extension(&cx, operation.method, operation.params).await,
+        }
+    }).id()
+}
+
 async fn fetch_dynamic_plugins(
     cx: &ConnectionTo<Agent>,
     agent_id: &str,
@@ -1051,6 +1076,7 @@ async fn initialize_switched_agent(
         .as_ref()
         .map(|info| info.name.clone())
         .unwrap_or_else(|| "acp".into());
+    let _ = bus.send(AppEvent::Ctl(CtlEvent::Initialized { server: name.clone() }));
     let init_value = serde_json::to_value(&init).unwrap_or(Value::Null);
     if let Ok(mut surface) = surface.lock() {
         surface.prompt_image = init.agent_capabilities.prompt_capabilities.image
@@ -1081,21 +1107,18 @@ async fn initialize_switched_agent(
     let methods = parse_auth_methods(&auth_raw, &agent_argv, &cfg.workspace, &env);
     let declared = declared_auth_methods(&auth_raw);
     let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
-    let selected = select_auth_method(&methods, None).cloned();
+    let selected: Option<AuthMethodInfo> = None;
     if auth.status == AuthStatus::NeedsAuth
-        && selected.as_ref().is_some_and(|method| method.form)
+        && methods.first().is_some_and(|method| method.form)
     {
-        auth = configured_snapshot(methods.clone(), selected.as_ref());
+        auth = configured_snapshot(methods.clone(), None);
+        auth.status = AuthStatus::Unknown;
     }
     let needs_open = auth.status == AuthStatus::NeedsAuth;
     emit_auth(bus, auth);
     emit_open_auth_if_needed(
         bus,
-        if needs_open {
-            AuthStatus::NeedsAuth
-        } else {
-            AuthStatus::None
-        },
+        if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None },
     );
     let mut session_auth_pending = false;
     let session_id = match create_prompt_session(
@@ -1114,9 +1137,7 @@ async fn initialize_switched_agent(
             None
         }
     };
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready {
-        server: name.clone(),
-    }));
+    let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: name.clone() }));
     Ok(SwitchedAgent {
         name,
         load_session,
@@ -1596,6 +1617,7 @@ where
                     .as_ref()
                     .map(|info| info.name.clone())
                     .unwrap_or_else(|| "acp".into());
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Initialized { server: agent_name.clone() }));
 
                 let init_value = serde_json::to_value(&init).unwrap_or(Value::Null);
                 if let Ok(mut surface) = surface.lock() {
@@ -1627,24 +1649,24 @@ where
                 );
                 let declared = declared_auth_methods(&auth_raw);
                 let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
-                let mut selected = select_auth_method(&methods, None).cloned();
+                // Only authenticate selects a method; session/new cannot reveal
+                // which persisted credential (if any) the Agent used.
+                let mut selected: Option<AuthMethodInfo> = None;
                 // A form-capable method may already have persistent credentials.
                 // Stay optimistic and let the startup session/new prove auth.
                 if auth.status == AuthStatus::NeedsAuth
-                    && selected.as_ref().is_some_and(|method| method.form)
+                    && methods.first().is_some_and(|method| method.form)
                 {
-                    auth = configured_snapshot(methods.clone(), selected.as_ref());
+                    auth = configured_snapshot(methods.clone(), None);
+                    auth.status = AuthStatus::Unknown;
                 }
 
                 let cwd = std::path::PathBuf::from(&cfg.workspace);
                 let needs_open = auth.status == AuthStatus::NeedsAuth;
                 emit_auth(&bus, auth);
-                emit_open_auth_if_needed(&bus, if needs_open {
-                    AuthStatus::NeedsAuth
-                } else {
-                    AuthStatus::None
-                });
+                emit_open_auth_if_needed(&bus, if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None });
                 let mut session_auth_pending = false;
+                let mut setup_failed = false;
                 let mut session_id = match create_prompt_session(
                     &cx,
                     &cwd,
@@ -1661,13 +1683,16 @@ where
                         None
                     }
                     Err(err) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                            "session/new: {err}"
-                        ))));
+                        setup_failed = true;
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
+                            target: agent_name.clone(), error: format!("session/new: {err}")
+                        }));
                         None
                     }
                 };
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
+                if !setup_failed {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
+                }
                 let mut parked: Option<ParkedPrompt> = None;
 
                 let (fwd_tx, mut fwd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
@@ -1687,10 +1712,49 @@ where
                 let (steer_done_tx, mut steer_done_rx) =
                     tokio::sync::mpsc::unbounded_channel::<SteerFinish>();
                 let mut turn_aborted = false;
+                // Keep primary local operations FIFO, while allowing cancel and
+                // change events through during an asynchronous install/search.
+                // Dropping the JoinSet on shutdown aborts outstanding requests.
+                let mut plugin_operations = tokio::task::JoinSet::new();
+                let mut plugin_queue = VecDeque::<PluginOperation>::new();
+                let mut deferred_commands = VecDeque::<Cmd>::new();
+                let mut active_plugin_operation = None;
+                let mut active_plugin_cancelled = false;
                 loop {
+                    if active_plugin_operation.is_none() {
+                        if let Some(operation) = plugin_queue.pop_front() {
+                            active_plugin_operation = Some(spawn_plugin_operation(
+                                &mut plugin_operations, cx.clone(), operation,
+                            ));
+                            active_plugin_cancelled = false;
+                        }
+                    }
+                    let mut harness_switch = None;
+                    let deferred = if active_plugin_operation.is_none() {
+                        deferred_commands.pop_front()
+                    } else {
+                        None
+                    };
                     tokio::select! {
-                        cmd = fwd_rx.recv() => {
+                        // A queued Esc or shutdown wins over a simultaneous reply.
+                        biased;
+                        cmd = async {
+                            match deferred {
+                                Some(cmd) => Some(cmd),
+                                None => fwd_rx.recv().await,
+                            }
+                        } => {
                             let Some(cmd) = cmd else { break };
+                            let bypass_primary = matches!(&cmd, Cmd::Shutdown)
+                                || matches!(&cmd, Cmd::PluginOverlayEvent { event, .. }
+                                    if event == "cancel" || event == "change");
+                            if active_plugin_operation.is_some() && !bypass_primary {
+                                // A primary callback may already have replaced the ACP
+                                // child. Preserve prior command serialization until its
+                                // result is consumed and any new handshake is finished.
+                                deferred_commands.push_back(cmd);
+                                continue;
+                            }
                             if session_id.is_none()
                                 && parked.is_none()
                                 && parked_prompt(&cmd).is_some()
@@ -1724,7 +1788,6 @@ where
                                     }
                                 }
                             }
-                            let mut harness_switch = None;
                             match cmd {
                         Cmd::Prompt { text, .. } => {
                             let next = Cmd::Prompt {
@@ -2049,24 +2112,15 @@ where
                             if !ensure_client_compositor(&surface, &bus) {
                                 continue;
                             }
-                            match call_tui_extension(
-                                &cx,
-                                crate::cordis::COMMAND_INVOKE,
-                                serde_json::json!({
+                            plugin_queue.push_back(PluginOperation {
+                                method: crate::cordis::COMMAND_INVOKE,
+                                params: serde_json::json!({
                                     "protocol": 0,
                                     "name": name,
                                     "args": args,
                                 }),
-                            )
-                            .await
-                            {
-                                Ok(value) => harness_switch = switched_harness(&value),
-                                Err(error) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                    "plugin command failed: {error}"
-                                    ))));
-                                }
-                            }
+                                context: "plugin command",
+                            });
                         }
                         Cmd::PluginThemeSelected { agent_id, id } => {
                             if !ensure_client_compositor(&surface, &bus) {
@@ -2123,19 +2177,25 @@ where
                             if let Some(value) = value {
                                 params["value"] = value;
                             }
-                            let result = if event == "change" {
-                                UntypedMessage::new(crate::cordis::OVERLAY_EVENT, params)
+                            if event == "change" {
+                                if let Err(error) = UntypedMessage::new(crate::cordis::OVERLAY_EVENT, params)
                                     .and_then(|notification| cx.send_notification(notification))
-                                    .map(|_| Value::Null)
-                            } else {
-                                call_tui_extension(&cx, crate::cordis::OVERLAY_EVENT, params).await
-                            };
-                            match result {
-                                Ok(value) => harness_switch = switched_harness(&value),
-                                Err(error) => {
+                                {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
                                         "plugin overlay event failed: {error}"
                                     ))));
+                                }
+                            } else {
+                                let operation = PluginOperation {
+                                    method: crate::cordis::OVERLAY_EVENT,
+                                    params,
+                                    context: "plugin overlay event",
+                                };
+                                if event == "cancel" {
+                                    active_plugin_cancelled = active_plugin_operation.is_some();
+                                    spawn_plugin_operation(&mut plugin_operations, cx.clone(), operation);
+                                } else {
+                                    plugin_queue.push_back(operation);
                                 }
                             }
                         }
@@ -2327,9 +2387,23 @@ where
                             if let Some(meta) = authenticate_meta_from_method(&method, &values) {
                                 req = req.meta(meta);
                             }
+                            selected = Some(method.clone());
+                            let mut signing_in = configured_snapshot(methods.clone(), Some(&method));
+                            signing_in.status = AuthStatus::SigningIn;
+                            emit_auth(&bus, signing_in);
                             match cx.send_request(req).block_task().await {
                                 Ok(_) => {
+                                    // Authentication and session setup are separate outcomes.
+                                    // Publish the ACP acknowledgement before waiting for session/new.
+                                    session_auth_pending = false;
+                                    emit_auth(
+                                        &bus,
+                                        configured_snapshot(methods.clone(), Some(&method)),
+                                    );
                                     if session_id.is_none() {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
+                                            "signed in — creating session".into(),
+                                        )));
                                         match create_prompt_session(
                                             &cx,
                                             &cwd,
@@ -2356,11 +2430,7 @@ where
                                             }
                                         }
                                     }
-                                    emit_auth(
-                                        &bus,
-                                        configured_snapshot(methods.clone(), Some(&method)),
-                                    );
-                                            match parked.take() {
+                                    match parked.take() {
                                         None => {
                                             let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
                                                 "signed in".into(),
@@ -2390,20 +2460,14 @@ where
                                         }
                                     }
                                 }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_auth(
-                                        &bus,
-                                        needs_auth_snapshot(
-                                            methods.clone(),
-                                            Some(&method),
-                                            Some(acp_error_message(&err)),
-                                        ),
-                                    );
-                                }
                                 Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "authenticate: {err}"
-                                    ))));
+                                    // A rejected authenticate is a failed attempt, including
+                                    // auth_required (e.g. an OAuth account eligibility error).
+                                    // Do not silently collapse it into the initial login hint.
+                                    let mut failure = needs_auth_snapshot(methods.clone(), Some(&method),
+                                        Some(acp_error_message(&err)));
+                                    failure.status = AuthStatus::Failed;
+                                    emit_auth(&bus, failure);
                                 }
                             }
                         }
@@ -2625,65 +2689,36 @@ where
                         }
                         Cmd::Shutdown => break,
                     }
-                            if let Some(HarnessSwitch { label, agent_argv }) = harness_switch {
-                                if let Some(task) = inflight.take() {
-                                    task.abort();
-                                }
-                                prompt_queue.clear();
-                                parked = None;
-                                session_id = None;
-                                session_auth_pending = false;
-                                turn_aborted = false;
-                                if let Ok(mut surface) = surface.lock() {
-                                    surface.reset_agent();
-                                }
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
-                                    runtime: "harness".into(),
-                                }));
-                                match initialize_switched_agent(
-                                    &cx,
-                                    &cfg,
-                                    &agent_argv,
-                                    &cwd,
-                                    &surface,
-                                    &bus,
-                                )
-                                .await
-                                {
-                                    Ok(next) => {
-                                        load_session = next.load_session;
-                                        list_session = next.list_session;
-                                        resume_session = next.resume_session;
-                                        methods = next.methods;
-                                        selected = next.selected;
-                                        session_id = next.session_id;
-                                        session_auth_pending = next.session_auth_pending;
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                                            "Harness switched to {label} · new session via {}",
-                                            next.name
-                                        ))));
-                                    }
-                                    Err(error) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                            "Harness {label} initialize: {error}"
-                                        ))));
-                                    }
-                                }
+                        }
+                        finished = plugin_operations.join_next_with_id(), if !plugin_operations.is_empty() => {
+                            let primary = match &finished {
+                                Some(Ok((id, _))) => active_plugin_operation == Some(*id),
+                                Some(Err(error)) => active_plugin_operation == Some(error.id()),
+                                None => false,
+                            };
+                            let cancelled = primary && active_plugin_cancelled;
+                            if primary {
+                                active_plugin_operation = None;
+                                active_plugin_cancelled = false;
                             }
-                            if inflight.is_none() && parked.is_none() {
-                                if let Some(next) = prompt_queue.pop_front() {
-                                    inflight = begin_prompt(
-                                        next,
-                                        &cx,
-                                        &bus,
-                                        &session_id,
-                                        &mut parked,
-                                        &methods,
-                                        selected.as_ref(),
-                                        &surface,
-                                        &cfg.workspace,
-                                    );
+                            match finished {
+                                Some(Ok((_, PluginOperationFinish { result: Ok(value), .. }))) if primary => {
+                                    // An acknowledged handoff already changed the process.
+                                    // Even if Esc raced its reply, finish that one handshake;
+                                    // skipping it would leave the new Agent uninitialized.
+                                    harness_switch = switched_harness(&value);
                                 }
+                                Some(Ok((_, PluginOperationFinish { context, result: Err(error) }))) if !cancelled => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                        "{context} failed: {error}"
+                                    ))));
+                                }
+                                Some(Err(error)) if !cancelled => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                        "plugin operation task failed: {error}"
+                                    ))));
+                                }
+                                _ => {}
                             }
                         }
                         steer = steer_done_rx.recv() => {
@@ -2693,21 +2728,6 @@ where
                                     message_id,
                                     deferred,
                                 }));
-                            }
-                            if inflight.is_none() && parked.is_none() {
-                                if let Some(next) = prompt_queue.pop_front() {
-                                    inflight = begin_prompt(
-                                        next,
-                                        &cx,
-                                        &bus,
-                                        &session_id,
-                                        &mut parked,
-                                        &methods,
-                                        selected.as_ref(),
-                                        &surface,
-                                        &cfg.workspace,
-                                    );
-                                }
                             }
                         }
                         finish = async {
@@ -2745,20 +2765,8 @@ where
                                 }
                                 Some(Err(_)) | None => {}
                             }
-                            if parked.is_none() {
-                                if let Some(next) = prompt_queue.pop_front() {
-                                    inflight = begin_prompt(
-                                        next,
-                                        &cx,
-                                        &bus,
-                                        &session_id,
-                                        &mut parked,
-                                        &methods,
-                                        selected.as_ref(),
-                                        &surface,
-                                        &cfg.workspace,
-                                    );
-                                } else if let Some(sid) = &session_id {
+                            if parked.is_none() && prompt_queue.is_empty() {
+                                if let Some(sid) = &session_id {
                                     let _ = bus.send(AppEvent::Rpc {
                                         method: "session.status".into(),
                                         params: json!({
@@ -2768,6 +2776,56 @@ where
                                     });
                                 }
                             }
+                        }
+                    }
+                    if let Some(HarnessSwitch { label, agent_argv }) = harness_switch {
+                        if let Some(task) = inflight.take() {
+                            task.abort();
+                        }
+                        prompt_queue.clear();
+                        parked = None;
+                        session_id = None;
+                        session_auth_pending = false;
+                        turn_aborted = false;
+                        if let Ok(mut surface) = surface.lock() {
+                            surface.reset_agent();
+                        }
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
+                            runtime: "harness".into(),
+                        }));
+                        match initialize_switched_agent(
+                            &cx, &cfg, &agent_argv, &cwd, &surface, &bus,
+                        ).await {
+                            Ok(next) => {
+                                load_session = next.load_session;
+                                list_session = next.list_session;
+                                resume_session = next.resume_session;
+                                methods = next.methods;
+                                selected = next.selected;
+                                session_id = next.session_id;
+                                session_auth_pending = next.session_auth_pending;
+                                let notice = if session_auth_pending {
+                                    format!("Harness {label} connected · sign in to start a session")
+                                } else {
+                                    format!("Harness switched to {label} · new session via {}", next.name)
+                                };
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(notice)));
+                            }
+                            Err(error) => {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
+                                    target: label, error: format!("{error}")
+                                }));
+                            }
+                        }
+                    }
+                    // The only FIFO drain point: never send a queued prompt
+                    // through a primary operation's possible handoff window.
+                    if active_plugin_operation.is_none() && inflight.is_none() && parked.is_none() {
+                        if let Some(next) = prompt_queue.pop_front() {
+                            inflight = begin_prompt(
+                                next, &cx, &bus, &session_id, &mut parked, &methods,
+                                selected.as_ref(), &surface, &cfg.workspace,
+                            );
                         }
                     }
                 }
