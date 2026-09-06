@@ -12,6 +12,9 @@ const COPY = {
   zh: {
     docs: "文档",
     navLabel: "文档导航",
+    guides: "使用指南",
+    harness: "Harness 管理",
+    sessions: "会话与消息队列",
     systems: "插件体系",
     architecture: "架构",
     plugins: "插件 API",
@@ -41,6 +44,9 @@ const COPY = {
   en: {
     docs: "Docs",
     navLabel: "Documentation",
+    guides: "USER GUIDES",
+    harness: "Harness management",
+    sessions: "Sessions and queues",
     systems: "Plugin systems",
     architecture: "Architecture",
     plugins: "Plugin API",
@@ -82,7 +88,7 @@ export function DocsPage({ locale, slug }: DocsPageProps) {
   return (
     <div className="docs-shell">
       <header className="docs-header">
-        <a className="docs-brand" href="/" aria-label="Martty home">
+        <a className="docs-brand" href={locale === "en" ? "/en" : "/"} aria-label="Martty home">
           <img src={marttyLogoUrl} alt="Martty" />
           <span>{copy.docs}</span>
         </a>
@@ -94,6 +100,13 @@ export function DocsPage({ locale, slug }: DocsPageProps) {
 
       <aside className="docs-sidebar">
         <nav aria-label={copy.navLabel}>
+          <p className="docs-nav__label">{copy.guides}</p>
+          <a href={docsPath(locale, "harness-management")} aria-current={slug === "harness-management" ? "page" : undefined}>
+            <span aria-hidden="true">↗</span>{copy.harness}
+          </a>
+          <a href={docsPath(locale, "sessions")} aria-current={slug === "sessions" ? "page" : undefined}>
+            <span aria-hidden="true">↗</span>{copy.sessions}
+          </a>
           <p className="docs-nav__label">CORE</p>
           <a
             href={docsPath(locale, "plugin-systems")}

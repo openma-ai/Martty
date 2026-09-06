@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { GET } from "./sitemap.xml";
+import { GET } from "../pages/sitemap.xml";
 
 describe("sitemap", () => {
   it("publishes both localized documentation trees", async () => {
@@ -23,7 +23,9 @@ describe("sitemap", () => {
     } as never);
     const xml = await response.text();
 
-    for (const slug of ["plugin-systems", "architecture", "plugins", "migration"]) {
+    for (const slug of ["plugin-systems", "architecture", "plugins", "migration", "harness-management", "sessions"]) {
+      expect(xml).toContain(`<loc>https://martty.sh/docs/${slug}</loc>`);
+      expect(xml).toContain(`<loc>https://martty.sh/en/docs/${slug}</loc>`);
       expect(xml).toContain(`hreflang="zh-CN" href="https://martty.sh/docs/${slug}"`);
       expect(xml).toContain(`hreflang="en" href="https://martty.sh/en/docs/${slug}"`);
     }
