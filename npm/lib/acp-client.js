@@ -26,6 +26,14 @@ export const inject = []
 let liveAgent = null
 
 /**
+ * One kill-on-exit hook per process, replaced (not accumulated) whenever a
+ * new agent is spawned. Registering `process.once('exit', …)` per apply()
+ * would stack listeners and kill every past child again on exit.
+ * @type {null | (() => void)}
+ */
+let liveAgentExitHook = null
+
+/**
  * @typedef {{ command: string, args?: string[], env?: Record<string, string> }} AgentSpec
  */
 
@@ -392,13 +400,15 @@ function createSpawnService(agent) {
     })
   }
   watchCurrent(current)
-  process.once('exit', () => {
+  if (liveAgentExitHook !== null) process.removeListener('exit', liveAgentExitHook)
+  liveAgentExitHook = () => {
     try {
       service.close()
     } catch {
       // already gone
     }
-  })
+  }
+  process.once('exit', liveAgentExitHook)
   return service
 }
 

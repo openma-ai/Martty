@@ -182,3 +182,29 @@ fn chars_between_slices_by_char_boundaries() {
     assert_eq!(i.chars_between(3, 3), "", "caret-only");
     assert_eq!(i.chars_between(2, 99), "b", "clamped to the buffer");
 }
+
+#[test]
+fn backspace_and_delete_forward_remove_whole_graphemes() {
+    // ZWJ family emoji: 7 chars, one grapheme. Deleting must never leave
+    // a dangling half of the sequence behind.
+    let mut input = Input::new();
+    input.insert_str("a\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f466}b");
+    let full = input.buf.clone();
+    assert!(full.chars().count() > 4, "sequence spans several chars");
+
+    input.backspace();
+    assert_eq!(input.buf, "a👨\u{200d}👩\u{200d}👦", "plain b died first");
+    // One more backspace removes the *whole* emoji cluster, not its
+    // last char — no dangling ZWJ or half a face left behind.
+    input.backspace();
+    assert_eq!(input.buf, "a");
+    input.backspace();
+    assert_eq!(input.buf, "");
+
+    // Forward delete from the start also takes the whole cluster.
+    let mut input = Input::new();
+    input.insert_str("e\u{301}x"); // e + combining acute = one grapheme
+    input.cursor = 0;
+    input.delete_forward();
+    assert_eq!(input.buf, "x", "combining mark went with its base");
+}

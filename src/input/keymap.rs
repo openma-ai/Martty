@@ -895,6 +895,11 @@ pub const KEY_ROWS: &[KeyRow] = &[
 
 pub const MOUSE_ROWS: &[MouseRow] = &[
     MouseRow {
+        chords: &["click tab"],
+        desc_en: "switch session tab (strip shows 2+ sessions) · /session prev · /session next · /new · /resume · /close",
+        desc_zh: "点击标签页切换会话（≥2 个会话时显示）· /session prev · /session next · /new · /resume · /close",
+    },
+    MouseRow {
         chords: &["click"],
         desc_en: "expand/collapse a tool · wheel scrolls",
         desc_zh: "点击展开/折叠工具 · 滚轮滚动",

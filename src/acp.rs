@@ -5,9 +5,11 @@
 //! Transcript paint comes from `session/update`. Negotiated Cordis TUI
 //! compositor state arrives as `_dsh/cordis/tui/*` extension notifications.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -18,6 +20,7 @@ use agent_client_protocol::schema::v1::{
     ClientSessionCapabilities, ContentBlock, CreateElicitationRequest, CreateElicitationResponse,
     CreateTerminalRequest, CreateTerminalResponse, ElicitationAcceptAction, ElicitationAction,
     ElicitationCapabilities, ElicitationContentValue, ElicitationFormCapabilities,
+    ElicitationScope,
     FileSystemCapabilities, ImageContent, Implementation, InitializeRequest, KillTerminalRequest,
     KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, ReadTextFileRequest, ReadTextFileResponse,
@@ -32,7 +35,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, AcpAgent, Agent, ByteStreams, Client, ConnectTo,
-    ConnectionTo, Error as AcpError, Handled, UntypedMessage,
+    ConnectionTo, Error as AcpError, Handled, SentRequest, UntypedMessage,
 };
 
 use crate::acp_auth::{
@@ -50,6 +53,9 @@ use crate::events::{
 };
 use crate::runtime::RuntimeConfig;
 
+mod control;
+use control::{ControlFinish, ControlWorkers};
+
 pub enum AcpEndpoint {
     Spawn(Vec<String>),
     AttachStdio {
@@ -59,8 +65,8 @@ pub enum AcpEndpoint {
     AttachTcp(std::net::TcpStream),
 }
 
-#[derive(Default)]
-struct Surface {
+#[derive(Clone, Default)]
+struct SessionSurface {
     composition_id: Option<String>,
     models: Vec<crate::bus::CatalogModel>,
     presets: Vec<CatalogPreset>,
@@ -69,6 +75,12 @@ struct Surface {
     effort_config_id: Option<String>,
     effort_current: Option<String>,
     modes: Vec<CatalogPreset>,
+}
+
+#[derive(Default)]
+struct Surface {
+    sessions: HashMap<String, SessionSurface>,
+    fallback: SessionSurface,
     /// A local Client compositor advertised one of its TUI projections.
     client_compositor: bool,
     /// Agent advertised `promptCapabilities.image` (ACP Image blocks allowed).
@@ -86,70 +98,105 @@ impl Surface {
         };
     }
 
-    fn apply_config_options(&mut self, options: &Value, bus: &Sender<AppEvent>) {
+    fn session_mut(&mut self, session_id: Option<&str>) -> &mut SessionSurface {
+        match session_id {
+            Some(id) => self.sessions.entry(id.to_string()).or_default(),
+            None => &mut self.fallback,
+        }
+    }
+
+    fn session(&self, session_id: &str) -> &SessionSurface {
+        self.sessions.get(session_id).unwrap_or(&self.fallback)
+    }
+
+    fn apply_config_options(
+        &mut self,
+        options: &Value,
+        bus: &Sender<AppEvent>,
+        session_id: Option<&str>,
+    ) {
         let (models, presets, composition_id) = catalog_from_config_options(options);
-        self.models = models.clone();
-        self.presets = presets.clone();
+        let target = self.session_mut(session_id);
+        target.models = models.clone();
+        target.presets = presets.clone();
         if composition_id.is_some() {
-            self.composition_id = composition_id;
+            target.composition_id = composition_id;
         }
         if let Some(arr) = options.as_array() {
             if let Some(effort) = reasoning_effort_option(options) {
-                self.effort_config_id = effort
+                target.effort_config_id = effort
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                self.effort_current = effort
+                target.effort_current = effort
                     .get("currentValue")
                     .or_else(|| effort.get("current_value"))
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                self.efforts =
+                target.efforts =
                     flatten_select_options(effort.get("options").unwrap_or(&Value::Null))
                         .into_iter()
                         .map(|(id, _, _)| id)
                         .collect();
             }
-            if self.modes.is_empty() {
-                if let Some(mode) = arr
-                    .iter()
-                    .find(|o| o.get("id").and_then(Value::as_str) == Some("mode"))
-                {
-                    self.modes =
-                        flatten_select_options(mode.get("options").unwrap_or(&Value::Null))
-                            .into_iter()
-                            .map(|(id, name, description)| CatalogPreset {
-                                id,
-                                name,
-                                description,
-                                broken: false,
-                            })
-                            .collect();
-                    if !self.modes.is_empty() {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
-                            modes: self.modes.clone(),
-                            current: mode
-                                .get("currentValue")
-                                .or_else(|| mode.get("current_value"))
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                        }));
-                    }
+            // ACP config options are per-session: refresh whenever an
+            // actual mode list shows up, even after an earlier session
+            // filled the catalog — later sessions may carry a different
+            // (or changed) set. The event still carries each session's
+            // own currentValue, so per-session state is not lost.
+            if let Some(mode) = arr
+                .iter()
+                .find(|o| o.get("id").and_then(Value::as_str) == Some("mode"))
+            {
+                let list: Vec<CatalogPreset> =
+                    flatten_select_options(mode.get("options").unwrap_or(&Value::Null))
+                        .into_iter()
+                        .map(|(id, name, description)| CatalogPreset {
+                            id,
+                            name,
+                            description,
+                            broken: false,
+                        })
+                        .collect();
+                let changed = !list.is_empty() && list != target.modes;
+                if changed {
+                    target.modes = list;
+                }
+                if !target.modes.is_empty() {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+                        session_id: session_id.map(str::to_string),
+                        modes: target.modes.clone(),
+                        current: mode
+                            .get("currentValue")
+                            .or_else(|| mode.get("current_value"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    }));
                 }
             }
         }
-        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models, presets }));
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: session_id.map(str::to_string),
+            models,
+            presets,
+        }));
     }
 
-    fn apply_session_modes(&mut self, modes: &Value, bus: &Sender<AppEvent>) {
+    fn apply_session_modes(
+        &mut self,
+        modes: &Value,
+        bus: &Sender<AppEvent>,
+        session_id: Option<&str>,
+    ) {
         let (list, current) = session_modes_from_value(modes);
         if list.is_empty() && current.is_none() {
             return;
         }
         if !list.is_empty() {
-            self.modes = list.clone();
+            self.session_mut(session_id).modes = list.clone();
         }
         let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+            session_id: session_id.map(str::to_string),
             modes: list,
             current,
         }));
@@ -193,7 +240,7 @@ pub fn check_blocking(argv: Vec<String>) -> Result<String> {
             .builder()
             .name("martty")
             .connect_with(agent, |cx: ConnectionTo<Agent>| async move {
-                let init = cx.send_request(initialize_request()).block_task().await?;
+                let init = cx.send_request(initialize_request()).block_task_deadline().await?;
                 Ok(init
                     .agent_info
                     .map(|info| info.name)
@@ -237,17 +284,99 @@ fn emit_auth(bus: &Sender<AppEvent>, snap: AuthSnapshot) {
     let _ = bus.send(AppEvent::Ctl(CtlEvent::Auth(snap)));
 }
 
-/// Parked composer payload retried after a later `authenticate` succeeds.
+/// The composer payload of one prompt stalled on auth.
 #[derive(Clone)]
-enum ParkedPrompt {
+enum ParkedPromptKind {
     Text(String),
     Images(Vec<crate::bus::PromptBlock>),
+}
+
+/// One stalled prompt with the session that owned it (`None` = it was
+/// submitted before the first session existed and adopts the current
+/// fallback on retry). A stall can hit several sessions' in-flight prompts
+/// at once, so parked is a queue — never an overwriting slot (issue #94).
+struct ParkedPrompt {
+    session: Option<String>,
+    kind: ParkedPromptKind,
 }
 
 struct PromptFinish {
     session_id: String,
     result: Result<agent_client_protocol::schema::v1::PromptResponse, AcpError>,
-    parked_on_auth: ParkedPrompt,
+    payload: ParkedPromptKind,
+    /// Turn generation: matches the `inflight` tag when this finish is the
+    /// one that currently owns the session handle.
+    gen: u64,
+}
+
+/// Per-session turn state on one shared ACP connection. The server allows one
+/// in-flight `session/prompt` per session, so every bound session gets its own
+/// handle; completions are demultiplexed by the id inside `PromptFinish`.
+#[derive(Default)]
+struct SessionHandle {
+    /// Occupancy marker for the in-flight `session/prompt` task, tagged
+    /// with the turn's generation. The task reports through the prompt-done
+    /// channel, so the handle is only ever cleared, never awaited. The
+    /// generation lets a stale finish (its session was forgotten and
+    /// re-bound while the old task was still unwinding) be recognized and
+    /// dropped instead of clearing the *new* turn's marker.
+    inflight: Option<(u64, tokio::task::JoinHandle<()>)>,
+    /// Follow-ups waiting for this session's active turn to settle.
+    queue: VecDeque<Cmd>,
+    /// `session/cancel` was sent for the in-flight prompt; its finish is
+    /// reported as an interruption, not a turn result.
+    turn_aborted: bool,
+}
+
+/// Resolve the session a command addresses: the id the UI carried, or the
+/// most recently bound session when the field is empty (backward compat).
+/// Before the first session exists, any carried id is a local placeholder
+/// with no server meaning yet, so it resolves to "no session" like an empty
+/// field. Once sessions exist, an id this connection never bound is rejected
+/// instead of silently rerouted to another session. `kind` names the command
+/// in the rejection so the UI notice says what was dropped.
+fn resolve_cmd_session(
+    sessions: &HashMap<String, SessionHandle>,
+    current: &Option<SessionId>,
+    cmd_session: &str,
+    kind: &str,
+) -> std::result::Result<Option<SessionId>, String> {
+    if cmd_session.is_empty() {
+        return Ok(current.clone());
+    }
+    if sessions.contains_key(cmd_session) {
+        return Ok(Some(SessionId::new(cmd_session)));
+    }
+    if sessions.is_empty() {
+        return Ok(None);
+    }
+    Err(format!("{kind}: unknown session {cmd_session}"))
+}
+
+/// Register a freshly created or loaded session, make it the fallback target
+/// for commands that arrive without a usable session id, and adopt any
+/// prompts that queued up before the first session existed.
+fn bind_session(
+    sessions: &mut HashMap<String, SessionHandle>,
+    current: &mut Option<SessionId>,
+    pending: &mut VecDeque<Cmd>,
+    sid: SessionId,
+) {
+    let handle = sessions.entry(sid.to_string()).or_default();
+    handle.queue.append(pending);
+    *current = Some(sid);
+}
+
+/// Point a prompt-like command at a freshly bound session: the id the UI
+/// carried was a pre-bind placeholder with no server meaning yet.
+fn retarget_session(cmd: &mut Cmd, sid: &SessionId) {
+    match cmd {
+        Cmd::Prompt { session_id, .. }
+        | Cmd::Steer { session_id, .. }
+        | Cmd::PromptImages { session_id, .. }
+        | Cmd::SteerImages { session_id, .. } => *session_id = sid.to_string(),
+        _ => {}
+    }
 }
 
 struct SteerFinish {
@@ -260,9 +389,11 @@ struct SteerFinish {
 /// prompt promise settle on its own.
 fn abort_turn(cx: &ConnectionTo<Agent>, session_id: &Option<SessionId>, bus: &Sender<AppEvent>) {
     if let Some(sid) = session_id.clone() {
-        let _ = cx.send_notification(CancelNotification::new(sid));
+        let _ = cx.send_notification(CancelNotification::new(sid.clone()));
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::CancelRequested {
+            session_id: sid.to_string(),
+        }));
     }
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::CancelRequested));
 }
 
 fn spawn_session_prompt(
@@ -270,8 +401,10 @@ fn spawn_session_prompt(
     bus: Sender<AppEvent>,
     sid: SessionId,
     content: Vec<ContentBlock>,
-    parked_on_auth: ParkedPrompt,
-) -> tokio::task::JoinHandle<PromptFinish> {
+    payload: ParkedPromptKind,
+    gen: u64,
+    done: tokio::sync::mpsc::UnboundedSender<PromptFinish>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnStart {
             session: sid.to_string(),
@@ -283,16 +416,18 @@ fn spawn_session_prompt(
         });
         let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: sid.to_string(),
+            session_id: Some(sid.to_string()),
         }));
         let result = cx
             .send_request(PromptRequest::new(sid.clone(), content))
             .block_task()
             .await;
-        PromptFinish {
+        let _ = done.send(PromptFinish {
             session_id: sid.to_string(),
             result,
-            parked_on_auth,
-        }
+            payload,
+            gen,
+        });
     })
 }
 
@@ -315,21 +450,28 @@ fn spawn_steer_prompt(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn begin_prompt(
     cmd: Cmd,
     cx: &ConnectionTo<Agent>,
     bus: &Sender<AppEvent>,
     session_id: &Option<SessionId>,
-    parked: &mut Option<ParkedPrompt>,
+    parked: &mut VecDeque<ParkedPrompt>,
     methods: &[AuthMethodInfo],
     selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
-) -> Option<tokio::task::JoinHandle<PromptFinish>> {
+    gen: u64,
+    done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
+) -> Option<tokio::task::JoinHandle<()>> {
     match cmd {
         Cmd::Prompt { text, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Text(text));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Text(text),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -343,12 +485,17 @@ fn begin_prompt(
                 bus.clone(),
                 sid,
                 vec![text.clone().into()],
-                ParkedPrompt::Text(text),
+                ParkedPromptKind::Text(text),
+                gen,
+                done.clone(),
             ))
         }
         Cmd::Steer { text, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Text(text));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Text(text),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -362,12 +509,17 @@ fn begin_prompt(
                 bus.clone(),
                 sid,
                 vec![text.clone().into()],
-                ParkedPrompt::Text(text),
+                ParkedPromptKind::Text(text),
+                gen,
+                done.clone(),
             ))
         }
         Cmd::PromptImages { blocks, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Images(blocks));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Images(blocks),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -376,7 +528,7 @@ fn begin_prompt(
                 );
                 return None;
             };
-            let parked_on_auth = ParkedPrompt::Images(blocks.clone());
+            let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -387,21 +539,34 @@ fn begin_prompt(
                     bus.clone(),
                     sid,
                     content,
-                    parked_on_auth,
+                    payload,
+                    gen,
+                    done.clone(),
                 )),
                 Ok(_) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error("empty image prompt".into())));
+                    // Session-scoped: the failure belongs to the requesting
+                    // tab (possibly parked), never to the viewed one.
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: "empty image prompt".into(),
+                    }));
                     None
                 }
                 Err(err) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: err,
+                    }));
                     None
                 }
             }
         }
         Cmd::SteerImages { blocks, .. } => {
             let Some(sid) = session_id.clone() else {
-                *parked = Some(ParkedPrompt::Images(blocks));
+                parked.push_back(ParkedPrompt {
+                    session: None,
+                    kind: ParkedPromptKind::Images(blocks),
+                });
                 emit_needs_auth_open(
                     bus,
                     methods.to_vec(),
@@ -410,7 +575,7 @@ fn begin_prompt(
                 );
                 return None;
             };
-            let parked_on_auth = ParkedPrompt::Images(blocks.clone());
+            let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -421,14 +586,22 @@ fn begin_prompt(
                     bus.clone(),
                     sid,
                     content,
-                    parked_on_auth,
+                    payload,
+                    gen,
+                    done.clone(),
                 )),
                 Ok(_) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error("empty image prompt".into())));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: "empty image prompt".into(),
+                    }));
                     None
                 }
                 Err(err) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                        session_id: sid.to_string(),
+                        message: err,
+                    }));
                     None
                 }
             }
@@ -437,9 +610,108 @@ fn begin_prompt(
     }
 }
 
+/// Start queued prompts whose session is free. Each session runs at most one
+/// in-flight `session/prompt`; a busy session simply keeps its FIFO.
+#[allow(clippy::too_many_arguments)]
+fn drain_ready_sessions(
+    controls: &ControlWorkers,
+    sessions: &mut HashMap<String, SessionHandle>,
+    cx: &ConnectionTo<Agent>,
+    bus: &Sender<AppEvent>,
+    parked: &mut VecDeque<ParkedPrompt>,
+    methods: &[AuthMethodInfo],
+    selected: Option<&AuthMethodInfo>,
+    surface: &Arc<Mutex<Surface>>,
+    workspace: &str,
+    next_gen: &mut u64,
+    done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
+) {
+    // While any prompt is stalled on auth, new prompts are not started:
+    // they would only fail the same way (and the stall release drains
+    // everything in order).
+    if !parked.is_empty() {
+        return;
+    }
+    let keys: Vec<String> = sessions.keys().cloned().collect();
+    for key in keys {
+        let Some(handle) = sessions.get_mut(&key) else {
+            continue;
+        };
+        if handle.inflight.is_some() || controls.busy(&key) {
+            continue;
+        }
+        let Some(next) = handle.queue.pop_front() else {
+            continue;
+        };
+        *next_gen += 1;
+        handle.inflight = begin_prompt(
+            next,
+            cx,
+            bus,
+            &Some(SessionId::new(key.as_str())),
+            parked,
+            methods,
+            selected,
+            surface,
+            workspace,
+            *next_gen,
+            done,
+        )
+        .map(|task| (*next_gen, task));
+        // If the begin parked a prompt (only possible without a session,
+        // which drain never passes) stop starting more.
+        if !parked.is_empty() {
+            return;
+        }
+    }
+}
+
+/// Send stalled prompts back to the sessions that owned them — an
+/// `authenticate` just succeeded, or another prompt succeeded, either of
+/// which proves the stall is over. Entries whose session was closed while
+/// stalled (`/close` → ForgetSession) are dropped: nobody views them, and
+/// retrying into the fallback session would leak the message into a
+/// conversation it never belonged to. Pre-session entries (no owner yet)
+/// adopt the current fallback session; with no session at all they stay
+/// parked for the next release. Returns how many prompts were requeued.
+fn requeue_parked_prompts(
+    sessions: &mut HashMap<String, SessionHandle>,
+    current: &Option<SessionId>,
+    parked: &mut VecDeque<ParkedPrompt>,
+) -> usize {
+    let mut retried = 0;
+    let mut still_parked: VecDeque<ParkedPrompt> = VecDeque::new();
+    while let Some(p) = parked.pop_front() {
+        let target = match p.session {
+            Some(sid) if sessions.contains_key(&sid) => Some(sid),
+            Some(_) => None, // closed while stalled — drop
+            None => current.as_ref().map(|c| c.to_string()),
+        };
+        match (target, p.kind) {
+            (Some(sid), kind) => {
+                let cmd = match kind {
+                    ParkedPromptKind::Text(text) => Cmd::Prompt {
+                        session_id: sid.clone(),
+                        text,
+                    },
+                    ParkedPromptKind::Images(blocks) => Cmd::PromptImages {
+                        session_id: sid.clone(),
+                        blocks,
+                    },
+                };
+                sessions.entry(sid).or_default().queue.push_front(cmd);
+                retried += 1;
+            }
+            (None, kind) => still_parked.push_back(ParkedPrompt { session: None, kind }),
+        }
+    }
+    *parked = still_parked;
+    retried
+}
+
 fn apply_prompt_finish(
     finish: PromptFinish,
-    parked: &mut Option<ParkedPrompt>,
+    parked: &mut VecDeque<ParkedPrompt>,
     bus: &Sender<AppEvent>,
     methods: &[AuthMethodInfo],
     selected: Option<&AuthMethodInfo>,
@@ -470,10 +742,23 @@ fn apply_prompt_finish(
                 session: finish.session_id,
                 kind: finish_kind.into(),
             }));
-            *parked = None;
+            // A success proves the stall is over — the release happens in
+            // the caller (it owns the session map); nothing parks here.
         }
         Err(err) if is_auth_required_error(&err) => {
-            *parked = Some(finish.parked_on_auth);
+            // Park the payload with its owning session so the retry (after
+            // `authenticate`) lands on the right tab. The turn itself is
+            // over for the UI: settle the session's transcript and badge
+            // like any other turn end — but never start a new prompt while
+            // the stall stands.
+            parked.push_back(ParkedPrompt {
+                session: Some(finish.session_id.clone()),
+                kind: finish.payload,
+            });
+            let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
+                session: finish.session_id,
+                kind: "interrupted".into(),
+            }));
             emit_needs_auth_open(
                 bus,
                 methods.to_vec(),
@@ -483,10 +768,13 @@ fn apply_prompt_finish(
         }
         Err(err) => {
             let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
-                session: finish.session_id,
+                session: finish.session_id.clone(),
                 kind: "error".into(),
             }));
-            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!("prompt: {err}"))));
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                session_id: finish.session_id,
+                message: format!("prompt: {err}"),
+            }));
         }
     }
 }
@@ -507,13 +795,13 @@ fn emit_open_auth_if_needed(bus: &Sender<AppEvent>, status: AuthStatus) {
     }
 }
 
-fn parked_prompt(cmd: &Cmd) -> Option<ParkedPrompt> {
+fn parked_prompt(cmd: &Cmd) -> Option<ParkedPromptKind> {
     match cmd {
         Cmd::Prompt { text, .. } | Cmd::Steer { text, .. } => {
-            Some(ParkedPrompt::Text(text.clone()))
+            Some(ParkedPromptKind::Text(text.clone()))
         }
         Cmd::PromptImages { blocks, .. } | Cmd::SteerImages { blocks, .. } => {
-            Some(ParkedPrompt::Images(blocks.clone()))
+            Some(ParkedPromptKind::Images(blocks.clone()))
         }
         _ => None,
     }
@@ -529,7 +817,7 @@ async fn create_prompt_session(
 ) -> std::result::Result<Option<SessionId>, AcpError> {
     match cx
         .send_request(NewSessionRequest::new(cwd.to_path_buf()))
-        .block_task()
+        .block_task_setup_deadline()
         .await
     {
         Ok(created) => {
@@ -560,25 +848,25 @@ fn apply_setup(
     bus: &Sender<AppEvent>,
 ) {
     if let Ok(mut surface) = surface.lock() {
-        surface.modes.clear();
+        let session = value
+            .get("sessionId")
+            .or_else(|| value.get("session_id"))
+            .and_then(Value::as_str)
+            .or(session_hint);
+        surface.session_mut(session).modes.clear();
         if let Some(options) = value
             .get("configOptions")
             .or_else(|| value.get("config_options"))
         {
-            surface.apply_config_options(options, bus);
-            if let Some(session) = value
-                .get("sessionId")
-                .or_else(|| value.get("session_id"))
-                .and_then(Value::as_str)
-                .or(session_hint)
-            {
-                for event in config_option_events(session.to_string(), options) {
+            surface.apply_config_options(options, bus, session);
+            if let Some(s) = session {
+                for event in config_option_events(s.to_string(), options) {
                     let _ = bus.send(AppEvent::Ui(event));
                 }
             }
         }
         if let Some(modes) = value.get("modes") {
-            surface.apply_session_modes(modes, bus);
+            surface.apply_session_modes(modes, bus, session);
         }
     }
 }
@@ -610,7 +898,7 @@ fn apply_config_response(
         .or_else(|| value.get("config_options"))?
         .clone();
     if let Ok(mut surface) = surface.lock() {
-        surface.apply_config_options(&options, bus);
+        surface.apply_config_options(&options, bus, Some(&session.0));
     }
     for event in config_option_events(session.to_string(), &options) {
         let _ = bus.send(AppEvent::Ui(event));
@@ -715,9 +1003,24 @@ fn abs_fs_path(path: &str, workspace: &str) -> Option<std::path::PathBuf> {
     Some(normalize_abs(abs))
 }
 
-/// Unix `file://` + absolute path (`file:///tmp/a.png`).
+/// Unix `file://` + absolute path with percent-encoding (`file:///tmp/a%20b.png`).
+/// `#`, `?`, `%`, spaces and non-ASCII bytes are encoded so agents parsing
+/// the URI (RFC 8089) recover the original path instead of treating `#` as
+/// a fragment or `?` as a query.
 fn unix_file_uri(path: &std::path::Path) -> String {
-    format!("file://{}", path.display())
+    let raw = path.to_string_lossy();
+    let mut encoded = String::with_capacity(raw.len());
+    for byte in raw.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'!' | b'$'
+            | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' | b'@' | b':' => {
+                encoded.push(*byte as char)
+            }
+            b'/' => encoded.push('/'),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    format!("file://{encoded}")
 }
 
 fn resolve_image_uri(path: &str, workspace: &str) -> Option<String> {
@@ -932,13 +1235,49 @@ fn static_plugins_from_value(value: &Value) -> std::result::Result<Vec<StaticPlu
         .collect()
 }
 
+/// Deadline for one ACP request round-trip. Generous on purpose — it only
+/// exists so a hung agent (half-open stdio, dead process) cannot freeze
+/// the command loop: Interrupt and Shutdown are unreachable while an arm
+/// awaits forever.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(120);
+const SETUP_DEADLINE: Duration = Duration::from_secs(20 * 60);
+
+/// [`SentRequest::block_task`] with [`REQUEST_DEADLINE`] applied. Every
+/// request the command loop awaits directly goes through this.
+trait BlockTaskDeadline {
+    type Output;
+    fn block_task_deadline(self) -> impl Future<Output = Result<Self::Output, AcpError>>;
+    fn block_task_setup_deadline(self) -> impl Future<Output = Result<Self::Output, AcpError>>;
+}
+
+impl<T> BlockTaskDeadline for SentRequest<T> {
+    type Output = T;
+    fn block_task_deadline(self) -> impl Future<Output = Result<T, AcpError>> {
+        request_with_deadline(self, REQUEST_DEADLINE)
+    }
+    fn block_task_setup_deadline(self) -> impl Future<Output = Result<T, AcpError>> {
+        request_with_deadline(self, SETUP_DEADLINE)
+    }
+}
+
+async fn request_with_deadline<T>(request: SentRequest<T>, deadline: Duration) -> Result<T, AcpError> {
+    match tokio::time::timeout(deadline, request.block_task()).await {
+        Ok(result) => result,
+        Err(_) => Err(AcpError::new(-32001, "agent request timed out")),
+    }
+}
+
 async fn call_tui_extension(
     cx: &ConnectionTo<Agent>,
     method: &str,
     params: Value,
 ) -> std::result::Result<Value, AcpError> {
     let request = UntypedMessage::new(method, params)?;
-    cx.send_request(request).block_task().await
+    if matches!(method, crate::cordis::COMMAND_INVOKE | crate::cordis::OVERLAY_EVENT) {
+        cx.send_request(request).block_task_setup_deadline().await
+    } else {
+        cx.send_request(request).block_task_deadline().await
+    }
 }
 
 struct PluginOperation {
@@ -1070,7 +1409,7 @@ async fn initialize_switched_agent(
     surface: &Arc<Mutex<Surface>>,
     bus: &Sender<AppEvent>,
 ) -> std::result::Result<SwitchedAgent, AcpError> {
-    let init = cx.send_request(initialize_request()).block_task().await?;
+    let init = cx.send_request(initialize_request()).block_task_setup_deadline().await?;
     let name = init
         .agent_info
         .as_ref()
@@ -1150,6 +1489,13 @@ async fn initialize_switched_agent(
     })
 }
 
+/// The local compositor owns client projections independently of Agent Cordis.
+/// Without either capability, never send extension traffic or spam notices.
+fn client_projection_available(surface: &Arc<Mutex<Surface>>) -> bool {
+    let surface = surface.lock().unwrap_or_else(|error| error.into_inner());
+    surface.client_compositor || surface.cordis
+}
+
 async fn connect<T>(
     transport: T,
     cfg: RuntimeConfig,
@@ -1174,6 +1520,8 @@ where
     let workspace_write = workspace.clone();
     let terms = Arc::new(crate::acp_term::TerminalBroker::new(workspace.clone()));
     let terms_create = Arc::clone(&terms);
+    let bus_create = bus.clone();
+    let workspace_create = workspace.clone();
     let terms_output = Arc::clone(&terms);
     let terms_wait = Arc::clone(&terms);
     let terms_kill = Arc::clone(&terms);
@@ -1197,8 +1545,9 @@ where
                             .get("configOptions")
                             .or_else(|| update.get("config_options"))
                         {
+                            let session = params.get("sessionId").and_then(Value::as_str);
                             if let Ok(mut surface) = surface_n.lock() {
-                                surface.apply_config_options(options, &bus_n);
+                                surface.apply_config_options(options, &bus_n, session);
                             }
                         }
                         if let Some(commands) = update
@@ -1206,10 +1555,17 @@ where
                             .or_else(|| update.get("available_commands"))
                         {
                             let skills = skills_from_available_commands(commands);
+                            let session = params
+                                .get("sessionId")
+                                .or_else(|| params.get("session_id"))
+                                .and_then(Value::as_str);
                             if let Ok(mut surface) = surface_n.lock() {
-                                surface.skills = skills.clone();
+                                surface.session_mut(session).skills = skills.clone();
                             }
-                            let _ = bus_n.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+                            let _ = bus_n.send(AppEvent::Ctl(CtlEvent::Skills {
+                                session_id: session.map(str::to_string),
+                                skills,
+                            }));
                         }
                     }
                     Ok(())
@@ -1287,6 +1643,7 @@ where
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if bus_p
                     .send(AppEvent::PermissionAsk {
+                        session_id: req.session_id.to_string(),
                         title,
                         options,
                         reply: tx,
@@ -1314,6 +1671,13 @@ where
         )
         .on_receive_request(
             async move |req: CreateElicitationRequest, responder, _cx| {
+                let session_id = match req.scope() {
+                    ElicitationScope::Session(scope) => Some(scope.session_id.to_string()),
+                    // Auth/config-phase elicitation (or a future scope kind)
+                    // has no session to attach to; the client shows it on
+                    // the live view.
+                    _ => None,
+                };
                 let form = match crate::elicitation::form_from_request(&req) {
                     Ok(form) => form,
                     Err(err) => {
@@ -1322,7 +1686,11 @@ where
                 };
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if bus_e
-                    .send(AppEvent::ElicitationAsk { form, reply: tx })
+                    .send(AppEvent::ElicitationAsk {
+                        session_id,
+                        form,
+                        reply: tx,
+                    })
                     .is_err()
                 {
                     return responder.respond(CreateElicitationResponse::new(
@@ -1403,6 +1771,7 @@ where
                 let bus = bus_write;
                 let workspace = workspace_write;
                 async move |req: WriteTextFileRequest, responder, _cx| {
+                    let session_id = req.session_id.to_string();
                     let path = crate::acp_fs::resolve_with_cwd(
                         &req.path,
                         std::path::Path::new(&workspace),
@@ -1414,7 +1783,7 @@ where
                         let allowed = if crate::acp_fs::is_inside_cwd(&path, &workspace) {
                             true
                         } else {
-                            crate::acp_fs::confirm_write_outside(&bus, &path).await
+                            crate::acp_fs::confirm_write_outside(&bus, &session_id, &path).await
                         };
                         let result = if allowed {
                             crate::acp_fs::write_text_file(&path, &content)
@@ -1439,22 +1808,60 @@ where
         .on_receive_request(
             {
                 let terms = terms_create;
+                let bus = bus_create;
                 async move |req: CreateTerminalRequest, responder, _cx| {
+                    // Asking the user takes an async round-trip through the
+                    // permission overlay — the handler offloads like the
+                    // fs/write handler does. Everything the spawned task
+                    // needs is cloned per call: the handler itself must
+                    // stay callable.
+                    let terms = Arc::clone(&terms);
                     let env: Vec<(String, String)> = req
                         .env
                         .iter()
                         .map(|e| (e.name.clone(), e.value.clone()))
                         .collect();
-                    match terms.create(
-                        &req.command,
-                        &req.args,
-                        req.cwd,
-                        &env,
-                        req.output_byte_limit,
-                    ) {
-                        Ok(id) => responder.respond(CreateTerminalResponse::new(id)),
-                        Err(err) => responder.respond_with_error(AcpError::new(-32603, err)),
-                    }
+                    let session_id = req.session_id.to_string();
+                    let command = req.command;
+                    let args = req.args;
+                    let cwd = req.cwd;
+                    let output_byte_limit = req.output_byte_limit;
+                    let bus = bus.clone();
+                    let workspace = workspace_create.clone();
+                    tokio::spawn(async move {
+                        let resolved_cwd = cwd
+                            .map(|c| {
+                                crate::acp_fs::resolve_with_cwd(
+                                    &c,
+                                    std::path::Path::new(&workspace),
+                                )
+                            })
+                            .unwrap_or_else(|| workspace.clone().into());
+                        let allowed = crate::acp_fs::confirm_terminal_spawn(
+                            &bus,
+                            &session_id,
+                            &command,
+                            &args,
+                            &resolved_cwd,
+                        )
+                        .await;
+                        let result = if allowed {
+                            terms.create(
+                                &command,
+                                &args,
+                                Some(resolved_cwd),
+                                &env,
+                                output_byte_limit,
+                            )
+                        } else {
+                            Err("user denied createTerminal".to_string())
+                        };
+                        match result {
+                            Ok(id) => responder.respond(CreateTerminalResponse::new(id)),
+                            Err(err) => responder.respond_with_error(AcpError::new(-32603, err)),
+                        }
+                    });
+                    Ok(())
                 }
             },
             on_receive_request!(),
@@ -1463,12 +1870,16 @@ where
             {
                 let terms = terms_output;
                 async move |req: TerminalOutputRequest, responder, _cx| {
-                    let (output, truncated, exit) = terms.output(&req.terminal_id.to_string());
-                    let mut resp = TerminalOutputResponse::new(output, truncated);
-                    if let Some(exit) = exit {
-                        resp = resp.exit_status(exit);
+                    match terms.output(&req.terminal_id.to_string()) {
+                        Ok((output, truncated, exit)) => {
+                            let mut resp = TerminalOutputResponse::new(output, truncated);
+                            if let Some(exit) = exit {
+                                resp = resp.exit_status(exit);
+                            }
+                            responder.respond(resp)
+                        }
+                        Err(err) => responder.respond_with_error(AcpError::new(-32602, err)),
                     }
-                    responder.respond(resp)
                 }
             },
             on_receive_request!(),
@@ -1478,9 +1889,16 @@ where
                 let terms = terms_wait;
                 async move |req: WaitForTerminalExitRequest, responder, _cx| {
                     let terms = Arc::clone(&terms);
+                    let terminal_id = req.terminal_id.to_string();
                     tokio::spawn(async move {
-                        let status = terms.wait(&req.terminal_id.to_string()).await;
-                        let _ = responder.respond(WaitForTerminalExitResponse::new(status));
+                        match terms.wait(&terminal_id).await {
+                            Ok(status) => {
+                                let _ = responder.respond(WaitForTerminalExitResponse::new(status));
+                            }
+                            Err(err) => {
+                                let _ = responder.respond_with_error(AcpError::new(-32602, err));
+                            }
+                        }
                     });
                     Ok(())
                 }
@@ -1491,8 +1909,10 @@ where
             {
                 let terms = terms_kill;
                 async move |req: KillTerminalRequest, responder, _cx| {
-                    terms.kill(&req.terminal_id.to_string());
-                    responder.respond(KillTerminalResponse::new())
+                    match terms.kill(&req.terminal_id.to_string()) {
+                        Ok(()) => responder.respond(KillTerminalResponse::new()),
+                        Err(err) => responder.respond_with_error(AcpError::new(-32602, err)),
+                    }
                 }
             },
             on_receive_request!(),
@@ -1501,8 +1921,10 @@ where
             {
                 let terms = terms_release;
                 async move |req: ReleaseTerminalRequest, responder, _cx| {
-                    terms.release(&req.terminal_id.to_string());
-                    responder.respond(ReleaseTerminalResponse::new())
+                    match terms.release(&req.terminal_id.to_string()) {
+                        Ok(()) => responder.respond(ReleaseTerminalResponse::new()),
+                        Err(err) => responder.respond_with_error(AcpError::new(-32602, err)),
+                    }
                 }
             },
             on_receive_request!(),
@@ -1568,7 +1990,7 @@ where
                                 config_id,
                                 config_value,
                             ))
-                            .block_task()
+                            .block_task_deadline()
                             .await
                         {
                             Ok(response) => match serde_json::to_value(&response) {
@@ -1611,7 +2033,7 @@ where
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
                 }));
-                let init = cx.send_request(initialize_request()).block_task().await?;
+                let init = cx.send_request(initialize_request()).block_task_setup_deadline().await?;
                 let agent_name = init
                     .agent_info
                     .as_ref()
@@ -1666,8 +2088,17 @@ where
                 emit_auth(&bus, auth);
                 emit_open_auth_if_needed(&bus, if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None });
                 let mut session_auth_pending = false;
+                // One stdio connection drives many sessions: each bound id
+                // gets its own turn state, and `current` is only the fallback
+                // target for commands that arrive without a usable id.
+                let mut sessions = HashMap::<String, SessionHandle>::new();
+                let mut current: Option<SessionId> = None;
+                // Prompt-like commands that arrived before the first session
+                // existed (sign-in still pending). They adopt the first bound
+                // session, in arrival order behind the parked intent.
+                let mut pending = VecDeque::<Cmd>::new();
                 let mut setup_failed = false;
-                let mut session_id = match create_prompt_session(
+                match create_prompt_session(
                     &cx,
                     &cwd,
                     &surface,
@@ -1677,23 +2108,21 @@ where
                 )
                 .await
                 {
-                    Ok(Some(session_id)) => Some(session_id),
+                    Ok(Some(sid)) => bind_session(&mut sessions, &mut current, &mut pending, sid),
                     Ok(None) => {
                         session_auth_pending = true;
-                        None
                     }
                     Err(err) => {
                         setup_failed = true;
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
                             target: agent_name.clone(), error: format!("session/new: {err}")
                         }));
-                        None
                     }
-                };
+                }
                 if !setup_failed {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
                 }
-                let mut parked: Option<ParkedPrompt> = None;
+                let mut parked: VecDeque<ParkedPrompt> = VecDeque::new();
 
                 let (fwd_tx, mut fwd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
                 std::thread::Builder::new()
@@ -1707,11 +2136,16 @@ where
                     })
                     .map_err(|err| AcpError::new(-32603, err.to_string()))?;
 
-                let mut inflight: Option<tokio::task::JoinHandle<PromptFinish>> = None;
-                let mut prompt_queue = VecDeque::<Cmd>::new();
+                let (prompt_done_tx, mut prompt_done_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<PromptFinish>();
                 let (steer_done_tx, mut steer_done_rx) =
                     tokio::sync::mpsc::unbounded_channel::<SteerFinish>();
-                let mut turn_aborted = false;
+                // Monotonic turn generation: every started prompt task is
+                // tagged, finishes carry the tag back, and a stale finish
+                // can never clear a newer turn's occupancy marker.
+                let mut prompt_gen: u64 = 0;
+                let mut controls = ControlWorkers::default();
+                let (control_done_tx, mut control_done_rx) = tokio::sync::mpsc::unbounded_channel();
                 // Keep primary local operations FIFO, while allowing cancel and
                 // change events through during an asynchronous install/search.
                 // Dropping the JoinSet on shutdown aborts outstanding requests.
@@ -1744,7 +2178,7 @@ where
                                 None => fwd_rx.recv().await,
                             }
                         } => {
-                            let Some(cmd) = cmd else { break };
+                            let Some(mut cmd) = cmd else { break };
                             let bypass_primary = matches!(&cmd, Cmd::Shutdown)
                                 || matches!(&cmd, Cmd::PluginOverlayEvent { event, .. }
                                     if event == "cancel" || event == "change");
@@ -1755,358 +2189,311 @@ where
                                 deferred_commands.push_back(cmd);
                                 continue;
                             }
-                            if session_id.is_none()
-                                && parked.is_none()
-                                && parked_prompt(&cmd).is_some()
-                            {
-                                if session_auth_pending {
-                                    parked = parked_prompt(&cmd);
-                                    continue;
-                                }
-                                match create_prompt_session(
-                                    &cx,
-                                    &cwd,
-                                    &surface,
-                                    &bus,
-                                    &methods,
-                                    selected.as_ref(),
-                                ).await {
-                                    Ok(Some(sid)) => {
-                                        session_id = Some(sid);
-                                        session_auth_pending = false;
-                                    }
-                                    Ok(None) => {
-                                        session_auth_pending = true;
-                                        parked = parked_prompt(&cmd);
+                            if current.is_none() && parked.is_empty() {
+                                if let Some(kind) = parked_prompt(&cmd) {
+                                    if session_auth_pending {
+                                        parked.push_back(ParkedPrompt {
+                                            session: None,
+                                            kind,
+                                        });
                                         continue;
                                     }
-                                    Err(err) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                            "session/new: {err}"
-                                        ))));
-                                        continue;
+                                    match create_prompt_session(
+                                        &cx,
+                                        &cwd,
+                                        &surface,
+                                        &bus,
+                                        &methods,
+                                        selected.as_ref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(sid)) => {
+                                            retarget_session(&mut cmd, &sid);
+                                            bind_session(
+                                                &mut sessions,
+                                                &mut current,
+                                                &mut pending,
+                                                sid,
+                                            );
+                                            session_auth_pending = false;
+                                        }
+                                        Ok(None) => {
+                                            session_auth_pending = true;
+                                            parked.push_back(ParkedPrompt {
+                                                session: None,
+                                                kind,
+                                            });
+                                            continue;
+                                        }
+                                        Err(err) => {
+                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                                format!("session/new: {err}"),
+                                            )));
+                                            continue;
+                                        }
                                     }
                                 }
                             }
                             match cmd {
-                        Cmd::Prompt { text, .. } => {
+                        Cmd::Prompt { session_id: cmd_session, text } => {
                             let next = Cmd::Prompt {
-                                session_id: String::new(),
+                                session_id: cmd_session.clone(),
                                 text,
                             };
-                            if inflight.is_some() || parked.is_some() {
-                                prompt_queue.push_back(next);
-                            } else {
-                                inflight = begin_prompt(
-                                    next,
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                            }
-                        }
-                        Cmd::Steer { message_id, text, .. } => {
-                            if inflight.is_some() {
-                                if let Some(sid) = session_id.clone() {
-                                    spawn_steer_prompt(
-                                        cx.clone(),
-                                        sid,
-                                        vec![text.into()],
-                                        message_id,
-                                        steer_done_tx.clone(),
-                                    );
-                                }
-                            } else if parked.is_some() {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: true,
-                                }));
-                            } else {
-                                inflight = begin_prompt(
-                                    Cmd::Steer {
-                                        session_id: String::new(),
-                                        message_id,
-                                        text,
-                                    },
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: false,
-                                }));
-                            }
-                        }
-                        Cmd::PromptImages { blocks, .. } => {
-                            let next = Cmd::PromptImages {
-                                session_id: String::new(),
-                                blocks,
-                            };
-                            if inflight.is_some() || parked.is_some() {
-                                prompt_queue.push_back(next);
-                            } else {
-                                inflight = begin_prompt(
-                                    next,
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                            }
-                        }
-                        Cmd::SteerImages { message_id, blocks, .. } => {
-                            if inflight.is_some() {
-                                if let Some(sid) = session_id.clone() {
-                                    let prompt_image = surface
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .prompt_image;
-                                    match prompt_content_blocks(blocks, prompt_image, &cfg.workspace) {
-                                        Ok(content) if !content.is_empty() => spawn_steer_prompt(
-                                            cx.clone(),
-                                            sid,
-                                            content,
-                                            message_id,
-                                            steer_done_tx.clone(),
-                                        ),
-                                        Ok(_) => {
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
-                                                "empty image prompt".into(),
-                                            )));
-                                        }
-                                        Err(err) => {
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(err)));
-                                        }
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt") {
+                                Ok(Some(sid)) => {
+                                    let handle = sessions.entry(sid.to_string()).or_default();
+                                    if handle.inflight.is_some() || controls.busy(&sid.0) || !parked.is_empty() {
+                                        handle.queue.push_back(next);
+                                    } else {
+                                        prompt_gen += 1;
+                                        handle.inflight = begin_prompt(
+                                            next,
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            prompt_gen,
+                                            &prompt_done_tx,
+                                        )
+                                        .map(|task| (prompt_gen, task));
                                     }
                                 }
-                            } else if parked.is_some() {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: true,
+                                Ok(None) => pending.push_back(next),
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
                                 }));
-                            } else {
-                                inflight = begin_prompt(
-                                    Cmd::SteerImages {
-                                        session_id: String::new(),
-                                        message_id,
-                                        blocks,
-                                    },
-                                    &cx,
-                                    &bus,
-                                    &session_id,
-                                    &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
-                                    &surface,
-                                    &cfg.workspace,
-                                );
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
-                                    message_id,
-                                    deferred: false,
-                                }));
+                                }
                             }
                         }
-                        Cmd::Interrupt { .. } => {
+                        Cmd::Steer { session_id: cmd_session, message_id, text } => {
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "steer") {
+                                Ok(Some(sid)) => {
+                                    let busy = sessions
+                                        .get(&sid.to_string())
+                                        .is_some_and(|handle| handle.inflight.is_some());
+                                    if busy {
+                                        spawn_steer_prompt(
+                                            cx.clone(),
+                                            sid,
+                                            vec![text.into()],
+                                            message_id,
+                                            steer_done_tx.clone(),
+                                        );
+                                    } else if !parked.is_empty() {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: true,
+                                        }));
+                                    } else {
+                                        let handle = sessions.entry(sid.to_string()).or_default();
+                                        prompt_gen += 1;
+                                        handle.inflight = begin_prompt(
+                                            Cmd::Steer {
+                                                session_id: cmd_session,
+                                                message_id,
+                                                text,
+                                            },
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            prompt_gen,
+                                            &prompt_done_tx,
+                                        )
+                                        .map(|task| (prompt_gen, task));
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: false,
+                                        }));
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                        message_id,
+                                        deferred: true,
+                                    }));
+                                }
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
+                                }
+                            }
+                        }
+                        Cmd::PromptImages { session_id: cmd_session, blocks } => {
+                            let next = Cmd::PromptImages {
+                                session_id: cmd_session.clone(),
+                                blocks,
+                            };
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt_images") {
+                                Ok(Some(sid)) => {
+                                    let handle = sessions.entry(sid.to_string()).or_default();
+                                    if handle.inflight.is_some() || controls.busy(&sid.0) || !parked.is_empty() {
+                                        handle.queue.push_back(next);
+                                    } else {
+                                        prompt_gen += 1;
+                                        handle.inflight = begin_prompt(
+                                            next,
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            prompt_gen,
+                                            &prompt_done_tx,
+                                        )
+                                        .map(|task| (prompt_gen, task));
+                                    }
+                                }
+                                Ok(None) => pending.push_back(next),
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
+                                }
+                            }
+                        }
+                        Cmd::SteerImages { session_id: cmd_session, message_id, blocks } => {
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "steer_images") {
+                                Ok(Some(sid)) => {
+                                    let busy = sessions
+                                        .get(&sid.to_string())
+                                        .is_some_and(|handle| handle.inflight.is_some());
+                                    if busy {
+                                        let prompt_image = surface
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .prompt_image;
+                                        match prompt_content_blocks(blocks, prompt_image, &cfg.workspace) {
+                                            Ok(content) if !content.is_empty() => spawn_steer_prompt(
+                                                cx.clone(),
+                                                sid,
+                                                content,
+                                                message_id,
+                                                steer_done_tx.clone(),
+                                            ),
+                                            Ok(_) => {
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                                    "empty image prompt".into(),
+                                                )));
+                                            }
+                                            Err(err) => {
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                                session_id: cmd_session.clone(),
+                                                message: err,
+                                            }));
+                                            }
+                                        }
+                                    } else if !parked.is_empty() {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: true,
+                                        }));
+                                    } else {
+                                        let handle = sessions.entry(sid.to_string()).or_default();
+                                        prompt_gen += 1;
+                                        handle.inflight = begin_prompt(
+                                            Cmd::SteerImages {
+                                                session_id: cmd_session,
+                                                message_id,
+                                                blocks,
+                                            },
+                                            &cx,
+                                            &bus,
+                                            &Some(sid),
+                                            &mut parked,
+                                            &methods,
+                                            selected.as_ref(),
+                                            &surface,
+                                            &cfg.workspace,
+                                            prompt_gen,
+                                            &prompt_done_tx,
+                                        )
+                                        .map(|task| (prompt_gen, task));
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                            message_id,
+                                            deferred: false,
+                                        }));
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
+                                        message_id,
+                                        deferred: true,
+                                    }));
+                                }
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                        session_id: cmd_session.clone(),
+                                        message: err,
+                                    }));
+                                }
+                            }
+                        }
+                        Cmd::Interrupt { session_id: cmd_session } => {
                             // Only a live turn can be aborted. Setting the
                             // flag with no inflight prompt would poison the
                             // *next* prompt's finish (its result would be
                             // swallowed and the turn misreported as
                             // interrupted).
-                            if inflight.is_some() {
-                                abort_turn(&cx, &session_id, &bus);
-                                turn_aborted = true;
-                            }
-                        }
-                        Cmd::SelectModel { model, effort, .. } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
-                            };
-                            if let Some(model) = model {
-                                let value = {
-                                    let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
-                                    match surface.models.iter().find(|m| m.id == model) {
-                                        Some(m) if !m.provider.is_empty() => {
-                                            format!("{}/{}", m.provider, model)
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "interrupt") {
+                                Ok(Some(sid)) => {
+                                    if let Some(handle) = sessions.get_mut(&sid.to_string()) {
+                                        if handle.inflight.is_some() {
+                                            abort_turn(&cx, &Some(sid), &bus);
+                                            handle.turn_aborted = true;
                                         }
-                                        _ => model.clone(),
                                     }
-                                };
-                                let _ = cx
-                                    .send_request(SetSessionConfigOptionRequest::new(
-                                        sid.clone(),
-                                        "model",
-                                        SessionConfigOptionValue::value_id(value),
-                                    ))
-                                    .block_task()
-                                    .await
-                                    .map_err(|err| {
-                                        if is_auth_required_error(&err) {
-                                            emit_needs_auth_open(
-                                                &bus,
-                                                methods.clone(),
-                                                selected.as_ref(),
-                                                Some(acp_error_message(&err)),
-                                            );
-                                        }
-                                    });
-                            }
-                            if let Some(effort) = effort {
-                                let config_id = surface
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .effort_config_id
-                                    .clone()
-                                    .unwrap_or_else(|| "effort".into());
-                                let _ = cx
-                                    .send_request(SetSessionConfigOptionRequest::new(
-                                        sid,
-                                        config_id,
-                                        SessionConfigOptionValue::value_id(effort),
-                                    ))
-                                    .block_task()
-                                    .await
-                                    .map_err(|err| {
-                                        if is_auth_required_error(&err) {
-                                            emit_needs_auth_open(
-                                                &bus,
-                                                methods.clone(),
-                                                selected.as_ref(),
-                                                Some(acp_error_message(&err)),
-                                            );
-                                        }
-                                    });
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
+                                }
                             }
                         }
-                        Cmd::FetchCatalog => {
+                        Cmd::FetchCatalog { session_id } => {
                             let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                            let scoped = surface.session(&session_id);
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
-                                models: surface.models.clone(),
-                                presets: surface.presets.clone(),
+                                session_id: Some(session_id.clone()),
+                                models: scoped.models.clone(),
+                                presets: scoped.presets.clone(),
                             }));
-                            if !surface.modes.is_empty() {
+                            if !scoped.modes.is_empty() {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
-                                    modes: surface.modes.clone(),
+                                    session_id: Some(session_id),
+                                    modes: scoped.modes.clone(),
                                     current: None,
                                 }));
                             }
                         }
-                        Cmd::FetchSkills => {
-                            let skills = surface
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .skills
-                                .clone();
-                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
-                        }
-                        Cmd::FetchStaticPlugins => match fetch_static_plugins(&cx).await {
-                            Ok(plugins) => {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::StaticPlugins { plugins }));
-                            }
-                            Err(error) => {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                    "static plugins unavailable: {error}"
-                                ))));
-                            }
-                        },
-                        Cmd::FetchCordisPlugins { agent_id } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
-                                continue;
-                            }
-                            match fetch_dynamic_plugins(&cx, &agent_id).await {
-                                Ok(plugins) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::CordisPlugins { plugins }));
-                                }
-                                Err(error) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                        "dynamic plugins unavailable: {error}"
-                                    ))));
-                                }
-                            }
-                        }
-                        Cmd::SetCordisPluginEnabled {
-                            agent_id,
-                            plugin_id,
-                            enabled,
-                        } => {
-                            if !ensure_agent_cordis(&surface, &bus) {
-                                continue;
-                            }
-                            let method = if enabled {
-                                crate::cordis::PLUGIN_START
-                            } else {
-                                crate::cordis::PLUGIN_STOP
-                            };
-                            let action = call_tui_extension(
-                                &cx,
-                                method,
-                                serde_json::json!({
-                                    "agentId": &agent_id,
-                                    "pluginId": &plugin_id,
-                                }),
-                            )
-                            .await;
-                            match action {
-                                Ok(value) if value.get("ok").and_then(Value::as_bool) == Some(false) => {
-                                    let message = value
-                                        .get("message")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("the Host rejected the lifecycle change");
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                        message.to_string(),
-                                    )));
-                                }
-                                Ok(_) => match fetch_dynamic_plugins(&cx, &agent_id).await {
-                                    Ok(plugins) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::CordisPlugins { plugins }));
-                                    }
-                                    Err(error) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                            "plugin changed, but inventory refresh failed: {error}"
-                                        ))));
-                                    }
-                                },
-                                Err(error) => {
-                                    let action = if enabled { "restore" } else { "stop" };
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                        "plugin {action} failed: {error}"
-                                    ))));
-                                }
-                            }
-                        }
-                        Cmd::RespondCordisApproval { request_id, decision } => {
-                            if !ensure_client_compositor(&surface, &bus) {
-                                continue;
-                            }
-                            if let Err(error) = call_tui_extension(
-                                &cx,
-                                crate::cordis::APPROVAL_RESPOND,
-                                serde_json::json!({
-                                    "protocol": crate::cordis::PROTOCOL,
-                                    "requestId": request_id,
-                                    "decision": decision,
-                                }),
-                            )
-                            .await
-                            {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
-                                    "plugin approval failed: {error}"
-                                ))));
-                            }
+                        Cmd::FetchSkills { session_id } => {
+                            let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                            let skills = surface.session(&session_id).skills.clone();
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                                session_id: Some(session_id),
+                                skills,
+                            }));
                         }
                         Cmd::InvokePluginCommand { name, args } => {
                             if !ensure_client_compositor(&surface, &bus) {
@@ -2199,496 +2586,81 @@ where
                                 }
                             }
                         }
-                        Cmd::FetchEfforts { .. } => {
-                            let (efforts, current) = {
-                                let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
-                                (surface.efforts.clone(), surface.effort_current.clone())
-                            };
+                        Cmd::FetchEfforts { session_id, .. } => {
+                            let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                            let efforts = surface.session(&session_id).efforts.clone();
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                                session_id: Some(session_id.clone()),
                                 efforts: if efforts.is_empty() {
                                     vec!["off".into(), "high".into(), "max".into()]
                                 } else {
                                     efforts.clone()
                                 },
-                                default: current.or_else(|| efforts.first().cloned()),
+                                default: surface.session(&session_id).effort_current.clone().or_else(|| efforts.first().cloned()),
                             }));
                         }
-                        Cmd::SetPermission { preset, .. } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
-                            };
-                            match cx
-                                .send_request(SetSessionModeRequest::new(sid.clone(), preset.clone()))
-                                .block_task()
-                                .await
+                        Cmd::ForgetSession { session_id } => {
+                            // `/close`: this client stopped viewing the
+                            // session. Drop its turn state and queued
+                            // prompts so nothing more is sent agent-side;
+                            // an in-flight prompt (if any) keeps running
+                            // and its finish is dropped by the prompt_done
+                            // guard. ACP has no session/close — the
+                            // server-side session survives and can be
+                            // re-entered later via session/resume.
+                            parked.retain(|p| p.session.as_deref() != Some(&session_id));
+                            if sessions.remove(&session_id).is_some()
+                                && current
+                                    .as_ref()
+                                    .is_some_and(|c| c.to_string() == session_id)
                             {
-                                Ok(_) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                                        "permission → {preset}"
-                                    ))));
-                                }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_needs_auth_open(
-                                        &bus,
-                                        methods.clone(),
-                                        selected.as_ref(),
-                                        Some(acp_error_message(&err)),
-                                    );
-                                }
-                                Err(err) => {
-                                    let _ = cx
-                                        .send_request(SetSessionConfigOptionRequest::new(
-                                            sid,
-                                            "mode",
-                                            SessionConfigOptionValue::value_id(preset.clone()),
-                                        ))
-                                        .block_task()
-                                        .await;
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                                        "permission → {preset} ({err})"
-                                    ))));
-                                }
+                                // Repoint the id-less fallback at any
+                                // remaining session.
+                                current = sessions
+                                    .keys()
+                                    .next()
+                                    .map(|id| SessionId::new(id.clone()));
                             }
-                        }
-                        Cmd::SetPreset { preset, .. } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
-                            };
-                            let config_id = surface
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .composition_id
-                                .clone()
-                                .unwrap_or_else(|| "agent".into());
-                            match cx
-                                .send_request(SetSessionConfigOptionRequest::new(
-                                    sid.clone(),
-                                    config_id,
-                                    SessionConfigOptionValue::value_id(preset.clone()),
-                                ))
-                                .block_task()
-                                .await
-                            {
-                                Ok(response) => {
-                                    if let Ok(value) = serde_json::to_value(&response) {
-                                        if let Some(options) = value
-                                            .get("configOptions")
-                                            .or_else(|| value.get("config_options"))
-                                        {
-                                            if let Ok(mut surface) = surface.lock() {
-                                                surface.apply_config_options(options, &bus);
-                                            }
-                                        }
-                                    }
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet { preset }));
-                                }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_needs_auth_open(
-                                        &bus,
-                                        methods.clone(),
-                                        selected.as_ref(),
-                                        Some(acp_error_message(&err)),
-                                    );
-                                }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                        format!("composition switch failed: {err}"),
-                                    )));
-                                }
-                            }
-                        }
-                        Cmd::SetConfigOption {
-                            config_id, value, ..
-                        } => {
-                            let Some(sid) = session_id.clone() else {
-                                continue;
-                            };
-                            match cx
-                                .send_request(SetSessionConfigOptionRequest::new(
-                                    sid.clone(),
-                                    config_id,
-                                    SessionConfigOptionValue::value_id(value),
-                                ))
-                                .block_task()
-                                .await
-                            {
-                                Ok(response) => {
-                                    if let Ok(value) = serde_json::to_value(&response) {
-                                        let _ = apply_config_response(
-                                            &value,
-                                            &sid,
-                                            &surface,
-                                            &bus,
-                                        );
-                                    }
-                                }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_needs_auth_open(
-                                        &bus,
-                                        methods.clone(),
-                                        selected.as_ref(),
-                                        Some(acp_error_message(&err)),
-                                    );
-                                }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                        format!("config option switch failed: {err}"),
-                                    )));
-                                }
-                            }
-                        }
-                        Cmd::Authenticate { method_id, values } => {
-                            let method = select_auth_method(&methods, Some(&method_id))
-                                .or_else(|| select_auth_method(&methods, None))
-                                .cloned();
-                            let Some(method) = method else {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                    if method_id.is_empty() {
-                                        "no supported ACP auth method is available".into()
-                                    } else {
-                                        format!(
-                                            "ACP auth method is unavailable or not supported: {method_id}"
-                                        )
-                                    },
-                                )));
-                                continue;
-                            };
-                            if method.is_env_prompt() {
-                                let vars = method
-                                    .vars
-                                    .iter()
-                                    .map(|v| v.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                    if vars.is_empty() {
-                                        format!(
-                                            "ACP auth method {} requires credential variables and cannot be started as a sign-in flow.",
-                                            method.id
-                                        )
-                                    } else {
-                                        format!(
-                                            "ACP auth method {} requires credential variables ({vars}) and cannot be started as a sign-in flow.",
-                                            method.id
-                                        )
-                                    },
-                                )));
-                                continue;
-                            }
-                            if method.form && authenticate_meta_from_method(&method, &values).is_none()
-                            {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                                    "sign-in needs values — /auth <api-key> (gateway: /auth <base-url> <api-key>)"
-                                        .into(),
-                                )));
-                                continue;
-                            }
-                            let mut req = AuthenticateRequest::new(method.id.clone());
-                            if let Some(meta) = authenticate_meta_from_method(&method, &values) {
-                                req = req.meta(meta);
-                            }
-                            selected = Some(method.clone());
-                            let mut signing_in = configured_snapshot(methods.clone(), Some(&method));
-                            signing_in.status = AuthStatus::SigningIn;
-                            emit_auth(&bus, signing_in);
-                            match cx.send_request(req).block_task().await {
-                                Ok(_) => {
-                                    // Authentication and session setup are separate outcomes.
-                                    // Publish the ACP acknowledgement before waiting for session/new.
-                                    session_auth_pending = false;
-                                    emit_auth(
-                                        &bus,
-                                        configured_snapshot(methods.clone(), Some(&method)),
-                                    );
-                                    if session_id.is_none() {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                            "signed in — creating session".into(),
-                                        )));
-                                        match create_prompt_session(
-                                            &cx,
-                                            &cwd,
-                                            &surface,
-                                            &bus,
-                                            &methods,
-                                            Some(&method),
-                                        )
-                                        .await
-                                        {
-                                            Ok(Some(sid)) => {
-                                                session_id = Some(sid);
-                                                session_auth_pending = false;
-                                            }
-                                            Ok(None) => {
-                                                session_auth_pending = true;
-                                                continue;
-                                            }
-                                            Err(err) => {
-                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
-                                                    format!("session/new after authenticate: {err}"),
-                                                )));
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    match parked.take() {
-                                        None => {
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                                "signed in".into(),
-                                            )));
-                                        }
-                                        Some(prompt) => {
-                                            let Some(sid) = session_id.clone() else {
-                                                parked = Some(prompt);
-                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                                    "signed in — resend from the composer".into(),
-                                                )));
-                                                continue;
-                                            };
-                                            prompt_queue.push_front(match prompt {
-                                                ParkedPrompt::Text(text) => Cmd::Prompt {
-                                                    session_id: sid.to_string(),
-                                                    text,
-                                                },
-                                                ParkedPrompt::Images(blocks) => Cmd::PromptImages {
-                                                    session_id: sid.to_string(),
-                                                    blocks,
-                                                },
-                                            });
-                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
-                                                "signed in — retried the parked prompt".into(),
-                                            )));
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    // A rejected authenticate is a failed attempt, including
-                                    // auth_required (e.g. an OAuth account eligibility error).
-                                    // Do not silently collapse it into the initial login hint.
-                                    let mut failure = needs_auth_snapshot(methods.clone(), Some(&method),
-                                        Some(acp_error_message(&err)));
-                                    failure.status = AuthStatus::Failed;
-                                    emit_auth(&bus, failure);
-                                }
-                            }
-                        }
-                        Cmd::NewSession => {
-                            match cx
-                                .send_request(NewSessionRequest::new(cwd.clone()))
-                                .block_task()
-                                .await
-                            {
-                                Ok(created) => {
-                                    session_id = Some(created.session_id.clone());
-                                    session_auth_pending = false;
-                                    apply_created(
-                                        &created,
-                                        &surface,
-                                        &bus,
-                                        Some(format!(
-                                            "new session · {} — /agent picks its agent preset",
-                                            created.session_id
-                                        )),
-                                    );
-                                }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_needs_auth_open(
-                                        &bus,
-                                        methods.clone(),
-                                        selected.as_ref(),
-                                        Some(acp_error_message(&err)),
-                                    );
-                                }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "session/new: {err}"
-                                    ))));
-                                }
-                            }
-                        }
-                        Cmd::ListSessions { prefix } => {
-                            if !list_session {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
-                                    prefix,
-                                    error: "agent did not advertise sessionCapabilities.list"
-                                        .into(),
-                                }));
-                                continue;
-                            }
-                            match cx
-                                .send_request(ListSessionsRequest::new().cwd(cwd.clone()))
-                                .block_task()
-                                .await
-                            {
-                                Ok(listed) => {
-                                    let sessions = listed
-                                        .sessions
-                                        .into_iter()
-                                        .map(|s| SessionListItem {
-                                            id: s.session_id.to_string(),
-                                            title: s.title,
-                                            updated_at: s.updated_at,
-                                        })
-                                        .collect();
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionList {
-                                        sessions,
-                                        prefix,
-                                    }));
-                                }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_needs_auth_open(
-                                        &bus,
-                                        methods.clone(),
-                                        selected.as_ref(),
-                                        Some(acp_error_message(&err)),
-                                    );
-                                }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
-                                        prefix,
-                                        error: err.to_string(),
-                                    }));
-                                }
-                            }
-                        }
-                        Cmd::ResumeSession { session_id: id } => {
-                            let sid = SessionId::new(id.clone());
-                            let restored = if resume_session {
-                                match cx
-                                    .send_request(ResumeSessionRequest::new(
-                                        sid.clone(),
-                                        cwd.clone(),
-                                    ))
-                                    .block_task()
-                                    .await
-                                {
-                                    Ok(resumed) => Ok((
-                                        serde_json::to_value(resumed).unwrap_or(Value::Null),
-                                        true,
-                                    )),
-                                    Err(err)
-                                        if load_session && !is_auth_required_error(&err) =>
-                                    {
-                                        cx.send_request(LoadSessionRequest::new(
-                                            sid.clone(),
-                                            cwd.clone(),
-                                        ))
-                                        .block_task()
-                                        .await
-                                        .map(|loaded| {
-                                            (
-                                                serde_json::to_value(loaded)
-                                                    .unwrap_or(Value::Null),
-                                                false,
-                                            )
-                                        })
-                                    }
-                                    Err(err) => Err(err),
-                                }
-                            } else {
-                                cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
-                                    .block_task()
-                                    .await
-                                    .map(|loaded| {
-                                        (
-                                            serde_json::to_value(loaded).unwrap_or(Value::Null),
-                                            false,
-                                        )
-                                    })
-                            };
-                            match restored {
-                                Ok((setup, resumed)) => {
-                                    session_id = Some(sid.clone());
-                                    let notice = if resumed {
-                                        format!(
-                                            "⟲ resumed {id} — previous transcript was not replayed"
-                                        )
-                                    } else {
-                                        format!(
-                                            "⟲ loaded {id} — transcript from session/update"
-                                        )
-                                    };
-                                    emit_session_bound(
-                                        &bus,
-                                        &sid,
-                                        Some(notice),
-                                    );
-                                    let session = sid.to_string();
-                                    apply_setup(&setup, Some(&session), &surface, &bus);
-                                }
-                                Err(err) if is_auth_required_error(&err) => {
-                                    emit_needs_auth_open(
-                                        &bus,
-                                        methods.clone(),
-                                        selected.as_ref(),
-                                        Some(acp_error_message(&err)),
-                                    );
-                                }
-                                Err(err) => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "session/resume: {err}"
-                                    ))));
-                                }
-                            }
-                        }
-                        Cmd::QueueSnapshot { snapshot } => {
-                            let items = snapshot
-                                .items
-                                .into_iter()
-                                .map(|item| {
-                                    serde_json::json!({
-                                        "id": item.id,
-                                        "ordinal": item.ordinal,
-                                        "summary": item.summary,
-                                    })
-                                })
-                                .collect::<Vec<_>>();
-                            // This method belongs to the local Client compositor.
-                            // Direct native launches may not have one, so absence is
-                            // intentionally silent and never affects prompt flow.
-                            let _ = call_tui_extension(
-                                &cx,
-                                crate::cordis::QUEUE_UPDATE,
-                                serde_json::json!({
-                                    "protocol": crate::cordis::PROTOCOL,
-                                    "count": snapshot.count,
-                                    "items": items,
-                                    "selectedId": snapshot.selected_id,
-                                    "editingId": snapshot.editing_id,
-                                    "deleteConfirm": snapshot.delete_confirm,
-                                }),
-                            )
-                            .await;
-                        }
-                        Cmd::AgentsSnapshot { snapshot } => {
-                            let items = snapshot
-                                .items
-                                .into_iter()
-                                .map(|item| {
-                                    serde_json::json!({
-                                        "id": item.id,
-                                        "label": item.label,
-                                        "kind": item.kind,
-                                        "status": item.status,
-                                        "current": item.current,
-                                    })
-                                })
-                                .collect::<Vec<_>>();
-                            // Agent transcript navigation is Client chrome;
-                            // it never becomes an ACP prompt or timeline cell.
-                            let _ = call_tui_extension(
-                                &cx,
-                                crate::cordis::AGENTS_UPDATE,
-                                serde_json::json!({
-                                    "protocol": crate::cordis::PROTOCOL,
-                                    "activeId": snapshot.active_id,
-                                    "selectedId": snapshot.selected_id,
-                                    "items": items,
-                                }),
-                            )
-                            .await;
                         }
                         Cmd::Shutdown => break,
+                        control => {
+                            let mut control = control;
+                            let target = match &mut control {
+                                Cmd::SelectModel { session_id, .. }
+                                | Cmd::SetPermission { session_id, .. }
+                                | Cmd::SetPreset { session_id, .. }
+                                | Cmd::SetConfigOption { session_id, .. } => Some(session_id),
+                                _ => None,
+                            };
+                            if let Some(target) = target {
+                                match resolve_cmd_session(&sessions, &current, target, "session operation") {
+                                    Ok(Some(sid)) => *target = sid.to_string(),
+                                    Ok(None) => continue,
+                                    Err(message) => {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+                                            session_id: target.clone(), message,
+                                        }));
+                                        continue;
+                                    }
+                                }
+                            }
+                            controls.enqueue(control, &cx, &bus, &surface, &methods, &selected,
+                                &cwd, load_session, resume_session, list_session, &control_done_tx);
+                        }
                     }
+                            if active_plugin_operation.is_none() { drain_ready_sessions(
+                                &controls,
+                                &mut sessions,
+                                &cx,
+                                &bus,
+                                &mut parked,
+                                &methods,
+                                selected.as_ref(),
+                                &surface,
+                                &cfg.workspace,
+                                &mut prompt_gen,
+                                &prompt_done_tx,
+                            ); }
                         }
                         finished = plugin_operations.join_next_with_id(), if !plugin_operations.is_empty() => {
                             let primary = match &finished {
@@ -2721,6 +2693,58 @@ where
                                 _ => {}
                             }
                         }
+                        completion = control_done_rx.recv(), if active_plugin_operation.is_none() => {
+                            match completion {
+                                Some(ControlFinish::SessionOperationDone { session_id }) => controls.settled(&session_id),
+                                Some(ControlFinish::Setup { result }) => match result {
+                                    Ok((sid, setup, notice)) => {
+                                        bind_session(&mut sessions, &mut current, &mut pending, sid.clone());
+                                        session_auth_pending = false;
+                                        emit_session_bound(&bus, &sid, notice);
+                                        apply_setup(&setup, Some(&sid.0), &surface, &bus);
+                                    }
+                                    Err(err) => {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed { message: acp_error_message(&err) }));
+                                        if is_auth_required_error(&err) {
+                                            emit_needs_auth_open(&bus, methods.clone(), selected.as_ref(), Some(acp_error_message(&err)));
+                                        }
+                                    }
+                                },
+                                Some(ControlFinish::Authenticated { method, result }) => match result {
+                                    Ok(()) => {
+                                        selected = Some(method.clone());
+                                        emit_auth(&bus, configured_snapshot(methods.clone(), Some(&method)));
+                                        if current.is_none() {
+                                            match create_prompt_session(&cx, &cwd, &surface, &bus, &methods, Some(&method)).await {
+                                                Ok(Some(sid)) => {
+                                                    bind_session(&mut sessions, &mut current, &mut pending, sid);
+                                                    session_auth_pending = false;
+                                                }
+                                                Ok(None) => { session_auth_pending = true; continue; }
+                                                Err(err) => {
+                                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!("session/new after authenticate: {err}"))));
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        let retried = requeue_parked_prompts(&mut sessions, &current, &mut parked);
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(if retried > 0 {
+                                            format!("signed in — retried {retried} parked prompt{s}", s = if retried == 1 { "" } else { "s" })
+                                        } else { "signed in".into() })));
+                                    }
+                                    Err(err) => {
+                                        selected = Some(method.clone());
+                                        let mut failure = needs_auth_snapshot(methods.clone(), Some(&method), Some(acp_error_message(&err)));
+                                        failure.status = AuthStatus::Failed;
+                                        emit_auth(&bus, failure);
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!("authenticate: {}", acp_error_message(&err)))));
+                                    }
+                                },
+                                None => {}
+                            }
+                            if active_plugin_operation.is_none() { drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked, &methods,
+                                selected.as_ref(), &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx); }
+                        }
                         steer = steer_done_rx.recv() => {
                             if let Some(SteerFinish { message_id, result }) = steer {
                                 let deferred = result.is_err();
@@ -2729,64 +2753,122 @@ where
                                     deferred,
                                 }));
                             }
+                            if active_plugin_operation.is_none() { drain_ready_sessions(
+                                &controls,
+                                &mut sessions,
+                                &cx,
+                                &bus,
+                                &mut parked,
+                                &methods,
+                                selected.as_ref(),
+                                &surface,
+                                &cfg.workspace,
+                                &mut prompt_gen,
+                                &prompt_done_tx,
+                            ); }
                         }
-                        finish = async {
-                            match &mut inflight {
-                                Some(h) => Some(h.await),
-                                None => std::future::pending().await,
+                        finish = prompt_done_rx.recv() => {
+                            let Some(done) = finish else { continue };
+                            let key = done.session_id.clone();
+                            // A session closed with `/close` (ForgetSession)
+                            // while its prompt was in flight: the turn ends
+                            // here — its UI events would be foreign on every
+                            // tab, and an auth error must not park a retry
+                            // for a session nobody views. Drop the finish.
+                            let Some(handle) = sessions.get_mut(&key) else {
+                                continue;
+                            };
+                            // Stale finish (the session was forgotten and
+                            // re-bound; a new turn owns the handle now):
+                            // clear nothing — the new turn's occupancy
+                            // marker must survive a late old finish.
+                            if handle.inflight.as_ref().map(|(gen, _)| *gen) != Some(done.gen) {
+                                continue;
                             }
-                        } => {
-                            inflight = None;
-                            let aborted = std::mem::take(&mut turn_aborted);
-                            if aborted {
-                                if let Some(sid) = &session_id {
-                                    let _ = bus.send(AppEvent::Ui(
-                                        crate::events::UiEvent::TurnEnd {
-                                            session: sid.to_string(),
-                                            kind: "interrupted".into(),
-                                        },
-                                    ));
-                                }
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
-                            }
-                            match finish {
-                                Some(Ok(done)) if !aborted => apply_prompt_finish(
+                            handle.inflight = None;
+                            let aborted = std::mem::take(&mut handle.turn_aborted);
+                            // `session/cancel` can race an already-settling
+                            // turn: trust the agent's stop reason. A real
+                            // interruption surfaces as `Cancelled` (or an
+                            // error); a turn that completed despite the
+                            // cancel still reports its own result.
+                            let agent_cancelled = matches!(
+                                &done.result,
+                                Ok(response) if matches!(
+                                    response.stop_reason,
+                                    agent_client_protocol::schema::v1::StopReason::Cancelled
+                                )
+                            );
+                            if aborted && (done.result.is_err() || agent_cancelled) {
+                                let _ = bus.send(AppEvent::Ui(
+                                    crate::events::UiEvent::TurnEnd {
+                                        session: key.clone(),
+                                        kind: "interrupted".into(),
+                                    },
+                                ));
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                    session_id: key.clone(),
+                                }));
+                            } else {
+                                let ok = matches!(done.result, Ok(_));
+                                apply_prompt_finish(
                                     done,
                                     &mut parked,
                                     &bus,
                                     &methods,
                                     selected.as_ref(),
-                                ),
-                                Some(Ok(_)) => {}
-                                Some(Err(err)) if !aborted => {
-                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
-                                        "prompt task: {err}"
-                                    ))));
+                                );
+                                if ok && !parked.is_empty() {
+                                    // A success proves the auth stall is
+                                    // over: requeue every stalled prompt
+                                    // into its owning session.
+                                    requeue_parked_prompts(
+                                        &mut sessions,
+                                        &current,
+                                        &mut parked,
+                                    );
                                 }
-                                Some(Err(_)) | None => {}
                             }
-                            if parked.is_none() && prompt_queue.is_empty() {
-                                if let Some(sid) = &session_id {
-                                    let _ = bus.send(AppEvent::Rpc {
-                                        method: "session.status".into(),
-                                        params: json!({
-                                            "sessionId": sid.to_string(),
-                                            "status": "idle"
-                                        }),
-                                    });
-                                }
+                            let queued = parked.is_empty()
+                                && sessions
+                                    .get(&key)
+                                    .is_some_and(|handle| !handle.queue.is_empty());
+                            if queued {
+                                if active_plugin_operation.is_none() { drain_ready_sessions(
+                                    &controls,
+                                    &mut sessions,
+                                    &cx,
+                                    &bus,
+                                    &mut parked,
+                                    &methods,
+                                    selected.as_ref(),
+                                    &surface,
+                                    &cfg.workspace,
+                                    &mut prompt_gen,
+                                    &prompt_done_tx,
+                                ); }
+                            } else {
+                                let _ = bus.send(AppEvent::Rpc {
+                                    method: "session.status".into(),
+                                    params: json!({
+                                        "sessionId": key,
+                                        "status": "idle"
+                                    }),
+                                });
                             }
                         }
                     }
                     if let Some(HarnessSwitch { label, agent_argv }) = harness_switch {
-                        if let Some(task) = inflight.take() {
-                            task.abort();
+                        for handle in sessions.values_mut() {
+                            if let Some((_, task)) = handle.inflight.take() { task.abort(); }
                         }
-                        prompt_queue.clear();
-                        parked = None;
-                        session_id = None;
+                        sessions.clear();
+                        pending.clear();
+                        parked.clear();
+                        current = None;
                         session_auth_pending = false;
-                        turn_aborted = false;
+                        controls = ControlWorkers::default();
+                        while control_done_rx.try_recv().is_ok() {}
                         if let Ok(mut surface) = surface.lock() {
                             surface.reset_agent();
                         }
@@ -2802,7 +2884,9 @@ where
                                 resume_session = next.resume_session;
                                 methods = next.methods;
                                 selected = next.selected;
-                                session_id = next.session_id;
+                                if let Some(sid) = next.session_id {
+                                    bind_session(&mut sessions, &mut current, &mut pending, sid);
+                                }
                                 session_auth_pending = next.session_auth_pending;
                                 let notice = if session_auth_pending {
                                     format!("Harness {label} connected · sign in to start a session")
@@ -2818,15 +2902,10 @@ where
                             }
                         }
                     }
-                    // The only FIFO drain point: never send a queued prompt
-                    // through a primary operation's possible handoff window.
-                    if active_plugin_operation.is_none() && inflight.is_none() && parked.is_none() {
-                        if let Some(next) = prompt_queue.pop_front() {
-                            inflight = begin_prompt(
-                                next, &cx, &bus, &session_id, &mut parked, &methods,
-                                selected.as_ref(), &surface, &cfg.workspace,
-                            );
-                        }
+                    if active_plugin_operation.is_none() {
+                        drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
+                            &methods, selected.as_ref(), &surface, &cfg.workspace,
+                            &mut prompt_gen, &prompt_done_tx);
                     }
                 }
                 Ok(())

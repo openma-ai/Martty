@@ -5,7 +5,19 @@
 //! those migrate too.
 #![allow(dead_code)]
 
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
+
+/// Display width of one char: combining marks and other zero-width chars
+/// take no cell (the terminal paints them over the previous one); control
+/// chars keep a safe 1-cell budget.
+fn char_width(ch: char) -> usize {
+    if ch.is_control() {
+        1
+    } else {
+        UnicodeWidthChar::width(ch).unwrap_or(0)
+    }
+}
 
 /// Editable prompt state. `cursor` is a char index (not bytes).
 pub struct Input {
@@ -66,12 +78,25 @@ impl Input {
         if self.cursor == 0 {
             return;
         }
-        let start = self.byte_at(self.cursor - 1);
+        // Delete one grapheme cluster, not one char: a combining mark or
+        // a ZWJ sequence dies together with its base character instead of
+        // leaving a dangling mark behind.
+        let start = self.prev_grapheme_boundary(self.cursor);
+        let start_byte = self.byte_at(start);
         let end = self.byte_at(self.cursor);
-        self.buf.replace_range(start..end, "");
-        self.cursor -= 1;
+        self.buf.replace_range(start_byte..end, "");
+        self.cursor = start;
         self.preferred_visual_col = None;
         self.cursor_at_wrap_end = false;
+    }
+
+    /// Char index of the boundary one grapheme cluster before `char_idx`.
+    fn prev_grapheme_boundary(&self, char_idx: usize) -> usize {
+        let end = self.byte_at(char_idx);
+        match self.buf[..end].graphemes(true).last() {
+            Some(cluster) => char_idx - cluster.chars().count(),
+            None => char_idx,
+        }
     }
 
     pub fn delete_word_back(&mut self) {
@@ -125,7 +150,13 @@ impl Input {
             return;
         }
         let start = self.byte_at(self.cursor);
-        let end = self.byte_at(self.cursor + 1);
+        // One grapheme cluster dies, not one char (see `backspace`).
+        let cluster_chars = self.buf[start..]
+            .graphemes(true)
+            .next()
+            .map(|cluster| cluster.chars().count())
+            .unwrap_or(1);
+        let end = self.byte_at(self.cursor + cluster_chars);
         self.buf.replace_range(start..end, "");
         self.preferred_visual_col = None;
         self.cursor_at_wrap_end = false;
@@ -213,7 +244,7 @@ impl Input {
                 break;
             }
             let start = carets[i].1;
-            let w = UnicodeWidthChar::width(chars[i]).unwrap_or(0).max(1);
+            let w = char_width(chars[i]);
             if col >= start && col < start + w {
                 if w > 1 && col >= start + w / 2 {
                     return i + 1; // right half of a wide char → after it
@@ -248,7 +279,7 @@ impl Input {
                 break;
             }
             let start = carets[i].1;
-            let w = UnicodeWidthChar::width(chars[i]).unwrap_or(0).max(1);
+            let w = char_width(chars[i]);
             if col >= start && col < start + w {
                 return i + 1;
             }
@@ -393,7 +424,7 @@ impl Input {
             return None;
         }
         let (row, col) = carets[index - 1];
-        let end = col + UnicodeWidthChar::width(previous).unwrap_or(0).max(1);
+        let end = col + char_width(previous);
         (carets[index].0 > row).then_some((row, end))
     }
 
@@ -410,13 +441,13 @@ impl Input {
                 carets[index + 1] = (row, col);
                 continue;
             }
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
-            if col + char_width > width {
+            let cw = char_width(ch);
+            if col + cw > width {
                 row += 1;
                 col = 0;
             }
             carets[index] = (row, col);
-            col += char_width;
+            col += cw;
             carets[index + 1] = (row, col);
         }
         if !chars.is_empty() && chars.last() != Some(&'\n') && col >= width {

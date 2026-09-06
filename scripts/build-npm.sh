@@ -26,6 +26,9 @@ node scripts/package-native.mjs stage \
   --vendor-root npm/vendor
 
 mkdir -p dist
+# Stale tgz files from earlier builds make `ls | tail` report (and the
+# release flow pick up) the wrong artifact — clear them first.
+rm -f dist/*.tgz
 (cd npm && npm pack --pack-destination ../dist)
 
 echo "tgz written to: $(ls -1 dist/*.tgz | tail -n 1)"

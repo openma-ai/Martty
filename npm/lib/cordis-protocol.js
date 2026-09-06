@@ -37,6 +37,7 @@ export const CORDIS_METHODS = Object.freeze({
   agentsUpdate: '_dsh/cordis/tui/agents/update',
   agentsSelect: '_dsh/cordis/tui/agents/select',
   agentsNavigate: '_dsh/cordis/tui/agents/navigate',
+  sessionActive: '_dsh/cordis/tui/session/active',
   sessionConfigSet: '_dsh/cordis/tui/session-config/set',
 })
 

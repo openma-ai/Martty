@@ -14,7 +14,7 @@ export const name = 'acp-session-status'
 export const inject = ['acpClientEvents', 'acpSessionConfig']
 
 const AUTH_REQUIRED_CODE = -32000
-const SETUP_METHODS = new Set(['session/new', 'session/load'])
+const SETUP_METHODS = new Set(['session/new', 'session/load', 'session/resume'])
 const RUNNING_UPDATE_TYPES = new Set([
   'user_message_chunk',
   'agent_message_chunk',
@@ -37,20 +37,20 @@ class AcpSessionStatusService extends Service {
   subscribe(listener) { return this.core.subscribe(this.ctx, listener) }
   observeClient(message) { return this.core.observeClient(message) }
   observeAgent(message) { return this.core.observeAgent(message) }
+  selectSession(sessionId) { return this.core.selectSession(sessionId) }
 }
 
-function zero() {
+function zeroSession(sessionId, bound = sessionId !== undefined) {
   return {
     state: 'idle',
-    connection: 'connecting',
-    server: undefined,
-    auth: { status: undefined, method: undefined },
-    session: { sessionId: undefined, bound: false, started: false },
+    session: { sessionId, bound, started: false },
     model: undefined,
     effort: undefined,
     permission: undefined,
     plan: undefined,
     agent: undefined,
+    permissionPreset: undefined,
+    sandboxMode: undefined,
   }
 }
 
@@ -60,21 +60,55 @@ export function installAcpSessionStatus(ctx, options = {}) {
     ?? ctx.acpSessionConfig ?? ctx.get?.('acpSessionConfig')
 
   const listeners = new Set()
-  let value = zero()
+  const sessions = new Map()
+  const fallback = zeroSession(undefined, false)
+  let sessionId
+  let selectionKnown = false
+  let connection = 'connecting'
+  let server
+  const auth = { status: undefined, method: undefined }
   let initializeId
   let authMethods = []
-  let pendingAuthenticate = new Set()
+  const pendingRequests = new Set()
+  const pendingAuthenticate = new Set()
   const pendingSetup = new Map()
   const pendingPrompts = new Map()
-  const pendingRequests = new Set()
-  let permissionPreset
-  let sandboxMode
 
-  function current() { return structuredClone(value) }
+  function stateFor(targetSessionId, bound = targetSessionId !== undefined) {
+    if (typeof targetSessionId !== 'string' || targetSessionId.length === 0) {
+      return fallback
+    }
+    let value = sessions.get(targetSessionId)
+    if (value === undefined) {
+      value = zeroSession(targetSessionId, bound)
+      sessions.set(targetSessionId, value)
+    } else if (bound) {
+      value.session.bound = true
+    }
+    return value
+  }
+
+  function current() {
+    const value = stateFor(sessionId)
+    const { permissionPreset: _permissionPreset, sandboxMode: _sandboxMode, ...visible } = value
+    return structuredClone({ connection, server, auth, ...visible })
+  }
 
   function publish() {
     const snapshot = current()
     for (const listener of [...listeners]) listener(snapshot)
+  }
+
+  function publishIf(targetSessionId) {
+    if (targetSessionId === sessionId) publish()
+  }
+
+  function selectSession(nextSessionId) {
+    selectionKnown = true
+    sessionId = typeof nextSessionId === 'string' && nextSessionId.length > 0
+      ? nextSessionId
+      : undefined
+    publish()
   }
 
   function subscribe(effectCtx, listener) {
@@ -100,13 +134,20 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (!object(message) || typeof message.method !== 'string') return
     if (message.method === 'initialize' && message.id !== undefined) {
       pendingRequests.clear()
-      value = zero()
+      sessions.clear()
+      Object.assign(fallback, zeroSession(undefined, false))
+      delete fallback.error
+      sessionId = undefined
+      selectionKnown = false
+      connection = 'connecting'
+      server = undefined
+      auth.status = undefined
+      auth.method = undefined
+      delete auth.message
       authMethods = []
       pendingAuthenticate.clear()
       pendingSetup.clear()
       pendingPrompts.clear()
-      permissionPreset = undefined
-      sandboxMode = undefined
       initializeId = message.id
       publish()
       return
@@ -116,33 +157,31 @@ export function installAcpSessionStatus(ctx, options = {}) {
       pendingAuthenticate.add(message.id)
       const methodId = readString(message.params, 'methodId')
       const method = authMethods.find((candidate) => candidate?.id === methodId)
-      if (methodId !== undefined) value.auth.method = readString(method, 'name', 'label') ?? methodId
-      delete value.auth.message
-      value.auth.status = 'signing in'
+      if (methodId !== undefined) auth.method = readString(method, 'name', 'label') ?? methodId
+      delete auth.message
+      auth.status = 'signing in'
       publish()
       return
     }
     if (SETUP_METHODS.has(message.method) && message.id !== undefined) {
       pendingSetup.set(message.id, {
-        sessionId: message.method === 'session/load'
+        sessionId: message.method !== 'session/new'
           ? readString(message.params, 'sessionId', 'session_id')
           : undefined,
-        started: message.method === 'session/load',
+        started: message.method !== 'session/new',
       })
       return
     }
     if (message.method === 'session/prompt' && message.id !== undefined) {
-      const sessionId = readString(message.params, 'sessionId', 'session_id')
-      pendingPrompts.set(
-        message.id,
-        sessionId,
-      )
-      if (value.session.sessionId === sessionId && !value.session.started) {
-        value.session.started = true
-      }
+      const promptSessionId = readString(message.params, 'sessionId', 'session_id')
+      if (promptSessionId === undefined) return
+      if (!selectionKnown && sessionId === undefined) sessionId = promptSessionId
+      pendingPrompts.set(message.id, promptSessionId)
+      const value = stateFor(promptSessionId)
+      value.session.started = true
       if (value.state === 'idle') {
         value.state = 'starting'
-        publish()
+        publishIf(promptSessionId)
       }
     }
   }
@@ -151,10 +190,10 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (!object(message)) return
     if (message.id !== undefined && message.id === initializeId) {
       initializeId = undefined
-      value.connection = message.error === undefined ? 'attached' : 'failed'
-      value.error = message.error?.message
+      connection = message.error === undefined ? 'attached' : 'failed'
+      fallback.error = message.error?.message
       const result = object(message.result) ? message.result : undefined
-      value.server = readString(result?.agentInfo, 'name')
+      server = readString(result?.agentInfo, 'name')
       const methods = Array.isArray(result?.authMethods) ? result.authMethods : []
       authMethods = methods
       // initialize advertises choices, not the credential used by this process.
@@ -167,11 +206,11 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (message.id !== undefined && pendingAuthenticate.has(message.id)) {
       pendingAuthenticate.delete(message.id)
       if (message.error === undefined) {
-        value.auth.status = 'configured'
-        delete value.auth.message
+        auth.status = 'configured'
+        delete auth.message
       } else {
-        value.auth.status = 'sign-in failed'
-        value.auth.message = readString(message.error?.data, 'details', 'message')
+        auth.status = 'sign-in failed'
+        auth.message = readString(message.error?.data, 'details', 'message')
           ?? readString(message.error, 'message') ?? 'Authentication failed'
       }
       publish()
@@ -181,100 +220,116 @@ export function installAcpSessionStatus(ctx, options = {}) {
       const setup = pendingSetup.get(message.id)
       pendingSetup.delete(message.id)
       if (message.error !== undefined) {
-        if (isAuthRequired(message.error)) value.auth.status = 'needs sign-in'
+        if (isAuthRequired(message.error)) auth.status = 'needs sign-in'
         else {
-          value.connection = 'failed'
+          connection = 'failed'
+          const value = stateFor(setup.sessionId, false)
           value.error = readString(message.error, 'message') ?? 'Session setup failed'
           value.state = 'idle'
-          value.auth = { status: undefined, method: undefined }
           value.model = undefined
           value.effort = undefined
         }
-        value.session = { sessionId: setup.sessionId, bound: false, started: false }
+        stateFor(setup.sessionId, false).session = {
+          sessionId: setup.sessionId, bound: false, started: false,
+        }
+        if (!selectionKnown) sessionId = setup.sessionId
       } else {
-        value.connection = 'attached'
-        delete value.error
-        const sessionId = readString(message.result, 'sessionId', 'session_id') ?? setup.sessionId
-        if (sessionId !== undefined && authMethods.length > 0) {
-          value.auth.status = 'configured'
-          delete value.auth.message
+        connection = 'attached'
+        delete fallback.error
+        const bound = readString(message.result, 'sessionId', 'session_id') ?? setup.sessionId
+        if (bound !== undefined) {
+          stateFor(bound).session = { sessionId: bound, bound: true, started: setup.started }
+          delete stateFor(bound).error
+          if (authMethods.length > 0) {
+            auth.status = 'configured'
+            delete auth.message
+          }
         }
-        value.session = {
-          sessionId,
-          bound: sessionId !== undefined,
-          started: sessionId !== undefined && setup.started,
-        }
+        if (!selectionKnown) sessionId = bound
       }
       publish()
       return
     }
     if (response(message) && pendingPrompts.has(message.id)) {
+      const promptSessionId = pendingPrompts.get(message.id)
       pendingPrompts.delete(message.id)
       let changed = false
       if (message.error !== undefined && isAuthRequired(message.error)
-        && value.auth.status !== 'needs sign-in') {
-        value.auth.status = 'needs sign-in'
+        && auth.status !== 'needs sign-in') {
+        auth.status = 'needs sign-in'
         changed = true
       }
-      if (pendingPrompts.size === 0 && value.state !== 'idle') {
+      const value = stateFor(promptSessionId)
+      if (!hasPendingPrompt(promptSessionId) && value.state !== 'idle') {
         value.state = 'idle'
         changed = true
       }
-      if (changed) publish()
+      if (changed && (promptSessionId === sessionId || auth.status === 'needs sign-in')) publish()
       return
     }
     if (message.error !== undefined && isAuthRequired(message.error)) {
-      value.auth.status = 'needs sign-in'
+      auth.status = 'needs sign-in'
       publish()
       return
     }
 
     if (message.method === 'session.status' && object(message.params)) {
+      const statusSessionId = readString(message.params, 'sessionId', 'session_id') ?? sessionId
+      if (statusSessionId === undefined) return
+      if (!selectionKnown && sessionId === undefined) sessionId = statusSessionId
       const status = readString(message.params, 'status')
-      if (status === 'running' || (status === 'idle' && pendingPrompts.size === 0)) {
+      const value = stateFor(statusSessionId)
+      if (status === 'running' || (status === 'idle' && !hasPendingPrompt(statusSessionId))) {
         value.state = status
-        publish()
+        publishIf(statusSessionId)
       }
       return
     }
     if (message.method === 'session.event' && object(message.params)) {
+      const eventSessionId = readString(message.params, 'sessionId', 'session_id') ?? sessionId
+      if (eventSessionId === undefined) return
+      if (!selectionKnown && sessionId === undefined) sessionId = eventSessionId
+      const value = stateFor(eventSessionId)
       const event = object(message.params.event) ? message.params.event : undefined
       const type = readString(event, 'type')
       const data = object(event?.data) ? event.data : undefined
       if (type === 'permission/preset') {
         const preset = readString(data, 'preset')
         if (preset !== undefined) {
-          permissionPreset = preset
-          value.permission = permissionPreset ?? sandboxMode
-          publish()
+          value.permissionPreset = preset
+          value.permission = value.permissionPreset ?? value.sandboxMode
+          publishIf(eventSessionId)
         }
       } else if (type === 'sandbox/mode') {
         const mode = readString(data, 'mode')
         if (mode !== undefined) {
-          sandboxMode = mode
-          value.permission = permissionPreset ?? sandboxMode
-          publish()
+          value.sandboxMode = mode
+          value.permission = value.permissionPreset ?? value.sandboxMode
+          publishIf(eventSessionId)
         }
       } else if (type === 'plan/mode' && typeof data?.active === 'boolean') {
         value.plan = data.active
-        publish()
+        publishIf(eventSessionId)
       } else if (type === 'agent-preset/selected') {
         const preset = readString(data, 'agentPreset')
         if (preset !== undefined) {
           value.agent = preset
-          publish()
+          publishIf(eventSessionId)
         }
       }
       return
     }
     if (message.method !== 'session/update' || !object(message.params)) return
-    const sessionId = readString(message.params, 'sessionId', 'session_id')
+    const updateSessionId = readString(message.params, 'sessionId', 'session_id')
+    if (updateSessionId === undefined) return
+    if (!selectionKnown && sessionId === undefined) sessionId = updateSessionId
     const update = object(message.params.update) ? message.params.update : undefined
     const type = readString(update, 'sessionUpdate', 'session_update')
-    if (value.state !== 'running' && hasPendingPrompt(sessionId)
+    const value = stateFor(updateSessionId)
+    if (value.state !== 'running' && hasPendingPrompt(updateSessionId)
       && RUNNING_UPDATE_TYPES.has(type)) {
       value.state = 'running'
-      publish()
+      publishIf(updateSessionId)
     }
   }
 
@@ -288,13 +343,14 @@ export function installAcpSessionStatus(ctx, options = {}) {
 
   function onConfigSnapshot(snapshot) {
     if (snapshot === null || typeof snapshot !== 'object') return
-    if (typeof snapshot.sessionId === 'string' && snapshot.sessionId.length > 0
-      && value.session.sessionId === undefined) {
-      value.session = { sessionId: snapshot.sessionId, bound: true, started: false }
-    }
+    const configSessionId = typeof snapshot.sessionId === 'string' && snapshot.sessionId.length > 0
+      ? snapshot.sessionId
+      : sessionId
+    const value = stateFor(configSessionId)
+    if (!selectionKnown && sessionId === undefined) sessionId = configSessionId
     value.model = optionValue(snapshot.options, 'model', 'model')
     value.effort = optionValue(snapshot.options, 'thought_level', 'effort')
-    publish()
+    publishIf(configSessionId)
   }
 
   function optionValue(options, category, id) {
@@ -306,7 +362,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
     return typeof raw === 'string' ? raw : undefined
   }
 
-  const core = { current, subscribe, observeClient, observeAgent }
+  const core = { current, subscribe, observeClient, observeAgent, selectSession }
   const service = typeof ctx.provide === 'function'
     ? new AcpSessionStatusService(ctx, core)
     : {
@@ -314,6 +370,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
         subscribe(listener) { return subscribe(ctx, listener) },
         observeClient,
         observeAgent,
+        selectSession,
       }
   if (typeof ctx.provide !== 'function') ctx.acpSessionStatus = service
 
@@ -327,7 +384,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
   if (typeof events?.register === 'function') {
     // register(observer) only: the service scopes the subscription to its
     // own Context, so pass the folding object alone.
-    events.register({ observeClient, observeAgent })
+    events.register({ observeClient, observeAgent, selectSession })
   }
 
   return service

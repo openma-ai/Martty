@@ -373,7 +373,7 @@ fn keys_markdown_renders_within_the_terminal_width() {
         for zh in [false, true] {
             for mac in [false, true] {
                 let md = keys_markdown(zh, mac);
-                let lines = crate::markdown::render(&md, &theme, width);
+                let lines = crate::markdown::render(&md, &theme, crate::markdown::ToneMode::Single, width);
                 assert!(!lines.is_empty());
                 for line in lines {
                     let w = line.width() as usize;

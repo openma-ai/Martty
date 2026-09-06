@@ -139,7 +139,9 @@ fn needs_auth_notice_points_at_auth() {
         &BTreeMap::new(),
     );
     let snap = needs_auth_snapshot(methods.clone(), methods.first(), None);
-    let (_, text) = snap.notice().expect("notice");
+    let (_, text) = snap
+        .notice(crate::locale::Locale::En)
+        .expect("notice");
     assert!(text.contains("/auth"));
     assert!(
         !text.contains("/login"),

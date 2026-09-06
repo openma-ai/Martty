@@ -44,6 +44,13 @@ Enter opens, and Escape collapses. No popup or mouse action is created. Native
 Queue and Agent views retain
 the same semantics as fallbacks when no Client tree is present.
 
+The native tab is the single source of truth for the visible Session. On each
+bind or tab switch, Rust projects its Session id (`null` while unbound) into the
+Client tree with the `_dsh/cordis/tui/session/active` request. `acpSessionConfig`,
+`acpSessionPlan`, `acpSessionStats`, and `acpSessionStatus` publish only that
+Session's cached snapshot; ACP updates from background Sessions update their own
+caches without replacing the visible tab.
+
 A standard ACP `tool_call` carrying subagent `_meta` still enters the parent
 transcript as the original tool event; the parser only appends a
 `SubagentStarted` projection. A terminal `tool_call_update` likewise produces

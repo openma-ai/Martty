@@ -24,9 +24,12 @@ fn test_app() -> (App, Receiver<AppEvent>) {
 #[test]
 fn scroll_by_after_jump_top_resolves_the_sentinel_against_the_last_frame() {
     let (mut app, _rx) = test_app();
-    // Last rendered frame: 200 lines in a 20-row pane → max_scroll = 180.
+    // Last rendered frame: 200 layout lines in a 20-row pane → max_scroll =
+    // 180. The snapshot is viewport-sized; `total` carries the line count.
     app.chat_view.area = ratatui::layout::Rect::new(0, 0, 80, 20);
-    app.chat_view.lines = (0..200).map(|i| format!("line {i}")).collect();
+    app.chat_view.total = 200;
+    app.chat_view.top = 180;
+    app.chat_view.lines = (180..200).map(|i| format!("line {i}")).collect();
 
     // JumpTop leaves the usize::MAX sentinel until the next draw; a wheel
     // flick arriving in the same event burst must stay relative to the top

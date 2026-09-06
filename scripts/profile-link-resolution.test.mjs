@@ -63,7 +63,7 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
   }, { permissionMode: 'workspace-write' })
 
   assert.equal(wrapperResult, undefined)
-  assert.deepEqual(acpHost.inject, ['loader'])
+  assert.deepEqual(acpHost.inject, ['loader', 'userQuestions', 'permissionPresets'])
   assert.deepEqual(mounted, [{
     plugin: loader.unwrapExports(ownAcpPluginExports),
     config: { permissionMode: 'workspace-write' },
@@ -90,4 +90,130 @@ test('Host entries pass resolved ACP modules to the profile loader as file URLs'
   assert.deepEqual(imports, [
     ownAcpBridgeUrl,
   ])
+})
+
+test('ACP Host adapts the legacy user-question provider to the scoped waterfall', async () => {
+  const listeners = []
+  const effects = []
+  const userQuestions = {}
+  const acpHost = await import(
+    pathToFileURL(path.join(packageLib, 'acp-host.js')).href
+  )
+  const ctx = {
+    userQuestions,
+    get(name) {
+      return name === 'userQuestions' ? userQuestions : undefined
+    },
+    on(name, listener) {
+      listeners.push({ name, listener })
+      return () => listeners.splice(
+        listeners.findIndex((entry) => entry.listener === listener),
+        1,
+      )
+    },
+    effect(callback) {
+      effects.push(callback())
+    },
+  }
+
+  assert.equal(acpHost.installUserQuestionsCompatibility(ctx), true)
+  const unregister = userQuestions.registerProvider({
+    ask: async (request) => ({ answer: request.question }),
+  })
+  assert.equal(listeners[0].name, 'user-questions/request')
+  assert.deepEqual(
+    await listeners[0].listener({ question: 'continue?' }),
+    { answer: 'continue?' },
+  )
+
+  unregister()
+  assert.equal(listeners.length, 0)
+  await Promise.all(effects.map((dispose) => dispose()))
+  assert.equal(userQuestions.registerProvider, undefined)
+})
+
+test('ACP Host restores the immutable Session.events snapshot removed by dsh 0.1.2', async () => {
+  const acpHost = await import(
+    pathToFileURL(path.join(packageLib, 'acp-host.js')).href
+  )
+  class CurrentSession {
+    snapshots = Object.freeze([{ type: 'plan/mode', data: { active: true } }])
+
+    snapshotEvents() {
+      return this.snapshots
+    }
+  }
+
+  assert.equal(acpHost.installSessionEventsCompatibility(CurrentSession), true)
+  const session = new CurrentSession()
+  assert.equal(session.events, session.snapshots)
+  assert.equal(acpHost.installSessionEventsCompatibility(CurrentSession), false)
+
+  class ReferencedSession {
+    seq = 2
+
+    constructor() {
+      // A Cordis reference can expose the Host prototype while omitting a
+      // newer method from the materialized remote object.
+      this.snapshotEvents = undefined
+    }
+
+    snapshotEvents() {
+      return Object.freeze([])
+    }
+
+    eventAt(seq) {
+      return [{ type: 'turn/start' }, { type: 'plan/mode' }][seq]
+    }
+  }
+  assert.equal(acpHost.installSessionEventsCompatibility(ReferencedSession), true)
+  assert.equal(
+    typeof Object.getOwnPropertyDescriptor(ReferencedSession.prototype, 'events')?.get,
+    'function',
+  )
+  assert.deepEqual(
+    new ReferencedSession().events.map(({ type }) => type),
+    ['turn/start', 'plan/mode'],
+  )
+
+  class LegacySession {
+    get events() {
+      return Object.freeze([])
+    }
+  }
+  assert.equal(acpHost.installSessionEventsCompatibility(LegacySession), false)
+})
+
+test('ACP Host lets legacy ACP read dsh 0.1.2 permission state from events', async () => {
+  const acpHost = await import(
+    pathToFileURL(path.join(packageLib, 'acp-host.js')).href
+  )
+  const session = { snapshotEvents() { return [] } }
+  const calls = []
+  const permissionPresets = {
+    current(target) {
+      calls.push(target)
+      return 'native-session'
+    },
+    derive(state) {
+      calls.push(state)
+      return `${state.preset}:${state.sandbox}:${state.approval}:${state.seeded}`
+    },
+  }
+
+  assert.equal(acpHost.installPermissionPresetsCompatibility(permissionPresets), true)
+  assert.equal(permissionPresets.current(session), 'native-session')
+  assert.equal(permissionPresets.current([
+    { type: 'permission/preset', data: { preset: 'strict' } },
+    { type: 'sandbox/mode', data: { mode: 'workspace-write' } },
+    { type: 'approval/policy', data: { policy: 'ask' } },
+    { type: 'session/end-seed', data: {} },
+  ]), 'strict:workspace-write:ask:true')
+  assert.deepEqual(calls, [session, {
+    preset: 'strict',
+    sandbox: 'workspace-write',
+    approval: 'ask',
+    seeded: true,
+  }])
+  assert.equal(acpHost.installPermissionPresetsCompatibility(permissionPresets), false)
 })

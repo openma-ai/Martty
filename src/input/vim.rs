@@ -51,6 +51,11 @@ impl VimState {
         self.mode != VimMode::Off
     }
 
+    /// Clear any half-entered two-key chords (`dd`, `gg`) on mode/tab switches.
+    pub fn reset_pending(&mut self) {
+        self.pending = None;
+    }
+
     /// Handle one key while vim is active. Returns `true` when the key was
     /// consumed (must not reach the app keymap).
     pub fn handle_key(&mut self, key: &KeyEvent, editor: &mut ComposerEditor) -> bool {
@@ -134,6 +139,10 @@ impl VimState {
             (_, 'O') => {
                 editor.line_head();
                 editor.insert_newline();
+                // `insert_newline` leaves the cursor at (row+1, 0) — the
+                // head of the original text shifted down. Lift back onto
+                // the new blank line above, as vim's `O` does.
+                editor.move_up();
                 self.mode = VimMode::Insert;
             }
             // Anything else (letters, digits, punctuation) is consumed as

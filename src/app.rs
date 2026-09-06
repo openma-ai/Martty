@@ -7,7 +7,9 @@
 //! history on an empty prompt.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
+#[cfg(not(unix))]
+use std::io::BufRead;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -24,6 +26,7 @@ use crate::controller::Controller;
 use crate::events::parse_notification;
 use crate::input::{Action, VimMode};
 use crate::locale::{Locale, UiSettings};
+use crate::markdown::ToneMode;
 use crate::runtime::{legacy_settings_path, settings_path, RuntimeConfig};
 use crate::theme::Theme;
 use crate::transcript::{clamp_str, NoticeLevel, Transcript};
@@ -40,6 +43,9 @@ struct CtrlCQuitChord {
     required: u8,
 }
 const TIP_TTL: Duration = Duration::from_secs(4);
+/// How long the `↥` jump flash keeps the jumped user prompt background-
+/// washed before it restores to normal (issue #103).
+pub(crate) const PROMPT_FLASH_TTL: Duration = Duration::from_secs(5);
 /// How often the composer cap re-checks the workspace git branch (tick
 /// cadence). Catches checkouts done by the agent or in another terminal;
 /// `!git checkout` in the session shell refreshes immediately instead.
@@ -135,29 +141,14 @@ pub struct SlashCommand {
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
-        name: "help",
-        usage: "/help",
-        desc: "show help and tips",
+        name: "agent",
+        usage: "/agent [id]",
+        desc: "switch agent preset · ctrl+shift+a",
     },
     SlashCommand {
-        name: "keys",
-        usage: "/keys",
-        desc: "keyboard shortcuts",
-    },
-    SlashCommand {
-        name: "vim",
-        usage: "/vim [on|off]",
-        desc: "toggle vim modal editing (default off)",
-    },
-    SlashCommand {
-        name: "new",
-        usage: "/new [id]",
-        desc: "start a fresh session",
-    },
-    SlashCommand {
-        name: "resume",
-        usage: "/resume [id]",
-        desc: "resume a durable session from this workspace",
+        name: "auth",
+        usage: "/auth [method|api-key]",
+        desc: "ACP sign-in (Backchat authenticate)",
     },
     SlashCommand {
         name: "clear",
@@ -165,54 +156,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "clear the scrollback",
     },
     SlashCommand {
-        name: "model",
-        usage: "/model [id]",
-        desc: "switch model · live over ACP",
-    },
-    SlashCommand {
-        name: "agent",
-        usage: "/agent [id]",
-        desc: "switch agent preset · ctrl+shift+a",
-    },
-    SlashCommand {
-        name: "effort",
-        usage: "/effort [off|high|max]",
-        desc: "reasoning effort for this session",
-    },
-    SlashCommand {
-        name: "permission",
-        usage: "/permission [preset]",
-        desc: "permission preset picker · shift+tab cycles",
-    },
-    SlashCommand {
-        name: "plan",
-        usage: "/plan [on|off]",
-        desc: "toggle host plan mode",
-    },
-    SlashCommand {
-        name: "image",
-        usage: "/image <path> [text]",
-        desc: "send a local image (png/jpeg/webp/gif)",
-    },
-    SlashCommand {
         name: "clip",
         usage: "/clip [text]",
         desc: "attach the clipboard image (macOS/Linux)",
     },
     SlashCommand {
-        name: "theme",
-        usage: "/theme [id|toggle]",
-        desc: "switch Theme Plugin or toggle dark/light",
-    },
-    SlashCommand {
-        name: "ui",
-        usage: "/ui [id]",
-        desc: "switch UI Plugin",
-    },
-    SlashCommand {
-        name: "plugins",
-        usage: "/plugins",
-        desc: "show Host plugin status (read-only)",
+        name: "close",
+        usage: "/close",
+        desc: "close the current session tab (last tab cannot close)",
     },
     SlashCommand {
         name: "cordis-plugins",
@@ -220,14 +171,24 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "review or manage dynamic Cordis plugins",
     },
     SlashCommand {
-        name: "session",
-        usage: "/session",
-        desc: "show session + runtime info",
+        name: "effort",
+        usage: "/effort [off|high|max]",
+        desc: "reasoning effort for this session",
     },
     SlashCommand {
-        name: "auth",
-        usage: "/auth [method|api-key]",
-        desc: "ACP sign-in (Backchat authenticate)",
+        name: "help",
+        usage: "/help",
+        desc: "show help and tips",
+    },
+    SlashCommand {
+        name: "image",
+        usage: "/image <path> [text]",
+        desc: "send a local image (png/jpeg/webp/gif)",
+    },
+    SlashCommand {
+        name: "keys",
+        usage: "/keys",
+        desc: "keyboard shortcuts",
     },
     SlashCommand {
         name: "lang",
@@ -240,9 +201,59 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "召唤小难梁 — 🤫 idle · ⌨︎ working",
     },
     SlashCommand {
+        name: "model",
+        usage: "/model [id]",
+        desc: "switch model · live over ACP",
+    },
+    SlashCommand {
+        name: "new",
+        usage: "/new [id]",
+        desc: "start a fresh session",
+    },
+    SlashCommand {
+        name: "permission",
+        usage: "/permission [preset]",
+        desc: "permission preset picker · shift+tab cycles",
+    },
+    SlashCommand {
+        name: "plan",
+        usage: "/plan [on|off]",
+        desc: "toggle host plan mode",
+    },
+    SlashCommand {
+        name: "plugins",
+        usage: "/plugins",
+        desc: "show Host plugin status (read-only)",
+    },
+    SlashCommand {
         name: "quit",
         usage: "/quit",
         desc: "exit martty",
+    },
+    SlashCommand {
+        name: "resume",
+        usage: "/resume [n|id]",
+        desc: "list the n most recent sessions (default 50) · /resume <id> resumes it",
+    },
+    SlashCommand {
+        name: "session",
+        usage: "/session [view|prev|next]",
+        desc: "show session info · prev/next switch session tab",
+    },
+    SlashCommand {
+        name: "theme",
+        usage: "/theme [id|toggle]",
+        desc: "switch Theme Plugin or toggle dark/light",
+    },
+    SlashCommand {
+        name: "ui",
+        usage: "/ui [id]",
+        desc: "switch UI Plugin",
+    },
+    SlashCommand {
+        name: "vim",
+        usage: "/vim [on|off]",
+        desc: "toggle vim modal editing (default off)",
     },
 ];
 
@@ -503,12 +514,34 @@ pub struct ChatView {
     /// the streaming tail; a scroll gesture is resolved into a fresh anchor
     /// by the next draw.
     pub(crate) manual_top: Option<usize>,
+    /// The frame's selection snapshot, **viewport-sized**: the plain text of
+    /// the `top..top+len` layout lines this frame actually showed (L25 —
+    /// hit-testing and copy extraction never need more). `total` carries the
+    /// absolute line count for scroll math.
     pub lines: Vec<String>,
-    /// Per layout line, the transcript cell that owns it (only tool cells
-    /// claim ownership) — the seam for click-to-expand.
+    /// Per snapshot line (same viewport window), the transcript cell that
+    /// owns it (only tool cells claim ownership) — the seam for
+    /// click-to-expand.
     pub owners: Vec<Option<usize>>,
+    /// Total layout line count of the last frame (viewport-relative lines
+    /// exist only for `top..top+lines.len()`).
+    pub total: usize,
     /// Visible image thumbnails, filled by `ui::draw_chat` every frame.
     pub images: Vec<ThumbPlacement>,
+}
+
+impl ChatView {
+    /// The frame's snapshot text for an absolute layout line — `None`
+    /// outside the viewport this frame captured.
+    pub fn line_text(&self, line: usize) -> Option<&str> {
+        self.lines.get(line.checked_sub(self.top)?).map(String::as_str)
+    }
+
+    /// The transcript cell owning an absolute layout line — `None` outside
+    /// the viewport or for lines no tool cell owns.
+    pub fn line_owner(&self, line: usize) -> Option<usize> {
+        self.owners.get(line.checked_sub(self.top)?).copied().flatten()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -733,6 +766,12 @@ pub struct Picker {
     pub title: String,
     pub sel: usize,
     pub items: Vec<PickerItem>,
+    /// First row of the popup's viewport. Unlike `sel` (which keys and the
+    /// wheel move freely), the window only scrolls when the selection
+    /// leaves it — the draw pass adjusts this by the minimum needed, so a
+    /// static window lets ↑/↓ and wheel sweep the highlight row by row
+    /// instead of re-pinning the window edge under it every frame.
+    pub offset: usize,
 }
 
 /// The `/plugins` static inventory as a two-level tree (provider → plugin),
@@ -772,6 +811,150 @@ pub struct SubagentView {
     pub running: bool,
     pub failed: bool,
     pub transcript: Transcript,
+}
+
+/// One non-live session's full state while another tab is viewed (issue
+/// #94). The App's own fields always describe the viewed session; a tab
+/// switch moves them into a slot and loads the target slot in their place.
+///
+/// Everything the frame paints between the session tab strip and the
+/// composer stats dock is session state: the transcript and its scroll
+/// position, the composer draft + staged images + `@file` browser, the
+/// queue shelf, subagents, ACP asks, painter popups — a tab switch must
+/// never show another session's chrome on this session's tab.
+pub struct SessionSlot {
+    pub id: String,
+    pub title: Option<String>,
+    pub transcript: Transcript,
+    /// Composer draft (text, cursor, per-tab recall history) rides with
+    /// its session like the queue does — the composer area is bound to
+    /// the viewed tab.
+    pub input: ComposerEditor,
+    /// Images staged in the draft as `[image n]` chips (draft-bound).
+    pub pending_images: crate::attachments::Staged,
+    /// Composer well pinned to the amplified height (issue #92).
+    pub input_expanded: bool,
+    /// Open `@file` browser + its Esc-dismissed `@` token tag. Both are
+    /// draft-bound: the menu filters the draft's token, so it follows the
+    /// draft to its tab.
+    pub file_menu: Option<crate::file_ref::FileMenu>,
+    pub file_menu_dismissed: Option<String>,
+    /// Chat scroll offset in lines above the bottom (0 = follow).
+    pub scroll_up: usize,
+    /// Model explicitly picked on this session (`/model`); wins over
+    /// `transcript.last_model` in the chip until a turn realizes it.
+    pub selected_model: Option<String>,
+    pub session_model: Option<String>,
+    /// Welcome banner: shown until this session sends its first prompt.
+    pub show_banner: bool,
+    /// Meta-row chrome while the session runs: state note text and the
+    /// elapsed-timer anchor.
+    pub state_note: String,
+    pub run_started: Option<Instant>,
+    /// Authoritative per-session running bit (folded from `SessionStatus`
+    /// and turn lifecycle events).
+    pub running: bool,
+    /// Finished while parked → tab badge until the user views the tab.
+    pub completed_unseen: bool,
+    pub prompt_queue: VecDeque<ClientQueuedPrompt>,
+    queue_selection: Option<usize>,
+    queue_edit: Option<QueueEditState>,
+    pub prompt_pending: bool,
+    pub modes: Modes,
+    pub skills: Vec<crate::bus::SkillInfo>,
+    pub presets: Vec<crate::bus::CatalogPreset>,
+    pub models: Vec<crate::bus::CatalogModel>,
+    pub permission_choices: Vec<crate::bus::CatalogPreset>,
+    pub effort_choices: Vec<String>,
+    pub session_bound: bool,
+    pub pending_steer_cells: HashMap<u64, PendingSteer>,
+    pub subagents: Vec<SubagentView>,
+    pub current_subagents: HashSet<String>,
+    pub next_subagent_starts_batch: bool,
+    pub active_subagent: Option<String>,
+    pub agent_selection: Option<String>,
+    /// A session-bound ACP ask (permission or elicitation) that arrived
+    /// while this session was out of view — or that was on screen when the
+    /// user switched away. Asks follow their session: only the live tab
+    /// renders and answers them, switching never cancels one, and the tab
+    /// strip marks a tab with a pending ask.
+    pub permission_ask: Option<PermissionAskOverlay>,
+    pub elicitation_ask: Option<ElicitationAskOverlay>,
+    /// Painter-owned info popup (`/help`, `/keys`, `/session`, painter
+    /// `/status` — `notify_plugin == false`) parked with its session: it
+    /// leaves the screen on a switch and resurfaces, scroll and all, when
+    /// the user returns. Compositor-owned plugin views never park — the
+    /// tab-click path cancels them instead (see `cancel_plugin_overlays`).
+    pub view_overlay: Option<ViewOverlay>,
+    /// `/plugins` / `/cordis-plugins` inventory tree (selection state
+    /// included) parked with its session like the info popups.
+    pub plugin_tree: Option<PluginTree>,
+}
+
+impl SessionSlot {
+    /// A fresh, empty session tab. `bound` is true only when the id is
+    /// already a real session id (demo, local JSONL resume).
+    fn fresh(id: String, bound: bool) -> Self {
+        SessionSlot {
+            transcript: Transcript::new(id.clone()),
+            id,
+            title: None,
+            input: ComposerEditor::new(),
+            pending_images: crate::attachments::Staged::default(),
+            input_expanded: false,
+            file_menu: None,
+            file_menu_dismissed: None,
+            scroll_up: 0,
+            selected_model: None,
+            session_model: None,
+            // A fresh tab has not prompted yet — the welcome banner paints
+            // until its first send (resume paths force it off).
+            show_banner: true,
+            state_note: String::new(),
+            run_started: None,
+            running: false,
+            completed_unseen: false,
+            prompt_queue: VecDeque::new(),
+            queue_selection: None,
+            queue_edit: None,
+            prompt_pending: false,
+            modes: Modes::default(),
+            skills: Vec::new(),
+            presets: Vec::new(),
+            models: Vec::new(),
+            permission_choices: Vec::new(),
+            effort_choices: Vec::new(),
+            session_bound: bound,
+            pending_steer_cells: HashMap::new(),
+            subagents: Vec::new(),
+            current_subagents: HashSet::new(),
+            next_subagent_starts_batch: true,
+            active_subagent: None,
+            agent_selection: None,
+            permission_ask: None,
+            elicitation_ask: None,
+            view_overlay: None,
+            plugin_tree: None,
+        }
+    }
+}
+
+/// One FIFO entry for a tab awaiting its `SessionBound` (see the App
+/// field `awaiting_binds`).
+struct AwaitingBind {
+    id: String,
+    open: bool,
+}
+
+/// One row of the session tab strip (native chrome, `ui::draw_session_tabs`).
+pub struct SessionTab {
+    pub label: String,
+    pub running: bool,
+    pub completed_unseen: bool,
+    /// A session-bound ACP ask (permission/elicitation) is pending on this
+    /// tab — the agent is waiting for an answer only this tab can give.
+    pub ask_pending: bool,
+    pub current: bool,
 }
 
 pub(crate) const AGENT_HISTORY_ID: &str = "__martty_internal__:agent-history";
@@ -885,6 +1068,23 @@ struct PersistentShell {
     marker: String,
 }
 
+/// Silence deadline for one `!` command. A wedged command (or a closed
+/// control fd) must not block the single-shell worker forever; on timeout
+/// the shell is killed and the next request spawns a fresh one.
+#[cfg(unix)]
+const SHELL_SILENCE: Duration = Duration::from_secs(120);
+
+/// Outcome of the marker wait.
+#[cfg(unix)]
+enum ShellRead {
+    /// Marker found; carries the parsed exit status.
+    Done(Option<i32>),
+    /// Shell stdout closed.
+    Eof,
+    /// No output within `SHELL_SILENCE`.
+    Silent,
+}
+
 impl PersistentShell {
     fn spawn(cwd: &str) -> std::io::Result<Self> {
         let mut child = std::process::Command::new("sh")
@@ -914,7 +1114,11 @@ impl PersistentShell {
 
     fn run(&mut self, id: u64, command: &str) -> std::io::Result<(Option<i32>, String, bool)> {
         let marker = format!("\x1e{}:{id}:", self.marker);
-        writeln!(self.stdin, "eval {} 2>&1", shell_quote(command))?;
+        // stdin from /dev/null: the persistent shell's stdin is the command
+        // pipe itself, so a command that reads it (`!cat`, `!ssh …`) would
+        // otherwise swallow the status/marker lines and hang the marker
+        // wait forever.
+        writeln!(self.stdin, "eval {} 2>&1 < /dev/null", shell_quote(command))?;
         writeln!(self.stdin, "__martty_shell_status=$?")?;
         writeln!(
             self.stdin,
@@ -924,27 +1128,115 @@ impl PersistentShell {
         self.stdin.flush()?;
 
         let mut captured = Vec::new();
-        loop {
-            let read = self.stdout.read_until(0x1f, &mut captured)?;
-            if read == 0 {
-                let code = self.child.wait().ok().and_then(|status| status.code());
-                return Ok((code, shell_output(captured), false));
+        #[cfg(unix)]
+        {
+            match self.read_marker(&marker, &mut captured)? {
+                ShellRead::Done(status) => return Ok((status, shell_output(captured), true)),
+                ShellRead::Eof => {
+                    let code = self.child.wait().ok().and_then(|status| status.code());
+                    return Ok((code, shell_output(captured), false));
+                }
+                ShellRead::Silent => {
+                    // No output within the deadline: the command is wedged
+                    // (the single worker thread must never block forever).
+                    // Kill the shell; the next `!` request spawns a fresh one.
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Ok((
+                        None,
+                        format!(
+                            "command killed: no output for {}s — the next `!` restarts the shell",
+                            SHELL_SILENCE.as_secs()
+                        ),
+                        false,
+                    ));
+                }
             }
-            let Some(start) = find_bytes(&captured, marker.as_bytes()) else {
+        }
+        #[cfg(not(unix))]
+        {
+            loop {
+                let read = self.stdout.read_until(0x1f, &mut captured)?;
+                if read == 0 {
+                    let code = self.child.wait().ok().and_then(|status| status.code());
+                    return Ok((code, shell_output(captured), false));
+                }
+                let Some(start) = find_bytes(&captured, marker.as_bytes()) else {
+                    continue;
+                };
+                let status_start = start + marker.len();
+                let Some(status_len) = captured[status_start..]
+                    .iter()
+                    .position(|byte| *byte == 0x1f)
+                else {
+                    continue;
+                };
+                let status =
+                    std::str::from_utf8(&captured[status_start..status_start + status_len])
+                        .ok()
+                        .and_then(|value| value.parse::<i32>().ok());
+                captured.truncate(start);
+                return Ok((status, shell_output(captured), true));
+            }
+        }
+    }
+
+    /// Read stdout until the status marker arrives. Poll-based so the
+    /// silence deadline can fire even though `BufReader` has no
+    /// non-blocking mode; every byte of progress resets the deadline.
+    #[cfg(unix)]
+    fn read_marker(
+        &mut self,
+        marker: &str,
+        captured: &mut Vec<u8>,
+    ) -> std::io::Result<ShellRead> {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.stdout.get_ref().as_raw_fd();
+        let mut pollfd = [libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let mut chunk = [0u8; 8192];
+        let marker_bytes = marker.as_bytes();
+        let timeout_ms = SHELL_SILENCE.as_millis().min(i32::MAX as u128) as i32;
+        loop {
+            let ready = unsafe { libc::poll(pollfd.as_mut_ptr(), 1, timeout_ms) };
+            if ready < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            if ready == 0 {
+                return Ok(ShellRead::Silent);
+            }
+            if pollfd[0].revents & libc::POLLNVAL != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "shell stdout closed",
+                ));
+            }
+            // POLLIN (and/or POLLHUP) — a read never blocks here.
+            let read = self.stdout.read(&mut chunk)?;
+            if read == 0 {
+                return Ok(ShellRead::Eof);
+            }
+            captured.extend_from_slice(&chunk[..read]);
+            let Some(start) = find_bytes(captured, marker_bytes) else {
                 continue;
             };
-            let status_start = start + marker.len();
-            let Some(status_len) = captured[status_start..]
-                .iter()
-                .position(|byte| *byte == 0x1f)
-            else {
+            let status_start = start + marker_bytes.len();
+            let Some(status_len) = captured[status_start..].iter().position(|b| *b == 0x1f) else {
                 continue;
             };
-            let status = std::str::from_utf8(&captured[status_start..status_start + status_len])
-                .ok()
-                .and_then(|value| value.parse::<i32>().ok());
+            let status =
+                std::str::from_utf8(&captured[status_start..status_start + status_len])
+                    .ok()
+                    .and_then(|value| value.parse::<i32>().ok());
             captured.truncate(start);
-            return Ok((status, shell_output(captured), true));
+            return Ok(ShellRead::Done(status));
         }
     }
 }
@@ -983,6 +1275,10 @@ fn shell_output(bytes: Vec<u8>) -> String {
 pub struct App {
     pub theme: Theme,
     pub locale: Locale,
+    /// Markdown body-color scheme: single (default, one color for CJK and
+    /// Latin) or two-tone. A deliberately quiet preference — no command or
+    /// picker surface; set `markdownTone` in settings.json (`two`) to opt in.
+    pub tone_mode: ToneMode,
     pub palettes: Vec<crate::theme::PalettePack>,
     pub active_palette_id: String,
     /// Persisted UI Preset id. The Client compositor owns activation; Rust
@@ -1034,6 +1330,28 @@ pub struct App {
     /// True while the pointer rests on the expand button; only then does
     /// the frame painter show it (`needs_redraw` on change).
     pub(crate) hover_expand_btn: bool,
+    /// Screen rect of the mouse-only `↥` user-prompt jump button (issue
+    /// #103) from the latest frame — one cell left of the expand glyph on
+    /// the composer card's top-right.
+    pub(crate) prompt_jump_btn: Option<ratatui::layout::Rect>,
+    /// True while the pointer rests on the `↥` button (`needs_redraw` on
+    /// change, same hover policy as the expand button).
+    pub(crate) hover_prompt_jump_btn: bool,
+    /// Transcript cell of the user prompt the last `↥` click jumped to
+    /// (issue #103). The next click walks one prompt back; the oldest
+    /// wraps to the newest. In-memory only — never persisted.
+    pub(crate) prompt_jump_cell: Option<usize>,
+    /// The `↥` jump flash (issue #103): the transcript cell of the prompt
+    /// that was just jumped to, with the instant the highlight (chip
+    /// background wash + brand text) expires, 5 s after the click.
+    /// `App::tick` clears it on expiry; the painter resolves the cell to
+    /// lines per frame.
+    pub(crate) prompt_flash: Option<(usize, std::time::Instant)>,
+    /// Per-frame absolute line span `[start, end)` of the flashing prompt,
+    /// resolved by `draw_chat` from `prompt_flash` against the current
+    /// layout (streaming can move the prompt's lines). `None` when nothing
+    /// flashes this frame.
+    pub(crate) prompt_flash_lines: Option<(usize, usize)>,
     pub state: RunState,
     pub state_note: String,
     /// Welcome banner (whale + wordmark) — shown until the first real prompt.
@@ -1148,6 +1466,29 @@ pub struct App {
     pub ambient_tip_at: Instant,
     ctrl_c_armed: Option<CtrlCQuitChord>,
     pub session_id: String,
+    /// Parked sessions — every session except the viewed one (issue #94).
+    /// Conceptual tab order is this list with the live session spliced in
+    /// at `current`; the App's own fields above always mirror the live tab.
+    parked: Vec<SessionSlot>,
+    /// Tab index of the live session (`0..=parked.len()`).
+    current: usize,
+    /// One FIFO entry for a tab awaiting its `SessionBound`: `/new`
+    /// placeholders and `session/load` targets. The bind lands on the tab
+    /// that asked, even if the user switched away while it resolved.
+    /// Closing the tab before the bind resolves keeps the entry (its FIFO
+    /// position still owns the in-flight request) but marks it dead — the
+    /// bind is discarded when it arrives instead of rebinding some other
+    /// tab.
+    awaiting_binds: VecDeque<AwaitingBind>,
+    /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
+    pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
+    /// First tab index rendered in the session tab strip (the strip's
+    /// scroll window). Mouse clicks on the window's edge tabs nudge it by
+    /// one so the neighboring tab appears — a mouse can walk through every
+    /// session tab without ever hitting a dead end. The draw pass keeps the
+    /// window sane (never past the tail, head-anchored when there is no
+    /// overflow, live tab always in view).
+    pub(crate) tab_strip_offset: usize,
     pub cfg: RuntimeConfig,
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
@@ -1160,6 +1501,13 @@ pub struct App {
     /// A real `session/new`, `session/resume`, or `session/load` supplied this id.
     /// Cached session options stay hidden until this becomes true.
     pub session_bound: bool,
+    /// The unrequested startup/reconnect bind has been seen. Before it,
+    /// any `SessionBound` is the acp-side `session/new` this client did not
+    /// ask for — so when one arrives while tabs are awaiting their own
+    /// binds it must land on the parked tab that is not awaiting anything,
+    /// not on the FIFO head (issue #94 startup race). Seeded bound
+    /// sessions (demo, tests) have no pending unrequested bind.
+    startup_bound: bool,
     /// ACP initialize / authenticate status (live ACP only).
     pub auth: crate::acp_auth::AuthSnapshot,
     /// Leave the TUI and run this agent login, then `authenticate`.
@@ -1181,7 +1529,7 @@ pub struct App {
     /// ACP request task yet. Runtime startup alone does not make a turn busy.
     prompt_pending: bool,
     shell_seq: u64,
-    shell_pending: Vec<(u64, usize)>, // (id, cell idx)
+    shell_pending: Vec<(u64, String, usize, u64)>, // (id, session id, cell idx, transcript gen)
     shell_worker: Option<ShellWorker>,
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
@@ -1222,6 +1570,30 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
     }
 }
 
+/// Register (or revive) the view for a started subagent in `views`.
+fn upsert_subagent_view(
+    views: &mut Vec<SubagentView>,
+    parent: &str,
+    child: &str,
+    locale: Locale,
+) {
+    if let Some(view) = views.iter_mut().find(|view| view.id == child) {
+        view.running = true;
+        view.failed = false;
+    } else {
+        let mut transcript = Transcript::new(child.to_string());
+        transcript.locale = locale;
+        views.push(SubagentView {
+            id: child.to_string(),
+            parent: parent.to_string(),
+            label: locale.trf("subagent {}", "子代理 {}", &[(views.len() + 1).to_string()]),
+            running: true,
+            failed: false,
+            transcript,
+        });
+    }
+}
+
 /// Draft pieces after stripping `[image n]` chips, still in reading order.
 #[derive(Clone)]
 enum StagedBlock {
@@ -1229,7 +1601,7 @@ enum StagedBlock {
     Image(crate::attachments::Attachment),
 }
 
-struct ClientQueuedPrompt {
+pub(crate) struct ClientQueuedPrompt {
     id: u64,
     blocks: Vec<StagedBlock>,
 }
@@ -1247,11 +1619,14 @@ pub(crate) struct QueuePreview {
     pub(crate) editing: bool,
 }
 
-struct PendingSteer {
+pub(crate) struct PendingSteer {
     cells: Vec<usize>,
     blocks: Vec<StagedBlock>,
     /// Queue-head retries keep their original FIFO position when deferred.
     requeue_front: bool,
+    /// Transcript generation at echo time — a `/clear` invalidates the
+    /// hide handles (stale indexes must not touch the new transcript).
+    gen: u64,
 }
 
 fn token_spans_in(
@@ -1440,9 +1815,16 @@ impl App {
             .unwrap_or(crate::theme::Mode::Dark);
         let theme = palettes[0].theme(mode);
         let locale = settings.language;
-        App {
+        // Persisted markdown body tone (`single` | `two`); absent → single.
+        let tone_mode = settings
+            .markdown_tone
+            .as_deref()
+            .and_then(ToneMode::parse)
+            .unwrap_or_default();
+        let mut app = App {
             theme,
             locale,
+            tone_mode,
             palettes,
             active_palette_id: "default".into(),
             ui_preset: settings.ui_preset,
@@ -1465,6 +1847,11 @@ impl App {
             input_expanded: false,
             expand_btn: None,
             hover_expand_btn: false,
+            prompt_jump_btn: None,
+            hover_prompt_jump_btn: false,
+            prompt_jump_cell: None,
+            prompt_flash: None,
+            prompt_flash_lines: None,
             state: RunState::Idle,
             state_note: String::new(),
             show_banner: true,
@@ -1520,12 +1907,20 @@ impl App {
             ambient_tip_at: Instant::now(),
             ctrl_c_armed: None,
             session_id,
+            parked: Vec::new(),
+            current: 0,
+            awaiting_binds: VecDeque::new(),
+            tab_rects: Vec::new(),
+            tab_strip_offset: 0,
             cfg,
             selected_model: None,
             session_model: None,
             demo,
             attached,
             session_bound: demo,
+            // Seeded-bound sessions (demo, tests, local resume) have no
+            // unrequested bind coming; a live ACP start does.
+            startup_bound: demo,
             auth: crate::acp_auth::AuthSnapshot::none(),
             pending_terminal_auth: None,
             quit: false,
@@ -1544,7 +1939,9 @@ impl App {
             server_info: None,
             connection_error: None,
             needs_redraw: true,
-        }
+        };
+        app.transcript.locale = locale;
+        app
     }
 
     pub fn spinner(&self) -> char {
@@ -1568,6 +1965,438 @@ impl App {
             return &mut self.subagents[index].transcript;
         }
         &mut self.transcript
+    }
+
+    /// Move the live session's per-session state out of the App fields into
+    /// a parking slot, leaving cheap placeholders behind. Always paired with
+    /// [`Self::put_live_slot`] before anything reads the fields again.
+    fn take_live_slot(&mut self) -> SessionSlot {
+        let mut placeholder = Transcript::new(String::new());
+        placeholder.locale = self.locale;
+        SessionSlot {
+            id: std::mem::take(&mut self.session_id),
+            title: self.session_title.take(),
+            transcript: std::mem::replace(&mut self.transcript, placeholder),
+            // Composer + chat chrome bound to the tab (see `put_live_slot`).
+            input: std::mem::take(&mut self.input),
+            pending_images: std::mem::take(&mut self.pending_images),
+            input_expanded: std::mem::take(&mut self.input_expanded),
+            file_menu: self.file_menu.take(),
+            file_menu_dismissed: self.file_menu_dismissed.take(),
+            scroll_up: std::mem::take(&mut self.scroll_up),
+            selected_model: std::mem::take(&mut self.selected_model),
+            session_model: self.session_model.take(),
+            show_banner: std::mem::take(&mut self.show_banner),
+            state_note: std::mem::take(&mut self.state_note),
+            run_started: self.run_started.take(),
+            running: self.state != RunState::Idle || self.prompt_pending,
+            completed_unseen: false,
+            prompt_queue: std::mem::take(&mut self.prompt_queue),
+            queue_selection: self.queue_selection.take(),
+            queue_edit: self.queue_edit.take(),
+            prompt_pending: std::mem::take(&mut self.prompt_pending),
+            modes: std::mem::take(&mut self.modes),
+            skills: std::mem::take(&mut self.skills),
+            presets: std::mem::take(&mut self.last_presets),
+            models: std::mem::take(&mut self.last_models),
+            permission_choices: std::mem::take(&mut self.permission_choices),
+            effort_choices: std::mem::take(&mut self.effort_choices),
+            session_bound: std::mem::take(&mut self.session_bound),
+            pending_steer_cells: std::mem::take(&mut self.pending_steer_cells),
+            subagents: std::mem::take(&mut self.subagents),
+            current_subagents: std::mem::take(&mut self.current_subagents),
+            next_subagent_starts_batch: std::mem::replace(&mut self.next_subagent_starts_batch, true),
+            active_subagent: self.active_subagent.take(),
+            agent_selection: self.agent_selection.take(),
+            permission_ask: self.permission_ask.take(),
+            elicitation_ask: self.elicitation_ask.take(),
+            // Painter info popups ride along with their session; plugin
+            // views are filtered out (a compositor overlay must never be
+            // resurrected stale on another tab — the tab-click path
+            // cancels it before the switch, anything left here is dropped).
+            view_overlay: self.view_overlay.take().filter(|view| !view.notify_plugin),
+            plugin_tree: self.plugin_tree.take(),
+        }
+    }
+
+    /// Load a slot's state into the App fields — the inverse of
+    /// [`Self::take_live_slot`]. RunState is recomputed from the slot's
+    /// authoritative `running` bit; an in-flight turn keeps its elapsed
+    /// timer and state note.
+    fn put_live_slot(&mut self, slot: SessionSlot) {
+        self.session_id = slot.id;
+        self.session_title = slot.title;
+        self.transcript = slot.transcript;
+        self.queued = slot.prompt_queue.len();
+        self.prompt_queue = slot.prompt_queue;
+        self.queue_selection = slot.queue_selection;
+        self.queue_edit = slot.queue_edit;
+        self.prompt_pending = slot.prompt_pending;
+        self.modes = slot.modes;
+        self.skills = slot.skills;
+        self.last_presets = slot.presets;
+        self.last_models = slot.models;
+        self.permission_choices = slot.permission_choices;
+        self.effort_choices = slot.effort_choices;
+        self.session_bound = slot.session_bound;
+        self.pending_steer_cells = slot.pending_steer_cells;
+        self.subagents = slot.subagents;
+        self.current_subagents = slot.current_subagents;
+        self.next_subagent_starts_batch = slot.next_subagent_starts_batch;
+        self.active_subagent = slot.active_subagent;
+        self.agent_selection = slot.agent_selection;
+        // A session-bound ask rides along with its session: an ask that was
+        // open when the user left this tab (or that arrived while parked)
+        // resurfaces here, untouched, ready to answer or Esc away.
+        self.permission_ask = slot.permission_ask;
+        self.elicitation_ask = slot.elicitation_ask;
+        // Painter popups and the /plugins tree resurface the same way.
+        self.view_overlay = slot.view_overlay;
+        self.plugin_tree = slot.plugin_tree;
+        // Composer + chat chrome bound to the tab: draft, staged images,
+        // @file browser, scroll, banner, model pick, running note.
+        self.input = slot.input;
+        self.pending_images = slot.pending_images;
+        self.input_expanded = slot.input_expanded;
+        self.file_menu = slot.file_menu;
+        self.file_menu_dismissed = slot.file_menu_dismissed;
+        self.scroll_up = slot.scroll_up;
+        self.selected_model = slot.selected_model;
+        self.session_model = slot.session_model;
+        self.show_banner = slot.show_banner;
+        let running = slot.running || slot.prompt_pending;
+        self.state = if running {
+            RunState::Running
+        } else {
+            RunState::Idle
+        };
+        // Restore the meta-row chrome as left: an in-flight turn keeps its
+        // elapsed timer and note; a session that settled while parked
+        // shows the idle meta row.
+        self.run_started = if running { slot.run_started } else { None };
+        self.state_note = if running {
+            slot.state_note
+        } else {
+            String::new()
+        };
+    }
+
+    /// Per-view caches that must not leak across a tab switch. Draft,
+    /// staged images, scroll and model pick come back from the slot via
+    /// [`Self::put_live_slot`]; everything here is transient interaction
+    /// state that must never resurface on the incoming tab.
+    fn after_switch(&mut self) {
+        self.chat_view = ChatView::default();
+        self.sel = None;
+        self.selecting = false;
+        self.last_click = None;
+        self.input_sel = None;
+        self.input_selecting = false;
+        self.picker = None;
+        self.vim.reset_pending();
+        // The ↥ jump cursor indexes this session's transcript cells, and
+        // the flash must not carry over to another session's view.
+        self.prompt_jump_cell = None;
+        self.prompt_flash = None;
+        self.prompt_flash_lines = None;
+        self.needs_redraw = true;
+    }
+
+    /// Switch the view to tab `tab` (conceptual index, live spliced in at
+    /// `current`): park the live state into its slot, load the target.
+    pub fn switch_to_session(&mut self, tab: usize) {
+        if tab == self.current || tab > self.parked.len() {
+            return;
+        }
+        let pidx = if tab < self.current { tab } else { tab - 1 };
+        let live = self.take_live_slot();
+        let mut target = self.parked.remove(pidx);
+        target.completed_unseen = false;
+        // The parked copy takes the live tab's conceptual position.
+        let park_at = if self.current < tab {
+            self.current
+        } else {
+            self.current - 1
+        };
+        self.parked.insert(park_at, live);
+        self.current = tab;
+        self.put_live_slot(target);
+        self.after_switch();
+    }
+
+    /// Leave the viewed session for another tab — the mouse click and the
+    /// `/session prev|next` commands take the same path: transient
+    /// interactions are dismissed and compositor-owned overlays are
+    /// released with their cancel events (the plugin owns a
+    /// single-overlay slot; Esc would send the same). Painter popups and
+    /// ACP asks park with their session instead and resurface on return.
+    pub fn switch_view_to_tab(&mut self, tab: usize, ctl: &Controller) {
+        self.sel = None;
+        self.selecting = false;
+        self.last_click = None;
+        self.input_sel = None;
+        self.input_selecting = false;
+        if tab != self.current {
+            self.cancel_plugin_overlays(ctl);
+        }
+        self.switch_to_session(tab);
+    }
+
+    /// Park the live session and open a fresh tab for `id` at the end.
+    /// `bound` is true only when the id is already a real session id.
+    fn open_new_session(&mut self, id: String, bound: bool) {
+        let live = self.take_live_slot();
+        self.parked.insert(self.current, live);
+        self.current = self.parked.len();
+        let mut slot = SessionSlot::fresh(id, bound);
+        slot.transcript.locale = self.locale;
+        self.put_live_slot(slot);
+        self.after_switch();
+    }
+
+    /// Conceptual tab index of the session with this id (live or parked).
+    fn tab_index_of(&self, id: &str) -> Option<usize> {
+        if self.session_id == id {
+            return Some(self.current);
+        }
+        self.parked.iter().position(|slot| slot.id == id).map(|pidx| {
+            if pidx < self.current {
+                pidx
+            } else {
+                pidx + 1
+            }
+        })
+    }
+
+    /// Tab strip model: every session in tab order with the live tab
+    /// spliced in at `current`. Native status chrome fed by session status
+    /// facts (same source as `state_line`, never the palette/slot systems).
+    pub fn session_tabs(&self) -> Vec<SessionTab> {
+        let mut tabs: Vec<SessionTab> = self
+            .parked
+            .iter()
+            .map(|slot| SessionTab {
+                label: slot
+                    .title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| short_id(&slot.id)),
+                running: slot.running || slot.prompt_pending,
+                completed_unseen: slot.completed_unseen,
+                ask_pending: slot.permission_ask.is_some() || slot.elicitation_ask.is_some(),
+                current: false,
+            })
+            .collect();
+        tabs.insert(
+            self.current,
+            SessionTab {
+                label: self
+                    .session_title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| short_id(&self.session_id)),
+                running: self.state != RunState::Idle || self.prompt_pending,
+                completed_unseen: false,
+                ask_pending: self.permission_ask.is_some() || self.elicitation_ask.is_some(),
+                current: true,
+            },
+        );
+        tabs
+    }
+
+    /// Number of session tabs (parked + live).
+    pub fn session_tab_count(&self) -> usize {
+        self.parked.len() + 1
+    }
+
+    /// Tab index of the live session — the position where `session_tabs`
+    /// splices it into the parked list. The painter uses it to keep the
+    /// strip's scroll window anchored on the tab being viewed.
+    pub(crate) fn live_tab_index(&self) -> usize {
+        self.current
+    }
+
+    /// Hit-test a screen cell against the tab rects recorded by the painter.
+    fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_rects
+            .iter()
+            .find(|(rect, _)| {
+                col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+            })
+            .map(|(_, idx)| *idx)
+    }
+
+    /// Was this session mid-turn (live RunState, or a parked slot's running
+    /// bit)? Read just before folding a `SessionStatus` event.
+    fn session_was_running(&self, session: &str) -> bool {
+        if session == self.session_id {
+            matches!(self.state, RunState::Running)
+        } else {
+            self.parked
+                .iter()
+                .any(|slot| slot.id == session && slot.running)
+        }
+    }
+
+    /// Fold an event addressed to a parked session into its slot: the same
+    /// mode/status facts the live path folds, plus the running → idle edge
+    /// that raises the tab's completion badge. Live UI state is untouched.
+    fn apply_to_slot(slot: &mut SessionSlot, ui: crate::events::UiEvent) {
+        use crate::events::UiEvent as E;
+        let mut apply_to_transcript = true;
+        match &ui {
+            E::PlanMode { active, .. } => {
+                if slot.modes.plan == *active {
+                    apply_to_transcript = false;
+                } else {
+                    slot.modes.plan = *active;
+                }
+            }
+            E::SandboxMode { mode, .. } => slot.modes.sandbox = Some(mode.clone()),
+            E::ApprovalPolicy { policy, .. } => slot.modes.approval = Some(policy.clone()),
+            E::PermissionPreset { preset, .. } => slot.modes.permission = Some(preset.clone()),
+            E::AgentPreset { preset, .. } => {
+                slot.modes.agent_preset = Some(preset.clone());
+                apply_to_transcript = false;
+            }
+            E::ReasoningEffort { effort, .. } => {
+                slot.modes.effort = Some(effort.clone());
+                apply_to_transcript = false;
+            }
+            E::SessionTitle { title, .. } => slot.title = Some(title.clone()),
+            E::SessionModel { model, .. } => {
+                slot.session_model = Some(model.clone());
+                apply_to_transcript = false;
+            }
+            _ => {}
+        }
+        match &ui {
+            E::SessionStatus { running, .. } => {
+                if slot.running && !running {
+                    slot.completed_unseen = true;
+                }
+                slot.running = *running;
+                if !running {
+                    slot.prompt_pending = false;
+                }
+            }
+            E::TurnStart { .. } => {
+                // A new turn on this session starts a fresh subagent batch
+                // (mirror of the live path in `apply_ui`).
+                slot.next_subagent_starts_batch = true;
+                slot.running = true;
+            }
+            E::TurnEnd { .. } => {
+                if slot.running {
+                    slot.completed_unseen = true;
+                }
+                slot.prompt_pending = false;
+            }
+            _ => {}
+        }
+        if apply_to_transcript {
+            slot.transcript.apply(ui);
+        }
+    }
+
+    /// Dispatch the head of one session's queue — the live session takes
+    /// the existing path; a parked session echoes into its own transcript
+    /// and sends addressed by its own id (acp.rs fans in per session).
+    fn dispatch_session_queue(&mut self, session: &str, ctl: &Controller) {
+        if session == self.session_id {
+            self.dispatch_next_queued(ctl);
+            return;
+        }
+        let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session) else {
+            return;
+        };
+        if slot.queue_selection.is_some() || slot.queue_edit.is_some() {
+            return;
+        }
+        if !slot.session_bound {
+            // Mirror of the live path's guard (dispatch_next_queued): an
+            // unbound placeholder must never burn its queue — the prompts
+            // would be addressed to an id acp.rs does not know.
+            return;
+        }
+        let Some(prompt) = slot.prompt_queue.pop_front() else {
+            return;
+        };
+        for block in &prompt.blocks {
+            match block {
+                StagedBlock::Text(text) => slot.transcript.push_user(text.clone(), false),
+                StagedBlock::Image(att) => slot.transcript.push_image(
+                    att.name.clone(),
+                    String::new(),
+                    att.path.clone(),
+                    att.data.clone(),
+                    false,
+                ),
+            }
+        }
+        slot.prompt_pending = true;
+        slot.running = true;
+        slot.run_started = Some(Instant::now());
+        slot.state_note = self.locale.tr("sending queued followup", "正在发送排队消息").into();
+        slot.scroll_up = 0;
+        match prompt.blocks.as_slice() {
+            [StagedBlock::Text(text)] => ctl.send(Cmd::Prompt {
+                session_id: session.to_string(),
+                text: text.clone(),
+            }),
+            _ => ctl.send(Cmd::PromptImages {
+                session_id: session.to_string(),
+                blocks: prompt_blocks_from_staged(prompt.blocks),
+            }),
+        }
+    }
+
+    /// Settle one Send Now (steer) outcome. The steer's session may have
+    /// been parked or even closed while the agent decided, so the pending
+    /// entry is looked up on the viewed tab first and then in every parked
+    /// slot (`next_prompt_id` is a single counter, so ids are unique app-
+    /// wide). A deferred steer is requeued into its own session's FIFO and
+    /// its echo bubble hidden there.
+    fn settle_steer(&mut self, message_id: u64, deferred: bool) {
+        if let Some(pending) = self.pending_steer_cells.remove(&message_id) {
+            if deferred {
+                self.transcript.hide_cells(&pending.cells, pending.gen);
+                let queued = ClientQueuedPrompt {
+                    id: message_id,
+                    blocks: pending.blocks,
+                };
+                if pending.requeue_front {
+                    self.prompt_queue.push_front(queued);
+                } else {
+                    self.prompt_queue.push_back(queued);
+                }
+                self.queued = self.prompt_queue.len();
+                self.show_tip(self.locale.tr(
+                    "agent deferred Send Now — queued after the active turn",
+                    "Agent 暂缓了立即发送 —— 已排在当前轮次之后",
+                ));
+            }
+            return;
+        }
+        // The owning tab is not the one in view — settle inside its slot.
+        for slot in &mut self.parked {
+            if let Some(pending) = slot.pending_steer_cells.remove(&message_id) {
+                if deferred {
+                    slot.transcript.hide_cells(&pending.cells, pending.gen);
+                    let queued = ClientQueuedPrompt {
+                        id: message_id,
+                        blocks: pending.blocks,
+                    };
+                    if pending.requeue_front {
+                        slot.prompt_queue.push_front(queued);
+                    } else {
+                        slot.prompt_queue.push_back(queued);
+                    }
+                }
+                return;
+            }
+        }
+        // The session was closed before the settle: nothing to do.
     }
 
     /// Re-detect the workspace git branch for the composer cap label. One
@@ -1606,6 +2435,14 @@ impl App {
                 self.needs_redraw = true;
             }
         }
+        // The ↥ jump flash restores the prompt to normal after its 5 s.
+        if let Some((_, until)) = &self.prompt_flash {
+            if Instant::now() >= *until {
+                self.prompt_flash = None;
+                self.prompt_flash_lines = None;
+                self.needs_redraw = true;
+            }
+        }
         if self.ambient_tip_at.elapsed() > Duration::from_secs(14) {
             self.ambient_tip_at = Instant::now();
             self.ambient_tip_idx = (self.ambient_tip_idx + 1) % crate::locale::AMBIENT_TIP_COUNT;
@@ -1630,7 +2467,11 @@ impl App {
         match crate::theme::parse_palette_notification(params) {
             Ok(Some(n)) => self.merge_palette(n.pack, n.activate),
             Ok(None) => {}
-            Err(err) => self.show_tip(format!("palette ignored: {err}")),
+            Err(err) => self.show_tip(self.locale.trf(
+                "palette ignored: {}",
+                "已忽略主题包：{}",
+                &[err.to_string()],
+            )),
         }
         self.needs_redraw = true;
     }
@@ -1675,10 +2516,13 @@ impl App {
         }
         self.active_palette_id = id.to_string();
         self.sync_theme_from_active();
-        self.show_tip(format!(
+        self.show_tip(self.locale.trf(
             "theme: {} {}",
-            self.active_palette_id,
-            self.theme.mode.as_str()
+            "主题：{} {}",
+            &[
+                self.active_palette_id.clone(),
+                self.theme.mode.as_str().to_string(),
+            ],
         ));
     }
 
@@ -1689,7 +2533,11 @@ impl App {
         if palette.loaded {
             self.activate_palette(id);
         } else {
-            self.show_tip(format!("loading theme plugin for {id}…"));
+            self.show_tip(self.locale.trf(
+                "loading theme plugin for {}…",
+                "正在加载主题插件 {}…",
+                &[id.to_string()],
+            ));
         }
         ctl.send(Cmd::PluginThemeSelected {
             agent_id: self.session_id.clone(),
@@ -1716,9 +2564,16 @@ impl App {
                 if self.palettes.iter().any(|p| p.id == id) {
                     self.select_palette(id, ctl);
                 } else {
-                    self.show_tip(format!("unknown palette: {id}"));
-                    self.transcript
-                        .push_notice(NoticeLevel::Warn, format!("unknown palette `{id}`"));
+                    self.show_tip(self.locale.trf(
+                        "unknown palette: {}",
+                        "未知主题包：{}",
+                        &[id.to_string()],
+                    ));
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        self.locale
+                            .trf("unknown palette `{}`", "未知主题包 `{}`", &[id.to_string()]),
+                    );
                 }
             }
         }
@@ -1727,10 +2582,13 @@ impl App {
     fn toggle_theme_mode(&mut self) {
         self.theme = self.theme.toggled();
         self.save_settings();
-        self.show_tip(format!(
+        self.show_tip(self.locale.trf(
             "theme: {} {}",
-            self.active_palette_id,
-            self.theme.mode.as_str()
+            "主题：{} {}",
+            &[
+                self.active_palette_id.clone(),
+                self.theme.mode.as_str().to_string(),
+            ],
         ));
     }
 
@@ -1756,6 +2614,7 @@ impl App {
             .position(|item| item.id == self.active_palette_id)
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Theme,
             title: self
                 .locale
@@ -1786,6 +2645,7 @@ impl App {
             .position(|plugin| plugin.status == "active")
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::UiPlugin,
             title: self
                 .locale
@@ -1845,6 +2705,7 @@ impl App {
             })
             .collect();
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::CordisPlugin,
             title: self
                 .locale
@@ -1860,6 +2721,7 @@ impl App {
 
     fn open_cordis_approval_picker(&mut self, request_id: String) {
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::CordisApproval,
             title: self
                 .locale
@@ -1992,54 +2854,63 @@ impl App {
                 completion: None,
             })
             .collect();
-        for command in &self.plugin_commands {
-            if command.name.starts_with(prefix)
-                && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
-            {
-                out.push(SlashEntry {
-                    name: command.name.clone(),
-                    disabled: false,
-                    usage: command
-                        .input
-                        .as_ref()
-                        .map(|input| format!("/{} [{}]", command.name, input.hint))
-                        .unwrap_or_else(|| format!("/{}", command.name)),
-                    desc: self
-                        .locale
-                        .plugin_command_desc(&command.name, &command.description)
-                        .to_string(),
-                    skill: false,
-                    plugin: true,
-                    section: None,
-                    completion: None,
-                });
-            }
+        let mut plugins: Vec<_> = self
+            .plugin_commands
+            .iter()
+            .filter(|command| {
+                command.name.starts_with(prefix)
+                    && !SLASH_COMMANDS.iter().any(|c| c.name == command.name)
+            })
+            .collect();
+        plugins.sort_by(|a, b| a.name.cmp(&b.name));
+        for command in plugins {
+            out.push(SlashEntry {
+                disabled: false,
+                name: command.name.clone(),
+                usage: command
+                    .input
+                    .as_ref()
+                    .map(|input| format!("/{} [{}]", command.name, input.hint))
+                    .unwrap_or_else(|| format!("/{}", command.name)),
+                desc: self
+                    .locale
+                    .plugin_command_desc(&command.name, &command.description)
+                    .to_string(),
+                skill: false,
+                plugin: true,
+                section: None,
+                completion: None,
+            });
         }
         // Host skills share the '/' namespace. Builtins win first, then an
         // active client command, because the latter never enters a prompt.
-        for s in &self.skills {
-            if s.name.eq_ignore_ascii_case("logout") {
-                continue;
-            }
-            if s.name.starts_with(prefix)
-                && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
-                && !self.plugin_command_active(&s.name)
-            {
-                out.push(SlashEntry {
-                    name: s.name.clone(),
-                    disabled: false,
-                    usage: s
-                        .input_hint
-                        .as_ref()
-                        .map(|hint| format!("/{} {}", s.name, hint))
-                        .unwrap_or_else(|| format!("/{}", s.name)),
-                    desc: s.description.clone(),
-                    skill: !s.client_command,
-                    plugin: s.client_command,
-                    section: None,
-                    completion: None,
-                });
-            }
+        // Each group stays alphabetical so the menu reads in name order.
+        let mut skills: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|s| {
+                !s.name.eq_ignore_ascii_case("logout")
+                    && s.name.starts_with(prefix)
+                    && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
+                    && !self.plugin_command_active(&s.name)
+            })
+            .collect();
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        for s in skills {
+            out.push(SlashEntry {
+                disabled: false,
+                name: s.name.clone(),
+                usage: s
+                    .input_hint
+                    .as_ref()
+                    .map(|hint| format!("/{} {}", s.name, hint))
+                    .unwrap_or_else(|| format!("/{}", s.name)),
+                desc: s.description.clone(),
+                skill: !s.client_command,
+                plugin: s.client_command,
+                section: None,
+                completion: None,
+            });
         }
         // An exact command must win over a longer name sharing its prefix.
         out.sort_by_key(|entry| entry.name != prefix);
@@ -2100,17 +2971,68 @@ impl App {
             .collect()
     }
 
+    /// The value currently in effect for an open builtin option menu
+    /// (`/model `, `/effort `, `/agent `, `/theme `, `/permission `), if
+    /// the menu is one. Command-name lists and plugin option lists carry no
+    /// client-side "current". Mirrors the pickers (issue #102).
+    pub(crate) fn builtin_option_current(&self, matches: &[SlashEntry]) -> Option<String> {
+        let first = matches.first()?;
+        if first.completion.is_none() || matches.iter().any(|entry| entry.plugin) {
+            return None;
+        }
+        match first.name.as_str() {
+            "model" => Some(self.current_model()),
+            "effort" => self.modes.effort.clone(),
+            "agent" => Some(self.current_mode()),
+            "theme" => Some(self.active_palette_id.clone()),
+            "permission" => Some(self.current_permission().to_string()),
+            _ => None,
+        }
+    }
+
+    /// Restart the slash menu selection on the option currently in effect
+    /// when the open menu is a builtin option list; other menus restart at
+    /// their head. Text edits call this instead of pinning `slash_sel` to 0
+    /// so `/model ` / `/effort ` open on the running value (issue #102).
+    fn snap_slash_sel(&mut self) {
+        let matches = self.slash_matches();
+        let current = self.builtin_option_current(&matches);
+        self.slash_sel = current
+            .and_then(|value| {
+                matches.iter().position(|entry| {
+                    entry.completion.as_deref().and_then(|completion| {
+                        completion.strip_prefix(&format!("/{} ", entry.name))
+                    }) == Some(value.as_str())
+                })
+            })
+            .unwrap_or(0);
+    }
+
     fn builtin_argument_options(&self, name: &str) -> Vec<(String, String, String)> {
         let plain =
             |value: &str, desc: &str| (value.to_string(), value.to_string(), desc.to_string());
         match name {
             "model" => {
+                // The option list always carries the effective model (pick →
+                // stream → config default) so the inline menu can mark and
+                // preselect what the session runs (issue #102).
+                let current = self.current_model();
                 if !self.last_models.is_empty() {
-                    return self
+                    let mut rows: Vec<(String, String, String)> = self
                         .last_models
                         .iter()
-                        .map(|model| (model.id.clone(), model.name.clone(), model.provider.clone()))
+                        .map(|model| {
+                            (
+                                model.id.clone(),
+                                model.name.clone(),
+                                model.provider.clone(),
+                            )
+                        })
                         .collect();
+                    if !rows.iter().any(|(id, _, _)| id == &current) {
+                        rows.insert(0, (current.clone(), current.clone(), String::new()));
+                    }
+                    return rows;
                 }
                 let mut ids = host_catalog_models().unwrap_or_else(|| {
                     MODEL_PRESETS
@@ -2118,8 +3040,8 @@ impl App {
                         .map(|value| (*value).to_string())
                         .collect()
                 });
-                if !ids.iter().any(|id| id == &self.cfg.model) {
-                    ids.insert(0, self.cfg.model.clone());
+                if !ids.iter().any(|id| id == &current) {
+                    ids.insert(0, current);
                 }
                 ids.into_iter()
                     .map(|id| (id.clone(), id, String::new()))
@@ -2219,13 +3141,23 @@ impl App {
                 .collect(),
             "lang" => vec![plain("zh", "中文"), plain("en", "English")],
             "liang" => vec![plain("on", "show pet"), plain("off", "hide pet")],
+            "session" => vec![
+                plain("view", "show session + runtime info"),
+                plain("prev", "switch to the previous session tab"),
+                plain("next", "switch to the next session tab"),
+            ],
             _ => Vec::new(),
         }
     }
 
     pub fn handle(&mut self, ev: AppEvent, ctl: &Controller) {
-        let queue_before = (!self.demo).then(|| self.queue_snapshot());
-        let agents_before = (!self.demo).then(|| self.agents_snapshot());
+        // Cheap fingerprints instead of full snapshot clones: chatty agents
+        // can stream hundreds of thousands of session updates (issue #94 —
+        // a session/load replay storm), and cloning every queue/agents
+        // snapshot per event multiplies that into a UI-melting alloc storm.
+        let queue_before = (!self.demo).then(|| self.queue_fingerprint());
+        let agents_before = (!self.demo).then(|| self.agents_fingerprint());
+        let active_before = (!self.demo).then(|| (self.session_id.clone(), self.session_bound));
         self.handle_inner(ev, ctl);
         // A turn ran on the picked model → the stream is the truth again.
         if self.selected_model.is_some()
@@ -2234,17 +3166,84 @@ impl App {
             self.selected_model = None;
         }
         if let Some(before) = queue_before {
-            let after = self.queue_snapshot();
-            if after != before {
-                ctl.send(Cmd::QueueSnapshot { snapshot: after });
+            if self.queue_fingerprint() != before {
+                ctl.send(Cmd::QueueSnapshot {
+                    snapshot: self.queue_snapshot(),
+                });
             }
         }
         if let Some(before) = agents_before {
-            let after = self.agents_snapshot();
-            if after != before {
-                ctl.send(Cmd::AgentsSnapshot { snapshot: after });
+            if self.agents_fingerprint() != before {
+                ctl.send(Cmd::AgentsSnapshot {
+                    snapshot: self.agents_snapshot(),
+                });
             }
         }
+        if let Some(before) = active_before {
+            if (self.session_id.as_str(), self.session_bound) != (before.0.as_str(), before.1) {
+                ctl.send(Cmd::ActiveSession {
+                    session_id: self.session_bound.then(|| self.session_id.clone()),
+                });
+            }
+        }
+    }
+
+    /// Identity of everything `queue_snapshot` projects, without the summary
+    /// strings: ordered prompt ids (order captures reordering) plus the
+    /// selection/edit/confirm flags. A summary edit always passes through an
+    /// `editing_id` transition, so text changes are covered too.
+    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool) {
+        (
+            self.prompt_queue.iter().map(|prompt| prompt.id).collect(),
+            self.queue_selection
+                .and_then(|index| self.prompt_queue.get(index))
+                .map(|prompt| prompt.id),
+            self.queue_edit.as_ref().map(|edit| edit.prompt_id),
+            self.queue_delete_confirming(),
+        )
+    }
+
+    /// Identity of everything `agents_snapshot` projects, without label
+    /// strings: root running bit, per-view id/status/current, the history
+    /// count, and the active/selected ids. Labels are assigned at view
+    /// creation, so they cannot change without the id set changing.
+    fn agents_fingerprint(&self) -> (String, Option<String>, bool, Vec<(String, u8, bool)>, usize) {
+        let active_id = match self.active_subagent.as_deref() {
+            Some(id) if !self.subagent_in_current_batch(id) => AGENT_HISTORY_ID.into(),
+            Some(id) => id.into(),
+            None => self.session_id.clone(),
+        };
+        let root_running = !matches!(self.state, RunState::Idle) || self.prompt_pending;
+        let views: Vec<(String, u8, bool)> = self
+            .subagents
+            .iter()
+            .map(|view| {
+                let status = if view.running {
+                    0
+                } else if view.failed {
+                    1
+                } else {
+                    2
+                };
+                (
+                    view.id.clone(),
+                    status,
+                    self.subagent_in_current_batch(&view.id),
+                )
+            })
+            .collect();
+        let history_count = self
+            .subagents
+            .iter()
+            .filter(|view| !self.subagent_in_current_batch(&view.id))
+            .count();
+        let selected_id = self.agent_selection.as_ref().and_then(|selected| {
+            (self.subagents.iter().any(|view| view.id == *selected)
+                || *selected == self.session_id
+                || (history_count > 0 && selected == AGENT_HISTORY_ID))
+                .then(|| selected.clone())
+        });
+        (active_id, selected_id, root_running, views, history_count)
     }
 
     fn queue_snapshot(&self) -> crate::bus::QueueSnapshot {
@@ -2338,14 +3337,16 @@ impl App {
             }
             AppEvent::Term(term) => self.handle_term(term, ctl),
             AppEvent::Ui(ui) => {
-                let became_idle = matches!(
-                    &ui,
-                    crate::events::UiEvent::SessionStatus { session, running: false }
-                        if session == &self.session_id
-                ) && matches!(self.state, RunState::Running);
+                let idle_session = match &ui {
+                    crate::events::UiEvent::SessionStatus {
+                        session,
+                        running: false,
+                    } if self.session_was_running(session) => Some(session.clone()),
+                    _ => None,
+                };
                 self.apply_ui(ui);
-                if became_idle {
-                    self.dispatch_next_queued(ctl);
+                if let Some(session) = idle_session {
+                    self.dispatch_session_queue(&session, ctl);
                 }
             }
             AppEvent::Rpc { method, params } => {
@@ -2380,7 +3381,11 @@ impl App {
                     match serde_json::from_value::<UiPluginCatalog>(params) {
                         Ok(catalog) if catalog.protocol == 0 => self.ui_plugins = catalog.plugins,
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("UI Plugin catalog ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "UI Plugin catalog ignored: {}",
+                            "已忽略 UI 插件目录：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -2391,7 +3396,11 @@ impl App {
                             self.pending_cordis_approvals = snapshot.approvals;
                         }
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("plugin approvals ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "plugin approvals ignored: {}",
+                            "已忽略插件授权：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -2410,7 +3419,11 @@ impl App {
                             self.plugin_commands = catalog.commands;
                         }
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("commands ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "commands ignored: {}",
+                            "已忽略命令：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -2437,7 +3450,10 @@ impl App {
                                     self.view_overlay = None;
                                     self.select_overlay = Some(select);
                                 } else {
-                                    self.show_tip("overlay ignored: invalid select");
+                                    self.show_tip(self.locale.tr(
+                                        "overlay ignored: invalid select",
+                                        "已忽略 overlay：无效的 select",
+                                    ));
                                     self.slider_overlay = None;
                                     self.select_overlay = None;
                                     self.view_overlay = None;
@@ -2465,7 +3481,10 @@ impl App {
                                 self.slider_overlay = Some(slider);
                             }
                             Some(PluginOverlay::Slider(_)) => {
-                                self.show_tip("overlay ignored: invalid slider");
+                                self.show_tip(self.locale.tr(
+                                    "overlay ignored: invalid slider",
+                                    "已忽略 overlay：无效的 slider",
+                                ));
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
                                 self.view_overlay = None;
@@ -2481,19 +3500,37 @@ impl App {
                                 self.view_overlay = Some(view);
                             }
                             Some(PluginOverlay::View(_)) => {
-                                self.show_tip("overlay ignored: invalid view");
+                                self.show_tip(self.locale.tr(
+                                    "overlay ignored: invalid view",
+                                    "已忽略 overlay：无效的 view",
+                                ));
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
                                 self.view_overlay = None;
                             }
                             None => {
+                                // The plugin's overlay closed (dispatch ack
+                                // or plugin-side close). Only compositor
+                                // surfaces go with it: a painter popup that
+                                // was parked/restored by a tab switch in the
+                                // meantime must survive the ack.
                                 self.slider_overlay = None;
                                 self.select_overlay = None;
-                                self.view_overlay = None;
+                                if self
+                                    .view_overlay
+                                    .as_ref()
+                                    .is_some_and(|view| view.notify_plugin)
+                                {
+                                    self.view_overlay = None;
+                                }
                             }
                         },
                         Ok(_) => {}
-                        Err(err) => self.show_tip(format!("overlay ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "overlay ignored: {}",
+                            "已忽略 overlay：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
@@ -2509,20 +3546,26 @@ impl App {
                             }
                         }
                         Ok(None) => {}
-                        Err(err) => self.show_tip(format!("slot ignored: {err}")),
+                        Err(err) => self.show_tip(self.locale.trf(
+                            "slot ignored: {}",
+                            "已忽略 slot：{}",
+                            &[err.to_string()],
+                        )),
                     }
                     self.needs_redraw = true;
                     return;
                 }
                 for ui in parse_notification(&method, &params) {
-                    let became_idle = matches!(
-                        &ui,
-                        crate::events::UiEvent::SessionStatus { session, running: false }
-                            if session == &self.session_id
-                    ) && matches!(self.state, RunState::Running);
+                    let idle_session = match &ui {
+                        crate::events::UiEvent::SessionStatus {
+                            session,
+                            running: false,
+                        } if self.session_was_running(session) => Some(session.clone()),
+                        _ => None,
+                    };
                     self.apply_ui(ui);
-                    if became_idle {
-                        self.dispatch_next_queued(ctl);
+                    if let Some(session) = idle_session {
+                        self.dispatch_session_queue(&session, ctl);
                     }
                 }
                 self.needs_redraw = true;
@@ -2531,22 +3574,39 @@ impl App {
                 // kept in proto's tail buffer for diagnostics; stay quiet here
             }
             AppEvent::RuntimeExited(code) => {
+                // A next prompt restarts the runtime; its fresh startup
+                // bind is again an unrequested one (see `startup_bound`).
+                self.startup_bound = false;
                 self.prompt_pending = false;
                 self.queued = 0;
                 self.prompt_queue.clear();
                 self.queue_selection = None;
                 self.queue_edit = None;
                 self.pending_steer_cells.clear();
+                for slot in &mut self.parked {
+                    // The dead runtime owned every session's delivery state,
+                    // not just the viewed one.
+                    slot.running = false;
+                    slot.prompt_pending = false;
+                    slot.prompt_queue.clear();
+                    slot.queue_selection = None;
+                    slot.queue_edit = None;
+                    slot.pending_steer_cells.clear();
+                }
                 if self.state != RunState::Idle {
                     self.state = RunState::Idle;
                     self.run_started = None;
                 }
                 if let Some(c) = code {
                     if c != 0 {
-                        self.transcript.push_notice(
-                            NoticeLevel::Warn,
-                            format!("runtime exited with code {c} — next prompt restarts it"),
-                        );
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        self.locale.trf(
+                            "runtime exited with code {} — next prompt restarts it",
+                            "运行时以退出码 {} 结束 —— 下一条提示会重启它",
+                            &[c.to_string()],
+                        ),
+                    );
                     }
                 }
                 self.needs_redraw = true;
@@ -2556,6 +3616,9 @@ impl App {
                     CtlEvent::Starting { runtime } => {
                         self.connection_error = None;
                         if runtime == "harness" {
+                            self.parked.clear();
+                            self.awaiting_binds.clear();
+                            self.startup_bound = false;
                             self.reset_session_ui();
                             self.show_banner = true;
                             self.server_info = None;
@@ -2597,7 +3660,28 @@ impl App {
                         self.state_note.clear();
                         self.transcript.push_notice(NoticeLevel::Error, error);
                     }
-                    CtlEvent::PromptQueued { .. } => {
+                    CtlEvent::PromptQueued {
+                        session_id: Some(sid),
+                        ..
+                    } => {
+                        // Per-session: only the session the prompt belongs
+                        // to settles — a background tab's prompt must not
+                        // flip the viewed tab out of Starting.
+                        if sid == self.session_id {
+                            self.prompt_pending = false;
+                            if self.state == RunState::Starting {
+                                self.state = RunState::Running;
+                            }
+                            self.state_note.clear();
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == *sid)
+                        {
+                            slot.prompt_pending = false;
+                        }
+                    }
+                    CtlEvent::PromptQueued { session_id: None, .. } => {
+                        // Legacy attach transport: no session attribution,
+                        // settle the viewed tab as before.
                         self.prompt_pending = false;
                         if self.state == RunState::Starting {
                             self.state = RunState::Running;
@@ -2608,48 +3692,145 @@ impl App {
                         message_id,
                         deferred,
                     } => {
-                        if let Some(pending) = self.pending_steer_cells.remove(&message_id) {
-                            if deferred {
-                                self.transcript.hide_cells(&pending.cells);
-                                let queued = ClientQueuedPrompt {
-                                    id: message_id,
-                                    blocks: pending.blocks,
-                                };
-                                if pending.requeue_front {
-                                    self.prompt_queue.push_front(queued);
-                                } else {
-                                    self.prompt_queue.push_back(queued);
-                                }
-                                self.queued = self.prompt_queue.len();
-                                self.show_tip(
-                                    "agent deferred Send Now — queued after the active turn",
-                                );
-                            }
-                        }
+                        self.settle_steer(message_id, deferred);
                     }
                     CtlEvent::Error(err) => {
+                        // Connection-level failure (no session context): the
+                        // notice belongs to the viewed tab. Session-scoped
+                        // failures arrive as `SessionError` instead.
                         self.prompt_pending = false;
                         self.state = RunState::Idle;
                         self.run_started = None;
                         self.transcript.push_notice(NoticeLevel::Error, err);
                         self.dispatch_next_queued(ctl);
                     }
-                    CtlEvent::CancelRequested => {
-                        self.state_note = "cancelling".into();
-                        self.transcript.cancel_open_work();
+                    CtlEvent::SessionOpFailed { session_id, message } => {
+                        if session_id == self.session_id {
+                            self.transcript.push_notice(NoticeLevel::Error, message);
+                        } else if let Some(slot) = self.parked.iter_mut()
+                            .find(|slot| slot.id == session_id)
+                        {
+                            slot.transcript.push_notice(NoticeLevel::Error, message);
+                        }
                     }
-                    CtlEvent::Interrupted => {
-                        self.prompt_pending = false;
-                        self.state = RunState::Idle;
-                        self.run_started = None;
-                        self.state_note.clear();
-                        self.transcript.cancel_open_work();
-                        self.transcript
-                            .push_notice(NoticeLevel::Warn, "interrupted — turn cancelled".into());
-                        self.dispatch_next_queued(ctl);
+                    CtlEvent::SessionError {
+                        session_id,
+                        message,
+                    } => {
+                        // A failure for one specific session (prompt,
+                        // steer, config select, …): the notice lands in that
+                        // session's own transcript — a parked tab must not
+                        // spill errors onto the viewed one. The session's
+                        // delivery state settles (its prompt, if any, is not
+                        // coming back) but its queue is left alone: an
+                        // unbound/forgotten tab must not burn queued
+                        // prompts through repeated rejections.
+                        if session_id == self.session_id {
+                            self.prompt_pending = false;
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.transcript
+                                .push_notice(NoticeLevel::Error, message);
+                        } else if let Some(slot) = self
+                            .parked
+                            .iter_mut()
+                            .find(|slot| slot.id == session_id)
+                        {
+                            slot.prompt_pending = false;
+                            slot.running = false;
+                            slot.transcript
+                                .push_notice(NoticeLevel::Error, message);
+                        }
                     }
-                    CtlEvent::Skills { skills } => {
-                        self.skills = skills;
+                    CtlEvent::BindFailed { message } => {
+                        // session/new·resume failed outright. acp completes
+                        // bind requests in order, so the FIFO head owns the
+                        // failure: drop its entry so a later bind cannot
+                        // land on the dead request, and tell the tab that
+                        // asked (it stays open and unbound — /close or
+                        // retry /new·resume).
+                        if let Some(awaiting) = self.awaiting_binds.pop_front() {
+                            if awaiting.open {
+                                let msg = self.locale.trf(
+                                    "session bind failed: {} — this tab stays open; /close it or retry /new",
+                                    "会话绑定失败：{} —— 本标签页保持打开；/close 关闭或重试 /new",
+                                    &[message.clone()],
+                                );
+                                if self.session_id == awaiting.id {
+                                    self.transcript.push_notice(NoticeLevel::Warn, msg);
+                                } else if let Some(slot) = self
+                                    .parked
+                                    .iter_mut()
+                                    .find(|slot| slot.id == awaiting.id)
+                                {
+                                    slot.transcript.push_notice(NoticeLevel::Warn, msg);
+                                }
+                            }
+                        }
+                        self.show_tip(self.locale.trf(
+                            "session bind failed: {}",
+                            "会话绑定失败：{}",
+                            &[message],
+                        ));
+                        self.needs_redraw = true;
+                    }
+                    CtlEvent::CancelRequested { session_id } => {
+                        if session_id == self.session_id {
+                            self.state_note = "cancelling".into();
+                            self.transcript.cancel_open_work();
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            slot.state_note = "cancelling".into();
+                            slot.transcript.cancel_open_work();
+                        }
+                    }
+                    CtlEvent::Interrupted { session_id } => {
+                        // One connection can run turns for several sessions;
+                        // settle whichever session the interruption names —
+                        // the viewed one, or a parked slot.
+                        if session_id == self.session_id {
+                            self.prompt_pending = false;
+                            self.state = RunState::Idle;
+                            self.run_started = None;
+                            self.state_note.clear();
+                            self.transcript.cancel_open_work();
+                            self.transcript
+                                .push_notice(
+                                    NoticeLevel::Warn,
+                                    self.locale
+                                        .tr("interrupted — turn cancelled", "已中断 —— 本轮已取消")
+                                        .into(),
+                                );
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            slot.prompt_pending = false;
+                            slot.running = false;
+                            slot.transcript.cancel_open_work();
+                            slot.transcript
+                                .push_notice(
+                                    NoticeLevel::Warn,
+                                    self.locale
+                                        .tr("interrupted — turn cancelled", "已中断 —— 本轮已取消")
+                                        .into(),
+                                );
+                        }
+                        self.dispatch_session_queue(&session_id, ctl);
+                    }
+                    CtlEvent::Skills { session_id, skills } => {
+                        let is_live = session_id
+                            .as_deref()
+                            .is_none_or(|session_id| session_id == self.session_id);
+                        if is_live {
+                            self.skills = skills;
+                        } else if let Some(session_id) = session_id.as_deref() {
+                            if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == session_id)
+                            {
+                                slot.skills = skills;
+                            }
+                        }
                     }
                     CtlEvent::StaticPlugins { plugins } => {
                         self.static_plugins = plugins;
@@ -2659,7 +3840,23 @@ impl App {
                         self.cordis_plugins = plugins;
                         self.open_cordis_plugin_picker();
                     }
-                    CtlEvent::Catalog { models, presets } => {
+                    CtlEvent::Catalog {
+                        session_id: Some(session_id),
+                        models,
+                        presets,
+                    } if session_id != self.session_id => {
+                        if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            if !presets.is_empty() {
+                                slot.presets = presets;
+                            }
+                            if !models.is_empty() {
+                                slot.models = models;
+                            }
+                        }
+                    }
+                    CtlEvent::Catalog { models, presets, .. } => {
                         if !presets.is_empty() {
                             self.last_presets = presets.clone();
                         }
@@ -2667,11 +3864,11 @@ impl App {
                             self.last_models = models.clone();
                         }
                         let mode_current = self.current_mode();
+                        let model_current = self.current_model();
+                        let model_provider = self.cfg.provider.clone();
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
                                 PickerKind::Model if !models.is_empty() => {
-                                    let current = self.cfg.model.clone();
-                                    let current_provider = self.cfg.provider.clone();
                                     picker.items = models
                                         .into_iter()
                                         .map(|m| PickerItem {
@@ -2690,9 +3887,17 @@ impl App {
                                         .items
                                         .iter()
                                         .position(|i| {
-                                            i.id == current
+                                            i.id == model_current
                                                 && i.provider.as_deref()
-                                                    == Some(current_provider.as_str())
+                                                    == Some(model_provider.as_str())
+                                        })
+                                        // Same id under an unknown provider
+                                        // still beats pinning row 0.
+                                        .or_else(|| {
+                                            picker
+                                                .items
+                                                .iter()
+                                                .position(|i| i.id == model_current)
                                         })
                                         .unwrap_or(0);
                                 }
@@ -2720,48 +3925,103 @@ impl App {
                             }
                         }
                     }
-                    CtlEvent::SessionModes { modes, current } => {
-                        if !modes.is_empty() {
-                            self.permission_choices = modes.clone();
-                        }
-                        if let Some(id) = current {
-                            self.modes.permission = Some(id);
-                        }
-                        let reported = self.modes.permission.clone();
-                        let current_id = self.current_permission().to_string();
-                        let choices = self.permission_choices.clone();
-                        if let Some(picker) = &mut self.picker {
-                            if matches!(picker.kind, PickerKind::Permission) && !choices.is_empty()
-                            {
-                                picker.items = permission_picker_items(
-                                    &choices,
-                                    reported.as_deref(),
-                                    &current_id,
-                                );
-                                picker.sel = picker
-                                    .items
-                                    .iter()
-                                    .position(|i| i.id == current_id)
-                                    .unwrap_or(0);
+                    CtlEvent::SessionModes {
+                        session_id,
+                        modes,
+                        current,
+                    } => {
+                        let is_live = match &session_id {
+                            Some(sid) => sid == &self.session_id,
+                            None => true,
+                        };
+                        if is_live {
+                            if !modes.is_empty() {
+                                self.permission_choices = modes.clone();
+                            }
+                            if let Some(id) = &current {
+                                self.modes.permission = Some(id.clone());
+                            }
+                            let reported = self.modes.permission.clone();
+                            let current_id = self.current_permission().to_string();
+                            let choices = self.permission_choices.clone();
+                            if let Some(picker) = &mut self.picker {
+                                if matches!(picker.kind, PickerKind::Permission) && !choices.is_empty()
+                                {
+                                    picker.items = permission_picker_items(
+                                        &choices,
+                                        reported.as_deref(),
+                                        &current_id,
+                                    );
+                                    picker.sel = picker
+                                        .items
+                                        .iter()
+                                        .position(|i| i.id == current_id)
+                                        .unwrap_or(0);
+                                }
+                            }
+                        } else if let Some(sid) = session_id.as_deref() {
+                            if let Some(slot) = self.parked.iter_mut().find(|s| s.id == sid) {
+                                if !modes.is_empty() {
+                                    slot.permission_choices = modes;
+                                }
+                                if let Some(id) = current {
+                                    slot.modes.permission = Some(id);
+                                }
                             }
                         }
                     }
-                    CtlEvent::Efforts { efforts, default } => {
-                        if !efforts.is_empty() {
-                            self.effort_choices = efforts.clone();
+                    CtlEvent::Efforts {
+                        session_id,
+                        efforts,
+                        default,
+                    } => {
+                        let is_live = session_id
+                            .as_deref()
+                            .is_none_or(|session_id| session_id == self.session_id);
+                        if is_live {
+                            if !efforts.is_empty() {
+                                self.effort_choices = efforts.clone();
+                            }
+                            self.open_effort_picker(efforts, default);
+                        } else if let Some(session_id) = session_id.as_deref() {
+                            if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == session_id)
+                            {
+                                if !efforts.is_empty() {
+                                    slot.effort_choices = efforts;
+                                }
+                            }
                         }
-                        self.open_effort_picker(efforts, default);
                     }
-                    CtlEvent::PresetSet { preset } => {
+                    CtlEvent::PresetSet {
+                        session_id,
+                        preset,
+                    } => {
+                        let is_live = session_id.is_empty() || session_id == self.session_id;
                         let label = self.agent_label(&preset);
-                        self.modes.agent_preset = Some(preset.clone());
-                        self.transcript.push_notice(
-                            NoticeLevel::Info,
-                            format!(
-                                "⚙ agent → {} · composes on this session's first prompt",
-                                label
-                            ),
-                        );
+                        if is_live {
+                            self.modes.agent_preset = Some(preset.clone());
+                            self.transcript.push_notice(
+                                NoticeLevel::Info,
+                                self.locale.trf(
+                                    "⚙ agent → {} · composes on this session's first prompt",
+                                    "⚙ Agent → {} · 在本会话首次输入时生效",
+                                    &[label],
+                                ),
+                            );
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|s| s.id == session_id)
+                        {
+                            slot.modes.agent_preset = Some(preset.clone());
+                            slot.transcript.push_notice(
+                                NoticeLevel::Info,
+                                self.locale.trf(
+                                    "⚙ agent → {} · composes on this session's first prompt",
+                                    "⚙ Agent → {} · 在本会话首次输入时生效",
+                                    &[label],
+                                ),
+                            );
+                        }
                     }
                     CtlEvent::TuiOpDone(desc) => {
                         if self.show_banner {
@@ -2776,7 +4036,7 @@ impl App {
                     CtlEvent::Auth(snap) => {
                         let retrying_prompt =
                             self.state == RunState::Running || self.prompt_pending;
-                        if let Some((level, text)) = snap.notice() {
+                        if let Some((level, text)) = snap.notice(self.locale) {
                             self.transcript.push_notice(level, text);
                         }
                         if snap.status == crate::acp_auth::AuthStatus::Configured {
@@ -2819,46 +4079,233 @@ impl App {
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
                         self.connection_error = None;
-                        if self.session_id != session_id {
-                            self.reset_subagent_views();
-                            self.session_model = None;
+                        // The session that just bound, for the queue dispatch
+                        // below (prompts submitted while the tab was unbound
+                        // are held in its queue — acp.rs rejects unbound ids).
+                        let mut just_bound: Option<String> = None;
+                        if !self.startup_bound && !self.awaiting_binds.is_empty() {
+                            // The unrequested startup/reconnect session/new
+                            // resolved while the user's own /new·resume is
+                            // still in flight — acp completes the startup
+                            // bind before any UI request, so this bind owns
+                            // no awaiting entry. Its tab is the parked
+                            // session that is unbound and not itself
+                            // awaiting anything; never steal the FIFO head
+                            // from the request that really owns it.
+                            self.startup_bound = true;
+                            let owner = self.parked.iter().position(|slot| {
+                                !slot.session_bound
+                                    && !self.awaiting_binds.iter().any(|e| e.id == slot.id)
+                            });
+                            match owner {
+                                Some(pidx) => {
+                                    let slot = &mut self.parked[pidx];
+                                    let old_id = slot.id.clone();
+                                    slot.id = session_id.clone();
+                                    slot.transcript.set_root_session(session_id.clone());
+                                    slot.session_bound = true;
+                                    if let Some(notice) = notice {
+                                        slot.transcript
+                                            .push_notice(NoticeLevel::Info, notice);
+                                    }
+                                    for (_, sid, _, _) in &mut self.shell_pending {
+                                        if sid == &old_id {
+                                            *sid = session_id.clone();
+                                        }
+                                    }
+                                    just_bound = Some(slot.id.clone());
+                                }
+                                None => {
+                                    if !self.session_bound
+                                        && !self.awaiting_binds.iter().any(|e| e.id == self.session_id)
+                                    {
+                                        if self.session_id != session_id {
+                                            self.reset_subagent_views();
+                                self.session_model = None;
+                                        }
+                                        let old_id = self.session_id.clone();
+                                        self.session_id = session_id.clone();
+                                        self.transcript.set_root_session(session_id.clone());
+                                        self.session_bound = true;
+                                        if let Some(notice) = notice {
+                                            self.transcript
+                                                .push_notice(NoticeLevel::Info, notice);
+                                        }
+                                        for (_, sid, _, _) in &mut self.shell_pending {
+                                            if sid == &old_id {
+                                                *sid = session_id.clone();
+                                            }
+                                        }
+                                        just_bound = Some(self.session_id.clone());
+                                    } else {
+                                        // The viewed tab is bound or awaiting its own bind:
+                                        // park this startup session as a fresh slot.
+                                        let mut slot =
+                                            SessionSlot::fresh(session_id.clone(), true);
+                                        slot.transcript.locale = self.locale;
+                                        if let Some(notice) = notice {
+                                            slot.transcript.push_notice(NoticeLevel::Info, notice);
+                                        }
+                                        just_bound = Some(session_id.clone());
+                                        self.parked.push(slot);
+                                    }
+                                }
+                            }
+                        } else if let Some(awaiting) = self.awaiting_binds.pop_front() {
+                            // The tab that asked for session/new (placeholder
+                            // id) or session/resume·load (target id) owns
+                            // this bind — the user may have switched away
+                            // while it resolved, so rebind by the awaiting
+                            // id, not by which tab happens to be live.
+                            if !awaiting.open {
+                                // The requesting tab was closed (/close)
+                                // before the bind resolved. acp already
+                                // registered the new session server-side, so
+                                // forget it and never hijack the viewed tab.
+                                ctl.send(Cmd::ForgetSession {
+                                    session_id: session_id.clone(),
+                                });
+                                self.show_tip(self.locale.trf(
+                                    "session {} bound after its tab was closed",
+                                    "会话 {} 已绑定，但对应标签页已被关闭",
+                                    &[session_id.clone()],
+                                ));
+                            } else if self.session_id == awaiting.id {
+                                let old_id = self.session_id.clone();
+                                self.session_id = session_id.clone();
+                                self.transcript.set_root_session(session_id.clone());
+                                self.session_bound = true;
+                                if let Some(notice) = notice {
+                                    self.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                for (_, sid, _, _) in &mut self.shell_pending {
+                                    if sid == &old_id || sid == &awaiting.id {
+                                        *sid = session_id.clone();
+                                    }
+                                }
+                                just_bound = Some(self.session_id.clone());
+                            } else if let Some(slot) =
+                                self.parked.iter_mut().find(|slot| slot.id == awaiting.id)
+                            {
+                                let old_id = slot.id.clone();
+                                slot.id = session_id.clone();
+                                slot.transcript.set_root_session(session_id.clone());
+                                slot.session_bound = true;
+                                if let Some(notice) = notice {
+                                    slot.transcript.push_notice(NoticeLevel::Info, notice);
+                                }
+                                for (_, sid, _, _) in &mut self.shell_pending {
+                                    if sid == &old_id || sid == &awaiting.id {
+                                        *sid = session_id.clone();
+                                    }
+                                }
+                                just_bound = Some(slot.id.clone());
+                            } else {
+                                self.show_tip(self.locale.trf(
+                                    "session {} bound after its tab was closed",
+                                    "会话 {} 已绑定，但对应标签页已被关闭",
+                                    &[session_id.clone()],
+                                ));
+                            }
+                        } else if let Some(slot) =
+                            self.parked.iter_mut().find(|slot| slot.id == session_id)
+                        {
+                            // A session/load for a parked tab resolved.
+                            slot.session_bound = true;
+                            if let Some(notice) = notice {
+                                slot.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            just_bound = Some(slot.id.clone());
+                        } else {
+                            // Startup / reconnect: rebind the viewed session.
+                            self.startup_bound = true;
+                            if self.session_id != session_id {
+                                self.reset_subagent_views();
+                                self.session_model = None;
+                            }
+                            let old_id = self.session_id.clone();
+                            self.session_id = session_id.clone();
+                            self.transcript.set_root_session(session_id.clone());
+                            self.session_bound = true;
+                            if let Some(notice) = notice {
+                                self.transcript.push_notice(NoticeLevel::Info, notice);
+                            }
+                            for (_, sid, _, _) in &mut self.shell_pending {
+                                if sid == &old_id {
+                                    *sid = session_id.clone();
+                                }
+                            }
+                            just_bound = Some(self.session_id.clone());
                         }
-                        self.session_id = session_id.clone();
-                        self.transcript.set_root_session(session_id);
-                        self.session_bound = true;
-                        if let Some(notice) = notice {
-                            self.transcript.push_notice(NoticeLevel::Info, notice);
+                        if let Some(bound) = just_bound {
+                            self.dispatch_session_queue(&bound, ctl);
+                            ctl.send(Cmd::FetchSkills { session_id: bound });
                         }
-                        ctl.send(Cmd::FetchSkills);
                     }
-                    CtlEvent::SessionList { sessions, prefix } => {
-                        self.on_acp_session_list(sessions, prefix, ctl);
+                    CtlEvent::SessionList {
+                        requester_session_id,
+                        sessions,
+                        prefix,
+                        limit,
+                    } => {
+                        self.on_acp_session_list(
+                            requester_session_id,
+                            sessions,
+                            prefix,
+                            limit,
+                            ctl,
+                        );
                     }
-                    CtlEvent::SessionListUnavailable { prefix, error } => {
-                        self.on_acp_session_list_unavailable(prefix, error, ctl);
+                    CtlEvent::SessionListUnavailable {
+                        requester_session_id,
+                        prefix,
+                        limit,
+                        error,
+                    } => {
+                        self.on_acp_session_list_unavailable(
+                            requester_session_id,
+                            prefix,
+                            limit,
+                            error,
+                            ctl,
+                        );
                     }
                 }
                 self.needs_redraw = true;
             }
             AppEvent::PermissionAsk {
+                session_id,
                 title,
                 options,
                 reply,
             } => {
-                self.open_permission_ask(title, options, reply);
+                self.open_permission_ask(&session_id, title, options, reply);
             }
-            AppEvent::ElicitationAsk { form, reply } => {
-                self.elicitation_ask = Some(ElicitationAskOverlay {
-                    form: crate::elicitation::ElicitationFormState::new(form),
-                    scroll: 0,
-                    reply: Some(reply),
-                });
-                self.needs_redraw = true;
+            AppEvent::ElicitationAsk {
+                session_id,
+                form,
+                reply,
+            } => {
+                self.open_elicitation_ask(session_id.as_deref(), form, reply);
             }
             AppEvent::ShellDone { id, code, output } => {
-                if let Some(pos) = self.shell_pending.iter().position(|(sid, _)| *sid == id) {
-                    let (_, cell) = self.shell_pending.remove(pos);
-                    self.transcript.finish_shell(cell, code, output);
+                if let Some(pos) = self
+                    .shell_pending
+                    .iter()
+                    .position(|(sid, _, _, _)| *sid == id)
+                {
+                    let (_, session, cell, gen) = self.shell_pending.remove(pos);
+                    // The shell is workspace-wide but its cell lives in the
+                    // transcript of the session that ran it — the user may
+                    // have switched tabs while the command ran. The gen
+                    // guard drops results for cells a /clear removed.
+                    if session == self.session_id {
+                        self.transcript.finish_shell(cell, code, output, gen);
+                    } else if let Some(slot) =
+                        self.parked.iter_mut().find(|slot| slot.id == session)
+                    {
+                        slot.transcript.finish_shell(cell, code, output, gen);
+                    }
                     self.needs_redraw = true;
                 }
                 // `!git checkout …` in the session shell moves the branch —
@@ -2880,24 +4327,42 @@ impl App {
         }
 
         if let E::SubagentStarted { parent, child } = &ui {
+            if parent != &self.session_id && !self.subagents.iter().any(|view| view.id == *parent)
+            {
+                // A parked session's subagent tree: register the child in
+                // its slot and fold the event into the slot's transcripts.
+                for slot in &mut self.parked {
+                    if slot.id == *parent || slot.subagents.iter().any(|v| v.id == *parent) {
+                        // A fresh turn starts a new batch, exactly like the
+                        // live path below — background sessions must keep
+                        // their current/history grouping current.
+                        if slot.next_subagent_starts_batch {
+                            slot.current_subagents.clear();
+                            slot.next_subagent_starts_batch = false;
+                        }
+                        slot.current_subagents.insert(child.clone());
+                        upsert_subagent_view(&mut slot.subagents, parent, child, self.locale);
+                        if slot.id == *parent {
+                            slot.transcript.apply(ui);
+                        } else if let Some(view) =
+                            slot.subagents.iter_mut().find(|view| view.id == *parent)
+                        {
+                            view.transcript.apply(ui);
+                        }
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // Unknown parent: a session this client never opened (or
+                // already closed) — drop it, never leak it into live state.
+                return;
+            }
             if self.next_subagent_starts_batch {
                 self.current_subagents.clear();
                 self.next_subagent_starts_batch = false;
             }
             self.current_subagents.insert(child.clone());
-            if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *child) {
-                view.running = true;
-                view.failed = false;
-            } else {
-                self.subagents.push(SubagentView {
-                    id: child.clone(),
-                    parent: parent.clone(),
-                    label: format!("subagent {}", self.subagents.len() + 1),
-                    running: true,
-                    failed: false,
-                    transcript: Transcript::new(child.clone()),
-                });
-            }
+            upsert_subagent_view(&mut self.subagents, parent, child, self.locale);
             if parent == &self.session_id {
                 self.transcript.apply(ui);
             } else if let Some(view) = self.subagents.iter_mut().find(|view| view.id == *parent) {
@@ -2908,6 +4373,34 @@ impl App {
         }
 
         if let E::SubagentFinished { child, failed } = &ui {
+            if !self.subagents.iter().any(|view| view.id == *child) {
+                // A parked session's subagent: settle it inside its slot.
+                for slot in &mut self.parked {
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == *child) {
+                        view.running = false;
+                        view.failed = *failed;
+                        let parent = view.parent.clone();
+                        if parent == slot.id {
+                            slot.transcript.apply(ui);
+                        } else if let Some(pview) =
+                            slot.subagents.iter_mut().find(|view| view.id == parent)
+                        {
+                            pview.transcript.apply(ui);
+                        }
+                        // Issue #80 parity: a parked session's rail also
+                        // auto-closes once every subagent task has ended.
+                        if slot.agent_selection.is_some()
+                            && !slot.subagents.iter().any(|view| view.running || view.failed)
+                        {
+                            slot.agent_selection = None;
+                        }
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // Unknown child — drop (same guard as SubagentStarted).
+                return;
+            }
             let parent = self
                 .subagents
                 .iter_mut()
@@ -2944,6 +4437,22 @@ impl App {
                     self.needs_redraw = true;
                     return;
                 }
+                for slot in &mut self.parked {
+                    if slot.id == session {
+                        Self::apply_to_slot(slot, ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                    if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == session) {
+                        view.transcript.apply(ui);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                // A session this client never opened (or already closed):
+                // drop the event. Foreign-session facts must never fall
+                // through into the live transcript (issue #94 leak guard).
+                return;
             }
         }
 
@@ -3055,6 +4564,42 @@ impl App {
         }
     }
 
+    /// Cancel compositor-owned modals before a session switch, mirroring
+    /// the Esc paths of `handle_view_key` / `handle_select_key` /
+    /// `handle_slider_key` so the plugin releases its single-overlay slot
+    /// (its `current` clears and future overlay opens work again).
+    /// Painter-owned views (`notify_plugin == false`, i.e. `/help`, `/keys`,
+    /// `/session`, painter `/status`) are left alone — they park with their
+    /// session inside the switch and resurface on return.
+    fn cancel_plugin_overlays(&mut self, ctl: &Controller) {
+        if let Some(view) = self.view_overlay.take() {
+            if view.notify_plugin {
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: view.id,
+                    event: "cancel".into(),
+                    value: None,
+                });
+            } else {
+                self.view_overlay = Some(view);
+            }
+        }
+        if let Some(slider) = self.slider_overlay.take() {
+            ctl.send(Cmd::PluginOverlayEvent {
+                id: slider.id,
+                event: "cancel".into(),
+                value: Some(serde_json::json!(slider.value)),
+            });
+        }
+        if let Some(select) = self.select_overlay.take() {
+            let value = select.options[select.sel].value.clone();
+            ctl.send(Cmd::PluginOverlayEvent {
+                id: select.id,
+                event: "cancel".into(),
+                value: Some(serde_json::json!(value)),
+            });
+        }
+    }
+
     /// grok-build mouse semantics, scaled down: wheel scrolls; left-drag
     /// selects with a live highlight (auto-scrolling at the pane edges) and
     /// copies on release; double-click selects & copies a word. Shift+drag
@@ -3064,6 +4609,8 @@ impl App {
             MouseEventKind::ScrollUp => {
                 if self.elicitation_ask.is_some() {
                     self.elicitation_scroll_by(-3);
+                } else if self.permission_ask.is_some() {
+                    self.permission_ask_scroll_by(-1);
                 } else if let Some(tree) = &mut self.plugin_tree {
                     tree.state.scroll_up(3);
                 } else if self.view_overlay.is_some() {
@@ -3071,6 +4618,8 @@ impl App {
                 } else if self.select_overlay.is_some() {
                     self.handle_select_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), ctl);
                     self.needs_redraw = true;
+                } else if self.picker.is_some() {
+                    self.picker_scroll_by(-1);
                 } else {
                     self.mouse_scroll(3, mouse.column, mouse.row);
                 }
@@ -3078,6 +4627,8 @@ impl App {
             MouseEventKind::ScrollDown => {
                 if self.elicitation_ask.is_some() {
                     self.elicitation_scroll_by(3);
+                } else if self.permission_ask.is_some() {
+                    self.permission_ask_scroll_by(1);
                 } else if let Some(tree) = &mut self.plugin_tree {
                     tree.state.scroll_down(3);
                 } else if self.view_overlay.is_some() {
@@ -3085,12 +4636,43 @@ impl App {
                 } else if self.select_overlay.is_some() {
                     self.handle_select_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), ctl);
                     self.needs_redraw = true;
+                } else if self.picker.is_some() {
+                    self.picker_scroll_by(1);
                 } else {
                     self.mouse_scroll(-3, mouse.column, mouse.row);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
+                // Session tab strip (issue #94): left-click a tab switches.
+                if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
+                    self.switch_view_to_tab(tab, ctl);
+                    // Clicking the strip's outermost visible tab also
+                    // nudges the strip so its neighbor appears — repeated
+                    // edge clicks walk the mouse through every session
+                    // tab, left or right. `switch_view_to_tab` already
+                    // released overlays etc.; only the strip moves here.
+                    let first = self
+                        .tab_rects
+                        .iter()
+                        .map(|(_, idx)| *idx)
+                        .min()
+                        .unwrap_or(tab);
+                    let last = self
+                        .tab_rects
+                        .iter()
+                        .map(|(_, idx)| *idx)
+                        .max()
+                        .unwrap_or(tab);
+                    if tab == first && tab > 0 {
+                        self.tab_strip_offset = self.tab_strip_offset.saturating_sub(1);
+                        self.needs_redraw = true;
+                    } else if tab == last && tab + 1 < self.session_tab_count() {
+                        self.tab_strip_offset = self.tab_strip_offset.saturating_add(1);
+                        self.needs_redraw = true;
+                    }
+                    return;
+                }
                 if let Some(action) = self
                     .slot_actions
                     .iter()
@@ -3121,6 +4703,21 @@ impl App {
                     self.last_click = None;
                     self.input_selecting = false;
                     self.toggle_tool(ci);
+                    return;
+                }
+                // The ↥ prompt-jump button (issue #103) wins over caret
+                // placement: each click walks the chat view to the previous
+                // user prompt (newest first, wrapping at the oldest).
+                if self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.prompt_jump_btn_hit(mouse.column, mouse.row)
+                {
+                    self.sel = None;
+                    self.selecting = false;
+                    self.last_click = None;
+                    self.input_selecting = false;
+                    self.input_sel = None;
+                    self.jump_to_user_prompt();
                     return;
                 }
                 // The mouse-only expand button (issue #92) wins over caret
@@ -3229,6 +4826,11 @@ impl App {
                     self.hover_expand_btn = over_btn;
                     self.needs_redraw = true;
                 }
+                let over_jump = self.prompt_jump_btn_hit(mouse.column, mouse.row);
+                if over_jump != self.hover_prompt_jump_btn {
+                    self.hover_prompt_jump_btn = over_jump;
+                    self.needs_redraw = true;
+                }
                 let hover = self.chip_at(mouse.column, mouse.row);
                 if hover != self.hover_att {
                     self.hover_att = hover;
@@ -3275,7 +4877,7 @@ impl App {
         };
         self.input.delete_char_range(start, end);
         if let Some(att) = self.pending_images.remove(idx) {
-            self.show_tip(format!("removed {}", att.name));
+            self.show_tip(self.locale.trf("removed {}", "已移除 {}", &[att.name.clone()]));
         }
         true
     }
@@ -3313,6 +4915,83 @@ impl App {
         })
     }
 
+    /// Hit-test the mouse-only `↥` user-prompt jump button (issue #103).
+    fn prompt_jump_btn_hit(&self, col: u16, row: u16) -> bool {
+        self.prompt_jump_btn.is_some_and(|r| {
+            col >= r.x
+                && col < r.x.saturating_add(r.width)
+                && row >= r.y
+                && row < r.y.saturating_add(r.height)
+        })
+    }
+
+    /// `↥` click (issue #103): jump the chat view to a user prompt. The
+    /// first click goes to the newest prompt, each further click walks one
+    /// prompt back, and the oldest wraps to the newest again. The last
+    /// target is remembered in memory only (never persisted) and rides
+    /// across clicks, so jumping resumes where the previous jump stopped.
+    fn jump_to_user_prompt(&mut self) {
+        let area = self.chat_view.area;
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.theme;
+        let spinner = self.spinner();
+        let layout = self.transcript.layout(
+            &theme,
+            self.tone_mode,
+            area.width,
+            spinner,
+            crate::pet::kitty_supported(),
+        );
+        if layout.users.is_empty() {
+            self.show_tip(self.locale.tr(
+                "no user prompts yet — ↥ finds them once you send one",
+                "还没有用户输入 —— 发送后 ↥ 即可跳转",
+            ));
+            return;
+        }
+        // The running indicator rides as one extra tail line in draw_chat;
+        // include it so the anchored viewport matches the next frame.
+        let total = layout.lines.len()
+            + usize::from(matches!(self.state, RunState::Starting | RunState::Running));
+        let h = area.height as usize;
+        let max_scroll = total.saturating_sub(h);
+        let target = match self
+            .prompt_jump_cell
+            .and_then(|cell| layout.users.iter().position(|p| p.cell == cell))
+        {
+            // A previous jump: continue walking backward from it…
+            Some(rank) if rank > 0 => layout.users[rank - 1],
+            // …and the oldest prompt wraps back to the newest.
+            Some(_) => layout.users[layout.users.len() - 1],
+            // No previous jump (fresh session, tab switch, or the target
+            // cell is gone): start at the newest prompt.
+            None => layout.users[layout.users.len() - 1],
+        };
+        let from_newest = layout
+            .users
+            .iter()
+            .rposition(|p| p.cell == target.cell)
+            .map(|rank| layout.users.len() - rank)
+            .unwrap_or(1);
+        self.prompt_jump_cell = Some(target.cell);
+        // Anchor the prompt's first line to the top of the chat pane and
+        // flash its rows for a few seconds (issue #103).
+        let start = target.line.min(max_scroll);
+        let end = start.saturating_add(h).min(total);
+        let scroll_up = total.saturating_sub(end);
+        self.chat_view.manual_top = (scroll_up > 0).then_some(start);
+        self.scroll_up = scroll_up;
+        self.prompt_flash = Some((target.cell, Instant::now() + PROMPT_FLASH_TTL));
+        self.needs_redraw = true;
+        self.show_tip(self.locale.trf(
+            "↥ user prompt {k}/{n} · newest first",
+            "↥ 用户输入 {k}/{n} · 从最新往前",
+            &[from_newest.to_string(), layout.users.len().to_string()],
+        ));
+    }
+
     /// Hit-test a screen cell against the inline chips drawn this frame.
     fn chip_at(&self, col: u16, row: u16) -> Option<usize> {
         self.att_chips
@@ -3337,8 +5016,11 @@ impl App {
         {
             return None;
         }
+        // The snapshot covers only the viewport: clamp the screen row to it
+        // (content shorter than the pane) — absolute line = top + rel.
+        let rel = ((row - a.y) as usize).min(self.chat_view.lines.len() - 1);
         Some(SelPoint {
-            line: (self.chat_view.top + (row - a.y) as usize).min(self.chat_view.lines.len() - 1),
+            line: self.chat_view.top + rel,
             col: (col - a.x) as usize,
         })
     }
@@ -3356,7 +5038,7 @@ impl App {
     /// The transcript cell that owns the line under a screen cell, if any.
     fn tool_at(&self, col: u16, row: u16) -> Option<usize> {
         let p = self.chat_hit(col, row)?;
-        self.chat_view.owners.get(p.line).copied().flatten()
+        self.chat_view.line_owner(p.line)
     }
 
     /// Mouse wheel always scrolls the conversation, including over tool cards.
@@ -3392,6 +5074,44 @@ impl App {
         }
     }
 
+    /// Wheel-scroll the open picker — the `/resume` session list, `/model`,
+    /// `/mode`, … One notch moves the selection exactly like one ↑/↓ press
+    /// (the highlight sweeps through a static window; the window itself only
+    /// scrolls once the selection leaves it — see `draw_model_picker`).
+    /// Steps clamp at both ends; only the arrows wrap, so an overscrolled
+    /// notch never teleports the highlight to the list tail.
+    fn picker_scroll_by(&mut self, delta: i64) {
+        let Some(picker) = &mut self.picker else { return };
+        let last = picker.items.len().saturating_sub(1);
+        if delta < 0 {
+            picker.sel = picker
+                .sel
+                .saturating_sub(delta.unsigned_abs() as usize)
+                .min(last);
+        } else {
+            picker.sel = picker.sel.saturating_add(delta as usize).min(last);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Wheel over an ACP permission ask (which floats above host pickers)
+    /// moves its highlight, mirroring the ↑/↓ keys and the modal priority
+    /// of `handle_key` — an ask on top of the `/resume` picker must not
+    /// scroll the picker underneath it.
+    fn permission_ask_scroll_by(&mut self, delta: i64) {
+        let Some(ask) = &mut self.permission_ask else { return };
+        let last = ask.options.len().saturating_sub(1);
+        if delta < 0 {
+            ask.sel = ask
+                .sel
+                .saturating_sub(delta.unsigned_abs() as usize)
+                .min(last);
+        } else {
+            ask.sel = ask.sel.saturating_add(delta as usize).min(last);
+        }
+        self.needs_redraw = true;
+    }
+
     /// Toggle a tool between its collapsed viewport and full expansion.
     fn toggle_tool(&mut self, ci: usize) {
         let label = {
@@ -3405,7 +5125,11 @@ impl App {
                 "collapsed"
             }
         };
-        self.show_tip(format!("{label} tool output · click toggles"));
+        self.show_tip(self.locale.trf(
+            "{} tool output · click toggles",
+            "{} 工具输出 · 点击切换展开",
+            &[label.into()],
+        ));
         self.needs_redraw = true;
     }
 
@@ -3430,9 +5154,16 @@ impl App {
     fn copy_text(&mut self, text: &str) {
         let chars = text.chars().count();
         if crate::clipboard::copy(text) {
-            self.show_tip(format!("✓ copied {chars} chars — esc clears the highlight"));
+            self.show_tip(self.locale.trf(
+                "✓ copied {} chars — esc clears the highlight",
+                "✓ 已复制 {} 个字符 —— esc 清除高亮",
+                &[chars.to_string()],
+            ));
         } else {
-            self.show_tip("copy failed — hold shift and drag for the terminal's native selection");
+            self.show_tip(self.locale.tr(
+                "copy failed — hold shift and drag for the terminal's native selection",
+                "复制失败 —— 按住 shift 拖动可使用终端原生选择",
+            ));
         }
     }
 
@@ -3514,19 +5245,28 @@ impl App {
     }
 
     /// Extract the selected text from the layout snapshot: cell-range slices
-    /// per line, trailing whitespace trimmed, joined with newlines.
+    /// per line, trailing whitespace trimmed, joined with newlines. The
+    /// snapshot is viewport-sized: a selection anchored above/below what the
+    /// frame showed (stale after scrolling) copies its visible part.
     pub fn selection_text(&self, sel: Selection) -> String {
         let lines = &self.chat_view.lines;
         if lines.is_empty() {
             return String::new();
         }
+        let top = self.chat_view.top;
         let (s, e) = sel.ordered();
-        let last = lines.len() - 1;
-        let (sl, el) = (s.line.min(last), e.line.min(last));
-        let mut out = Vec::with_capacity(el - sl + 1);
-        for (li, text) in lines.iter().enumerate().take(el + 1).skip(sl) {
-            let c0 = if li == sl { s.col } else { 0 };
-            let c1 = if li == el { e.col + 1 } else { usize::MAX };
+        if e.line < top {
+            return String::new(); // selection entirely above the viewport
+        }
+        let first = s.line.saturating_sub(top);
+        let last = (e.line - top).min(lines.len() - 1);
+        if first > last {
+            return String::new(); // starts below the captured viewport
+        }
+        let mut out = Vec::with_capacity(last - first + 1);
+        for (li, text) in lines.iter().enumerate().take(last + 1).skip(first) {
+            let c0 = if li + top == s.line { s.col } else { 0 };
+            let c1 = if li + top == e.line { e.col + 1 } else { usize::MAX };
             out.push(slice_by_cells(text, c0, c1).trim_end().to_string());
         }
         out.join("\n")
@@ -3535,7 +5275,7 @@ impl App {
     /// Double-click: select the whitespace-delimited word under the pointer
     /// and copy it right away (grok's word select & copy).
     fn select_word_at(&mut self, p: SelPoint) {
-        let Some(line) = self.chat_view.lines.get(p.line) else {
+        let Some(line) = self.chat_view.line_text(p.line) else {
             return;
         };
         let Some((col, width, word)) = word_span(line, p.col) else {
@@ -3598,6 +5338,7 @@ impl App {
             .unwrap_or_else(|| serde_json::json!({}));
         current["language"] = serde_json::json!(self.locale);
         current["themeMode"] = serde_json::json!(self.theme.mode.as_str());
+        current["markdownTone"] = serde_json::json!(self.tone_mode.as_str());
         if let Ok(text) = serde_json::to_string_pretty(&current) {
             let _ = std::fs::write(path, text);
         }
@@ -3616,6 +5357,18 @@ impl App {
             return;
         };
         self.locale = next;
+        // New notices from every transcript (live, parked, subagent views)
+        // render in the switched language; cells already pushed keep theirs.
+        self.transcript.locale = next;
+        for slot in &mut self.parked {
+            slot.transcript.locale = next;
+            for view in &mut slot.subagents {
+                view.transcript.locale = next;
+            }
+        }
+        for view in &mut self.subagents {
+            view.transcript.locale = next;
+        }
         self.save_settings();
         self.show_tip(match next {
             Locale::En => "Language switched to English",
@@ -3631,8 +5384,7 @@ impl App {
         // viewport from the top of scrollback to just above the tail).
         let cur = if self.scroll_up == usize::MAX {
             self.chat_view
-                .lines
-                .len()
+                .total
                 .saturating_sub(self.chat_view.area.height as usize) as i64
         } else {
             self.scroll_up as i64
@@ -3854,22 +5606,22 @@ impl App {
         // DSH_TUI_KEYDEBUG=1: surface exactly what the terminal delivered
         // (after CG rescue) in the tip row — kills keybinding mysteries.
         if self.key_debug {
-            self.show_tip(format!("key: {:?} + {:?}", key.modifiers, key.code));
+            self.show_tip(self.locale.trf(
+                "key: {} + {}",
+                "按键：{} + {}",
+                &[
+                    format!("{:?}", key.modifiers),
+                    format!("{:?}", key.code),
+                ],
+            ));
         }
 
-        // Vim mode intercepts plain keys while it is active; overlays and
-        // forms keep their own key handling.
-        if self.vim.is_active()
-            && self.elicitation_ask.is_none()
-            && self.queue_edit.is_none()
-            && !self.slash_completion_open()
-        {
-            if self.vim.handle_key(&key, &mut self.input) {
-                self.reconcile_attachments();
-                self.refresh_file_menu();
-                return;
-            }
-        }
+        // Vim mode intercepts plain keys while it is active — but only
+        // once every modal has had its chance: overlays and forms keep
+        // their own key handling (the intercept therefore lives after the
+        // modal blocks, so a vim Insert-mode Esc cancels the ask/picker
+        // instead of toggling vim, and normal-mode letters never land in
+        // a hidden composer while a modal is up).
 
         if key.modifiers == KeyModifiers::ALT && !self.pending_cordis_approvals.is_empty() {
             let decision = match key.code {
@@ -3969,6 +5721,20 @@ impl App {
             return;
         }
 
+        // Vim mode: plain keys become vim commands, but only with no
+        // modal above (see the note at the top of this function).
+        if self.vim.is_active()
+            && self.elicitation_ask.is_none()
+            && self.queue_edit.is_none()
+            && !self.slash_completion_open()
+        {
+            if self.vim.handle_key(&key, &mut self.input) {
+                self.reconcile_attachments();
+                self.refresh_file_menu();
+                return;
+            }
+        }
+
         // The @file browser owns its navigation keys while open; everything
         // else falls through to normal editing (which re-syncs the browser
         // through `refresh_file_menu`). Enter settles, Tab drills into a
@@ -4046,7 +5812,7 @@ impl App {
                 }
                 (KeyCode::Esc, KeyModifiers::NONE) => {
                     self.queue_selection = None;
-                    self.show_tip("queue selection closed");
+                    self.show_tip(self.locale.tr("queue selection closed", "队列选择已关闭"));
                     if matches!(self.state, RunState::Idle) {
                         self.dispatch_next_queued(ctl);
                     }
@@ -4064,7 +5830,10 @@ impl App {
                 edit.delete_confirm = true;
             }
             self.slash_completion_dismissed = true;
-            self.show_tip("delete queued prompt? · enter confirm · esc back");
+            self.show_tip(self.locale.tr(
+                "delete queued prompt? · enter confirm · esc back",
+                "删除这条排队消息？· enter 确认 · esc 返回",
+            ));
             return;
         }
 
@@ -4276,7 +6045,7 @@ impl App {
         match action {
             Action::Insert(ch) => {
                 self.input.insert_char(ch);
-                self.slash_sel = 0;
+                self.snap_slash_sel();
             }
             Action::Newline => {
                 self.input.insert_newline();
@@ -4315,6 +6084,7 @@ impl App {
                             .clone()
                             .unwrap_or_else(|| format!("/{} ", entry.name)),
                     );
+                    self.snap_slash_sel();
                 }
             }
             Action::Esc => self.handle_esc(ctl),
@@ -4323,8 +6093,10 @@ impl App {
             Action::ClearScrollback => {
                 self.transcript.clear();
                 self.sel = None;
-                self.transcript
-                    .push_notice(NoticeLevel::Info, "scrollback cleared".into());
+                    self.transcript.push_notice(
+                        NoticeLevel::Info,
+                        self.locale.tr("scrollback cleared", "滚动区已清空").into(),
+                    );
             }
             Action::ToggleTheme => {
                 self.toggle_theme_mode();
@@ -4332,9 +6104,11 @@ impl App {
             Action::ToggleExpandAll => {
                 self.transcript.expand_all = !self.transcript.expand_all;
                 self.show_tip(if self.transcript.expand_all {
-                    "expanded all thoughts and tool results"
+                    self.locale
+                        .tr("expanded all thoughts and tool results", "已展开全部思考与工具输出")
                 } else {
-                    "collapsed all thoughts and tool results"
+                    self.locale
+                        .tr("collapsed all thoughts and tool results", "已折叠全部思考与工具输出")
                 });
             }
             Action::SendNow => self.send_now(ctl),
@@ -4425,7 +6199,10 @@ impl App {
                         self.input.cut_selection_to_yank();
                         self.copy_text(&text);
                     } else {
-                        self.show_tip("nothing to cut — select with shift+arrows");
+                        self.show_tip(self.locale.tr(
+                        "nothing to cut — select with shift+arrows",
+                        "无可剪切 —— 用 shift+方向键先选中文本",
+                    ));
                     }
                 } else if let Some((a, b)) = self.input_selection_range() {
                     let text = self.input.chars_between(a, b);
@@ -4434,10 +6211,16 @@ impl App {
                         self.input_sel = None;
                         self.copy_text(&text);
                     } else {
-                        self.show_tip("nothing to cut — select with shift+arrows");
+                        self.show_tip(self.locale.tr(
+                        "nothing to cut — select with shift+arrows",
+                        "无可剪切 —— 用 shift+方向键先选中文本",
+                    ));
                     }
                 } else {
-                    self.show_tip("nothing to cut — select with shift+arrows");
+                    self.show_tip(self.locale.tr(
+                        "nothing to cut — select with shift+arrows",
+                        "无可剪切 —— 用 shift+方向键先选中文本",
+                    ));
                 }
             }
         }
@@ -4526,19 +6309,109 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Route an incoming ACP permission ask to the session that owns it:
+    /// the live view when the owning tab is on screen, otherwise the
+    /// owning parked slot (the ask waits there and its tab is badged until
+    /// the user returns). An ask whose session the tab model does not know
+    /// falls back to the live view rather than silently cancelling the
+    /// agent's tool call. Dropping an unanswered overlay cancels it.
     fn open_permission_ask(
         &mut self,
+        session_id: &str,
         title: String,
         options: Vec<PermissionAskOption>,
         reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
     ) {
+        // acp_fs's builtin write-outside ask is authored in English; its
+        // known strings localize here at render time. Anything else (plugin
+        // and host asks) passes through untouched.
+        let title = match title
+            .strip_prefix("write ")
+            .and_then(|rest| rest.strip_suffix(" · outside workspace"))
+        {
+            Some(path) => self.locale.trf(
+                "write {} · outside workspace",
+                "写入 {} · 工作区外",
+                &[path.into()],
+            ),
+            None => title,
+        };
+        let mut options = options;
+        for option in &mut options {
+            match (option.option_id.as_str(), option.name.as_str()) {
+                ("deny", "Deny") => option.name = self.locale.tr("Deny", "拒绝").into(),
+                ("allow", "Allow write") => {
+                    option.name = self.locale.tr("Allow write", "允许写入").into();
+                }
+                _ => {}
+            }
+        }
         let sel = permission_ask_default_sel(&options);
-        self.permission_ask = Some(PermissionAskOverlay {
+        let overlay = PermissionAskOverlay {
             title,
             sel,
             options,
             reply: Some(reply),
-        });
+        };
+        let belongs_to_live = session_id == self.session_id
+            || self.subagents.iter().any(|v| v.id == session_id);
+        if belongs_to_live {
+            self.permission_ask = Some(overlay);
+        } else if let Some(slot) = self
+            .parked
+            .iter_mut()
+            .find(|slot| slot.id == session_id || slot.subagents.iter().any(|v| v.id == session_id))
+        {
+            // A parked session asked while out of view: keep the ask on its
+            // tab — it must not float over the tab on screen.
+            slot.permission_ask = Some(overlay);
+        } else {
+            self.show_tip(self.locale.tr(
+                "permission ask from an unknown session — shown here",
+                "未知会话的权限请求 —— 在此显示",
+            ));
+            self.permission_ask = Some(overlay);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Route an ACP elicitation form like [`Self::open_permission_ask`].
+    /// `None` sessions are request-scoped elicitations (auth/config phase)
+    /// with no tab to belong to — they surface on the live view.
+    fn open_elicitation_ask(
+        &mut self,
+        session_id: Option<&str>,
+        form: crate::elicitation::ElicitationForm,
+        reply: tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>,
+    ) {
+        let mut form_state = crate::elicitation::ElicitationFormState::new(form);
+        form_state.locale = self.locale;
+        let overlay = ElicitationAskOverlay {
+            form: form_state,
+            scroll: 0,
+            reply: Some(reply),
+        };
+        let for_live = match session_id {
+            None => true,
+            Some(sid) => sid == self.session_id || self.subagents.iter().any(|v| v.id == sid),
+        };
+        if for_live {
+            self.elicitation_ask = Some(overlay);
+        } else if let Some(slot) = self
+            .parked
+            .iter_mut()
+            .find(|slot| {
+                session_id.is_some_and(|sid| slot.id == sid || slot.subagents.iter().any(|v| v.id == sid))
+            })
+        {
+            slot.elicitation_ask = Some(overlay);
+        } else {
+            self.show_tip(self.locale.tr(
+                "elicitation from an unknown session — shown here",
+                "未知会话的表单请求 —— 在此显示",
+            ));
+            self.elicitation_ask = Some(overlay);
+        }
         self.needs_redraw = true;
     }
 
@@ -4619,8 +6492,14 @@ impl App {
                             model: None,
                             effort: Some(effort.clone()),
                         });
-                        self.transcript
-                            .push_notice(NoticeLevel::Info, format!("reasoning effort → {effort}"));
+                        self.transcript.push_notice(
+                            NoticeLevel::Info,
+                            self.locale.trf(
+                                "reasoning effort → {}",
+                                "推理强度 → {}",
+                                &[effort.clone()],
+                            ),
+                        );
                     }
                     PickerKind::Auth => self.start_auth(&item.id, ctl),
                     PickerKind::CordisPlugin => {
@@ -4639,7 +6518,11 @@ impl App {
                             self.open_cordis_approval_picker(request_id.clone());
                         } else if let Some((plugin_id, status, _)) = action {
                             if matches!(status.as_str(), "starting-host" | "client-pending") {
-                                self.show_tip(format!("plugin {plugin_id} is already starting"));
+                                self.show_tip(self.locale.trf(
+                                    "plugin {} is already starting",
+                                    "插件 {} 已在启动中",
+                                    &[plugin_id],
+                                ));
                                 return;
                             }
                             let enabled = !matches!(status.as_str(), "running" | "waiting");
@@ -4649,9 +6532,17 @@ impl App {
                                 enabled,
                             });
                             self.show_tip(if enabled {
-                                format!("restoring plugin {plugin_id}…")
+                                self.locale.trf(
+                                    "restoring plugin {}…",
+                                    "正在恢复插件 {}…",
+                                    &[plugin_id.clone()],
+                                )
                             } else {
-                                format!("stopping plugin {plugin_id}…")
+                                self.locale.trf(
+                                    "stopping plugin {}…",
+                                    "正在停止插件 {}…",
+                                    &[plugin_id.clone()],
+                                )
                             });
                         }
                     }
@@ -4813,6 +6704,7 @@ impl App {
             return;
         }
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::AgentHistory,
             title: "Agent history".into(),
             sel: 0,
@@ -4824,7 +6716,9 @@ impl App {
     fn open_model_picker(&mut self, ctl: &Controller) {
         // Ask the ACP agent for its real catalog; seed the picker
         // with fallback presets / env snapshot meanwhile.
-        ctl.send(Cmd::FetchCatalog);
+        ctl.send(Cmd::FetchCatalog {
+            session_id: self.session_id.clone(),
+        });
         let mut items: Vec<PickerItem> = host_catalog_models()
             .unwrap_or_else(|| MODEL_PRESETS.iter().map(|s| s.to_string()).collect())
             .into_iter()
@@ -4835,22 +6729,36 @@ impl App {
                 provider: None,
             })
             .collect();
-        if !items.iter().any(|i| i.id == self.cfg.model) {
+        // The effective model (explicit pick → last streamed → configured
+        // default) is the picker's "current": the highlight and the ✓ mark
+        // land on the model the session is actually running (issue #102).
+        let current = self.current_model();
+        if !items.iter().any(|i| i.id == current) {
             items.insert(
                 0,
                 PickerItem {
-                    id: self.cfg.model.clone(),
-                    label: self.cfg.model.clone(),
+                    id: current.clone(),
+                    label: current.clone(),
                     meta: String::new(),
                     provider: None,
                 },
             );
         }
+        let current_provider = self.cfg.provider.clone();
         let sel = items
             .iter()
-            .position(|i| i.id == self.cfg.model)
+            .position(|i| {
+                i.id == current
+                    && i.provider
+                        .as_deref()
+                        .is_none_or(|provider| provider == current_provider)
+            })
+            // The running model may come from the transcript without a
+            // provider: fall back to an id-only match rather than row 0.
+            .or_else(|| items.iter().position(|i| i.id == current))
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Model,
             title: self
                 .locale
@@ -4892,11 +6800,22 @@ impl App {
                 })
                 .collect();
         }
-        let sel = default
+        // The highlight lands on the effort actually in effect (host-echoed
+        // `config_option_update` / last `/effort`), falling back to the
+        // model's advertised default, then the first row (issue #102).
+        let sel = self
+            .modes
+            .effort
             .as_deref()
-            .and_then(|value| items.iter().position(|item| item.id == value))
+            .and_then(|effort| items.iter().position(|i| i.id == effort))
+            .or_else(|| {
+                default
+                    .as_deref()
+                    .and_then(|d| items.iter().position(|i| i.id == d))
+            })
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Effort,
             title: self
                 .locale
@@ -4911,31 +6830,43 @@ impl App {
     }
 
     /// `/resume`: list this workspace's durable sessions in a picker
-    /// (grok-build's session picker). Live ACP prefers `session/list`.
-    fn open_resume_picker(&mut self, ctl: &Controller) {
+    /// (grok-build's session picker). Live ACP prefers `session/list`;
+    /// `limit` is the `/resume n` count (most recent first).
+    fn open_resume_picker(&mut self, limit: usize, ctl: &Controller) {
         if !self.demo && self.list_session {
-            ctl.send(Cmd::ListSessions { prefix: None });
-            self.show_tip("listing ACP sessions…");
+            ctl.send(Cmd::ListSessions {
+                requester_session_id: self.session_id.clone(),
+                prefix: None,
+                limit,
+            });
+            self.show_tip(self.locale.tr("listing ACP sessions…", "正在列出 ACP 会话…"));
             return;
         }
         if !self.demo {
-            self.show_tip("agent did not advertise session/list — listing local JSONL");
+            self.show_tip(self.locale.tr(
+                "agent did not advertise session/list — listing local JSONL",
+                "Agent 未声明 session/list —— 改为列出本地 JSONL",
+            ));
         }
-        self.open_local_resume_picker();
+        self.open_local_resume_picker(limit);
     }
 
-    fn open_local_resume_picker(&mut self) {
+    fn open_local_resume_picker(&mut self, limit: usize) {
         self.resume_via_acp = false;
         let sessions = crate::sessions::list_sessions(
             &self.cfg.session_root,
             &self.cfg.workspace,
             &self.session_id,
+            limit,
         );
         if sessions.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                "no durable sessions for this workspace yet — finish a turn and /resume finds it"
-                    .into(),
+                self.locale.tr(
+                    "no durable sessions for this workspace yet — finish a turn and /resume finds it",
+                    "此工作区还没有持久会话 —— 完成一轮对话后 /resume 即可找回",
+                )
+                .into(),
             );
             return;
         }
@@ -4945,6 +6876,7 @@ impl App {
             .collect();
         self.resume_candidates = sessions;
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Session,
             title: self
                 .locale
@@ -4968,6 +6900,7 @@ impl App {
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
+                usize::MAX,
             );
         }
         let matches: Vec<crate::sessions::SessionSummary> = self
@@ -4981,7 +6914,11 @@ impl App {
             [] => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
-                    format!("no session matches “{id_or_prefix}” — /resume lists them"),
+                    self.locale.trf(
+                        "no session matches “{}” — /resume lists them",
+                        "没有会话匹配「{}」—— /resume 可列出全部",
+                        &[id_or_prefix.into()],
+                    ),
                 );
                 return;
             }
@@ -4990,9 +6927,10 @@ impl App {
                 None => {
                     self.transcript.push_notice(
                         NoticeLevel::Warn,
-                        format!(
-                            "“{id_or_prefix}” is ambiguous ({} matches) — /resume lists them",
-                            many.len()
+                        self.locale.trf(
+                            "“{}” is ambiguous ({} matches) — /resume lists them",
+                            "「{}」有 {} 个匹配，存在歧义 —— /resume 可列出全部",
+                            &[id_or_prefix.into(), many.len().to_string()],
                         ),
                     );
                     return;
@@ -5004,28 +6942,54 @@ impl App {
             Err(err) => {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
-                    format!("cannot read {}: {err:#}", session.file.display()),
+                    self.locale.trf(
+                        "cannot read {}: {}",
+                        "无法读取 {}：{}",
+                        &[session.file.display().to_string(), format!("{err:#}")],
+                    ),
                 );
                 return;
             }
         };
 
-        self.session_id = session.id.clone();
-        self.reset_subagent_views();
-        self.transcript.clear();
-        self.transcript.set_root_session(session.id.clone());
-        // Replay folds the session's own authoritative mode facts from empty.
-        self.modes = Modes::default();
+        if self.session_id != session.id {
+            if let Some(tab) = self.tab_index_of(&session.id) {
+                // Already open in a tab — switching to it is the resume.
+                // The view path (not the raw switch) releases compositor-
+                // owned overlays with their cancel events first, exactly
+                // like a tab click; a raw switch would leak the plugin's
+                // single-overlay slot and float the popup onto the tab.
+                self.switch_view_to_tab(tab, ctl);
+                self.resume_candidates = Vec::new();
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    self.locale.trf(
+                        "⟲ {} is already open — switched to its tab",
+                        "⟲ {} 已在打开的标签页中 —— 已切换过去",
+                        &[session.id.clone()],
+                    ),
+                );
+                return;
+            }
+            // Park the live session and replay into a fresh tab (issue #94).
+            self.open_new_session(session.id.clone(), true);
+        } else {
+            self.reset_subagent_views();
+            self.transcript.clear();
+            self.transcript.set_root_session(session.id.clone());
+            // Replay folds the session's own authoritative mode facts from empty.
+            self.modes = Modes::default();
+            self.queued = 0;
+            self.prompt_queue.clear();
+            self.queue_selection = None;
+            self.queue_edit = None;
+            self.pending_steer_cells.clear();
+            self.prompt_pending = false;
+            self.sel = None;
+        }
         // The resumed stream's own model is the truth for the chip.
         self.selected_model = None;
         self.show_banner = false;
-        self.queued = 0;
-        self.prompt_queue.clear();
-        self.queue_selection = None;
-        self.queue_edit = None;
-        self.pending_steer_cells.clear();
-        self.prompt_pending = false;
-        self.sel = None;
         let mut replayed = 0usize;
         for ev in &events {
             if ev.get("type").and_then(serde_json::Value::as_str) == Some("session") {
@@ -5053,20 +7017,149 @@ impl App {
         self.resume_candidates = Vec::new();
         self.transcript.push_notice(
             NoticeLevel::Info,
-            format!(
-                "⟲ resumed {} · {} turn{} · {replayed} events replayed — the next prompt continues it",
-                session.id,
-                session.turns,
-                if session.turns == 1 { "" } else { "s" },
+            self.locale.trf(
+                "⟲ resumed {} · {} turn{} · {} events replayed — the next prompt continues it",
+                "⟲ 已恢复 {} · {} 轮对话 · 回放 {} 个事件 —— 下一条消息继续它",
+                &[
+                    session.id.clone(),
+                    session.turns.to_string(),
+                    if session.turns == 1 { "" } else { "s" }.to_string(),
+                    replayed.to_string(),
+                ],
             ),
         );
         self.needs_redraw = true;
+    }
+
+    /// The `/new` flow, shared by the slash command and the tab strip `+`
+    /// cell: park the live session and open a fresh tab (issue #94).
+    fn new_session_flow(&mut self, arg: &str, ctl: &Controller) {
+        if self.demo {
+            let id = if arg.is_empty() {
+                format!("dsh-{}", timestamp())
+            } else {
+                arg.to_string()
+            };
+            self.open_new_session(id.clone(), true);
+            ctl.send(Cmd::FetchSkills {
+                session_id: self.session_id.clone(),
+            });
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                self.locale.trf(
+                    "new session · {} — /agent picks its agent preset",
+                    "新会话 · {} —— /agent 选择它的 Agent 预设",
+                    &[id],
+                ),
+            );
+        } else {
+            // A local placeholder ids the tab until session/new resolves —
+            // the same shape main.rs seeds the startup session with. The
+            // real id lands on this tab via `awaiting_binds` at SessionBound.
+            let placeholder = format!("dsh-{}", timestamp());
+            self.open_new_session(placeholder.clone(), false);
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: placeholder,
+                open: true,
+            });
+            ctl.send(Cmd::NewSession);
+            self.show_tip(self.locale.tr("session/new …", "正在创建会话（session/new）…"));
+        }
+    }
+
+    /// The `/close` flow (issue #94): stop viewing the current session tab
+    /// and drop everything bound to it (transcript, composer draft, queue,
+    /// asks, subagents). Local only — ACP has no session/close, so the
+    /// server-side session keeps existing; acp.rs forgets its turn state
+    /// and queued prompts so nothing more is sent into the void, and the
+    /// session's later updates drop at the router. An in-flight turn keeps
+    /// running and is dropped when it settles. Never closes the last tab.
+    fn close_session_flow(&mut self, ctl: &Controller) {
+        let total = self.session_tab_count();
+        if total < 2 {
+            self.show_tip(self.locale.tr(
+                "cannot close the last session — /new opens another first",
+                "不能关闭最后一个会话 —— 先用 /new 开一个新的",
+            ));
+            return;
+        }
+        let doomed = self.session_id.clone();
+        let running = self.state != RunState::Idle || self.prompt_pending;
+        // Compositor-owned overlays (plugin view/select/slider) must be
+        // released with a cancel event before the tab dies — the same path
+        // a tab click takes. Painter popups, asks and the composer draft
+        // die with the slot (ask overlays auto-cancel through Drop).
+        self.cancel_plugin_overlays(ctl);
+        let doomed_slot = self.take_live_slot();
+        let discarded = doomed_slot.prompt_queue.len();
+        let had_draft = !doomed_slot.input.is_empty()
+            || !doomed_slot.pending_images.is_empty();
+        let had_ask =
+            doomed_slot.permission_ask.is_some() || doomed_slot.elicitation_ask.is_some();
+        drop(doomed_slot);
+
+        // The bind this tab may still be awaiting keeps its FIFO position
+        // (the in-flight session/new·resume owns it) but is now dead: when
+        // it resolves the session is forgotten, never bound onto a
+        // neighboring tab.
+        if let Some(entry) = self.awaiting_binds.iter_mut().find(|entry| entry.id == doomed) {
+            entry.open = false;
+        }
+        // Forget the session on the ACP side too: drop its turn state and
+        // queued prompts (no-op for an unbound placeholder id).
+        ctl.send(Cmd::ForgetSession {
+            session_id: doomed.clone(),
+        });
+
+        // View a neighbor first, keeping the closed tab's conceptual slot:
+        // the right neighbor when one exists, else the tab on the left.
+        let right = self.current + 1 < total;
+        let pidx = if right { self.current } else { self.current - 1 };
+        let mut target = self.parked.remove(pidx);
+        target.completed_unseen = false;
+        self.current = if right {
+            self.current
+        } else {
+            self.current.saturating_sub(1)
+        };
+        self.put_live_slot(target);
+        self.after_switch();
+        self.needs_redraw = true;
+
+        let label = short_id(&doomed);
+        let mut bits: Vec<String> = Vec::new();
+        if running {
+            bits.push("its running turn keeps settling".into());
+        }
+        if discarded > 0 {
+            bits.push(format!("{discarded} queued dropped"));
+        }
+        if had_draft {
+            bits.push("draft dropped".into());
+        }
+        if had_ask {
+            bits.push("pending ask cancelled".into());
+        }
+        if bits.is_empty() {
+            self.show_tip(self.locale.trf("closed {}", "已关闭 {}", &[label.clone()]));
+        } else {
+            self.show_tip(self.locale.trf(
+                "closed {} · {}",
+                "已关闭 {} · {}",
+                &[label.clone(), bits.join(", ")],
+            ));
+        }
     }
 
     fn reset_session_ui(&mut self) {
         self.reset_subagent_views();
         self.transcript.clear();
         self.modes = Modes::default();
+        self.skills.clear();
+        self.last_presets.clear();
+        self.last_models.clear();
+        self.permission_choices.clear();
+        self.effort_choices.clear();
         self.selected_model = None;
         self.session_model = None;
         self.session_title = None;
@@ -5095,25 +7188,69 @@ impl App {
     }
 
     fn resume_acp_session(&mut self, id: &str, ctl: &Controller) {
-        self.reset_session_ui();
-        self.session_id = id.to_string();
-        self.transcript.set_root_session(id.to_string());
+        // The welcome banner only ever paints instead of the transcript, so
+        // any path that (re)loads real history must dismiss it — the local
+        // `resume_session` does the same. Without this, a /resume before the
+        // first prompt left the banner covering the whole replayed chat.
+        // Dismissed *after* the branch: a fresh tab starts with the banner
+        // (composer chrome is tab-bound), and the same-session branch resets
+        // its own fields.
+        if self.session_id == id {
+            // Resuming the viewed session: reset its UI and re-stream. The
+            // resume still re-binds on the ACP side (acp.rs emits
+            // SessionBound unconditionally), so this tab keeps a FIFO
+            // entry — without it a concurrent /new's SessionBound would
+            // be consumed by this bind and the tabs would cross-bind.
+            self.reset_session_ui();
+            self.session_id = id.to_string();
+            self.transcript.set_root_session(id.to_string());
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: id.to_string(),
+                open: true,
+            });
+        } else if let Some(tab) = self.tab_index_of(id) {
+            // Already open in a tab — switching to it is the resume. Same
+            // as the local path: release plugin overlays on the way out.
+            self.switch_view_to_tab(tab, ctl);
+            return;
+        } else {
+            // Park the live session; the resumed session binds this fresh
+            // tab. With ACP `session/resume` the agent does not replay the
+            // transcript; the legacy `session/load` fallback streams it via
+            // session/update tagged with this id.
+            self.open_new_session(id.to_string(), false);
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: id.to_string(),
+                open: true,
+            });
+        }
+        self.show_banner = false;
         ctl.send(Cmd::ResumeSession {
             session_id: id.to_string(),
         });
-        self.show_tip(format!("resuming {id} …"));
+        self.show_tip(self.locale.trf("resuming {} …", "正在恢复会话 {} …", &[id.into()]));
         self.needs_redraw = true;
     }
 
     fn on_acp_session_list(
         &mut self,
+        requester_session_id: String,
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
+        limit: usize,
         ctl: &Controller,
     ) {
+        if requester_session_id != self.session_id {
+            return;
+        }
         let skip = self.session_id.clone();
-        let sessions: Vec<SessionListItem> =
-            sessions.into_iter().filter(|s| s.id != skip).collect();
+        // The `/resume n` cap counts resumable sessions only: the current
+        // session is dropped first, then the list truncates to the limit.
+        let mut sessions: Vec<SessionListItem> = sessions
+            .into_iter()
+            .filter(|s| s.id != skip)
+            .collect();
+        sessions.truncate(limit);
         if let Some(prefix) = prefix.as_deref().filter(|p| !p.is_empty()) {
             match unique_session_list_match(&sessions, prefix) {
                 Ok(id) => {
@@ -5131,7 +7268,11 @@ impl App {
         if sessions.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                "no ACP sessions from session/list — finish a turn and /resume finds it".into(),
+                self.locale.tr(
+                    "no ACP sessions from session/list — finish a turn and /resume finds it",
+                    "session/list 没有返回 ACP 会话 —— 完成一轮对话后 /resume 即可找回",
+                )
+                .into(),
             );
             return;
         }
@@ -5142,6 +7283,7 @@ impl App {
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
+                usize::MAX,
             )
             .into_iter()
             .map(|s| (s.id.clone(), s))
@@ -5160,6 +7302,7 @@ impl App {
             .collect();
         self.resume_via_acp = true;
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Session,
             title: self
                 .locale
@@ -5176,12 +7319,19 @@ impl App {
 
     fn on_acp_session_list_unavailable(
         &mut self,
+        requester_session_id: String,
         prefix: Option<String>,
+        limit: usize,
         error: String,
         ctl: &Controller,
     ) {
-        self.show_tip(format!(
-            "session/list unavailable ({error}) — listing local JSONL"
+        if requester_session_id != self.session_id {
+            return;
+        }
+        self.show_tip(self.locale.trf(
+            "session/list unavailable ({}) — listing local JSONL",
+            "session/list 不可用（{}）—— 改为列出本地 JSONL",
+            &[error.clone()],
         ));
         if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
             if self.resume_session_cap || self.load_session {
@@ -5191,14 +7341,16 @@ impl App {
             self.resume_session(&prefix, ctl);
             return;
         }
-        self.open_local_resume_picker();
+        self.open_local_resume_picker(limit);
         if self.resume_session_cap || self.load_session {
             self.resume_via_acp = true;
         }
     }
 
     fn open_mode_picker(&mut self, ctl: &Controller) {
-        ctl.send(Cmd::FetchCatalog);
+        ctl.send(Cmd::FetchCatalog {
+            session_id: self.session_id.clone(),
+        });
         let items: Vec<PickerItem> = if self.demo {
             AGENT_MODES
                 .iter()
@@ -5227,6 +7379,7 @@ impl App {
         let current = self.current_mode();
         let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Mode,
             title: self
                 .locale
@@ -5280,7 +7433,7 @@ impl App {
     fn set_mode(&mut self, preset: String, ctl: &Controller) {
         let label = self.agent_label(&preset);
         if self.modes.agent_preset.as_deref() == Some(preset.as_str()) {
-            self.show_tip(format!("agent already {label}"));
+            self.show_tip(self.locale.trf("agent already {}", "Agent 已是 {}", &[label.into()]));
             return;
         }
         ctl.send(Cmd::SetPreset {
@@ -5288,8 +7441,10 @@ impl App {
             preset: preset.clone(),
         });
         // Preset scopes can mount their own skill registries.
-        ctl.send(Cmd::FetchSkills);
-        self.show_tip(format!("agent → {label} …"));
+        ctl.send(Cmd::FetchSkills {
+            session_id: self.session_id.clone(),
+        });
+        self.show_tip(self.locale.trf("agent → {} …", "Agent → {} …", &[label.into()]));
     }
 
     /// Ctrl+Shift+A cycles the advertised agent presets directly. `/agent`
@@ -5311,8 +7466,10 @@ impl App {
             .map(|index| choices[(index + 1) % choices.len()])
             .or_else(|| choices.first().copied())
         else {
-            ctl.send(Cmd::FetchCatalog);
-            self.show_tip("agent presets unavailable");
+            ctl.send(Cmd::FetchCatalog {
+                session_id: self.session_id.clone(),
+            });
+            self.show_tip(self.locale.tr("agent presets unavailable", "Agent 预设不可用"));
             return;
         };
         self.set_mode(next.to_string(), ctl);
@@ -5339,6 +7496,7 @@ impl App {
         }
         // Stage 2: offer efforts for the chosen model.
         ctl.send(Cmd::FetchEfforts {
+            session_id: self.session_id.clone(),
             provider: self.cfg.provider.clone(),
             model: self.cfg.model.clone(),
         });
@@ -5382,6 +7540,17 @@ impl App {
         self.set_permission(next, ctl);
     }
 
+    /// The effective model: an explicit `/model` pick until a turn realizes
+    /// it, then the model that actually streamed last, then the configured
+    /// default. Mirrors the meta-row chip chain, so the model picker
+    /// highlights and ✓-marks the model the session is running (issue #102).
+    pub fn current_model(&self) -> String {
+        self.selected_model
+            .clone()
+            .or_else(|| self.transcript.last_model.clone())
+            .unwrap_or_else(|| self.cfg.model.clone())
+    }
+
     /// The effective permission preset: the folded `permission/preset` fact,
     /// or the harness default (workspace-write) before the session reports.
     pub fn current_permission(&self) -> &str {
@@ -5397,14 +7566,22 @@ impl App {
     /// session is created.
     fn set_permission(&mut self, preset: String, ctl: &Controller) {
         if self.modes.permission.as_deref() == Some(preset.as_str()) {
-            self.show_tip(format!("permission already {preset}"));
+            self.show_tip(self.locale.trf(
+                "permission already {}",
+                "权限预设已是 {}",
+                &[preset.into()],
+            ));
             return;
         }
         ctl.send(Cmd::SetPermission {
             session_id: self.session_id.clone(),
             preset: preset.clone(),
         });
-        self.show_tip(format!("permission → {preset} …"));
+        self.show_tip(self.locale.trf(
+            "permission → {} …",
+            "权限预设 → {} …",
+            &[preset.into()],
+        ));
     }
 
     /// `/permission` — the two stock presets with their meaning, the current
@@ -5436,6 +7613,7 @@ impl App {
         };
         let sel = items.iter().position(|i| i.id == current).unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Permission,
             title: self
                 .locale
@@ -5483,14 +7661,17 @@ impl App {
         if let Some(edit) = &mut self.queue_edit {
             if edit.delete_confirm {
                 edit.delete_confirm = false;
-                self.show_tip("delete cancelled · still editing queued prompt");
+                self.show_tip(self.locale.tr(
+                    "delete cancelled · still editing queued prompt",
+                    "已取消删除 · 仍在编辑这条排队消息",
+                ));
             } else {
                 self.queue_edit = None;
                 self.input.clear();
                 self.input_sel = None;
                 self.slash_completion_dismissed = false;
                 self.reconcile_attachments();
-                self.show_tip("queued prompt edit cancelled");
+                self.show_tip(self.locale.tr("queued prompt edit cancelled", "已取消编辑排队消息"));
                 if matches!(self.state, RunState::Idle) {
                     self.dispatch_next_queued(ctl);
                 }
@@ -5506,7 +7687,7 @@ impl App {
                     });
                     self.state_note = self.locale.tr("cancelling", "正在取消").into();
                 } else {
-                    self.show_tip("demo turn — it finishes on its own");
+                    self.show_tip(self.locale.tr("demo turn — it finishes on its own", "演示轮次 —— 会自动结束"));
                 }
             }
             RunState::Idle => {
@@ -5516,10 +7697,13 @@ impl App {
                     self.input.history.push(self.input.buf());
                     self.input.clear();
                     self.reconcile_attachments();
-                    self.show_tip("draft cleared — ↑ recalls it");
+                    self.show_tip(self.locale.tr("draft cleared — ↑ recalls it", "草稿已清空 —— ↑ 可找回"));
                     return;
                 }
-                self.show_tip("esc — idle · a running turn is interrupted with esc");
+                self.show_tip(self.locale.tr(
+                    "esc — idle · a running turn is interrupted with esc",
+                    "esc — 空闲 · 运行中的轮次用 esc 中断",
+                ));
             }
         }
     }
@@ -5538,7 +7722,7 @@ impl App {
             self.input.clear();
             self.input_sel = None;
             self.reconcile_attachments();
-            self.show_tip("draft cleared — ↑ recalls it");
+            self.show_tip(self.locale.tr("draft cleared — ↑ recalls it", "草稿已清空 —— ↑ 可找回"));
             return;
         }
         let required = 2;
@@ -5555,9 +7739,15 @@ impl App {
         let remaining = chord.required - chord.presses;
         self.ctrl_c_armed = Some(chord);
         self.show_tip(if remaining == 1 {
-            "press ctrl+c again to exit".into()
+            self.locale
+                .tr("press ctrl+c again to exit", "再按一次 ctrl+c 退出")
+                .into()
         } else {
-            format!("press ctrl+c {remaining} more times to exit while the agent is running")
+            self.locale.trf(
+                "press ctrl+c {} more times to exit while the agent is running",
+                "Agent 运行中，再按 {} 次 ctrl+c 退出",
+                &[remaining.to_string()],
+            )
         });
     }
 
@@ -5714,7 +7904,11 @@ impl App {
                         id: arg.to_string(),
                     });
                 } else {
-                    self.show_tip(format!("unknown UI Plugin: {arg}"));
+                    self.show_tip(self.locale.trf(
+                    "unknown UI Plugin: {}",
+                    "未知 UI 插件：{}",
+                    &[arg.into()],
+                ));
                 }
             }
             "plugins" => {
@@ -5747,47 +7941,55 @@ impl App {
                     self.set_mode(arg.to_string(), ctl);
                 }
             }
-            "new" => {
-                if self.demo {
-                    let id = if arg.is_empty() {
-                        format!("dsh-{}", timestamp())
-                    } else {
-                        arg.to_string()
-                    };
-                    self.reset_subagent_views();
-                    self.session_id = id.clone();
-                    self.transcript.set_root_session(id.clone());
-                    self.modes = Modes::default();
-                    self.session_title = None;
-                    ctl.send(Cmd::FetchSkills);
-                    self.transcript.push_notice(
-                        NoticeLevel::Info,
-                        format!("new session · {id} — /agent picks its agent preset"),
-                    );
-                } else {
-                    self.reset_session_ui();
-                    ctl.send(Cmd::NewSession);
-                    self.show_tip("session/new …");
+            "new" => self.new_session_flow(arg, ctl),
+            "close" => self.close_session_flow(ctl),
+            "session" => match arg {
+                "view" | "" => self.push_session_info(),
+                "prev" => {
+                    let count = self.session_tab_count();
+                    if count > 1 {
+                        let prev =
+                            if self.current == 0 { count - 1 } else { self.current - 1 };
+                        self.switch_view_to_tab(prev, ctl);
+                    }
                 }
-            }
-            "session" => self.push_session_info(),
+                "next" => {
+                    let count = self.session_tab_count();
+                    if count > 1 {
+                        let next = (self.current + 1) % count;
+                        self.switch_view_to_tab(next, ctl);
+                    }
+                }
+                _ => self.show_tip(self.locale.tr(
+                    "usage: /session [view|prev|next]",
+                    "用法：/session [view|prev|next]",
+                )),
+            },
             "status" => self.push_status_info(),
             "auth" => self.start_auth(arg, ctl),
             "resume" => {
+                // `/resume [n|id]` — a bare number is how many of the most
+                // recent durable sessions to list (default 50); anything
+                // else is an id prefix to resume.
                 if arg.is_empty() {
-                    self.open_resume_picker(ctl);
+                    self.open_resume_picker(crate::sessions::DEFAULT_SESSION_LIST_LIMIT, ctl);
+                } else if let Ok(n) = arg.parse::<usize>() {
+                    self.open_resume_picker(n.max(1), ctl);
                 } else if !self.demo && self.list_session {
                     ctl.send(Cmd::ListSessions {
+                        requester_session_id: self.session_id.clone(),
                         prefix: Some(arg.to_string()),
+                        limit: usize::MAX,
                     });
-                    self.show_tip("listing ACP sessions…");
+                    self.show_tip(self.locale.tr("listing ACP sessions…", "正在列出 ACP 会话…"));
                 } else if !self.demo && (self.resume_session_cap || self.load_session) {
                     self.resume_acp_session(arg, ctl);
                 } else {
                     if !self.demo {
-                        self.show_tip(
+                        self.show_tip(self.locale.tr(
                             "agent did not advertise session/resume or loadSession — replaying local JSONL",
-                        );
+                            "Agent 未声明 session/resume 或 loadSession —— 改为回放本地 JSONL",
+                        ));
                     }
                     self.resume_session(arg, ctl);
                 }
@@ -5795,6 +7997,7 @@ impl App {
             "effort" => {
                 if arg.is_empty() {
                     ctl.send(Cmd::FetchEfforts {
+                        session_id: self.session_id.clone(),
                         provider: self.cfg.provider.clone(),
                         model: self.cfg.model.clone(),
                     });
@@ -5834,6 +8037,7 @@ impl App {
                     };
                     if let Some(value) = value {
                         ctl.send(Cmd::SetConfigOption {
+                            session_id: self.session_id.clone(),
                             config_id: action.config_id,
                             value,
                         });
@@ -5883,7 +8087,7 @@ impl App {
         self.state = RunState::Idle;
         self.run_started = None;
         self.state_note.clear();
-        self.show_tip("sign-in needed — /auth to retry");
+        self.show_tip(self.locale.tr("sign-in needed — /auth to retry", "需要登录 —— /auth 重试"));
         self.start_auth("", ctl);
     }
 
@@ -5908,6 +8112,7 @@ impl App {
             .and_then(|id| items.iter().position(|item| item.id == *id))
             .unwrap_or(0);
         self.picker = Some(Picker {
+            offset: 0,
             kind: PickerKind::Auth,
             title: self
                 .locale
@@ -5927,7 +8132,12 @@ impl App {
         };
         if self.demo {
             self.transcript
-                .push_notice(NoticeLevel::Info, "demo has no ACP authenticate".into());
+                .push_notice(
+                    NoticeLevel::Info,
+                    self.locale
+                        .tr("demo has no ACP authenticate", "演示模式没有 ACP authenticate")
+                        .into(),
+                );
             return;
         }
         if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
@@ -5937,10 +8147,14 @@ impl App {
         if self.auth.methods.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                self.auth
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| "this agent did not advertise auth methods".into()),
+                self.auth.message.clone().unwrap_or_else(|| {
+                    self.locale
+                        .tr(
+                            "this agent did not advertise auth methods",
+                            "此 Agent 未声明认证方式",
+                        )
+                        .into()
+                }),
             );
             return;
         }
@@ -5968,7 +8182,11 @@ impl App {
         let Some(method) = select_auth_method(&self.auth.methods, Some(&method_id)).cloned() else {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                format!("ACP auth method is unavailable or not supported: {method_id}"),
+                self.locale.trf(
+                    "ACP auth method is unavailable or not supported: {}",
+                    "ACP 认证方式不可用或不支持：{}",
+                    &[method_id.clone()],
+                ),
             );
             return;
         };
@@ -5982,14 +8200,16 @@ impl App {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
                 if vars.is_empty() {
-                    format!(
+                    self.locale.trf(
                         "ACP auth method {} requires credential variables and cannot be started as a sign-in flow.",
-                        method.id
+                        "ACP 认证方式 {} 需要凭据变量，无法以登录流程启动。",
+                        &[method.id.clone()],
                     )
                 } else {
-                    format!(
-                        "ACP auth method {} requires credential variables ({vars}) and cannot be started as a sign-in flow.",
-                        method.id
+                    self.locale.trf(
+                        "ACP auth method {} requires credential variables ({}) and cannot be started as a sign-in flow.",
+                        "ACP 认证方式 {} 需要凭据变量（{}），无法以登录流程启动。",
+                        &[method.id.clone(), vars],
                     )
                 },
             );
@@ -5997,7 +8217,10 @@ impl App {
         }
         let values = values_from_auth_arg(&method, &rest);
         if method.form && authenticate_meta_from_method(&method, &values).is_none() {
-            self.show_tip("usage: /auth <api-key> · gateway: /auth <base-url> <api-key>");
+            self.show_tip(self.locale.tr(
+                "usage: /auth <api-key> · gateway: /auth <base-url> <api-key>",
+                "用法：/auth <api-key> · 网关：/auth <base-url> <api-key>",
+            ));
             return;
         }
         if values.is_empty() {
@@ -6005,9 +8228,14 @@ impl App {
                 self.pending_terminal_auth = Some(launch);
                 self.transcript.push_notice(
                     NoticeLevel::Info,
-                    format!(
+                    self.locale.trf(
                         "leaving the TUI for {} — return here when it finishes",
-                        method.name.as_deref().unwrap_or(&method.id)
+                        "离开 TUI 前往 {} —— 完成后回到这里",
+                        &[method
+                            .name
+                            .as_deref()
+                            .unwrap_or(&method.id)
+                            .to_string()],
                     ),
                 );
                 return;
@@ -6374,7 +8602,10 @@ impl App {
         // instead of silently dropping them.
         if !self.pending_images.is_empty() && (text.starts_with('/') || text.starts_with('!')) {
             self.show_tip(
-                "send or delete the [image] chips first — /commands and !shell don't take images",
+                self.locale.tr(
+                    "send or delete the [image] chips first — /commands and !shell don't take images",
+                    "先发送或删除 [image] 标记 —— /命令 和 !shell 不接受图片",
+                ),
             );
             return;
         }
@@ -6439,7 +8670,13 @@ impl App {
     /// passthroughs like /plan).
     fn send_agent_text(&mut self, text: String, ctl: &Controller) {
         self.show_banner = false;
-        let running = self.state == RunState::Running || self.prompt_pending || self.queued > 0;
+        // An unbound tab (placeholder id awaiting session/new·load) must not
+        // send: acp.rs rejects ids it never bound. Hold the prompt in the
+        // queue; the SessionBound handler dispatches it with the real id.
+        let running = self.state == RunState::Running
+            || self.prompt_pending
+            || self.queued > 0
+            || !self.session_bound;
         if running {
             let id = self.next_prompt_id();
             self.prompt_queue.push_back(ClientQueuedPrompt {
@@ -6447,7 +8684,10 @@ impl App {
                 blocks: vec![StagedBlock::Text(text.clone())],
             });
             self.queued += 1;
-            self.show_tip("queued · empty enter sends first · alt+↑ edit");
+            self.show_tip(self.locale.tr(
+                "queued · empty enter sends first · alt+↑ edit",
+                "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
+            ));
         } else {
             self.transcript.push_user(text.clone(), false);
             self.prompt_pending = true;
@@ -6474,7 +8714,17 @@ impl App {
                 .locale
                 .tr("queue paused for selection/edit", "队列已暂停 · 请选择或编辑")
                 .into();
-            self.show_tip("queue paused · finish or close the queue editor");
+            self.show_tip(self.locale.tr(
+                "queue paused · finish or close the queue editor",
+                "队列暂停 · 完成或关闭队列编辑器",
+            ));
+            return;
+        }
+        if !self.session_bound {
+            // The tab still awaits (or lost) its session bind: an unbound
+            // id would be rejected by acp, and every rejection error would
+            // re-enter this function and burn the whole queue. The prompt
+            // stays queued for the SessionBound handler (issue #94).
             return;
         }
         let Some(prompt) = self.prompt_queue.pop_front() else {
@@ -6503,6 +8753,13 @@ impl App {
     /// Empty Enter promotes the FIFO head into the active turn. If the agent
     /// cannot accept the steer, settlement restores the item to the front.
     fn send_queue_head_now(&mut self, ctl: &Controller) {
+        if !self.session_bound {
+            self.show_tip(self.locale.tr(
+                "session still binding — prompt stays queued",
+                "会话仍在绑定中 —— 消息保留在队列里",
+            ));
+            return;
+        }
         if !self.input.is_empty()
             || !self.pending_images.is_empty()
             || self.queue_selection.is_some()
@@ -6533,9 +8790,13 @@ impl App {
                     cells,
                     blocks: blocks.clone(),
                     requeue_front: true,
+                    gen: self.transcript.gen(),
                 },
             );
-            self.show_tip("queue head sent now — lands at the next agent step");
+            self.show_tip(self.locale.tr(
+                "queue head sent now — lands at the next agent step",
+                "队首已立即发送 —— 在下一步 Agent 处生效",
+            ));
             ctl.send(if let Some(text) = text {
                 Cmd::Steer {
                     session_id: self.session_id.clone(),
@@ -6574,22 +8835,31 @@ impl App {
             return;
         }
         if !self.input.is_empty() {
-            self.show_tip("send or clear the current draft before editing the queue");
+            self.show_tip(self.locale.tr(
+                "send or clear the current draft before editing the queue",
+                "编辑队列前请先发送或清空当前草稿",
+            ));
             return;
         }
         if self.prompt_queue.is_empty() {
-            self.show_tip("no queued prompt to edit");
+            self.show_tip(self.locale.tr("no queued prompt to edit", "没有可编辑的排队消息"));
             return;
         }
         self.queue_selection = Some(self.prompt_queue.len() - 1);
         self.slash_completion_dismissed = true;
-        self.show_tip("select queued prompt · ↑/↓ choose · enter edit · esc close");
+        self.show_tip(self.locale.tr(
+            "select queued prompt · ↑/↓ choose · enter edit · esc close",
+            "选择排队消息 · ↑/↓ 选择 · enter 编辑 · esc 关闭",
+        ));
     }
 
     fn begin_queue_edit_at(&mut self, index: usize) {
         let Some(prompt) = self.prompt_queue.get(index) else {
             self.queue_selection = None;
-            self.show_tip("queued prompt already left the queue");
+            self.show_tip(self.locale.tr(
+                "queued prompt already left the queue",
+                "这条消息已离开队列",
+            ));
             return;
         };
         let prompt_id = prompt.id;
@@ -6613,9 +8883,10 @@ impl App {
         });
         self.input.set(text);
         self.slash_completion_dismissed = false;
-        self.show_tip(format!(
+        self.show_tip(self.locale.trf(
             "editing queued prompt {} · enter save · ctrl+d delete · esc cancel",
-            index + 1
+            "编辑排队消息 {} · enter 保存 · ctrl+d 删除 · esc 取消",
+            &[(index + 1).to_string()],
         ));
     }
 
@@ -6630,7 +8901,10 @@ impl App {
         }
         let raw = self.input.buf().trim().to_string();
         if raw.is_empty() && self.pending_images.is_empty() {
-            self.show_tip("queued prompt cannot be empty · ctrl+d deletes it");
+            self.show_tip(self.locale.tr(
+                "queued prompt cannot be empty · ctrl+d deletes it",
+                "排队消息不能为空 · ctrl+d 可删除",
+            ));
             return;
         }
         let blocks = if self.pending_images.is_empty() {
@@ -6645,7 +8919,10 @@ impl App {
         else {
             self.queue_edit = None;
             self.input.clear();
-            self.show_tip("queued prompt already left the queue");
+            self.show_tip(self.locale.tr(
+                "queued prompt already left the queue",
+                "这条消息已离开队列",
+            ));
             return;
         };
         self.prompt_queue[index].blocks = blocks;
@@ -6653,7 +8930,11 @@ impl App {
         self.input.clear();
         self.slash_completion_dismissed = false;
         self.reconcile_attachments();
-        self.show_tip(format!("queued prompt {} updated", index + 1));
+        self.show_tip(self.locale.trf(
+            "queued prompt {} updated",
+            "排队消息 {} 已更新",
+            &[(index + 1).to_string()],
+        ));
         if matches!(self.state, RunState::Idle) {
             self.dispatch_next_queued(ctl);
         }
@@ -6670,7 +8951,10 @@ impl App {
         else {
             self.queue_edit = None;
             self.input.clear();
-            self.show_tip("queued prompt already left the queue");
+            self.show_tip(self.locale.tr(
+                "queued prompt already left the queue",
+                "这条消息已离开队列",
+            ));
             return;
         };
         self.prompt_queue.remove(index);
@@ -6679,7 +8963,11 @@ impl App {
         self.input.clear();
         self.slash_completion_dismissed = false;
         self.reconcile_attachments();
-        self.show_tip(format!("queued prompt {} deleted", index + 1));
+        self.show_tip(self.locale.trf(
+            "queued prompt {} deleted",
+            "排队消息 {} 已删除",
+            &[(index + 1).to_string()],
+        ));
         if matches!(self.state, RunState::Idle) {
             self.dispatch_next_queued(ctl);
         }
@@ -6693,17 +8981,27 @@ impl App {
             None => (arg, String::new()),
         };
         if path.is_empty() {
-            self.show_tip("/image needs a path — /image ./pic.png [caption]");
+            self.show_tip(self.locale.tr(
+                "/image needs a path — /image ./pic.png [caption]",
+                "/image 需要路径 —— /image ./pic.png [说明]",
+            ));
             return;
         }
         let Some(media_type) = media_type_for(path) else {
-            self.show_tip("unsupported image — use .png .jpg .jpeg .webp .gif");
+            self.show_tip(self.locale.tr(
+                "unsupported image — use .png .jpg .jpeg .webp .gif",
+                "不支持的图片 —— 支持 .png .jpg .jpeg .webp .gif",
+            ));
             return;
         };
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(err) => {
-                self.show_tip(format!("cannot read {path}: {err}"));
+                self.show_tip(self.locale.trf(
+                    "cannot read {}: {}",
+                    "无法读取 {}：{}",
+                    &[path.into(), err.to_string()],
+                ));
                 return;
             }
         };
@@ -6726,7 +9024,10 @@ impl App {
                 bytes,
                 caption.to_string(),
             ),
-            None => self.show_tip("clipboard has no image, or this platform isn't supported"),
+            None => self.show_tip(self.locale.tr(
+                "clipboard has no image, or this platform isn't supported",
+                "剪贴板没有图片，或当前平台不支持",
+            )),
         }
     }
 
@@ -6743,7 +9044,13 @@ impl App {
         let token = match self.pending_images.add(name, path, media_type, data) {
             Ok(att) => att.token.clone(),
             Err(full) => {
-                self.show_tip(full);
+                self.show_tip(if full == "attachment tray is full — send or remove an [image] chip first" {
+                    self.locale
+                        .tr(full, "附件栏已满 —— 先发送或移除一个 [image] 标记")
+                        .to_string()
+                } else {
+                    full.to_string()
+                });
                 return;
             }
         };
@@ -6762,7 +9069,10 @@ impl App {
             self.input.insert_char(' ');
         }
         self.input.insert_str(&token);
-        self.show_tip("image staged — ⌫ deletes its chip · hover it to preview");
+        self.show_tip(self.locale.tr(
+            "image staged — ⌫ deletes its chip · hover it to preview",
+            "图片已附加 —— ⌫ 删除其标记 · 悬停可预览",
+        ));
         self.needs_redraw = true;
     }
 
@@ -6813,6 +9123,7 @@ impl App {
                     cells,
                     blocks: staged.clone(),
                     requeue_front: false,
+                    gen: self.transcript.gen(),
                 },
             );
         }
@@ -6849,9 +9160,15 @@ impl App {
                 .push_back(ClientQueuedPrompt { id, blocks: staged });
             self.queued += 1;
             self.show_tip(if n <= 1 {
-                "image queued · empty enter sends first".to_string()
+                self.locale
+                    .tr("image queued · empty enter sends first", "图片已排队 · 空输入按 enter 发送队首")
+                    .to_string()
             } else {
-                format!("{n} images queued · empty enter sends first")
+                self.locale.trf(
+                    "{} images queued · empty enter sends first",
+                    "{} 张图片已排队 · 空输入按 enter 发送队首",
+                    &[n.to_string()],
+                )
             });
             self.scroll_up = 0;
             return;
@@ -6875,7 +9192,10 @@ impl App {
         let raw = self.input.buf().trim().to_string();
         if !self.pending_images.is_empty() && (raw.starts_with('/') || raw.starts_with('!')) {
             self.show_tip(
-                "send or delete the [image] chips first — /commands and !shell don't take images",
+                self.locale.tr(
+                    "send or delete the [image] chips first — /commands and !shell don't take images",
+                    "先发送或删除 [image] 标记 —— /命令 和 !shell 不接受图片",
+                ),
             );
             return;
         }
@@ -6901,7 +9221,10 @@ impl App {
                 .filter(|b| matches!(b, StagedBlock::Image(_)))
                 .count();
             if running {
-                self.show_tip("steered with image — lands at the next agent step");
+                self.show_tip(self.locale.tr(
+                    "steered with image — lands at the next agent step",
+                    "已带图 steer —— 在下一步 Agent 处生效",
+                ));
             } else {
                 self.prompt_pending = true;
                 self.state = RunState::Starting;
@@ -6923,7 +9246,10 @@ impl App {
             let cell = self.transcript.cells.len();
             self.transcript.push_user(text.clone(), false);
             if running {
-                self.show_tip("steered — lands at the next agent step");
+                self.show_tip(self.locale.tr(
+                    "steered — lands at the next agent step",
+                    "已 steer —— 在下一步 Agent 处生效",
+                ));
             } else {
                 self.prompt_pending = true;
                 self.state = RunState::Starting;
@@ -6938,6 +9264,7 @@ impl App {
                         cells: vec![cell],
                         blocks: vec![StagedBlock::Text(text.clone())],
                         requeue_front: false,
+                        gen: self.transcript.gen(),
                     },
                 );
                 Cmd::Steer {
@@ -6966,7 +9293,9 @@ impl App {
         self.shell_seq += 1;
         let id = self.shell_seq;
         let cell = self.transcript.push_shell(cmd.clone());
-        self.shell_pending.push((id, cell));
+        // Tag the pending cell with its session: the worker is shared and
+        // the user may switch tabs before the command settles.
+        self.shell_pending.push((id, self.session_id.clone(), cell, self.transcript.gen()));
         let request = ShellRequest { id, command: cmd };
         let worker = self.shell_worker.get_or_insert_with(|| {
             ShellWorker::spawn(self.cfg.workspace.clone(), self.bus_tx.clone())
@@ -6990,12 +9319,15 @@ impl App {
 mod persistent_shell_tests;
 
 pub fn timestamp() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_micros())
         .unwrap_or(0);
-    format!("{secs:x}")
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{micros:x}-{seq:x}")
 }
 
 /// Model ids from the host catalog snapshot: either inline JSON in
@@ -7079,6 +9411,10 @@ pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize, String)
 #[cfg(test)]
 #[path = "../tests/unit/app__resume_tests.rs"]
 mod resume_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__session_tabs_tests.rs"]
+mod session_tabs_tests;
 
 #[cfg(test)]
 #[path = "../tests/unit/app__selection_tests.rs"]

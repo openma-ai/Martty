@@ -396,3 +396,40 @@ fn delete_forward_with_a_selection_deletes_the_selection() {
     assert_eq!(e.buf(), "lo world", "delete removes the active selection");
     assert_eq!(e.selection_text(), None);
 }
+
+#[test]
+fn explicit_range_kills_ignore_an_active_selection() {
+    // A shift-selection must not hijack explicit range kills: the
+    // requested range dies, the selection is cancelled. Regression for
+    // the delete_token_at bug (selection deleted instead of the token,
+    // while the image was dropped from the tray).
+    let mut e = ComposerEditor::new();
+    e.insert_str("[image 1] hello");
+    e.set_cursor_char(0);
+    e.select_right();
+    e.select_right();
+    e.select_right(); // selection "[im"
+    e.delete_char_range(0, 10); // want the whole "[image 1] " token
+    assert_eq!(e.buf(), "hello", "the requested range died, not the selection");
+    assert_eq!(e.selection_text(), None, "selection cancelled");
+
+    // kill_to_start / kill_to_end likewise: they kill to the *cursor*
+    // (which a shift-selection advances to the selection end), never the
+    // selection itself.
+    let mut e = ComposerEditor::new();
+    e.insert_str("hello world");
+    e.set_cursor_char(0);
+    e.select_right();
+    e.select_right();
+    e.select_right(); // selection "hel", cursor now at 3
+    e.kill_to_end(80);
+    assert_eq!(e.buf(), "hel", "kill_to_end killed to the cursor, not the selection");
+
+    let mut e = ComposerEditor::new();
+    e.insert_str("hello world");
+    e.set_cursor_char(6);
+    e.select_right();
+    e.select_right(); // selection "wo", cursor now at 8
+    e.kill_to_start(80);
+    assert_eq!(e.buf(), "rld", "kill_to_start killed from the row head to the cursor");
+}

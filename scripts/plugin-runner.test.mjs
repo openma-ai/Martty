@@ -662,8 +662,15 @@ test('shell dispatches Cordis TUI requests to lifecycle-owned commands and overl
   const restore = ensureTestNative()
   const invoked = []
   const previews = []
+  const selectedSessions = []
   try {
     const ctx = makeCtx()
+    ctx.acpClientEvents.register({
+      observeClient() {},
+      selectSession(sessionId) {
+        selectedSessions.push(sessionId)
+      },
+    })
     ctx.tuiCommands.register(
       { name: 'threshold', description: 'adjust threshold' },
       (args) => {
@@ -690,6 +697,12 @@ test('shell dispatches Cordis TUI requests to lifecycle-owned commands and overl
       },
       {
         jsonrpc: '2.0',
+        id: 24,
+        method: '_dsh/cordis/tui/session/active',
+        params: { protocol: 0, sessionId: 's-2' },
+      },
+      {
+        jsonrpc: '2.0',
         method: '_dsh/cordis/tui/overlay/event',
         params: { protocol: 0, id: 'threshold', event: 'change', value: 55 },
       },
@@ -703,11 +716,18 @@ test('shell dispatches Cordis TUI requests to lifecycle-owned commands and overl
 
     assert.deepEqual(invoked, ['55'])
     assert.deepEqual(previews, [55])
-    const response = writes
+    assert.deepEqual(selectedSessions, ['s-2'])
+    const responses = writes
       .flatMap((line) => line.trim().split('\n').filter(Boolean))
       .map((line) => JSON.parse(line))
-      .find((message) => message.id === 23)
-    assert.deepEqual(response, { jsonrpc: '2.0', id: 23, result: { opened: true } })
+    assert.deepEqual(
+      responses.find((message) => message.id === 23),
+      { jsonrpc: '2.0', id: 23, result: { opened: true } },
+    )
+    assert.deepEqual(
+      responses.find((message) => message.id === 24),
+      { jsonrpc: '2.0', id: 24, result: { ok: true } },
+    )
   } finally {
     restore()
   }

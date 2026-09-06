@@ -5,255 +5,375 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Harness management through `/harness` and `martty harness`: official ACP
+  Registry discovery, local command detection, saved recipes, configuration-only
+  setup, explicit runtime switching, and confirmed configuration/private-installation
+  removal. Binary packages install into Martty-owned directories with SHA-256
+  validation; shared caches, global programs, credentials and history are protected.
+- Registry pickers open from a bundled snapshot or validated local cache immediately,
+  then probe asynchronously. Installed/configured and downloadable entries are grouped;
+  the current Harness stays first and cannot be selected again.
+- Background-capable downloads with progress, bounded diagnostics, cancellation,
+  completion notices and retry. Enter on completion uses the normal Harness switch
+  flow; Esc closes without switching. Removal dialogs support stepwise back navigation.
+- CLI and TUI walkthroughs, README quick starts and screenshots.
+- Plan progress uses an animated running marker and a distinct in-progress label.
+
 ### Fixed
 
-- Enter on download completion now uses the existing Harness switch flow, including
-  session confirmation and ACP readiness; Escape still closes without switching.
-- Harness removal panels now use Esc to return one menu level, preserving the
-  selected Harness and removal mode without changing configuration or files.
-- Harness connection errors show the actual reason, structured error data and
-  captured stderr together in a scrollable panel; Enter retries directly, without
-  a recovery/details menu. Failed setup no longer leaves landing in a pending state.
-- Current Harness is pinned first in the switch picker, slash completions and
-  Add catalog, while preserving the relative order of other entries.
-- Selecting a configured Harness now switches directly instead of repeating the
-  Add/download flow. Current Harness choices are marked from the live recipe and
-  disabled in both the picker and slash completions.
-- New ACP initialization clears old session config, status, plan and statistics;
-  late request replies cannot restore old authentication state. Landing shows the
-  initialized Agent before session setup finishes, without old-runtime fallback.
-- Session configuration writes and preview rollbacks are scoped to their original
-  session generation. Status resolves model/effort by ACP category; live landing
-  no longer substitutes startup DeepSeek defaults for unreported model data.
-- Current Harness completions refresh at process handoff, including while login
-  is pending. Exited processes remain selectable for recovery.
-- Advertised authentication methods no longer masquerade as the active credential
-  source. Successful session setup without an explicit login leaves the source
-  unreported; welcome credential labels have a separating space.
+- Harness switching reinitializes ACP and starts a fresh empty session. All old
+  connection projections and requests are cleared, while session-scoped state
+  remains isolated across tabs within one connection. Saved configuration is
+  independent of authentication/readiness; the default changes only after readiness.
+- Authentication follows ACP responses, not browser completion or advertised
+  methods. Pending, failed and successful login states are distinct; unknown
+  credential sources are not labeled as API keys. Connection errors show the actual
+  reason, structured data and captured stderr directly, with Enter to retry.
+- Welcome runtime/model/effort follow the active Agent and session, including
+  semantic ACP model and thought-level categories, without stale startup defaults.
+- Harness setup/authentication allows twenty minutes; archive extraction allows
+  ten minutes. Windows command discovery honors PATHEXT and uses cross-spawn.
+  Registry npx/uvx recipes receive no implicit runner flags.
+- Completed installs persist independently of runtime/session setup; older background
+  jobs cannot overwrite newer configuration. CLI removal supports previews and
+  private-resource cleanup, and source-checkout command arguments are validated.
 
 ### Added
 
-- Harness CLI walkthrough and README quick starts now cover source-checkout entrypoints,
-  Registry IDs, next-launch defaults, and configuration/private-resource removal.
-- TUI walkthrough and README screenshots cover switching, Registry discovery, downloads,
-  authentication, errors, and deletion with stepwise back navigation.
-- CLI Harness management now supports confirmed removal, private-resource cleanup and
-  dry runs. Discovery uses the local official Registry snapshot with explicit `find --refresh`;
-  saved recipes are reused offline. Binary setup preserves command-option overrides,
-  validates arguments before downloading, reports progress and cleans staging on Ctrl-C.
-  Missing standalone `--agent` / `--agent-arg` values fail before TUI startup.
+- The `/agent`, `/effort`, `/model`, `/theme` and `/permission` pickers now
+  open with the row that is actually in effect preselected and ✓-marked
+  (issue #102): the effort picker follows the host-echoed effort (falling
+  back to the model's advertised default), and the model picker follows
+  the running model (explicit `/model` pick → last streamed model →
+  configured default) instead of the config default. The inline
+  argument-option lists typed next to `/model` and `/effort` behave the
+  same way: they open on the effective model/effort, ✓-mark it, and list
+  the effective model even when it is not in the host catalog.
 
-- `/harness` supports Delete on the selected saved row (also the Mac Delete key),
-  without a separate Remove Harness menu entry, with configuration-only removal or
-  confirmed cleanup of an exclusive private binary installation. Running/forced
-  Harnesses, shared caches, credentials, history and symlinked resources are protected;
-  pending downloads are cancelled and awaited before removal.
-- Managed Harness binary downloads now use the lightweight
-  `node-downloader-helper` SDK in the existing JS client. Transfers retain
-  connection/idle limits, panel progress, background completion notices,
-  checksum verification, and atomic installation under Martty's own directory.
-  Cancellation waits for file handles to close before cleaning up; failed or
-  incomplete transfers remain retryable from the panel.
+- `↥` user-prompt jump button on the composer cap row, between the project
+  path and the `⛶` expand glyph (issue #103): hovering highlights it and
+  clicking scrolls the chat to the newest user prompt; each further click
+  walks one prompt back, and the oldest prompt wraps to the newest again.
+  The last-jumped position is remembered in memory only (never persisted),
+  so the walk resumes where the previous click stopped; the cap row tip
+  shows the current position (`user prompt k/n · newest first`). Text and
+  image prompts both count as jump targets. Right after a jump the jumped
+  prompt's rows are highlighted for 5 seconds like a picker's selected row
+  (chip background wash with the text in the brand tone) and then restore
+  to the ordinary bubble look.
 
-- Harness discovery now opens immediately, probes local commands in a background
-  worker alongside the Registry request, and progressively fills a grouped picker
-  (`Installed / configured` and `Not downloaded`). Refreshes preserve search and
-  selection; selecting an entry reuses its displayed recipe. Binary downloads use
-  connection and no-progress timeouts instead of a fixed total 60-second limit.
-  An offline `scripts/harness-discovery-scenario.mjs` playground covers six local,
-  managed, downloadable, and missing-runner states without real agents or installs.
 
-- Harness setup now has a visible Add action and searchable Registry picker,
-  verified local npm/uv command reuse, offline local choices and retry/recheck
-  actions. Package preparation and binary downloads share a progress panel:
-  Enter keeps unfinished jobs open; Escape hides the panel while downloading
-  continues in the background, with completion/failure notices in the composer
-  and a reopen/connect/retry path in `/harness`. Downloads never switch the
-  current session; quitting Martty stops unfinished work. Stalled transfers and
-  package preparation have timeouts; extraction has a cancellable ten-minute
-  default deadline. Child stderr is captured
-  as bounded, sanitized diagnostics instead of overwriting the TUI. TUI selection becomes the
-  persisted default only after actual ACP initialization and session creation;
-  Add/Install/Connect end after saving configuration, without switching or
-  starting sign-in/session setup. Completed foreground and background installs
-  automatically join the configured list; Enter/Esc only dismiss completion.
-  Switching requires a later explicit selection from /harness. Older background
-  downloads cannot overwrite newer configuration choices. Failed connections remain retryable. Windows batch
-  launchers use cross-spawn.
+- `/resume [n|id]` — a bare number lists the `n` most recent durable
+  sessions in the resume picker (`/resume 10` → latest 10). Without a
+  number the default is 50 (`/resume` ≡ `/resume 50`); anything that is
+  not a number stays an id prefix for a direct resume. The cap applies to
+  both the ACP `session/list` results and the local JSONL listing, and
+  survives the `session/list`-unavailable fallback.
 
-- Plan progress now marks the active `in progress` entry with an animated
-  running marker in the composer dock and a distinct `◐` icon plus label in
-  `/plan-view`, instead of relying on bold text alone. The ACP update path
-  remains immediate; no debounce or delayed refresh was added.
+- Chinese coverage for every client-owned user-visible string: status-bar
+  tips, transcript notices (turn end, session/plan/policy/approval facts,
+  subagent labels, tool preview chrome), elicitation form validation
+  errors, auth notices (sign-in hints, terminal-auth failures), the
+  write-outside permission ask, and the composer/subagent chrome. ACP and
+  plugin payloads stay authored by their owner. `Locale::trf` fills `{}`
+  holes left-to-right for parameterized messages.
 
-- Fast local build profile `devlocal` (debug codegen, incremental) for
-  `scripts/devlocalinstall.sh`: the local install/build loop no longer
-  pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
-  restores the shipped config). The npm bundles keep the fat-LTO release
-  config untouched.
+- `/close` closes the current session tab (issue #94): everything bound to
+  the tab — transcript, composer draft, staged images, prompt queue, ACP
+  asks, subagents — is discarded, and the ACP controller forgets the
+  session's turn state so no queued follow-up is sent into the void.
+  Local only: ACP has no session/close, so the server-side session
+  survives and a running turn keeps settling (its result drops at the
+  router); the session can be re-entered later with `/resume`. The last
+  remaining tab cannot close. Closing a tab that is still awaiting its
+  `session/new`·`resume` bind keeps the FIFO slot but marks it dead, so
+  the late bind is forgotten instead of rebinding whatever tab is on
+  screen.
 
-- Standalone ACP Registry discovery and installation: `martty harness find` and
-  `/harness find` now fetch the official ACP Registry catalog and supplement it
-  with local `*-acp` / `*_acp` PATH discovery. `npx` / `uvx` distributions are
-  configured as launch recipes without implicit flags; platform `binary`
-  distributions are confirmed, SHA-256 checked, and installed under Martty's
-  own `$MARTTY_HOME/bin/<id>/<version>/<platform>` directory before switching.
-  `harness add` and `/harness add` use the same official records, while manual
-  `--command` remains available for unregistered agents.
-  Unqualified `harness find` is the primary discovery path and lists the full
-  catalog without requiring an agent name; query text is only an optional
-  filter. Unconfigured Registry results now point to `harness add <id>` instead
-  of incorrectly suggesting the local-only `harness use <id>` path.
-  Windows discovery now honors `PATHEXT` for launchers such as `npx.cmd`
-  and `uvx.exe`. If those package runners are unavailable, a platform
-  binary distribution takes precedence; package-only entries show the required
-  Node.js/npm or uv setup without persisting an unusable Harness.
-  The built-in Client Plugin adds `/harness`, `/harness <id>`, and
-  `/harness add <id> --command <cmd> [--arg <arg>]` as the third
-  entry point, using the native TUI single-select overlay and the same registry.
-  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → an internal,
-  product-owned `forcedHarness` (empty by default, when supplied) → the saved `defaultHarness`
-  → the bundled fallback. CLI/settings selection applies on the next
-  standalone launch when the product does not force a Harness. In a running
-  standalone TUI, `/harness` replaces the ACP child immediately while no
-  prompt has started the current session. Once
-  the first `session/prompt` has been sent, or an existing session has been
-  loaded, it first confirms that switching starts another session; the current
-  session remains available through session navigation. Standalone startup and
-  Harness replacement now perform `initialize` followed by `session/new`, so
-  the welcome screen immediately receives the Agent's model and effort config.
-  This binds an empty session without starting a model turn and returns the TUI
-  to its landing page; the switch result stays in the composer Tip instead of
-  becoming transcript. Sessions never carry across Harnesses; profile-owned
-  Host runtimes and sessions remain unchanged. `/harness` updates only the
-  saved `defaultHarness`, never the product forced value. `harness find` and
-  `/harness find` keep saved entries visible as `Configured` candidates, so a
-  machine whose known Harnesses are already configured no longer presents an
-  empty discovery result. Binary-only registry entries now offer managed
-  installation under `$MARTTY_HOME/bin` with checksum verification instead of
-  implying that an installer command is itself an ACP launch command.
-- The `@file` mention browser now follows the typed query across the
-  tree: the listing is live-filtered to matching names (exact > prefix >
-  contains > subsequence, `../` always kept so a filtered view can back
-  out), and when the filter leaves nothing in the current directory a
-  bounded search (max 3 levels, skipping `.git`/`node_modules`/`target`-
-  style trees) hops the browser to the closest entry and selects it —
-  typing `@abc` jumps to `docs/abc_ref.md` without a path prefix, and
-  continuing to type keeps the browser there. An empty match leaves the
-  frame up with a no-match hint instead of hiding the menu.
-- A mouse-only expand affordance now sits on the composer card's
-  top-right frame border (issue #92): an always-visible `⛶` glyph that
-  highlights on hover and pins the input to the amplified height (about
-  5/8 of the main area) on click; clicking again restores the
-  draft-following auto height. The glyph lives on the cap row, outside
-  the text well, so a full draft never hides it. It has no key binding
-  and never moves the caret.
-- New gallery palette pack `tomorrow` (dark from Tomorrow Night
-  Bright, light from Tomorrow), sourced from
-  terminalcolors.com/themes/tomorrow. It registers at Client boot as a
-  sibling `inject = ['tuiTheme']` row and `/theme tomorrow` covers it.
-  Both terminalcolors variants export bright black as `#000000`
-  (equal to the dark background, darker than the light foreground), so
-  secondary text/border take the Tomorrow family's canonical comment
-  tones (`#969896` dark / `#8e908c` light) and panel/chip take the
-  selection background (`#424242` / `#d6d6d6`), following the
-  solarized/everforest readability precedent.
-- New gallery palette pack `one` (dark from One Dark, light from One
-  Light), sourced from terminalcolors.com/themes/one. It registers at
-  Client boot as a sibling `inject = ['tuiTheme']` row and `/theme one`
-  covers it; dark/light follows the existing packs. Three adaptations
-  in light mode, all sourced from the One family's canonical syntax
-  tones because One Light's terminal export lacks them: secondary
-  text/border take the comment gray (`#5c6370`) instead of collapsing
-  onto `panel`'s `#bbbbbb` (which made picker dialog text unreadable),
-  `warn` takes the orange constant tone (`#c18401`) instead of the
-  export's pale tan (invisible as the approval dialog border on the
-  panel), and `hint` takes the aqua tone (`#0184bc`) because the export
-  maps cyan and green to the same swatch, colliding with `ok`. One
-  Dark's inverted selection also makes the user bubble light-on-dark in
-  dark mode and dark-on-light in light mode, straight from the source
-  selection swatches.
-- `@file` mentions in the composer (issue #62): typing `@` at a word
-  boundary opens a workspace file browser (ratatui-explorer) above the
-  input. The query's directory prefix descends as you type (`@src/m` opens
-  `src/` and jumps to the first `ma*` entry), `↑/↓` move, `Tab`/`→` drill
-  into a directory (rewriting the token to `@dir/`), `←` goes up, `Enter`
-  picks (`@path`, `@"path with spaces"` quoted automatically, directories
-  keep their trailing `/`), `Esc` dismisses the token until its text
-  changes, and `ctrl+h` toggles hidden files and directories. Emails and
-  URL hosts never trigger; the `@"…"` form allows
-  spaces and keeps the quote open while drilling. The browser colors from
-  the active theme tokens (panel/border/fg/brand/chip_bg), so palette
-  packs and both UI presets apply.
+- Everything the frame paints between the session tab strip and the
+  composer stats dock is now bound to the viewed tab, not shared: the
+  composer draft and its staged `[image n]` chips (plus the `@file`
+  browser and the pinned/expanded composer height) park with their
+  session like the queue already did, chat scroll position, the `/model`
+  pick, the welcome banner, and the running-state meta row (elapsed
+  timer + state note) survive a tab switch exactly as left, and a `!`
+  shell command started on one session lands its result in that session's
+  transcript even if the user switched tabs while it ran.
+
+- `/session view` shows the session + runtime info popup, and
+  `/session prev` / `/session next` switch to the previous/next session
+  tab (issue #94) — the tab strip needs no mouse. Every route (click and
+  command) shares one path that dismisses transient interactions and
+  releases compositor overlays with their cancel events before parking
+  the session. Overflowing tab bars show an overflow counter (`+N`).
+
+### Changed
+
+- Markdown body text is now single-tone by default: CJK and Latin/digit
+  runs share one foreground color (`fg`) instead of the previous always-on
+  CJK/Latin split. The two-tone look (Chinese on the muted body gray,
+  English brighter) remains available as a deliberately quiet preference —
+  no command or picker surface for now: set `markdownTone` to `"two"` in
+  the UI settings file (settings.json, next to `themeMode`) to opt in. The
+  choice applies everywhere markdown paints — assistant messages, tables,
+  plugin slot content, and overlay/plan descriptions.
+
+- Markdown tables wider than the chat width no longer truncate cells with
+  an ellipsis. The transcript buffers each table block whole and re-lays
+  it out: columns shrink proportionally (narrow columns keep their
+  natural width, wide ones share what remains), and cell text soft-wraps
+  across extra box rows — `│`-framed continuation lines, `├─┼─┤`
+  junctions still between body rows — so every character stays readable.
+  Source column alignment (`:---`/`---:`/`:---:`) survives the re-layout
+  for cells that fit on one line, and tables inside blockquotes or list
+  items keep their `>` marker / continuation indent on every frame line
+  instead of being wrapped apart like prose. Tables that already fit the
+  width are painted unchanged.
 
 ### Fixed
 
-- ACP sign-in now distinguishes a pending authenticate request, a rejected login,
-  and success. Agent failure reasons (including OAuth account eligibility errors)
-  appear in a visible dialog on the landing page and in `/status`, instead of
-  being hidden behind a generic sign-in hint. Retries clear stale errors and
-  retain the selected authentication method; browser authorization is not treated
-  as ACP authentication success.
-- Selecting an already-configured Harness in Add/Find switches it through the
-  normal session boundary instead of showing another configuration-complete notice.
+- Bold Markdown table text now follows the selected body color mode while
+  retaining its emphasis, fixing emphasized text appearing darker than
+  surrounding text in single-tone mode, especially with the One theme.
+- Fix `dsh --profile martty` startup against dsh 0.1.2 hosts: the embedded
+  ACP plugin now resolves agent presets from a self-shipping
+  `@deepseek-ai/dsh-agent-presets` instead of requiring the legacy
+  `@deepseek-ai/dsh/config/agent-presets` layout removed in dsh 0.1.2-rc.1
+  (bump `@openma/deepseek-harness-acp` to 0.4.29).
+- Preserve queue selection and edits across session tabs, including pausing
+  background delivery until an edit is saved or cancelled. Failed session
+  configuration operations no longer mark a running prompt idle.
+- Keep prompts and cancellations responsive while session creation, restore,
+  configuration or plugin requests are pending. Configuration changes retain
+  their order within a session; prompts and Send Now requests can run longer
+  than the 120-second control-request deadline.
+- Preserve replayed Plan and usage snapshots when session/load completes,
+  and keep concurrent Send Now responses from overwriting turn statistics.
+- Render code inside Markdown quotes with intact frames, newlines and
+  indentation; preserve grapheme clusters during wrapping; keep exact-width
+  table borders and deeply nested list content within the viewport.
 
-- ACP authentication success now clears the sign-in warning immediately, before
-  waiting for session creation. Session setup failures remain separate errors;
-  only an explicit authentication-required response restores the sign-in state.
+- Multi-session state is now isolated end to end: background ACP updates no
+  longer replace the visible tab's config, plan, stats, status, model/skill/
+  permission catalogs, cancellation state, or `/resume` picker; stale prompt
+  completions also cannot release a newer turn after a session is rebound.
 
-- Add Harness opens directly from a bundled official ACP Registry snapshot or
-  the last validated disk cache, without a blocking Loading panel. Catalog
-  refresh and local probes run in the background; offline refreshes retain the
-  existing list, and selecting an unprobed recipe checks its local command first.
+- `dsh --profile martty` starts correctly with dsh 0.1.2: an intentional Client
+  `SIGTERM` during the initial profile recompose no longer exits the replacement
+  Host tree, and compatibility adapters cover the new scoped user-question and
+  subagent model-selection Host services, the immutable session-event snapshot,
+  and the Session-based permission projection used by `/new` and `/resume`.
+  If a future bind fails, the ACP error is now shown instead of being discarded.
 
-- Harness switch connection/setup now defaults to a twenty-minute timeout
-  instead of 60 seconds; explicit caller timeouts remain supported.
+- Long-running ACP `terminal/*` commands now evict old output with an
+  amortized buffer instead of shifting the full retained window for every
+  small read. The bounded tail and UTF-8-safe output are unchanged, while
+  high-volume command output avoids repeated near-limit memory copies.
 
-- Harness switching no longer applies its machine setup deadline while a user
-  is completing ACP authentication. The deadline resumes after authentication
-  returns, so browser sign-in does not kill the new Harness after 60 seconds.
+- Code-review sweep (2026-09-03):
 
-- Binary archive inspection/extraction now has a ten-minute default deadline,
-  increased from 60 seconds. Explicit caller deadlines and cancellation still
-  terminate the extractor and clean staging.
+  - **Terminal output integrity** — `terminal/output` no longer corrupts
+    multi-byte characters split across 4096-byte reads: partial UTF-8
+    sequences are carried across chunks instead of being decoded per read
+    into U+FFFD. Unknown terminal ids now return protocol errors for
+    `output`/`wait`/`kill`/`release` instead of a fake success.
+  - **Terminal Auth keystrokes** — the crossterm input reader parks during
+    Terminal Auth (and stays parked until the auth subprocess exits), so
+    the login child no longer loses keystrokes to the UI reader.
+  - **Background tab errors** — a failed image prompt (no image support,
+    spill failure, empty payload) now reports through the requesting
+    session, so a parked tab's running badge can no longer stick forever
+    while the error lands on the viewed tab. `PromptQueued` carries the
+    session id and only settles that session.
+  - **Persistent shell** — `!` commands run with stdin from `/dev/null` and
+    a 120-second silence deadline: a command that used to eat the control
+    stream (`!cat`) or hang silently now kills the shell and the next `!`
+    restarts it, instead of wedging the single shell worker forever.
+  - **Cross-tab bind state** — same-session `/resume` keeps a FIFO bind
+    entry (a concurrent `/new` can no longer steal the bind and cross-wire
+    tabs), and both resume paths release plugin overlays with their cancel
+    events like a tab click does, instead of leaking them onto the new
+    tab.
+  - **Modal keys** — vim mode only intercepts keys when no modal is up:
+    one Esc cancels a permission ask / picker / overlay while vim Insert
+    is active, and normal-mode letters no longer land in a hidden composer
+    under a modal.
+  - **ACP turn lifecycle** — in-flight prompts carry a generation tag so a
+    stale finish after `/close` + `/resume` can never clear the new turn's
+    occupancy marker (no more double `session/prompt` per session), and a
+    `session/cancel` racing an already-settling turn trusts the agent's
+    stop reason instead of reporting a successful turn as interrupted.
+  - **ACP robustness** — every request the command loop awaits gets a
+    120s deadline (a hung agent can no longer freeze Interrupt/Shutdown);
+    the queue/agents snapshots stay silent for agents that never
+    negotiated `_dsh/cordis`; second and later sessions now update the
+    mode catalog from their own `configOptions`; `file://` URIs are
+    percent-encoded (spaces, `#`, `?`, CJK paths); and `terminal/create`
+    asks through the permission overlay before running an agent-supplied
+    command.
+  - **Runtime writer deadlock** — the legacy transport's stdin writer is
+    taken out of the shared slot while a write blocks, so a wedged child
+    can no longer deadlock `kill()` or starve the frame reader; the
+    reader's best-effort replies never block on the write path.
+  - **Editing** — vim `O` lands the cursor on the new blank line above;
+    explicit range kills and chip deletion ignore an active shift
+    selection (an image chip can no longer survive as literal
+    `[image n]` text with its attachment removed); the form editor
+    deletes whole grapheme clusters and gives combining marks zero width;
+    plain ctrl+c (not ctrl+shift+c) cancels elicitation forms.
+  - **Transcript rendering** — `/clear` invalidates stale cell-index
+    handles (shell results and steer echoes can no longer leak into a
+    fresh transcript); 4+ backtick fences with literal ```` ``` ````
+    content render as one frame; the composer input dock measures at its
+    real width (pet inset included) so PLAN summaries are not truncated;
+    collapsed shell output keeps the tail like tool output; the
+    navigation rail trims its last section instead of overlapping the
+    trailing actions; user-node and injected-context wrap budgets use
+    display width; zero-width characters are consistent across the
+    markdown paths; and the chat pane's selection snapshot is
+    viewport-sized instead of cloning the whole scrollback every frame
+    (long streaming sessions no longer allocate O(history) text per
+    frame — hit-testing translates through the viewport anchor, and the
+    render window borrows the assembled lines instead of copying them).
+  - **npm packaging** — a corrupt `settings.json` no longer blocks boot
+    (it is moved aside and settings restart fresh) and theme preferences
+    are written atomically; `package-alias.mjs` skips `node_modules` and
+    the lockfile, asserts source/alias version parity, and tells you how
+    to replace a stale alias; `release.mjs` warns when a stale local
+    `npm-martty` checkout would publish an old version; the painter exit
+    path maps signals to 130/143/1 consistently, `MARTTY_BIN` falling
+    back is announced, spawn failures print a diagnostic; shell scripts
+    honor `CARGO_TARGET_DIR` in the local installer, tolerate `du`/`df`
+    failures, clean stale `dist/*.tgz`, and use `mktemp` for diagnostics;
+    the old-ACP install-matrix case skips when the registry is
+    unreachable.
 
-- Harness connection/setup failures now show the agent's reason once in a
-  readable error panel, preserving the ACP method, error code, and error data.
-  Captured stderr is available separately in diagnostic details; recovery
-  actions offer retry, another Harness, or manual configuration without
-  replacing the saved default on failure.
+- The session tab strip now scrolls instead of cutting off: clicking the
+  leftmost or rightmost visible tab switches to it **and** nudges the
+  strip by one, so the adjacent tab appears — repeated edge clicks walk
+  the mouse through every session tab in either direction. The window
+  always keeps the live tab on screen: opening or switching to a session
+  outside the window re-anchors the strip with it at the right edge, and
+  once the tabs all fit again the strip snaps back to the head.
 
-- Harness switching now reclaims raw-mode ownership if the retiring ACP child
-  restores the TTY to cooked mode, and repeated `Ctrl+C` cannot trigger the
-  global quit chord while its replacement initializes. This prevents queued
-  Kitty keyboard reports such as `^[[99;5u` from leaking onto the terminal.
-  The built-in Codex Harness recipe also asks `npx` to prefer its local cache,
-  avoiding an unnecessary registry check on warm launches.
-- Welcome information now takes the runtime and model from the active ACP
-  connection and session. Generic Harnesses wait for the Agent's model report
-  instead of displaying the startup CLI's DeepSeek defaults, and Harness
-  switches clear the previous session's model before reconnecting.
-- Codex ACP adapter diagnostics now negotiate the typed `sessionFailure`
-  capability and render as TUI notices instead of being forwarded as assistant
-  prose. The footer model chip now follows the model reported by the active ACP
-  session and no longer falls back to a DeepSeek model name for generic
-  Harnesses. Reasoning effort now follows the semantic ACP `thought_level`
-  option, including its advertised values, current selection, and actual config
-  id. Local Client compositor commands such as `/harness` also remain usable
-  when the attached Agent does not advertise the server-side Cordis extension.
-- `martty harness list` now renders a width-aware, readable Harness catalog
-  with active state, labels, IDs, sources, separate command arguments, compact
-  local paths, and next-step hints instead of raw tab-separated rows. The
-  Harness help surface now also accepts the conventional `-h` and `--help`
-  aliases and includes commands, options, examples, and the new-session rule.
-  `harness add` now guides setup, while `harness find` resolves official ACP
-  Registry distributions and local PATH commands; binary installation is
-  managed under Martty's own home and manual command configuration remains the
-  final option.
+- The mouse wheel now scrolls an open picker dialog (the `/resume` session
+  list, `/model`, `/mode`, …) instead of falling through to the chat
+  behind it: one notch moves the selection exactly like one ↑/↓ press,
+  clamping at the list ends. Permission asks floating above a picker take
+  the wheel first, matching their keyboard priority.
+
+- Picker dialogs own a stable viewport window now: ↑/↓ and the wheel
+  sweep the highlight through the visible rows, and the window only
+  scrolls once the selection leaves it — previously the window was
+  re-pinned to the selection every frame, so keys after a wheel-scroll
+  slid the whole list instead of moving the highlight, and the highlight
+  stuck to a window edge instead of tracking the wheel. The scrollbar
+  thumb also tracks the real scroll offset (rescaled onto the track), so
+  it reaches the bottom at the deepest scroll instead of stalling a
+  third of the way down.
+
+- Background session subagents now receive their transcript updates and
+  streamed deltas cleanly, rather than having non-root session facts dropped
+  at the UI event router while parked.
+
+- Permission and elicitation asks from subagents are routed to their owning
+  session tab (badging the tab when parked) instead of defaulting to the
+  live tab and cancelling any foreground ask already on screen.
+
+- Closing a session (`/close`) now purges any auth-stalled prompts parked
+  for that session, and prompt settlement always reports session idle state
+  so a stall on one session never freezes queue dispatch on others.
+
+- Local shell commands (`!cmd`) started on an unbound tab update their
+  pending tracker when `SessionBound` arrives, ensuring command completion
+  never hangs indefinitely.
+
+- `list_sessions` now pre-sorts files by modified time before loading and
+  parsing JSONL logs, bounding decompression work to the top 50 sessions.
+
+- `/plan` (and host skill config actions that map onto ACP
+  `session/set_config_option`) now addresses the **viewed** session: the
+  command carries the session id, so toggling plan mode on an older tab
+  no longer silently flips the most recently bound session's plan.
+
+- Failures are now routed to the session they concern instead of always
+  printing on the viewed tab: prompt/steer/config rejections and errors
+  arrive as session-scoped events and land in the owning tab's own
+  transcript (including parked tabs), while a parked session's
+  `Send Now` settlement (`SteerSettled`) requeues into that session's
+  FIFO even if the user switched away meanwhile.
+
+- Auth stalls no longer misroute retries or lose payloads: a prompt that
+  hits an auth error is parked **with its owning session** (a queue, so
+  concurrent stalls on several sessions cannot overwrite each other), its
+  tab settles like a finished turn, and the next successful sign-in (or
+  any succeeding prompt) retries every stalled prompt into its own
+  session — never into the fallback session. A stalled prompt whose tab
+  was closed meanwhile is dropped instead of leaking into another
+  conversation.
+
+- Failed or auth-stalled `session/new`·`resume` requests no longer poison
+  the bind FIFO: they emit a bind-failure event that drops the awaiting
+  entry and tells its tab (which stays open), so the next successful bind
+  lands on the tab that actually asked — including the startup race where
+  the client's own `/new` overtakes the unrequested startup bind (the
+  startup session now finds its original parked tab instead of hijacking
+  the viewed one).
+
+- An unbound tab's queued prompts are never burned: queue dispatch is
+  gated on the session bind, so a rejection error cannot cascade-pop the
+  whole FIFO through repeated unknown-session errors.
+
+- `/resume` over ACP (`session/load`) no longer leaves the welcome banner
+  covering the replayed transcript: the banner was only dismissed by the
+  first prompt send (and by the local JSONL resume path), so resuming
+  before ever sending a prompt hid every loaded message until the user
+  typed and sent something. `resume_acp_session` (session/resume and the
+  legacy session/load fallback) now dismisses the banner before the
+  transcript streams in, like `resume_session` already did.
+
+- Painter info popups (`/help`, `/keys`, `/session`, and the painter
+  `/status` fallback) and the `/plugins` / `/cordis-plugins` inventory tree
+  now follow their session across tabs like the ACP asks do: opening one,
+  clicking another tab, and returning restores the popup exactly as left
+  (scroll and tree selection included), instead of floating over the newly
+  viewed session. Compositor-owned plugin overlays (the live `/status`
+  view, plan views, select/slider modals) cannot ride along — they belong
+  to the client Plugin runtime's single-overlay slot — so a tab switch
+  cancels them with the same event Esc would send (the plugin releases its
+  slot; shipped plugins have no cancel side effects). A plugin's later
+  "overlay closed" ack no longer eats a painter popup restored by that
+  switch.
+
+- Session-bound ACP asks (permission and elicitation popups) now follow
+  their session across tabs instead of floating over whatever session is on
+  screen: an ask that arrives for a background session waits in that
+  session's tab (marked with a `?` in the tab strip) and only shows when
+  its own tab is viewed; switching away never cancels or answers it, and
+  answering or Esc-ing it works from its own tab only. Two asks on
+  different sessions no longer clobber each other (the displaced ask used
+  to auto-cancel, silently denying the agent's tool call).
+
+- The UI no longer freezes for minutes when an agent floods the connection
+  with session updates — reproduced with dsh-acp's `session/load` replay of
+  a long session, which re-emits every historical delta (a 10k-event log
+  arrived as ~258k notifications / 1.4 GB and saturated the event loop.
+  Two defenses: drained bursts of `session/update` notifications are now
+  coalesced before application (adjacent text deltas of one message are
+  concatenated; superseded bare `tool_call_update`s keep only the latest
+  state — lossless for the final transcript), and the per-event
+  queue/agents projection comparisons now use cheap fingerprints instead of
+  full snapshot clones. The composer stays responsive while such a storm
+  drains in the background.
+
+
 - `/resume` now uses ACP `session/resume` when the agent advertises it, so long
   sessions can continue without replaying their full transcript into the TUI.
   Agents that only support the legacy `session/load` path keep working, and a
   rejected resume request falls back to load when that capability is available.
+
 - `acpSessionStatus` now treats each standard ACP `session/prompt` response
   (success or error) as that request's terminal turn signal, returning to
   `idle` after every pending prompt and concurrent steer has settled. This
@@ -364,7 +484,124 @@ All notable changes to this project are documented here. The project follows
   in-body `## …` headings were dropped from `/plan-view`, `/keys`, `/help`,
   `/session` and `/status` — the popup border already names the window.
 
+
+- The composer input now supports the mouse: left-click places the caret at
+  the clicked character (blank space past the text snaps to the end), and
+  left-drag selects a text span that is copied to the clipboard on release,
+  with the highlight persisting until the next click or Esc. CJK/emoji
+  double-width characters are handled cell-accurately: the caret splits a
+  wide char at its midpoint and a drag covers it whole. Mouse actions never
+  trigger submit, history recall or slash-completion selection.
+- `Ctrl+U`, `Ctrl+K`, and the corresponding macOS line-kill shortcut now
+  delete only to the current rendered line boundary instead of truncating the
+  entire multiline composer draft.
+- The composer caret no longer flickers while the transcript scrolls (agent
+  streaming auto-follow, or scrolling yourself). The caret is now painted as
+  a buffer cell — a steady reversed block that rides the frame diff — and
+  the terminal's hardware cursor stays hidden for the whole session, instead
+  of being hidden for the entire frame write (long during scroll redraws)
+  and re-shown at frame end. Elicitation form fields use the same cell
+  caret; the old hardware-cursor position and the redundant `▏` insert mark
+  are gone. Frames still apply as one synchronized update (DECSET 2026).
+- Image thumbnails and the pixel pet no longer re-send their whole PNG to
+  the terminal on every move: each kitty image is transmitted once under its
+  image id, and viewport scrolls (thumbnails) or composer-height changes and
+  idle↔working toggles (pet) re-place it with a small `a=p` placement
+  command, dropping the previous placement only after the new one exists so
+  nothing blinks out mid-scroll. The pet's ~43KB sprite retransmit on every
+  long-draft wrap boundary is gone. All kitty writers now share one set of
+  protocol primitives, and the pet's screen anchor is recorded by the frame
+  draw itself instead of being recomputed in main.
+
 ### Added
+
+- Multi-session parallel management (issue #94): one ACP connection now
+  drives several sessions concurrently. Once a second session exists, a
+  native tab strip appears at the top — one tab per session with a running
+  indicator (spinner on the viewed tab, `●` in the background) and a `✓`
+  completion badge for sessions that finished while in the background;
+  left-click a tab to switch. `/new` and `/resume` now park the current
+  session instead of discarding it: switching back restores its transcript,
+  prompt queue, modes, and subagent panels exactly as left, while background
+  sessions keep folding their `session/update` events into their own
+  transcripts (the event router also no longer lets foreign-session events
+  leak into the viewed transcript). Prompts, steers, interrupts, and
+  per-session queues are addressed by session id, so turns on different
+  sessions run truly concurrently.
+- `scripts/acp-multi-session.smoke.mjs`: opt-in smoke check that the
+  spawned dsh-acp agent drives concurrent sessions over one ACP connection
+  (consumes a small amount of model tokens; not part of `npm test`).
+
+- Fast local build profile `devlocal` (debug codegen, incremental) for
+  `scripts/devlocalinstall.sh`: the local install/build loop no longer
+  pays the fat-LTO release build (`DSH_TUI_CARGO_PROFILE=release`
+  restores the shipped config). The npm bundles keep the fat-LTO release
+  config untouched.
+
+- Standalone harness registry and discovery: `martty harness list` shows saved
+  entries, the bundled DSH runtime, and executable `*-acp` / `*_acp` commands
+  on `PATH`; `harness add` saves a named command and repeated arguments, while
+  `harness use` persists the active entry in `$MARTTY_HOME/settings.json`.
+  The built-in Client Plugin adds `/harness` and `/harness <id>` as the third
+  entry point, using the native TUI single-select overlay and the same registry.
+  Standalone startup now resolves `--agent` → `DSH_TUI_AGENT` → the saved
+  `activeHarness` → the bundled default. Selection applies on the next launch,
+  which creates a fresh ACP session; sessions never carry across Harnesses and
+  profile-owned Host runtimes and sessions are unchanged.
+- The `@file` mention browser now follows the typed query across the
+  tree: the listing is live-filtered to matching names (exact > prefix >
+  contains > subsequence, `../` always kept so a filtered view can back
+  out), and when the filter leaves nothing in the current directory a
+  bounded search (max 3 levels, skipping `.git`/`node_modules`/`target`-
+  style trees) hops the browser to the closest entry and selects it —
+  typing `@abc` jumps to `docs/abc_ref.md` without a path prefix, and
+  continuing to type keeps the browser there. An empty match leaves the
+  frame up with a no-match hint instead of hiding the menu.
+- A mouse-only expand affordance now sits on the composer card's
+  top-right frame border (issue #92): an always-visible `⛶` glyph that
+  highlights on hover and pins the input to the amplified height (about
+  5/8 of the main area) on click; clicking again restores the
+  draft-following auto height. The glyph lives on the cap row, outside
+  the text well, so a full draft never hides it. It has no key binding
+  and never moves the caret.
+- New gallery palette pack `tomorrow` (dark from Tomorrow Night
+  Bright, light from Tomorrow), sourced from
+  terminalcolors.com/themes/tomorrow. It registers at Client boot as a
+  sibling `inject = ['tuiTheme']` row and `/theme tomorrow` covers it.
+  Both terminalcolors variants export bright black as `#000000`
+  (equal to the dark background, darker than the light foreground), so
+  secondary text/border take the Tomorrow family's canonical comment
+  tones (`#969896` dark / `#8e908c` light) and panel/chip take the
+  selection background (`#424242` / `#d6d6d6`), following the
+  solarized/everforest readability precedent.
+- New gallery palette pack `one` (dark from One Dark, light from One
+  Light), sourced from terminalcolors.com/themes/one. It registers at
+  Client boot as a sibling `inject = ['tuiTheme']` row and `/theme one`
+  covers it; dark/light follows the existing packs. Three adaptations
+  in light mode, all sourced from the One family's canonical syntax
+  tones because One Light's terminal export lacks them: secondary
+  text/border take the comment gray (`#5c6370`) instead of collapsing
+  onto `panel`'s `#bbbbbb` (which made picker dialog text unreadable),
+  `warn` takes the orange constant tone (`#c18401`) instead of the
+  export's pale tan (invisible as the approval dialog border on the
+  panel), and `hint` takes the aqua tone (`#0184bc`) because the export
+  maps cyan and green to the same swatch, colliding with `ok`. One
+  Dark's inverted selection also makes the user bubble light-on-dark in
+  dark mode and dark-on-light in light mode, straight from the source
+  selection swatches.
+- `@file` mentions in the composer (issue #62): typing `@` at a word
+  boundary opens a workspace file browser (ratatui-explorer) above the
+  input. The query's directory prefix descends as you type (`@src/m` opens
+  `src/` and jumps to the first `ma*` entry), `↑/↓` move, `Tab`/`→` drill
+  into a directory (rewriting the token to `@dir/`), `←` goes up, `Enter`
+  picks (`@path`, `@"path with spaces"` quoted automatically, directories
+  keep their trailing `/`), `Esc` dismisses the token until its text
+  changes, and `ctrl+h` toggles hidden files and directories. Emails and
+  URL hosts never trigger; the `@"…"` form allows
+  spaces and keeps the quote open while drilling. The browser colors from
+  the active theme tokens (panel/border/fg/brand/chip_bg), so palette
+  packs and both UI presets apply.
+
 
 - The light/dark theme mode (`ctrl+t`, `/theme toggle`) now persists to
   `settings.json` (`themeMode`) and is restored on the next launch; an
@@ -402,36 +639,6 @@ All notable changes to this project are documented here. The project follows
 - Popup dialog bodies (keys/plan-view/status and friends) are indented one
   level from the border, and markdown wraps one level narrower so
   continuation lines stay aligned (issue #49).
-
-### Fixed
-
-- The composer input now supports the mouse: left-click places the caret at
-  the clicked character (blank space past the text snaps to the end), and
-  left-drag selects a text span that is copied to the clipboard on release,
-  with the highlight persisting until the next click or Esc. CJK/emoji
-  double-width characters are handled cell-accurately: the caret splits a
-  wide char at its midpoint and a drag covers it whole. Mouse actions never
-  trigger submit, history recall or slash-completion selection.
-- `Ctrl+U`, `Ctrl+K`, and the corresponding macOS line-kill shortcut now
-  delete only to the current rendered line boundary instead of truncating the
-  entire multiline composer draft.
-- The composer caret no longer flickers while the transcript scrolls (agent
-  streaming auto-follow, or scrolling yourself). The caret is now painted as
-  a buffer cell — a steady reversed block that rides the frame diff — and
-  the terminal's hardware cursor stays hidden for the whole session, instead
-  of being hidden for the entire frame write (long during scroll redraws)
-  and re-shown at frame end. Elicitation form fields use the same cell
-  caret; the old hardware-cursor position and the redundant `▏` insert mark
-  are gone. Frames still apply as one synchronized update (DECSET 2026).
-- Image thumbnails and the pixel pet no longer re-send their whole PNG to
-  the terminal on every move: each kitty image is transmitted once under its
-  image id, and viewport scrolls (thumbnails) or composer-height changes and
-  idle↔working toggles (pet) re-place it with a small `a=p` placement
-  command, dropping the previous placement only after the new one exists so
-  nothing blinks out mid-scroll. The pet's ~43KB sprite retransmit on every
-  long-draft wrap boundary is gone. All kitty writers now share one set of
-  protocol primitives, and the pet's screen anchor is recorded by the frame
-  draw itself instead of being recomputed in main.
 
 ## [0.2.24] - 2026-08-24
 

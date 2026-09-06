@@ -9,7 +9,7 @@
 // branch or when a tag for the version already exists.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -100,6 +100,20 @@ try {
   const lockAfter = bumpCargoLock(lockBefore, cargoPackageName(cargoBefore), version)
   if (lockAfter === lockBefore) {
     throw new Error(`Cargo.lock is already at ${version}`)
+  }
+
+  // A stale local alias package is a publish hazard: it is gitignored and
+  // generated per release, so an old checkout copy would silently ship an
+  // old version if published without regenerating. Warn loudly.
+  const aliasPackage = path.join(repoRoot, 'npm-martty', 'package.json')
+  if (existsSync(aliasPackage)) {
+    const aliasVersion = JSON.parse(readFileSync(aliasPackage, 'utf8')).version
+    if (aliasVersion !== version) {
+      process.stdout.write(
+        `warning: local npm-martty/package.json is at ${aliasVersion} — regenerate the alias`
+          + ` (rm -rf npm-martty && node scripts/package-alias.mjs npm npm-martty martty) before publishing it\n`,
+      )
+    }
   }
 
   if (dryRun) {

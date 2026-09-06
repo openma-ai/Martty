@@ -20,14 +20,20 @@ pub enum AppEvent {
     Ctl(CtlEvent),
     /// ACP `session/request_permission`: UI picks an option, then replies
     /// on the oneshot. The ACP task waits; the UI thread does not.
+    /// `session_id` names the owning session so the ask can follow its tab
+    /// instead of floating over whatever session is on screen.
     PermissionAsk {
+        session_id: String,
         title: String,
         options: Vec<PermissionAskOption>,
         reply: tokio::sync::oneshot::Sender<PermissionAskReply>,
     },
     /// ACP `elicitation/create` form: the UI owns the modal and answers the
     /// request through this oneshot without blocking session updates.
+    /// Request-scoped elicitations (auth/config phases, no session yet)
+    /// carry `None` and surface on the live view.
     ElicitationAsk {
+        session_id: Option<String>,
         form: crate::elicitation::ElicitationForm,
         reply: tokio::sync::oneshot::Sender<crate::elicitation::ElicitationReply>,
     },
@@ -79,8 +85,14 @@ pub enum CtlEvent {
     Ready { server: String },
     /// Connection/session setup failed, distinct from an individual prompt error.
     ConnectionFailed { target: String, error: String },
-    /// session/prompt accepted into the durable inbox.
-    PromptQueued { message_id: String },
+    /// session/prompt accepted into the durable inbox. `session_id` names
+    /// the session the prompt belongs to when the sender knows it — the
+    /// App must not settle the viewed tab's state for another session's
+    /// prompt. Legacy attach transports (no session context) send `None`.
+    PromptQueued {
+        message_id: String,
+        session_id: Option<String>,
+    },
     /// A Send Now request settled. Rejected concurrent prompts degrade to
     /// the client FIFO without changing the active turn lifecycle.
     SteerSettled { message_id: u64, deferred: bool },
@@ -88,31 +100,52 @@ pub enum CtlEvent {
     Error(String),
     /// Backchat `session.cancel_requested`: user stop accepted; `session/cancel`
     /// is on the wire. The in-flight `session/prompt` has not unwound yet.
-    CancelRequested,
+    CancelRequested { session_id: String },
     /// Backchat `session.cancelled`: the prompt future settled after abort.
-    Interrupted,
+    /// `session_id` names the session whose turn was interrupted; one
+    /// connection can run turns for several sessions concurrently.
+    Interrupted { session_id: String },
     /// Host model catalog + advertised composition select.
     Catalog {
+        session_id: Option<String>,
         models: Vec<CatalogModel>,
         presets: Vec<CatalogPreset>,
     },
     /// Host skill catalog arrived (`available_commands_update`).
-    Skills { skills: Vec<SkillInfo> },
+    Skills {
+        session_id: Option<String>,
+        skills: Vec<SkillInfo>,
+    },
     /// Read-only Loader inventory, matching the Web plugin list.
     StaticPlugins { plugins: Vec<StaticPluginItem> },
     /// Dynamic Cordis plugins owned by the current Host Agent.
     CordisPlugins { plugins: Vec<CordisPluginItem> },
     /// ACP session modes (permission / `session/set_mode`).
     SessionModes {
+        session_id: Option<String>,
         modes: Vec<CatalogPreset>,
         current: Option<String>,
     },
     /// The agent accepted a composition switch (`session/set_config_option`).
-    PresetSet { preset: String },
+    PresetSet {
+        session_id: String,
+        preset: String,
+    },
     /// Selectable reasoning efforts for the current model.
     Efforts {
+        session_id: Option<String>,
         efforts: Vec<String>,
         default: Option<String>,
+    },
+    /// A failed session operation that does not finish the active prompt.
+    SessionOpFailed {
+        session_id: String,
+        message: String,
+    },
+    /// A failed prompt: settle this session's delivery state and report the error.
+    SessionError {
+        session_id: String,
+        message: String,
     },
     /// A client-side control call succeeded.
     TuiOpDone(String),
@@ -133,14 +166,29 @@ pub enum CtlEvent {
         session_id: String,
         notice: Option<String>,
     },
+    /// A `session/new` or `session/resume` request failed outright (not an
+    /// auth stall — auth keeps the request parked). acp completes bind
+    /// requests in order, so the awaiting-bind FIFO head owns the failure;
+    /// the UI drops that entry instead of letting a later bind land on a
+    /// dead request (issue #94 bind poisoning).
+    BindFailed {
+        message: String,
+    },
     /// `session/list` rows (`prefix` is the `/resume` argument, if any).
+    /// Rows from ACP `session/list`, plus the `/resume n` limit carried by
+    /// the request (applied after the current session is filtered out).
     SessionList {
+        requester_session_id: String,
         sessions: Vec<SessionListItem>,
         prefix: Option<String>,
+        limit: usize,
     },
-    /// `session/list` missing or failed; UI falls back to local JSONL.
+    /// `session/list` missing or failed; UI falls back to local JSONL with
+    /// the same `limit` the request carried.
     SessionListUnavailable {
+        requester_session_id: String,
         prefix: Option<String>,
+        limit: usize,
         error: String,
     },
 }
@@ -205,7 +253,7 @@ pub struct CatalogModel {
 /// One advertised composition choice (`agent` / `preset` / `agent-preset`,
 /// or the first extra uncategorized select). Demo seeds stock ids including
 /// `cordis`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CatalogPreset {
     pub id: String,
     pub name: String,
@@ -321,9 +369,13 @@ pub enum Cmd {
         model: Option<String>,
         effort: Option<String>,
     },
-    FetchCatalog,
+    FetchCatalog {
+        session_id: String,
+    },
     /// Fetch user-invocable host skills for the slash menu.
-    FetchSkills,
+    FetchSkills {
+        session_id: String,
+    },
     /// Fetch the Host's read-only Loader inventory.
     FetchStaticPlugins,
     /// Fetch dynamic Cordis plugins owned by this Agent from the Host registry.
@@ -356,6 +408,11 @@ pub enum Cmd {
     AgentsSnapshot {
         snapshot: AgentsSnapshot,
     },
+    /// Publish the currently visible native tab into the Client-side
+    /// per-session projections. `None` means the tab is awaiting a bind.
+    ActiveSession {
+        session_id: Option<String>,
+    },
     /// A native `/theme` or picker selection committed on the Client tree.
     PluginThemeSelected {
         agent_id: String,
@@ -374,6 +431,7 @@ pub enum Cmd {
         value: Option<Value>,
     },
     FetchEfforts {
+        session_id: String,
         provider: String,
         model: String,
     },
@@ -389,6 +447,7 @@ pub enum Cmd {
     /// Agent-advertised command action (`_meta.commandAction`) mapped onto
     /// standard ACP `session/set_config_option`.
     SetConfigOption {
+        session_id: String,
         config_id: String,
         value: String,
     },
@@ -400,12 +459,22 @@ pub enum Cmd {
     },
     /// Live ACP `/new` → `session/new` (cwd = workspace).
     NewSession,
-    /// Live ACP `/resume` listing (`session/list`). `prefix` is the typed id.
+    /// Live ACP `/resume` listing (`session/list`). `prefix` is the typed id;
+    /// `limit` caps how many entries come back (`/resume n`).
     ListSessions {
+        requester_session_id: String,
         prefix: Option<String>,
+        limit: usize,
     },
     /// Live ACP `/resume` pick → `session/resume`, with legacy `session/load` fallback.
     ResumeSession {
+        session_id: String,
+    },
+    /// `/close`: this client stops viewing a session. ACP has no
+    /// session/close, so the server-side session survives; the controller
+    /// drops the session's turn state and queued prompts so nothing more is
+    /// sent into the void, and its later events settle at the router.
+    ForgetSession {
         session_id: String,
     },
     Shutdown,

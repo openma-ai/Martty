@@ -1,5 +1,6 @@
 //! Rendering: banner, scrollback, tips row, status bar, prompt, hints, overlays.
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -7,13 +8,15 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, FrameExt, HighlightSpacing, Paragraph, Row, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Table, TableState,
 };
+use ratatui::widgets::Widget;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, RunState};
 use crate::logo;
+use crate::markdown::ToneMode;
 use crate::pet::{SPRITE_H, SPRITE_W, WHALE_XS};
-use crate::theme::{lerp, Theme};
+use crate::theme::{lerp, Mode, Theme};
 
 /// Columns the composer text keeps clear of the pet at its right edge
 /// (widest pet form is 8 cols, plus a one-column gap).
@@ -127,11 +130,20 @@ fn queue_shelf_height(app: &App, main_height: u16, child_view: bool) -> u16 {
 /// Structured input-dock nodes expand inside the composer card. Generic
 /// summaries keep using the one-line cap, so Plan/Goal stay compact while a
 /// selector such as Queue can temporarily reveal its rows above the input.
+/// Measured at the width the dock will actually render at: card border (2)
+/// plus the pet inset (PET_PAD when the pet is perched in the composer) —
+/// measuring at the full card width under-reserved rows and truncated the
+/// content (M12).
 fn input_dock_body_height(app: &App, main_width: u16, main_height: u16, child_view: bool) -> u16 {
     if child_view || main_height < 14 {
         return 0;
     }
-    let lines = input_dock_body_lines(app, main_width.saturating_sub(2) as usize);
+    let pet_pad = if app.pet_visible && main_width >= 60 && main_height >= 10 {
+        PET_PAD
+    } else {
+        0
+    };
+    let lines = input_dock_body_lines(app, main_width.saturating_sub(2 + pet_pad) as usize);
     (lines.len() as u16).min(main_height.saturating_sub(12))
 }
 
@@ -158,12 +170,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme;
     app.slot_actions.clear();
+    app.tab_rects.clear();
     app.pet_want = None;
     app.caret_cell = None;
     // The mouse-only expand button's frame rect is rebuilt by
     // `layout_expand_btn`; clear it first so a child view (or a frame where
-    // the card vanished) cannot keep a stale hit-test rect alive.
+    // the card vanished) cannot keep a stale hit-test rect alive. The ↥
+    // prompt-jump button rect rides the same layout pass.
     app.expand_btn = None;
+    app.prompt_jump_btn = None;
+    app.prompt_flash_lines = None;
     f.render_widget(
         Block::default().style(
             Style::default()
@@ -174,14 +190,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
     if area.height < 6 || area.width < 24 {
         f.render_widget(
-            Paragraph::new("terminal too small — need ≥ 24x6")
-                .style(Style::default().fg(theme.warn)),
+            Paragraph::new(app.locale.tr(
+                "terminal too small — need ≥ 24x6",
+                "终端太小 —— 至少需要 24x6",
+            ))
+            .style(Style::default().fg(theme.warn)),
             area,
         );
         return;
     }
 
-    let (main, right) = shell_areas(area, app);
+    // Session tab strip (issue #94): one native chrome row at the very top,
+    // only when more than one session is open — a single session keeps the
+    // frame layout byte-identical to before.
+    let tabs_h = if app.session_tab_count() > 1 { 1 } else { 0 };
+    let body = Rect::new(
+        area.x,
+        area.y + tabs_h,
+        area.width,
+        area.height - tabs_h,
+    );
+    if tabs_h > 0 {
+        draw_session_tabs(f, app, Rect::new(area.x, area.y, area.width, 1));
+    }
+
+    let (main, right) = shell_areas(body, app);
 
     // Composer card: one rounded box wrapping the cap row (dock / tip /
     // · workspace title) and the native input surface (input well on top,
@@ -619,7 +652,7 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
     let needed = if select.options.iter().any(|option| option.deletable && !option.disabled) {
         needed.max(delete_hint.width() as u16)
     } else { needed };
-    let width = needed.saturating_add(2).max(38).min(screen.width.saturating_sub(4));
+    let width = needed.saturating_add(2).max(28).min(screen.width.saturating_sub(4));
     let inner = width.saturating_sub(2) as usize;
     let label_cells = inner.saturating_sub(4);
     let desc_cells = inner.saturating_sub(4);
@@ -859,6 +892,7 @@ fn force_full_rewrite(f: &mut Frame, area: Rect) {
 
 fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     let theme = app.theme;
+    let tone = app.tone_mode;
     let Some(view) = app.view_overlay.as_mut() else {
         return;
     };
@@ -874,7 +908,7 @@ fn draw_view_overlay(f: &mut Frame, app: &mut App, screen: Rect) {
     // continuation lines stay aligned.
     const POPUP_INDENT: u16 = 2;
     let inner_width = width.saturating_sub(2 + POPUP_INDENT) as usize;
-    let mut lines = crate::slots::render_nodes(&view.nodes, &theme, inner_width);
+    let mut lines = crate::slots::render_nodes(&view.nodes, &theme, tone, inner_width);
     let indent = " ".repeat(POPUP_INDENT as usize);
     for line in &mut lines {
         line.spans.insert(0, Span::raw(indent.clone()));
@@ -1040,7 +1074,7 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
     };
     let theme = app.theme;
     let inner_width = area.width.saturating_sub(4) as usize;
-    let lines = crate::slots::render(snapshot, &theme, inner_width);
+    let lines = crate::slots::render(snapshot, &theme, app.tone_mode, inner_width);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1053,22 +1087,188 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// The session tab strip (issue #94) — Powerline-shaped native status chrome
+/// fed by per-session running facts, the same source as `state_line`. Per tab:
+/// a status indicator, a ✓ completion badge for a session that finished while
+/// parked, and a title/short-id label. A `?` indicator (warn color) marks a tab
+/// whose session has an unanswered ACP ask (permission or elicitation) — the
+/// agent is waiting on that tab. Tab rects include their trailing arrow for
+/// `App::tab_at` mouse hit-testing.
+///
+/// The strip scrolls: only the tabs in its window (`App::tab_strip_offset`)
+/// are drawn. Clicking the window's edge tab in `App::handle_mouse` nudges
+/// the window by one so the neighbor appears, which lets a mouse walk
+/// through every tab; the window is re-anchored here whenever the live tab
+/// leaves it (keyboard jumps, tab closes) and snaps to the head when the
+/// suffix fits on one row.
+fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
+    const ARROW: &str = "\u{e0b0}";
+
+    let theme = app.theme;
+    let canvas_bg = app.canvas_background_color();
+    let active_fg = match theme.mode {
+        Mode::Dark => theme.bg,
+        Mode::Light => theme.fg,
+    };
+    let background_for = |index: usize, current: bool| {
+        if current {
+            theme.brand
+        } else if index % 2 == 0 {
+            theme.panel
+        } else {
+            theme.bg
+        }
+    };
+    let tabs = app.session_tabs();
+    let spinner = app.spinner();
+    let right = area.right() as usize;
+    let total = tabs.len();
+    if total == 0 || area.width < 4 {
+        return;
+    }
+    // Per-tab display width: `" {indicator} {label} "` plus the trailing
+    // arrow. Every indicator — Braille spinner included — is one cell, so
+    // the widths only depend on the clamped label.
+    let widths: Vec<usize> = tabs
+        .iter()
+        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 5)
+        .collect();
+    let avail = right.saturating_sub(area.x as usize);
+
+    // The strip's scroll window. The draw pass owns its normalization so a
+    // stale offset (labels grew, tabs closed) can never draw garbage.
+    let mut start = app.tab_strip_offset.min(total.saturating_sub(1));
+    if widths.iter().sum::<usize>() <= avail {
+        // The whole strip fits on one row: there is nothing to scroll, so
+        // a stale offset (tabs closed since the last walk) snaps to 0.
+        // Note this only fires when *everything* fits — once a walk has
+        // started, a window whose suffix fits but whose head does not
+        // stays where the mouse put it, or the walk could never reveal the
+        // final tab.
+        start = 0;
+    }
+    // Greedy end of the window from `start` — mirrors the render loop's
+    // `x + width > right` cut exactly.
+    let window_end = |start: usize| -> usize {
+        let mut x = area.x as usize;
+        let mut end = start;
+        while end < total && x + widths[end] <= right {
+            x += widths[end];
+            end += 1;
+        }
+        end
+    };
+    let live = app.live_tab_index().min(total - 1);
+    if live < start || live >= window_end(start) {
+        // The live tab left the window (keyboard jump, /close): re-anchor
+        // with the live tab at the right edge and as many predecessors as
+        // fit, so the tab being viewed is always on screen.
+        let mut anchor = live;
+        let mut width = widths[live];
+        while anchor > 0 && width + widths[anchor - 1] <= avail {
+            anchor -= 1;
+            width += widths[anchor];
+        }
+        start = anchor;
+    }
+    app.tab_strip_offset = start;
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut x = area.x as usize;
+    for (idx, tab) in tabs.iter().enumerate().skip(start) {
+        let label = crate::transcript::clamp_str(&tab.label, 16);
+        let tab_bg = background_for(idx, tab.current);
+        let (indicator, indicator_style) = if tab.ask_pending {
+            // A session-bound ask outranks every other badge: the agent is
+            // blocked until this tab answers.
+            ("?".to_string(), Style::default().fg(theme.warn).bg(tab_bg))
+        } else if tab.running {
+            (
+                if tab.current {
+                    spinner.to_string()
+                } else {
+                    "●".to_string()
+                },
+                Style::default()
+                    .fg(if tab.current { active_fg } else { theme.brand })
+                    .bg(tab_bg),
+            )
+        } else if tab.completed_unseen {
+            (
+                "✓".to_string(),
+                Style::default().fg(theme.warn_soft()).bg(tab_bg),
+            )
+        } else {
+            (
+                "·".to_string(),
+                Style::default()
+                    .fg(if tab.current {
+                        active_fg
+                    } else {
+                        theme.caption
+                    })
+                    .bg(tab_bg),
+            )
+        };
+        let label_style = if tab.current {
+            Style::default()
+                .fg(active_fg)
+                .bg(tab_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_secondary).bg(tab_bg)
+        };
+        let arrow_width = ARROW.width();
+        let width = indicator.width() + label.width() + 3 + arrow_width;
+        if x + width > right {
+            let remaining = total - idx;
+            let note = format!(" +{remaining}");
+            if x + note.len() <= right {
+                spans.push(Span::styled(note, Style::default().fg(theme.caption)));
+            }
+            break;
+        }
+        app.tab_rects
+            .push((Rect::new(x as u16, area.y, width as u16, 1), idx));
+        spans.push(Span::styled(format!(" {indicator} ",), indicator_style));
+        spans.push(Span::styled(format!("{label} "), label_style));
+        let next_fits = tabs.get(idx + 1).is_some_and(|next| {
+            let next_label = crate::transcript::clamp_str(&next.label, 16);
+            // Every native status marker (including the Braille spinner) is
+            // one terminal cell wide.
+            let next_width = next_label.width() + 4;
+            x + width + next_width <= right
+        });
+        let next_bg = tabs
+            .get(idx + 1)
+            .filter(|_| next_fits)
+            .map(|next| background_for(idx + 1, next.current))
+            .unwrap_or(canvas_bg);
+        spans.push(Span::styled(ARROW, Style::default().fg(tab_bg).bg(next_bg)));
+        x += width;
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 fn draw_child_navigation(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let label = app
         .active_subagent
         .as_deref()
         .and_then(|id| app.subagents.iter().find(|view| view.id == id))
-        .map(|view| view.label.as_str())
-        .unwrap_or("subagent");
+        .map(|view| view.label.clone())
+        .unwrap_or_else(|| app.locale.tr("subagent", "子代理").to_string());
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!(" {label} · read-only"),
+                format!(" {label} · {}", app.locale.tr("read-only", "只读")),
                 Style::default().fg(theme.fg_secondary),
             ),
             Span::styled(
-                "   esc back · ↓ switch agents",
+                app.locale.tr(
+                    "   esc back · ↓ switch agents",
+                    "   esc 返回 · ↓ 切换子代理",
+                ),
                 Style::default().fg(theme.caption),
             ),
         ]))
@@ -1092,8 +1292,8 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
         .nodes
         .iter()
         .filter_map(|node| {
-            compact_node_spans(node, &theme, area.width as usize, app.spinner()).map(|spans| {
-                CompactSlotSection {
+            compact_node_spans(node, &theme, app.tone_mode, area.width as usize, app.spinner())
+                .map(|spans| CompactSlotSection {
                     spans,
                     action: node.action().cloned(),
                     essential: matches!(
@@ -1103,8 +1303,7 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
                             ..
                         } if matches!(tone.as_str(), "brand" | "brand_soft")
                     ),
-                }
-            })
+                })
         })
         .collect::<Vec<_>>();
     if sections.is_empty() {
@@ -1138,6 +1337,25 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
             break;
         };
         sections.remove(index);
+    }
+    // The loop above stops at two sections; two long ones can still
+    // overflow into the trailing action area. Trim the *last* drawn
+    // section only when the rail would actually overlap the trailing
+    // block (it starts one column past the budget) — earlier sections
+    // and their text stay intact.
+    if let Some(last_index) = sections.len().checked_sub(1) {
+        let used: usize = sections[..last_index]
+            .iter()
+            .map(|section| span_widths(&section.spans))
+            .sum::<usize>()
+            + last_index * 2;
+        let overlap_limit = left_budget + 1;
+        let last_width = span_widths(&sections[last_index].spans);
+        if used + last_width > overlap_limit {
+            let budget = overlap_limit.saturating_sub(used);
+            let last = &mut sections[last_index];
+            last.spans = truncate_spans(&last.spans, budget.saturating_sub(1));
+        }
     }
 
     let border_style = Style::default().fg(theme.border);
@@ -1474,9 +1692,10 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16, navigat
         app,
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
-    // The mouse-only expand button sits on the card's top row, outside the
-    // well; painted last so no text render can paint over it (issue #92).
-    paint_expand_btn(f, app);
+    // The mouse-only composer buttons sit on the card's top row, outside
+    // the well; painted last so no text render can paint over them (issue
+    // #92 / ↥ of issue #103).
+    paint_composer_buttons(f, app);
 }
 
 /// Meta row: run state + mode/permission chips left, model right,
@@ -1839,6 +2058,38 @@ fn span_widths(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
 
+/// Cut a span list to `budget` display columns, ending with an ellipsis
+/// when anything was dropped. Keeps each span's style.
+fn truncate_spans(spans: &[Span<'static>], budget: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let width = span.content.width();
+        if used + width <= budget {
+            out.push(span.clone());
+            used += width;
+            continue;
+        }
+        let remaining = budget.saturating_sub(used);
+        let mut text = String::new();
+        let mut taken = 0usize;
+        for c in span.content.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if taken + cw > remaining {
+                break;
+            }
+            text.push(c);
+            taken += cw;
+        }
+        if budget > 0 {
+            text.push('…');
+        }
+        out.push(Span::styled(text, span.style));
+        break;
+    }
+    out
+}
+
 fn slot_has_nodes(app: &App, name: &str) -> bool {
     app.slot_snapshots
         .get(name)
@@ -1855,6 +2106,7 @@ struct CompactSlotSection {
 fn compact_slot_sections(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Vec<CompactSlotSection> {
@@ -1862,7 +2114,7 @@ fn compact_slot_sections(
         .nodes
         .iter()
         .filter_map(|node| {
-            compact_node_spans(node, theme, width, spinner).map(|spans| CompactSlotSection {
+            compact_node_spans(node, theme, tone, width, spinner).map(|spans| CompactSlotSection {
                 spans,
                 action: node.action().cloned(),
                 essential: false,
@@ -1886,6 +2138,7 @@ fn compact_slot_sections(
 fn compact_input_dock_sections(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Vec<CompactSlotSection> {
@@ -1894,7 +2147,7 @@ fn compact_input_dock_sections(
         .iter()
         .filter(|node| matches!(node, crate::slots::TuiNode::Generic { .. }))
         .filter_map(|node| {
-            compact_node_spans(node, theme, width, spinner).map(|spans| CompactSlotSection {
+            compact_node_spans(node, theme, tone, width, spinner).map(|spans| CompactSlotSection {
                 spans,
                 action: node.action().cloned(),
                 essential: false,
@@ -1925,7 +2178,7 @@ fn input_dock_body_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         .filter(|node| !matches!(node, crate::slots::TuiNode::Generic { .. }))
         .cloned()
         .collect::<Vec<_>>();
-    crate::slots::render_nodes(&nodes, &app.theme, width)
+    crate::slots::render_nodes(&nodes, &app.theme, app.tone_mode, width)
 }
 
 /// The composer stats dock below the box: one compact row of plugin
@@ -1953,6 +2206,7 @@ fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
         Paragraph::new(compact_slot_line(
             snapshot,
             &theme,
+            app.tone_mode,
             inner.width as usize,
             app.spinner(),
         )),
@@ -1963,10 +2217,11 @@ fn draw_composer_dock(f: &mut Frame, app: &App, area: Rect, pet_pad: u16) {
 fn compact_slot_line(
     snapshot: &crate::slots::SlotSnapshot,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Line<'static> {
-    let sections = compact_slot_sections(snapshot, theme, width, spinner);
+    let sections = compact_slot_sections(snapshot, theme, tone, width, spinner);
     compact_slot_sections_line(&sections, theme)
 }
 
@@ -2011,6 +2266,7 @@ fn running_progress_color(theme: &Theme, spinner: char) -> ratatui::style::Color
 fn compact_node_spans(
     node: &crate::slots::TuiNode,
     theme: &Theme,
+    tone: ToneMode,
     width: usize,
     spinner: char,
 ) -> Option<Vec<Span<'static>>> {
@@ -2078,7 +2334,7 @@ fn compact_node_spans(
         spans.push(Span::styled(title.clone(), title_style));
         return Some(spans);
     }
-    crate::slots::render_nodes(std::slice::from_ref(node), theme, width)
+    crate::slots::render_nodes(std::slice::from_ref(node), theme, tone, width)
         .into_iter()
         .next()
         .map(|line| line.spans)
@@ -2105,9 +2361,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let thumbs = crate::pet::kitty_supported();
     let spinner = app.spinner();
+    let tone = app.tone_mode;
     let layout = app
         .displayed_transcript_mut()
-        .layout(&theme, inner.width, spinner, thumbs);
+        .layout(&theme, tone, inner.width, spinner, thumbs);
     if app.show_banner && lines.len() < inner.height as usize {
         let remaining = inner.height as usize - lines.len();
         let top = remaining / 2;
@@ -2154,18 +2411,29 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         app.chat_view.manual_top = Some(start);
         (start, end)
     };
-    let visible: Vec<Line> = lines[start..end].to_vec();
 
     // Layout snapshot for mouse selection: hit-testing and copy extraction
     // read exactly what this frame showed (grok-build's resolved selection
-    // model, scaled down to plain text per wrapped line).
+    // model, scaled down to plain text per wrapped line). Viewport-sized
+    // only (L25): the absolute→relative seam lives in
+    // `ChatView::line_text`/`line_owner`; `total` keeps scroll math whole.
     app.chat_view.area = inner;
     app.chat_view.top = start;
-    app.chat_view.lines = lines
+    app.chat_view.total = total;
+    app.chat_view.lines = lines[start..end]
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
-    app.chat_view.owners = owners;
+    app.chat_view.owners = owners[start..end].to_vec();
+    // The ↥ jump flash (issue #103): resolve the flashing transcript cell
+    // to its current line span every frame — streaming can move the prompt
+    // — and drop it once the 5 s window expired.
+    app.prompt_flash_lines = app
+        .prompt_flash
+        .as_ref()
+        .filter(|(_, until)| std::time::Instant::now() < *until)
+        .and_then(|(cell, _)| layout.users.iter().find(|p| p.cell == *cell))
+        .map(|prompt| (prompt.line, prompt.end));
 
     // Visible image thumbnails → screen rects (banner lines shift transcript
     // line indices; partially visible thumbnails clip to the pane).
@@ -2191,11 +2459,72 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    f.render_widget(Paragraph::new(visible), inner);
+    // Zero-copy render (B): the widget borrows the frame's assembled
+    // window — no per-frame `to_vec` of the viewport on top of the
+    // snapshot above.
+    f.render_widget(LinesWindow { lines: &lines[start..end] }, inner);
+    // The transient ↥ jump wash paints under an active copy-selection so
+    // the user's own highlight always wins.
+    draw_prompt_flash(f, app, inner, start);
     draw_selection_overlay(f, app, inner, start);
     // Last: the selection overlay above also writes these cells, so the
     // full-rewrite marker must run after it (issue #38).
     force_full_rewrite(f, inner);
+}
+
+/// Render the viewport's pre-wrapped lines, borrowing the frame's assembled
+/// `lines` — the zero-copy replacement for `Paragraph::new(window.to_vec())`,
+/// which had to clone the window because `Paragraph` consumes its text.
+/// Left-aligned truncation per line, exactly what an unwrapped `Paragraph`
+/// does: `Buffer::set_line` patches `line.style` over each span style and
+/// clips at the pane width.
+struct LinesWindow<'a> {
+    lines: &'a [Line<'static>],
+}
+
+impl Widget for LinesWindow<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for (row, line) in self.lines.iter().enumerate() {
+            if row as u16 >= area.height {
+                break;
+            }
+            buf.set_line(area.x, area.y + row as u16, line, area.width);
+        }
+    }
+}
+
+/// The transient `↥` jump highlight (issue #103): right after a jump the
+/// jumped prompt's rows are highlighted exactly like a picker's selected
+/// row — chip background wash plus the text brightened to the brand tone —
+/// for ~5 seconds, then the ordinary bubble look returns (the expiry lives
+/// in `App::tick`, which clears the state and requests a repaint).
+fn draw_prompt_flash(f: &mut Frame, app: &App, inner: Rect, start: usize) {
+    let Some((s, e)) = app.prompt_flash_lines else {
+        return;
+    };
+    let theme = app.theme;
+    let buf = f.buffer_mut();
+    for r in 0..inner.height {
+        let li = start + r as usize;
+        if li < s || li >= e {
+            continue;
+        }
+        let Some(text) = app.chat_view.line_text(li) else {
+            continue;
+        };
+        let lw = text.trim_end().width();
+        if lw == 0 {
+            continue;
+        }
+        for c in 0..lw.min(inner.width as usize) {
+            if let Some(cell) = buf.cell_mut((inner.x + c as u16, inner.y + r)) {
+                let style = cell
+                    .style()
+                    .patch(Style::default().fg(theme.brand).bg(theme.chip_bg));
+                cell.set_style(style);
+            }
+        }
+    }
 }
 
 /// Paint the in-app mouse selection as reversed cells — the live highlight
@@ -2210,7 +2539,7 @@ fn draw_selection_overlay(f: &mut Frame, app: &App, inner: Rect, start: usize) {
         if li < s.line || li > e.line {
             continue;
         }
-        let Some(text) = app.chat_view.lines.get(li) else {
+        let Some(text) = app.chat_view.line_text(li) else {
             continue;
         };
         let lw = text.trim_end().width();
@@ -2383,17 +2712,22 @@ fn draw_composer_box(
 ) {
     let theme = app.theme;
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
-    // Leave the cap row's top-right corner to the mouse-only expand glyph:
-    // the workspace title ends three cells early, so the `⛶` (and its
-    // hovered chip block) never covers title text (issue #92).
+    // Leave the cap row's top-right corner to the mouse-only composer
+    // buttons: the workspace title ends four cells early, so the `↥`
+    // prompt-jump glyph (issue #103) and the `⛶` expand glyph (issue #92)
+    // — with a space between them — never cover title text.
     let mut workspace = workspace_cap_title(app, area.width as usize);
-    workspace.spans.push(Span::raw(" ".repeat(EXPAND_BTN_W as usize)));
+    workspace
+        .spans
+        .push(Span::raw(" ".repeat(EXPAND_BTN_W as usize + 1)));
     let workspace_width = span_widths(&workspace.spans);
     let title_budget = (area.width as usize).saturating_sub(2 + workspace_width + 1);
     let dock_sections = has_input_dock
         .then(|| app.slot_snapshots.get("conversation.input.dock"))
         .flatten()
-        .map(|snapshot| compact_input_dock_sections(snapshot, &theme, title_budget, app.spinner()));
+        .map(|snapshot| {
+            compact_input_dock_sections(snapshot, &theme, app.tone_mode, title_budget, app.spinner())
+        });
     let dock_line = dock_sections
         .as_ref()
         .map(|sections| compact_input_dock_sections_line(sections, &theme));
@@ -2472,10 +2806,10 @@ fn draw_composer_box(
     app.att_thumbs.clear();
     app.composer_wrap_width = input.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, input);
-    // The mouse-only expand button sits on the card's top border (the cap
-    // row), outside the well — a full draft never hides it. Painted last
-    // so nothing can paint over it (issue #92).
-    paint_expand_btn(f, app);
+    // The mouse-only composer buttons sit on the card's top border (the cap
+    // row), outside the well — a full draft never hides them. Painted last
+    // so nothing can paint over them (issue #92 / ↥ of issue #103).
+    paint_composer_buttons(f, app);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -2583,22 +2917,29 @@ fn paint_caret(f: &mut Frame, x: u16, y: u16) {
     }
 }
 
-/// Mouse-only composer expand/collapse button (issue #92): a `⛶` glyph on
-/// the composer card's top-right frame border — outside the text well, so
-/// a full draft never hides it. Always visible; hovering (no key binding)
-/// highlights it; clicking pins the well to the amplified height or
-/// restores the draft-following auto height.
+/// Mouse-only composer buttons on the cap row's top-right (issue #92 / the
+/// ↥ prompt jump of issue #103): the `⛶` expand/collapse glyph and, one
+/// cell left of it, the `↥` user-prompt jump glyph — both on the card's top
+/// border, outside the text well. Always visible; hovering (no key binding)
+/// highlights them; clicking pins/restores the well height or walks the
+/// user prompts.
 const EXPAND_BTN_W: u16 = 3;
 const EXPAND_BTN_H: u16 = 1;
 const EXPAND_BTN_MARGIN: u16 = 1;
+/// The ↥ prompt-jump button is 2 cells wide (glyph + one margin), tucked
+/// directly left of the expand button's hit rect.
+const JUMP_BTN_W: u16 = 2;
 
 /// Record the expand button's screen rect for hit-testing. `cap` is the
 /// composer's top row: the rounded card's cap line (boxed layout) or the
 /// well's first row (short-terminal fallback). Runs every frame, so the
-/// pointer can discover the glyph before hovering it.
+/// pointer can discover the glyph before hovering it. The ↥ jump button
+/// rect (issue #103) is recorded in the same pass, one cell left of the
+/// expand glyph.
 fn layout_expand_btn(app: &mut App, cap: Rect) {
     if cap.width < EXPAND_BTN_W + EXPAND_BTN_MARGIN + 1 {
         app.expand_btn = None;
+        app.prompt_jump_btn = None;
         return;
     }
     let x = cap
@@ -2606,40 +2947,56 @@ fn layout_expand_btn(app: &mut App, cap: Rect) {
         .saturating_add(cap.width)
         .saturating_sub(EXPAND_BTN_W + EXPAND_BTN_MARGIN);
     app.expand_btn = Some(Rect::new(x, cap.y, EXPAND_BTN_W, EXPAND_BTN_H));
+    // The jump glyph occupies the cell left of the expand rect (the cap
+    // title leaves both cells free); hide it on caps too narrow to fit.
+    app.prompt_jump_btn = if x >= cap.x.saturating_add(JUMP_BTN_W) {
+        Some(Rect::new(x - JUMP_BTN_W, cap.y, JUMP_BTN_W, EXPAND_BTN_H))
+    } else {
+        None
+    };
 }
 
-/// Paint the expand glyph. Idle: `⛶` in the quiet caption tone on the
-/// card's top-right (the workspace title leaves this corner free).
-/// Hovered: the glyph brightens to the strongest foreground on a small
-/// frame-less chip block. Called after the card render so it always wins
-/// the pixels.
-fn paint_expand_btn(f: &mut Frame, app: &mut App) {
+/// Paint the composer cap-row glyphs — `↥` (prompt jump, issue #103) left
+/// of `⛶` (expand/collapse, issue #92). Idle: quiet caption tone. Hovered:
+/// the glyph brightens to the strongest foreground — no BOLD, which
+/// terminals synthesize by widening the glyph and clip at the cell edge
+/// (the right corner would vanish), and no background chip; the brightness
+/// shift alone is the hover affordance. Called after the card render so it
+/// always wins the pixels.
+fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
+    let theme = app.theme;
+    let b = f.buffer_mut();
+    if let Some(rect) = app.prompt_jump_btn {
+        if rect.width >= JUMP_BTN_W && rect.height >= EXPAND_BTN_H {
+            let tone = if app.hover_prompt_jump_btn {
+                theme.fg
+            } else {
+                theme.caption
+            };
+            // Glyph = the rect's rightmost cell, one cell left of the ⛶.
+            b.set_string(
+                rect.x.saturating_add(rect.width).saturating_sub(1),
+                rect.y,
+                "↥",
+                Style::default().fg(tone),
+            );
+        }
+    }
     let Some(rect) = app.expand_btn else {
         return;
     };
     if rect.width < EXPAND_BTN_W || rect.height < EXPAND_BTN_H {
         return;
     }
-    let theme = app.theme;
-    let b = f.buffer_mut();
     // The glyph sits one cell in from the card's corner: rightmost cell of
     // the rect minus one, so the corner `╮` stays visible beside it.
     let x = rect.x + rect.width - 2;
-    if app.hover_expand_btn {
-        let block = Style::default().bg(theme.chip_bg);
-        b.set_string(rect.x, rect.y, "  ", block);
-        b.set_string(
-            x,
-            rect.y,
-            "⛶",
-            Style::default()
-                .fg(theme.fg)
-                .bg(theme.chip_bg)
-                .add_modifier(Modifier::BOLD),
-        );
+    let tone = if app.hover_expand_btn {
+        theme.fg
     } else {
-        b.set_string(x, rect.y, "⛶", Style::default().fg(theme.caption));
-    }
+        theme.caption
+    };
+    b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
 }
 
 /// The input well. Long prompts wrap across the (now taller) well, and the
@@ -2870,10 +3227,22 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
     // Follow-window: selection stays visible, window pinned to the ends.
     let start = if sel < vis { 0 } else { sel + 1 - vis }.min(n - vis);
 
-    // Name column sized to what's listed (padded, never glued to the desc).
+    // The option currently in effect (builtin option menus only): its row
+    // gets a ✓ pinned to the label, like the pickers (issue #102).
+    let current_value = app.builtin_option_current(&matches);
+    let row_is_current = |entry: &crate::app::SlashEntry| {
+        current_value.as_deref().is_some_and(|value| {
+            entry.completion.as_deref().and_then(|completion| {
+                completion.strip_prefix(&format!("/{} ", entry.name))
+            }) == Some(value)
+        })
+    };
+
+    // Name column sized to what's listed (padded, never glued to the desc);
+    // the current row reserves two cells for its ✓.
     let name_w = matches
         .iter()
-        .map(|m| m.usage.width())
+        .map(|m| m.usage.width() + if row_is_current(m) { 2 } else { 0 })
         .max()
         .unwrap_or(14)
         .clamp(14, 26);
@@ -2919,9 +3288,14 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
             0
         };
         let desc_cells = (w as usize).saturating_sub(name_w + 5 + section_cells);
+        let usage_text = if row_is_current(cmd) {
+            format!("{} ✓", cmd.usage)
+        } else {
+            cmd.usage.clone()
+        };
         let mut spans = vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.brand)),
-            Span::styled(pad_or_ellipsize(&cmd.usage, name_w), name_style),
+            Span::styled(pad_or_ellipsize(&usage_text, name_w), name_style),
         ];
         if begins_section {
             spans.push(Span::styled(
@@ -3074,11 +3448,12 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
     let items = picker.items.clone();
     // Current-identity ids, precomputed so the row builder below never
     // borrows `app` (the ListView render needs a mutable picker).
-    let current_model = app.cfg.model.clone();
+    let current_model = app.current_model();
     let current_provider = app.cfg.provider.clone();
     let current_mode = app.current_mode();
     let current_palette = app.active_palette_id.clone();
     let current_permission = app.current_permission().to_string();
+    let current_effort = app.modes.effort.clone();
     let is_current = move |item: &crate::app::PickerItem| match kind {
         crate::app::PickerKind::Model => {
             item.id == current_model
@@ -3091,8 +3466,10 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         crate::app::PickerKind::Theme => item.id == current_palette,
         crate::app::PickerKind::UiPlugin => false,
         crate::app::PickerKind::Permission => item.id == current_permission,
-        crate::app::PickerKind::Effort
-        | crate::app::PickerKind::Session
+        crate::app::PickerKind::Effort => {
+            current_effort.as_deref() == Some(item.id.as_str())
+        }
+        crate::app::PickerKind::Session
         | crate::app::PickerKind::Auth
         | crate::app::PickerKind::CordisPlugin
         | crate::app::PickerKind::CordisApproval
@@ -3154,8 +3531,6 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
         .border_style(Style::default().fg(theme.brand))
         .title(Span::styled(title, Style::default().fg(theme.caption)))
         .style(Style::default().bg(theme.panel));
-    // TableState follows the selection into view (the viewport stays pinned
-    // to the ends), matching the old ListView behavior.
     let table = Table::new(
         rows,
         [
@@ -3173,12 +3548,50 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             .bg(theme.chip_bg)
             .add_modifier(Modifier::BOLD),
     );
-    let mut table_state =
-        TableState::new().with_selected(Some(sel.min(items.len().saturating_sub(1))));
+    // The picker owns its viewport window (`offset`, persisted across
+    // frames): keys and the wheel only move the selection, and this draw
+    // pass scrolls the window by the minimum needed to keep the selection
+    // visible. A selection that stays inside the window therefore leaves
+    // the window alone — ↑/↓ and the wheel sweep the highlight through a
+    // static list, and only scroll the content once the highlight reaches
+    // an edge. Rebuilding the window from the selection every frame (the
+    // ratatui auto-reveal default) would instead re-pin the highlight to
+    // the window edge and slide the whole list on every key press.
+    let viewport_rows = h.saturating_sub(2) as usize;
+    let last = items.len().saturating_sub(1);
+    let sel = sel.min(last);
+    let mut offset = picker.offset;
+    if items.len() > viewport_rows {
+        if sel < offset {
+            // Selection crossed the top edge: pin it to the first row.
+            offset = sel;
+        } else if sel >= offset + viewport_rows {
+            // Selection crossed the bottom edge: pin it to the last row.
+            offset = sel + 1 - viewport_rows;
+        }
+    } else {
+        offset = 0;
+    }
+    let mut table_state = TableState::new()
+        .with_selected(Some(sel))
+        .with_offset(offset);
     f.render_stateful_widget(table, area, &mut table_state);
     if overflow {
         let inner = area.inner(Margin::new(1, 1));
-        let mut sb_state = ScrollbarState::new(item_count).position(table_state.offset());
+        // ratatui's scrollbar treats `content_length - 1` as the bottom of
+        // the track, while the window offset tops out at
+        // `items - visible rows`. Rescale so the thumb really reaches the
+        // bottom at the deepest scroll instead of stalling a third of the
+        // way down the track.
+        let max_offset = items.len().saturating_sub(viewport_rows);
+        let position = if max_offset == 0 {
+            0
+        } else {
+            offset.saturating_mul(items.len().saturating_sub(1)) / max_offset
+        };
+        let mut sb_state = ScrollbarState::new(item_count)
+            .position(position)
+            .viewport_content_length(viewport_rows);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -3188,14 +3601,17 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
             &mut sb_state,
         );
     }
-    // The viewport is the source of truth for what is visible; selection
-    // moves (mouse later, programmatic now) land back in the picker.
+    // The draw pass is the source of truth for the window: the selection
+    // it actually rendered (clamped to the rows) and the offset ratatui
+    // kept (unchanged when our pre-clamping already satisfied the window
+    // invariants) land back in the picker.
     if let Some(picker) = &mut app.picker {
         if let Some(selected) = table_state.selected() {
             picker.sel = selected;
         }
+        picker.offset = table_state.offset();
         // Page keys jump a screenful: the rows the popup actually shows.
-        app.picker_page_rows = h.saturating_sub(2) as usize;
+        app.picker_page_rows = viewport_rows;
     }
 }
 
@@ -3275,7 +3691,7 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
         .field
         .description
         .as_ref()
-        .map(|text| crate::markdown::render(text, &theme, content_width));
+        .map(|text| crate::markdown::render(text, &theme, app.tone_mode, content_width));
     let mut bottom = Vec::new();
     bottom.push(Line::default());
     let mut field_cursor = None;
@@ -3482,6 +3898,7 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         out.extend(crate::slots::render_welcome_hero(
             hero,
             theme,
+            app.tone_mode,
             width as usize,
         ));
     } else if app.ui_preset == "deepseek" {
@@ -3524,7 +3941,7 @@ fn banner_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ) {
             out.extend(welcome_info_lines(app));
         } else {
-            out.extend(crate::slots::render(info, theme, width as usize));
+            out.extend(crate::slots::render(info, theme, app.tone_mode, width as usize));
         }
     } else {
         out.extend(welcome_info_lines(app));

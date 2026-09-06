@@ -5,7 +5,7 @@
 //! children when the broker drops.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,11 +19,56 @@ const DEFAULT_BYTE_LIMIT: usize = 1_048_576;
 
 struct TerminalRec {
     child: Mutex<std::process::Child>,
-    buf: Mutex<String>,
+    buf: Mutex<TerminalOutput>,
     truncated: AtomicBool,
     byte_limit: usize,
     exit: Mutex<Option<TerminalExitStatus>>,
     notify: Notify,
+}
+
+/// A bounded output window without shifting the whole retained transcript on
+/// every read. Terminal processes commonly emit in small chunks; repeatedly
+/// deleting from the start of a `String` once the window is full turns a
+/// streaming command into repeated near-limit memory copies.
+#[derive(Default)]
+struct TerminalOutput {
+    text: String,
+    /// Byte offset of the first visible character in `text`. It is always a
+    /// UTF-8 boundary, so snapshots can borrow the visible suffix directly.
+    start: usize,
+}
+
+impl TerminalOutput {
+    fn snapshot(&self) -> String {
+        self.text[self.start..].to_owned()
+    }
+
+    /// Appends decoded output and returns whether the bounded window dropped
+    /// any older text. Physical compaction is deliberately amortized: the
+    /// common append path only advances `start`; it copies the live suffix
+    /// after a sizeable consumed prefix has accumulated.
+    fn append(&mut self, text: &str, byte_limit: usize) -> bool {
+        self.text.push_str(text);
+        let visible = self.text.len().saturating_sub(self.start);
+        if visible <= byte_limit {
+            return false;
+        }
+
+        self.start += visible - byte_limit;
+        while self.start < self.text.len() && !self.text.is_char_boundary(self.start) {
+            self.start += 1;
+        }
+
+        // Keep memory bounded while avoiding a memmove for every small read.
+        // A 4 KiB floor also prevents tiny requested windows from repeatedly
+        // compacting their small backing strings.
+        let compact_at = self.text.capacity().saturating_div(2).max(4096);
+        if self.start >= compact_at {
+            self.text.drain(..self.start);
+            self.start = 0;
+        }
+        true
+    }
 }
 
 pub struct TerminalBroker {
@@ -65,7 +110,7 @@ impl TerminalBroker {
         let stderr = child.stderr.take();
         let rec = Arc::new(TerminalRec {
             child: Mutex::new(child),
-            buf: Mutex::new(String::new()),
+            buf: Mutex::new(TerminalOutput::default()),
             truncated: AtomicBool::new(false),
             byte_limit: output_byte_limit
                 .map(|n| n as usize)
@@ -93,19 +138,22 @@ impl TerminalBroker {
         Ok(id)
     }
 
-    pub fn output(&self, terminal_id: &str) -> (String, bool, Option<TerminalExitStatus>) {
+    pub fn output(
+        &self,
+        terminal_id: &str,
+    ) -> Result<(String, bool, Option<TerminalExitStatus>), String> {
         let Some(rec) = self.get(terminal_id) else {
-            return (String::new(), false, None);
+            return Err(format!("unknown terminal: {terminal_id}"));
         };
-        let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let output = rec.buf.lock().unwrap_or_else(|e| e.into_inner()).snapshot();
         let truncated = rec.truncated.load(Ordering::Relaxed);
         let exit = rec.exit.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (output, truncated, exit)
+        Ok((output, truncated, exit))
     }
 
-    pub async fn wait(&self, terminal_id: &str) -> TerminalExitStatus {
+    pub async fn wait(&self, terminal_id: &str) -> Result<TerminalExitStatus, String> {
         let Some(rec) = self.get(terminal_id) else {
-            return TerminalExitStatus::new();
+            return Err(format!("unknown terminal: {terminal_id}"));
         };
         loop {
             // Register interest *before* re-checking the status:
@@ -116,24 +164,27 @@ impl TerminalBroker {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if let Some(status) = rec.exit.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-                return status;
+                return Ok(status);
             }
             notified.await;
         }
     }
 
-    pub fn kill(&self, terminal_id: &str) {
-        if let Some(rec) = self.get(terminal_id) {
-            let _ = rec.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
-        }
+    pub fn kill(&self, terminal_id: &str) -> Result<(), String> {
+        let rec = self
+            .get(terminal_id)
+            .ok_or_else(|| format!("unknown terminal: {terminal_id}"))?;
+        let _ = rec.child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+        Ok(())
     }
 
-    pub fn release(&self, terminal_id: &str) {
-        self.kill(terminal_id);
+    pub fn release(&self, terminal_id: &str) -> Result<(), String> {
+        self.kill(terminal_id)?;
         self.terms
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(terminal_id);
+        Ok(())
     }
 
     fn get(&self, terminal_id: &str) -> Option<Arc<TerminalRec>> {
@@ -165,11 +216,49 @@ fn spawn_reader(rec: Arc<TerminalRec>, mut stream: impl Read + Send + 'static) {
         .name("dsh-acp-term-io".into())
         .spawn(move || {
             let mut chunk = [0u8; 4096];
+            // Carry bytes that may be the start of a truncated multi-byte
+            // UTF-8 sequence across reads, so characters split at the read
+            // boundary do not turn into U+FFFD.
+            let mut carry: Vec<u8> = Vec::new();
             loop {
                 match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => append_output(&rec, &chunk[..n]),
-                    Err(_) => break,
+                    Ok(0) => {
+                        if !carry.is_empty() {
+                            append_output(&rec, &carry);
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        carry.extend_from_slice(&chunk[..n]);
+                        // Flush the longest prefix that is valid UTF-8 and
+                        // keeps the remainder as carry. A read boundary may
+                        // only split a sequence that is already invalid, in
+                        // which case everything is emitted (with U+FFFD) so
+                        // the carry buffer cannot grow unbounded.
+                        let keep = match std::str::from_utf8(&carry) {
+                            Ok(_) => carry.len(),
+                            Err(err) => {
+                                if err.valid_up_to() > 0 {
+                                    err.valid_up_to()
+                                } else if err.error_len().is_some() {
+                                    carry.len()
+                                } else {
+                                    0
+                                }
+                            }
+                        };
+                        if keep > 0 {
+                            append_output(&rec, &carry[..keep]);
+                            carry.drain(..keep);
+                        }
+                    }
+                    Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                    Err(_) => {
+                        if !carry.is_empty() {
+                            append_output(&rec, &carry);
+                        }
+                        break;
+                    }
                 }
             }
         })
@@ -201,13 +290,7 @@ fn spawn_waiter(rec: Arc<TerminalRec>) {
 fn append_output(rec: &TerminalRec, bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
     let mut buf = rec.buf.lock().unwrap_or_else(|e| e.into_inner());
-    buf.push_str(&text);
-    if buf.len() > rec.byte_limit {
-        let mut cut = buf.len() - rec.byte_limit;
-        while cut < buf.len() && !buf.is_char_boundary(cut) {
-            cut += 1;
-        }
-        buf.replace_range(0..cut, "");
+    if buf.append(&text, rec.byte_limit) {
         rec.truncated.store(true, Ordering::Relaxed);
     }
 }

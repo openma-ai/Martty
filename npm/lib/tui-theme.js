@@ -7,7 +7,7 @@
  * flushed from `bindNotify`.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import { CORDIS_METHODS } from './cordis-protocol.js'
 
@@ -92,7 +92,12 @@ function writePreferred(settingsPath, id) {
   const settings = readSettings(settingsPath)
   settings.theme = id
   mkdirSync(dirname(settingsPath), { recursive: true })
-  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+  // Atomic write (temp + rename), matching harnesses.writeSettings: a
+  // crash mid-write must never leave a truncated settings.json behind —
+  // every later launch would otherwise start from an unreadable file.
+  const temporary = `${settingsPath}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`)
+  renameSync(temporary, settingsPath)
 }
 
 /**

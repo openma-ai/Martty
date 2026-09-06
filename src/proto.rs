@@ -22,6 +22,11 @@ type SharedWriter = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
 pub struct RuntimeProcess {
     child: Arc<Mutex<Option<Child>>>,
     stdin: SharedWriter,
+    /// Serializes writers. Never held across the blocking write itself:
+    /// `write_line` *takes the writer out* of `stdin` for the duration, so
+    /// a wedged child blocking a write can never starve `kill()` or the
+    /// reader thread (they only ever need the shared slot, briefly).
+    write_turn: Arc<Mutex<()>>,
     pending: Arc<Mutex<HashMap<String, SyncSender<Result<Value, RpcFailure>>>>>,
     next_id: AtomicU64,
     pub stderr_tail: Arc<Mutex<Vec<String>>>,
@@ -72,6 +77,7 @@ impl RuntimeProcess {
         let proc = RuntimeProcess {
             child: Arc::new(Mutex::new(Some(child))),
             stdin: Arc::new(Mutex::new(Some(Box::new(stdin) as Box<dyn Write + Send>))),
+            write_turn: Arc::new(Mutex::new(())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             stderr_tail: Arc::new(Mutex::new(Vec::new())),
@@ -115,6 +121,7 @@ impl RuntimeProcess {
         let proc = RuntimeProcess {
             child: Arc::new(Mutex::new(None)),
             stdin: Arc::new(Mutex::new(Some(Box::new(writer) as Box<dyn Write + Send>))),
+            write_turn: Arc::new(Mutex::new(())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             stderr_tail: Arc::new(Mutex::new(Vec::new())),
@@ -128,6 +135,7 @@ impl RuntimeProcess {
     fn start_reader(&self, stream: impl Read + Send + 'static, bus: Sender<AppEvent>) {
         let pending = Arc::clone(&self.pending);
         let stdin_slot = Arc::clone(&self.stdin);
+        let write_turn = Arc::clone(&self.write_turn);
         let child_slot = Arc::clone(&self.child);
         std::thread::Builder::new()
             .name("dsh-frames".into())
@@ -141,7 +149,7 @@ impl RuntimeProcess {
                     let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
-                    route_message(msg, &pending, &stdin_slot, &bus);
+                    route_message(msg, &pending, &stdin_slot, &write_turn, &bus);
                 }
                 let waiters: Vec<_> = pending.lock().unwrap().drain().collect();
                 for (_, tx) in waiters {
@@ -174,13 +182,28 @@ impl RuntimeProcess {
     }
 
     fn write_line(&self, value: &Value) -> Result<()> {
+        let _turn = self.write_turn.lock().unwrap();
+        // Take the writer out for the duration of the (possibly blocking)
+        // write: nobody else ever blocks on the shared slot behind a stuck
+        // pipe — kill() clears the slot instead of waiting for this write.
+        let mut writer = {
+            let mut guard = self.stdin.lock().unwrap();
+            guard.take().context("harness runtime stdin closed")?
+        };
+        let result = (|| {
+            let mut payload = serde_json::to_vec(value)?;
+            payload.push(b'\n');
+            writer.write_all(&payload)?;
+            writer.flush()?;
+            Ok(())
+        })();
+        // Put the writer back unless kill() already claimed the slot.
         let mut guard = self.stdin.lock().unwrap();
-        let stdin = guard.as_mut().context("harness runtime stdin closed")?;
-        let mut payload = serde_json::to_vec(value)?;
-        payload.push(b'\n');
-        stdin.write_all(&payload)?;
-        stdin.flush()?;
-        Ok(())
+        if guard.is_none() {
+            return result; // runtime killed; the writer dies with it
+        }
+        *guard = Some(writer);
+        result
     }
 
     /// Blocking JSON-RPC request. Call off the UI thread.
@@ -263,6 +286,7 @@ fn route_message(
     msg: Value,
     pending: &Arc<Mutex<HashMap<String, SyncSender<Result<Value, RpcFailure>>>>>,
     stdin_slot: &SharedWriter,
+    write_turn: &Mutex<()>,
     bus: &Sender<AppEvent>,
 ) {
     let id = msg.get("id");
@@ -270,18 +294,30 @@ fn route_message(
     match (id, method) {
         // Server-initiated request (e.g. interaction plugins). The minimal
         // composition never sends one; answer method-not-found so the runtime
-        // never deadlocks waiting on us.
+        // never deadlocks waiting on us. Best-effort: the reply only goes out
+        // when the write path is idle — a wedged runtime must never stop the
+        // reader thread from draining stdout.
         (Some(id), Some(method)) => {
             let reply = json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "error": { "code": -32601, "message": format!("dsb: unhandled server request {method}") }
             });
-            if let Some(stdin) = stdin_slot.lock().unwrap().as_mut() {
-                if let Ok(mut payload) = serde_json::to_vec(&reply) {
-                    payload.push(b'\n');
-                    let _ = stdin.write_all(&payload);
-                    let _ = stdin.flush();
+            if let Ok(_turn) = write_turn.try_lock() {
+                let writer = stdin_slot.lock().unwrap().take();
+                if let Some(mut stdin) = writer {
+                    if let Ok(mut payload) = serde_json::to_vec(&reply) {
+                        payload.push(b'\n');
+                        let _ = stdin.write_all(&payload);
+                        let _ = stdin.flush();
+                    }
+                    let mut guard = stdin_slot.lock().unwrap();
+                    if guard.is_none() {
+                        // kill() claimed the slot while we wrote: let the
+                        // writer die with the runtime.
+                    } else {
+                        *guard = Some(stdin);
+                    }
                 }
             }
             let _ = bus.send(AppEvent::RuntimeStderr(format!(

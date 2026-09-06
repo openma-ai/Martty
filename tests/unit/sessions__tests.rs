@@ -60,7 +60,7 @@ fn lists_workspace_sessions_newest_first_and_skips_current() {
     );
     write_session(&tmp, &slug, "dsh-cur", &[header("dsh-cur")]);
 
-    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "dsh-cur");
+    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "dsh-cur", usize::MAX);
     let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["dsh-new", "dsh-old"], "newest first, current skipped");
     assert_eq!(sessions[0].turns, 2);
@@ -126,7 +126,7 @@ fn title_falls_back_to_non_provider_and_skips_blanks() {
             title_event("fallback", "  "),
         ],
     );
-    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "other");
+    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "other", usize::MAX);
     assert_eq!(
         sessions
             .iter()
@@ -174,9 +174,33 @@ fn reads_all_frames_of_concatenated_zstd_logs() {
 
     let events = read_session_events(&dir.join("session.jsonl.zstd")).unwrap();
     assert_eq!(events.len(), 4, "header + 3 events across 3 frames");
-    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "other");
+    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "other", usize::MAX);
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].turns, 2, "turns counted across frames");
     assert_eq!(sessions[0].preview, "from frame two");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn list_sessions_limit_keeps_the_most_recent_n() {
+    let tmp = std::env::temp_dir().join(format!("dsh-sess-limit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let slug = workspace_slug("/w");
+    write_session(&tmp, &slug, "dsh-oldest", &[header("dsh-oldest")]);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_session(&tmp, &slug, "dsh-mid", &[header("dsh-mid")]);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_session(&tmp, &slug, "dsh-newest", &[header("dsh-newest")]);
+
+    // Default `/resume` (= 50) returns everything; `/resume 2` keeps only
+    // the two most recent entries.
+    let all = list_sessions(tmp.to_str().unwrap(), "/w", "none", usize::MAX);
+    assert_eq!(all.len(), 3, "no limit returns every session");
+    let two = list_sessions(tmp.to_str().unwrap(), "/w", "none", 2);
+    let ids: Vec<&str> = two.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["dsh-newest", "dsh-mid"], "limit keeps the newest n");
+    let one = list_sessions(tmp.to_str().unwrap(), "/w", "none", 1);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].id, "dsh-newest");
     let _ = std::fs::remove_dir_all(&tmp);
 }

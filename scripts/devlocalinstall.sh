@@ -14,7 +14,15 @@ PROFILE="${1:-${DSH_TUI_PROFILE:-martty}}"
 CARGO_PROFILE="${DSH_TUI_CARGO_PROFILE:-devlocal}"
 
 # 1. Build first so the installed copy always reflects the current source.
-BIN="target/${CARGO_PROFILE}/martty"
+# The target dir must match where cargo actually writes (CARGO_TARGET_DIR
+# wins over the default) — otherwise an old binary from a previous default
+# location could be installed and the change would look like it never
+# landed.
+TARGET_DIR="${DSH_TUI_CARGO_TARGET_DIR:-${CARGO_TARGET_DIR:-target}}"
+if [ "$TARGET_DIR" = "target" ]; then
+  TARGET_DIR="$(pwd)/target"
+fi
+BIN="${TARGET_DIR}/${CARGO_PROFILE}/martty"
 echo "building $BIN (cargo build --profile $CARGO_PROFILE --locked)…" >&2
 cargo build --profile "$CARGO_PROFILE" --locked
 

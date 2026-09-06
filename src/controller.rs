@@ -237,14 +237,30 @@ fn controller_loop(
                 if attached {
                     // Forward to the host runner: agent.cancel({ kind: 'user' })
                     // aborts the active turn; a followup sent after this lands
-                    // as the next turn.
+                    // as the next turn. A failed interrupt must not report
+                    // success — the agent-side turn would keep running and
+                    // stream updates into a UI that already went idle.
                     let guard = runtime.lock().unwrap();
-                    if let Some(rt) = guard.as_ref() {
-                        let params = json!({ "sessionId": session_id });
-                        let _ =
-                            rt.request("session/interrupt", Some(params), Duration::from_secs(10));
+                    let interrupt = guard
+                        .as_ref()
+                        .map(|rt| {
+                            let params = json!({ "sessionId": session_id });
+                            rt.request("session/interrupt", Some(params), Duration::from_secs(10))
+                        });
+                    drop(guard);
+                    match interrupt {
+                        Some(Ok(_)) | None => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                session_id: session_id.clone(),
+                            }));
+                        }
+                        Some(Err(err)) => {
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                                session_id: session_id.clone(),
+                                message: format!("session/interrupt failed: {err:#}"),
+                            }));
+                        }
                     }
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
                     continue;
                 }
                 // The kill itself happens in interrupt_now(); this is the
@@ -254,7 +270,7 @@ fn controller_loop(
                 if let Some(rt) = guard.take() {
                     rt.kill();
                 }
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted { session_id }));
             }
             Cmd::SelectModel {
                 session_id,
@@ -315,9 +331,10 @@ fn controller_loop(
                     ))));
                 }
             }
-            Cmd::FetchCatalog => {
+            Cmd::FetchCatalog { session_id } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+                        session_id: Some(session_id.clone()),
                         models: vec![
                             CatalogModel {
                                 provider: "deepseek-official".into(),
@@ -343,7 +360,11 @@ fn controller_loop(
                 match result {
                     Some(Ok(value)) => {
                         let (models, presets) = parse_catalog(&value);
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog { models, presets }));
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Catalog {
+                            session_id: Some(session_id),
+                            models,
+                            presets,
+                        }));
                     }
                     Some(Err(err)) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -357,9 +378,10 @@ fn controller_loop(
                     }
                 }
             }
-            Cmd::FetchSkills => {
+            Cmd::FetchSkills { session_id } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                        session_id: Some(session_id.clone()),
                         skills: vec![
                             SkillInfo {
                                 name: "commit-helper".into(),
@@ -389,7 +411,10 @@ fn controller_loop(
                     Some(Ok(value)) => parse_skills(&value),
                     _ => Vec::new(),
                 };
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills { skills }));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Skills {
+                    session_id: Some(session_id),
+                    skills,
+                }));
             }
             Cmd::FetchStaticPlugins => {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::StaticPlugins {
@@ -426,9 +451,14 @@ fn controller_loop(
                     "client plugin overlays require the ACP compositor transport".into(),
                 )));
             }
-            Cmd::FetchEfforts { provider, model } => {
+            Cmd::FetchEfforts {
+                session_id,
+                provider,
+                model,
+            } => {
                 if demo {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                        session_id: Some(session_id.clone()),
                         efforts: vec!["off".into(), "high".into(), "max".into()],
                         default: Some("high".into()),
                     }));
@@ -459,7 +489,11 @@ fn controller_loop(
                             .pointer("/reasoning/defaultEffort")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts { efforts, default }));
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                            session_id: Some(session_id.clone()),
+                            efforts,
+                            default,
+                        }));
                     }
                     Some(Err(err)) => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -468,6 +502,7 @@ fn controller_loop(
                     }
                     None => {
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::Efforts {
+                            session_id: Some(session_id),
                             efforts: vec!["off".into(), "high".into(), "max".into()],
                             default: None,
                         }));
@@ -557,7 +592,10 @@ fn controller_loop(
                 });
                 match result {
                     Some(Ok(_)) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet { preset }));
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::PresetSet {
+                            session_id,
+                            preset,
+                        }));
                     }
                     Some(Err(err)) => {
                         // The host locks the preset once the session's agent
@@ -594,7 +632,11 @@ fn controller_loop(
                         .into(),
                 )));
             }
-            Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } => {
+            Cmd::ForgetSession { .. } => {
+                // Sessions only exist on the ACP transport; the legacy/demo
+                // controller owns nothing to forget.
+            }
+            Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } | Cmd::ActiveSession { .. } => {
                 // The legacy/demo controller has no local Cordis compositor.
             }
             Cmd::Shutdown => {
@@ -741,7 +783,7 @@ fn send_attached_prompt(rt: &Arc<RuntimeProcess>, bus: &Sender<AppEvent>, params
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued { message_id }));
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued { message_id, session_id: None }));
         }
         Err(err) => {
             let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
@@ -803,7 +845,9 @@ fn handle_prompt(
                         rt.kill();
                         *runtime.lock().unwrap() = None;
                         if interrupted.swap(false, Ordering::SeqCst) {
-                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                            let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                session_id: session_id.to_string(),
+                            }));
                         } else {
                             let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
                                 "initialize failed: {err:#}"
@@ -830,11 +874,16 @@ fn handle_prompt(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued { message_id }));
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::PromptQueued {
+                message_id,
+                session_id: Some(session_id.to_string()),
+            }));
         }
         Err(err) => {
             if interrupted.swap(false, Ordering::SeqCst) {
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                    session_id: session_id.to_string(),
+                }));
             } else {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(format!(
                     "session/prompt failed: {err:#}"

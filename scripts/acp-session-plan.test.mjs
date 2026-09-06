@@ -69,3 +69,43 @@ test('standard ACP plan snapshots stay structured and plan_removed retracts them
   assert.equal(plan.current(), null)
   assert.deepEqual(observed.at(-1).plans, [])
 })
+
+test('plan snapshots follow explicit native tab selection', () => {
+  const plan = planModule.installAcpSessionPlan(makeCtx())
+  for (const [id, sessionId, content] of [[11, 's-1', 'one'], [12, 's-2', 'two']]) {
+    plan.observeClient({ jsonrpc: '2.0', id, method: 'session/load', params: { sessionId } })
+    plan.observeAgent({ jsonrpc: '2.0', id, result: { sessionId } })
+    plan.observeAgent({
+      jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId,
+        update: { sessionUpdate: 'plan', plan: { type: 'markdown', content } },
+      },
+    })
+  }
+
+  plan.selectSession('s-1')
+  assert.equal(plan.current().content, 'one')
+  plan.selectSession('s-2')
+  assert.equal(plan.current().content, 'two')
+})
+
+test('load replay survives its response and resume preserves the cached plan', () => {
+  const plan = planModule.installAcpSessionPlan(makeCtx())
+  const update = (sessionId, content) => plan.observeAgent({
+    method: 'session/update', params: {
+      sessionId, update: { sessionUpdate: 'plan', entries: [{ content, status: 'pending' }] },
+    },
+  })
+  update('background', 'background plan')
+  plan.selectSession('restored')
+  update('restored', 'stale plan')
+  plan.observeClient({ id: 1, method: 'session/load', params: { sessionId: 'restored' } })
+  update('restored', 'replayed plan')
+  plan.observeAgent({ id: 1, result: {} })
+  assert.equal(plan.current().entries[0].content, 'replayed plan')
+  plan.observeClient({ id: 2, method: 'session/resume', params: { sessionId: 'restored' } })
+  plan.observeAgent({ id: 2, result: {} })
+  assert.equal(plan.current().entries[0].content, 'replayed plan')
+  plan.selectSession('background')
+  assert.equal(plan.current().entries[0].content, 'background plan')
+})

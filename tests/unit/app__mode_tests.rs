@@ -181,6 +181,29 @@ fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
     );
 }
 
+/// The markdown body tone is a quiet, settings-only preference: no command
+/// surface. Absent `markdownTone` → single (the default look); `"two"`
+/// opts back into the two-tone CJK/Latin body.
+#[test]
+fn tone_defaults_to_single_and_loads_the_hidden_markdown_tone_setting() {
+    let cfg = test_cfg();
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let app = App::new(Some(Theme::dark()), cfg.clone(), "s1".into(), true, false, tx.clone());
+    assert_eq!(app.tone_mode, ToneMode::Single, "single tone is the default");
+
+    // Seed the hidden opt-in: a fresh App over the same session root picks
+    // the two-tone scheme from settings.json without any command.
+    let settings = std::path::Path::new(&cfg.session_root).join("settings.json");
+    std::fs::write(&settings, r#"{"markdownTone":"two"}"#).expect("seed settings");
+    let opted = App::new(Some(Theme::dark()), cfg.clone(), "s2".into(), true, false, tx.clone());
+    assert_eq!(opted.tone_mode, ToneMode::Two, "markdownTone:two opts in");
+
+    // Unknown values fall back to the single-tone default.
+    std::fs::write(&settings, r#"{"markdownTone":"bogus"}"#).expect("seed settings");
+    let bogus = App::new(Some(Theme::dark()), cfg.clone(), "s3".into(), true, false, tx.clone());
+    assert_eq!(bogus.tone_mode, ToneMode::Single, "unparsable markdownTone keeps the default");
+}
+
 #[test]
 fn liang_toggle_is_transient_and_keeps_the_empty_welcome_centered() {
     let (mut app, ctl, _rx) = test_app();
@@ -435,7 +458,7 @@ fn child_session_updates_do_not_enter_the_parent_transcript() {
 
     let rendered = app
         .transcript
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -458,7 +481,7 @@ fn subagent_started_updates_navigation_without_a_timeline_notice() {
     assert!(app.subagents[0].running);
     let rendered = app
         .transcript
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -484,7 +507,7 @@ fn subagent_finished_updates_navigation_without_a_timeline_notice() {
     assert!(!app.subagents[0].running);
     let rendered = app
         .transcript
-        .lines(&Theme::dark(), 80, '⠋')
+        .lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, '⠋')
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
@@ -1030,6 +1053,7 @@ fn live_mode_picker_uses_advertised_composition_not_stock() {
     app.demo = false;
     app.handle(
         AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: None,
             models: Vec::new(),
             presets: vec![CatalogPreset {
                 id: "cordis".into(),
@@ -1054,6 +1078,7 @@ fn host_catalog_replaces_mode_picker_items() {
     app.run_slash("agent", "", &ctl);
     app.handle(
         AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: None,
             models: Vec::new(),
             presets: vec![
                 CatalogPreset {
@@ -1092,6 +1117,7 @@ fn host_catalog_model_picker_distinguishes_duplicate_ids_by_provider() {
     app.open_model_picker(&ctl);
     app.handle(
         AppEvent::Ctl(CtlEvent::Catalog {
+            session_id: None,
             models: vec![
                 CatalogModel {
                     provider: "coding-plan-a".into(),
@@ -1115,6 +1141,101 @@ fn host_catalog_model_picker_distinguishes_duplicate_ids_by_provider() {
     assert_eq!(picker.items[0].meta, "coding-plan-a · DeepSeek V4");
     assert_eq!(picker.items[1].meta, "coding-plan-b · DeepSeek V4");
     assert_eq!(picker.sel, 1, "current provider and model identify the row");
+}
+
+#[test]
+fn model_picker_highlights_the_streamed_model_not_the_config_default() {
+    let (mut app, ctl, _rx) = test_app();
+    // The config default is only a fallback: once a turn streamed on a
+    // different model, the picker must mark the running one (issue #102).
+    app.cfg.model = "deepseek-v4-flash".into();
+    app.transcript.last_model = Some("deepseek-v4-pro".into());
+
+    app.open_model_picker(&ctl);
+
+    let picker = app.picker.as_ref().expect("model picker opens");
+    assert_eq!(picker.items[0].id, "deepseek-v4-pro", "current row seeded");
+    assert_eq!(picker.sel, 0, "highlight lands on the running model");
+}
+
+#[test]
+fn effort_picker_highlights_the_effort_in_effect() {
+    let (mut app, _ctl, _rx) = test_app();
+    // The host-echoed effort (config_option_update / last /effort) is the
+    // truth; the model default is only a fallback (issue #102).
+    app.modes.effort = Some("max".into());
+    app.open_effort_picker(
+        vec!["off".into(), "high".into(), "max".into()],
+        Some("high".into()),
+    );
+    let picker = app.picker.as_ref().expect("effort picker opens");
+    assert_eq!(picker.sel, 2, "highlight lands on the active effort");
+    assert!(
+        picker.items[1].meta.contains("default"),
+        "the model default stays marked: {}",
+        picker.items[1].meta
+    );
+}
+
+#[test]
+fn effort_picker_falls_back_to_the_advertised_default() {
+    let (mut app, _ctl, _rx) = test_app();
+    assert!(app.modes.effort.is_none());
+    app.open_effort_picker(
+        vec!["off".into(), "high".into(), "max".into()],
+        Some("high".into()),
+    );
+    let picker = app.picker.as_ref().expect("effort picker opens");
+    assert_eq!(picker.sel, 1, "highlight follows the advertised default");
+}
+
+#[test]
+fn slash_model_menu_preselects_the_running_model() {
+    let (mut app, ctl, _rx) = test_app();
+    // The inline option menu (typed `/model `) follows the same effective
+    // model as the picker: streamed model, not the config default (#102).
+    app.cfg.model = "deepseek-v4-flash".into();
+    app.transcript.last_model = Some("deepseek-v4-pro".into());
+    app.input.set("/model".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);
+
+    let menu = app.slash_matches();
+    assert_eq!(menu[0].completion.as_deref(), Some("/model deepseek-v4-pro"));
+    assert_eq!(app.slash_sel, 0, "highlight lands on the running model");
+
+    // Enter on the opened menu picks the running model (no accidental
+    // switch back to the config default).
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.cfg.model, "deepseek-v4-pro");
+}
+
+#[test]
+fn slash_effort_menu_preselects_the_effort_in_effect() {
+    let (mut app, ctl, _rx) = test_app();
+    app.modes.effort = Some("max".into());
+    app.input.set("/effort".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);
+
+    let menu = app.slash_matches();
+    let completions: Vec<&str> = menu
+        .iter()
+        .filter_map(|entry| entry.completion.as_deref())
+        .collect();
+    assert_eq!(
+        completions,
+        ["/effort off", "/effort high", "/effort max"]
+    );
+    assert_eq!(app.slash_sel, 2, "highlight lands on the active effort");
+
+    // A typed prefix that excludes the current restarts at the head.
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), &ctl);
+    assert_eq!(app.slash_sel, 0, "filtered menu restarts at its head");
+
+    // Enter on the opened menu keeps the effort in effect.
+    app.input.set("/effort".into());
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.modes.effort.as_deref(), Some("max"));
 }
 
 #[test]
@@ -1159,6 +1280,7 @@ fn preset_ack_folds_the_chip_and_new_session_waits_for_the_host_mode() {
     let (mut app, ctl, _rx) = test_app();
     app.handle(
         AppEvent::Ctl(CtlEvent::PresetSet {
+            session_id: String::new(),
             preset: "cordis".into(),
         }),
         &ctl,
@@ -1174,12 +1296,17 @@ fn preset_ack_folds_the_chip_and_new_session_waits_for_the_host_mode() {
 }
 
 #[test]
-fn live_acp_new_does_not_invent_a_local_id() {
+fn live_acp_new_parks_the_current_session_and_binds_the_new_tab() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;
     let before = app.session_id.clone();
     app.run_slash("new", "fresh", &ctl);
-    assert_eq!(app.session_id, before, "ACP /new waits for session/new");
+    assert_ne!(
+        app.session_id, before,
+        "ACP /new switches to a fresh placeholder tab"
+    );
+    assert_eq!(app.parked.len(), 1, "previous session parked, not dropped");
+    assert_eq!(app.parked[0].id, before);
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionBound {
             session_id: "acp-9".into(),
@@ -1187,7 +1314,128 @@ fn live_acp_new_does_not_invent_a_local_id() {
         }),
         &ctl,
     );
-    assert_eq!(app.session_id, "acp-9");
+    assert_eq!(app.session_id, "acp-9", "the new tab gets the real id");
+    assert_eq!(app.parked[0].id, before, "the parked session keeps its id");
+}
+
+/// Seed `n` user prompts, each followed by enough filler so the transcript
+/// outgrows any test viewport; returns the transcript cell index of each
+/// user prompt (oldest first).
+fn seed_prompt_history(app: &mut App, n: usize) -> Vec<usize> {
+    for i in 1..=n {
+        app.transcript.push_user(format!("user prompt {i}"), false);
+        for j in 0..30 {
+            app.transcript.push_notice(
+                crate::transcript::NoticeLevel::Info,
+                format!("filler {i}-{j} {}", "x".repeat(160)),
+            );
+        }
+    }
+    app.transcript
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| matches!(cell.kind, crate::transcript::CellKind::User { .. }))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// The first line the `↥` jump anchors for `cell`, mirroring
+/// `App::jump_to_user_prompt` (layout at the recorded chat width).
+fn prompt_jump_anchor(app: &mut App, cell: usize) -> usize {
+    let area = app.chat_view.area;
+    let theme = app.theme;
+    let spinner = app.spinner();
+    let layout = app.transcript.layout(
+        &theme,
+        crate::markdown::ToneMode::Single,
+        area.width,
+        spinner,
+        crate::pet::kitty_supported(),
+    );
+    let line = layout
+        .users
+        .iter()
+        .find(|prompt| prompt.cell == cell)
+        .expect("seeded prompt laid out")
+        .line;
+    line.min(layout.lines.len().saturating_sub(area.height as usize))
+}
+
+/// Left-click the `↥` button recorded by the last frame.
+fn click_prompt_jump(app: &mut App, ctl: &Controller) {
+    let jump = app.prompt_jump_btn.expect("↥ button rect recorded");
+    app.handle_mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(
+                crossterm::event::MouseButton::Left,
+            ),
+            column: jump.x + 1,
+            row: jump.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        ctl,
+    );
+}
+
+#[test]
+fn prompt_jump_walks_user_prompts_newest_first_and_wraps() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    let users = seed_prompt_history(&mut app, 4);
+    let _ = crate::ui::dump_frame(&mut app, 100, 30);
+    assert!(
+        app.chat_view.area.height > 0 && app.chat_view.area.width > 0,
+        "first frame records the chat area"
+    );
+
+    // First click → newest prompt; each next click walks one prompt back;
+    // the oldest wraps to the newest again. Every jump scrolls the chat so
+    // the prompt's first line anchors the viewport, and flashes the
+    // jumped prompt for a few seconds (issue #103).
+    for expected in [users[3], users[2], users[1], users[0], users[3]] {
+        click_prompt_jump(&mut app, &ctl);
+        assert_eq!(app.prompt_jump_cell, Some(expected), "jump cursor");
+        let (flash_cell, until) = app
+            .prompt_flash
+            .expect("the jumped prompt flashes");
+        assert_eq!(flash_cell, expected, "flash follows the jump");
+        assert!(
+            until > std::time::Instant::now(),
+            "flash expires in the future"
+        );
+        let anchor = prompt_jump_anchor(&mut app, expected);
+        let _ = crate::ui::dump_frame(&mut app, 100, 30);
+        assert_eq!(
+            app.chat_view.top, anchor,
+            "view anchors the first line of the jumped prompt"
+        );
+        assert!(app.scroll_up > 0, "the jump leaves the tail");
+    }
+
+    // The flash restores to normal on its own: after the 5 s window the
+    // next tick clears it and requests a repaint.
+    let (cell, _) = app.prompt_flash.expect("flash still armed");
+    app.prompt_flash = Some((
+        cell,
+        std::time::Instant::now() - crate::app::PROMPT_FLASH_TTL,
+    ));
+    app.tick();
+    assert!(app.prompt_flash.is_none(), "expired flash clears on tick");
+    assert!(app.needs_redraw, "expiry requests a repaint");
+}
+
+#[test]
+fn prompt_jump_without_user_prompts_tips_instead_of_jumping() {
+    let (mut app, ctl, _rx) = test_app();
+    app.show_banner = false;
+    let _ = crate::ui::dump_frame(&mut app, 100, 30);
+
+    click_prompt_jump(&mut app, &ctl);
+
+    assert!(app.prompt_jump_cell.is_none());
+    assert!(app.tip.is_some(), "no prompts → a tip explains ↥");
+    assert_eq!(app.chat_view.top, 0, "no jump happened");
 }
 
 #[test]
@@ -1232,6 +1480,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
     app.load_session = true;
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: app.session_id.clone(),
             sessions: vec![
                 SessionListItem {
                     id: "s-old".into(),
@@ -1245,6 +1494,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
                 },
             ],
             prefix: None,
+            limit: usize::MAX,
         }),
         &ctl,
     );
@@ -1256,17 +1506,45 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
     app.picker = None;
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: app.session_id.clone(),
             sessions: vec![SessionListItem {
                 id: "s-old".into(),
                 title: None,
                 updated_at: None,
             }],
             prefix: Some("s-old".into()),
+            limit: usize::MAX,
         }),
         &ctl,
     );
     assert_eq!(app.session_id, "s-old");
     assert!(app.picker.is_none());
+}
+
+#[test]
+fn acp_session_list_response_is_dropped_after_switching_tabs() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let requester = app.session_id.clone();
+    app.open_new_session("s-two".into(), true);
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: requester,
+            sessions: vec![SessionListItem {
+                id: "s-old".into(),
+                title: None,
+                updated_at: None,
+            }],
+            prefix: Some("s-old".into()),
+            limit: usize::MAX,
+        }),
+        &ctl,
+    );
+
+    assert_eq!(app.session_id, "s-two");
+    assert!(app.picker.is_none());
+    assert_eq!(app.session_tab_count(), 2);
 }
 
 #[test]
@@ -1294,12 +1572,14 @@ fn acp_session_list_enriches_rows_with_local_summaries() {
 
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionList {
+            requester_session_id: app.session_id.clone(),
             sessions: vec![SessionListItem {
                 id: "s-local".into(),
                 title: None,
                 updated_at: None,
             }],
             prefix: None,
+            limit: usize::MAX,
         }),
         &ctl,
     );
@@ -1556,7 +1836,12 @@ fn cancel_requested_stops_in_flight_tools() {
         name: "bash".into(),
         arguments: r#"{"command":"grep"}"#.into(),
     });
-    app.handle(AppEvent::Ctl(CtlEvent::CancelRequested), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::CancelRequested {
+            session_id: app.session_id.clone(),
+        }),
+        &ctl,
+    );
     assert_eq!(app.state_note, "cancelling");
     assert!(
         matches!(app.state, RunState::Running),
@@ -1808,7 +2093,9 @@ fn terminal_lifecycle_events_release_a_pending_first_prompt() {
     let events = vec![
         AppEvent::RuntimeExited(None),
         AppEvent::Ctl(CtlEvent::Error("failed".into())),
-        AppEvent::Ctl(CtlEvent::Interrupted),
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
         AppEvent::Ui(crate::events::UiEvent::SessionStatus {
             session: "dsh-test".into(),
             running: false,
@@ -1998,7 +2285,12 @@ fn interrupted_advances_one_client_followup_and_queues_later_input_behind_it() {
     app.state = RunState::Running;
     app.state_note = "cancelling".into();
     app.send_agent_text("first followup".into(), &ctl);
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
     assert!(matches!(app.state, RunState::Starting));
     assert_eq!(app.queued, 0);
     assert!(matches!(
@@ -2027,7 +2319,12 @@ fn interrupted_turn_renders_one_specific_terminal_notice() {
         }),
         &ctl,
     );
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
 
     let notices = app
         .transcript
@@ -2048,7 +2345,12 @@ fn staged_input_joins_a_surviving_fifo_after_interrupt() {
     let (mut app, ctl, _rx) = test_app();
     app.state = RunState::Running;
     app.send_agent_text("first followup".into(), &ctl);
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
 
     app.send_staged(
         vec![StagedBlock::Image(crate::attachments::Attachment {
@@ -2076,7 +2378,12 @@ fn send_now_can_steer_while_a_surviving_fifo_is_advancing() {
     let (mut app, ctl, _rx) = test_app();
     app.state = RunState::Running;
     app.send_agent_text("ordinary followup".into(), &ctl);
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
     app.input.set("urgent correction".into());
 
     app.send_now(&ctl);
@@ -2204,7 +2511,12 @@ fn interrupted_turn_releases_one_client_queued_prompt() {
     app.send_agent_text("first followup".into(), &ctl);
     app.send_agent_text("second followup".into(), &ctl);
 
-    app.handle(AppEvent::Ctl(CtlEvent::Interrupted), &ctl);
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Interrupted {
+            session_id: "dsh-test".into(),
+        }),
+        &ctl,
+    );
 
     assert!(matches!(
         commands.recv_timeout(std::time::Duration::from_secs(1)),
@@ -2307,6 +2619,7 @@ fn saving_a_selected_queue_edit_preserves_fifo_position() {
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "first".into(),
+            session_id: Some("dsh-test".into()),
         }),
         &ctl,
     );
@@ -3785,7 +4098,7 @@ fn advertised_plan_command_toggles_off_when_plan_is_active() {
 
     assert!(matches!(
         commands.recv_timeout(std::time::Duration::from_secs(1)),
-        Ok(Cmd::SetConfigOption { config_id, value })
+        Ok(Cmd::SetConfigOption { config_id, value, .. })
             if config_id == "collaboration_mode" && value == "default"
     ));
 }
@@ -3851,6 +4164,7 @@ fn direct_ui_turn_facts_update_client_lifecycle() {
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "dsh-test".into(),
+            session_id: Some("dsh-test".into()),
         }),
         &ctl,
     );
@@ -4162,6 +4476,7 @@ fn auth_retry_does_not_consume_the_followup_fifo_marker() {
     app.handle(
         AppEvent::Ctl(CtlEvent::PromptQueued {
             message_id: "dsh-test".into(),
+            session_id: Some("dsh-test".into()),
         }),
         &ctl,
     );
@@ -4334,6 +4649,7 @@ fn acp_permission_ask_enter_selects_option_id() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
             title: "bash".into(),
             options: ask_options(),
             reply: tx,
@@ -4358,6 +4674,7 @@ fn acp_permission_ask_esc_cancels() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::PermissionAsk {
+            session_id: "dsh-test".into(),
             title: "bash".into(),
             options: ask_options(),
             reply: tx,
@@ -4384,6 +4701,7 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.handle(
         AppEvent::ElicitationAsk {
+            session_id: Some("dsh-test".into()),
             form: ElicitationForm {
                 message: "The agent needs your input.".into(),
                 fields: vec![ElicitationField {
