@@ -3568,7 +3568,8 @@ impl App {
                         self.dispatch_session_queue(&session, ctl);
                     }
                 }
-                self.needs_redraw = true;
+                // apply_ui decides whether a fact affects the visible
+                // frame; background chunks and unknown notifications do not.
             }
             AppEvent::RuntimeStderr(_line) => {
                 // kept in proto's tail buffer for diagnostics; stay quiet here
@@ -4433,8 +4434,12 @@ impl App {
         if let Some(session) = ui_session(&ui) {
             if session != self.session_id {
                 if let Some(view) = self.subagents.iter_mut().find(|view| view.id == session) {
+                    let visible = self.active_subagent.as_deref() == Some(session);
                     view.transcript.apply(ui);
-                    self.needs_redraw = true;
+                    // Hidden child output only changes its own transcript.
+                    // Lifecycle events above still redraw the Agents dock;
+                    // tick drives its running animation independently.
+                    self.needs_redraw |= visible;
                     return;
                 }
                 for slot in &mut self.parked {
@@ -4445,7 +4450,6 @@ impl App {
                     }
                     if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == session) {
                         view.transcript.apply(ui);
-                        self.needs_redraw = true;
                         return;
                     }
                 }

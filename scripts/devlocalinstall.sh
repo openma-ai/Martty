@@ -7,11 +7,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # primary dev profile). Must match the `dsh --profile <name>` you run.
 PROFILE="${1:-${DSH_TUI_PROFILE:-martty}}"
 
-# Cargo profile for the local build: devlocal (debug codegen) by default —
-# the fastest turnaround for build/test loops; release matches the shipped
-# npm bundles when the debug binary is too slow. The names map 1:1 to the
-# [profile.*] sections in Cargo.toml.
-CARGO_PROFILE="${DSH_TUI_CARGO_PROFILE:-devlocal}"
+# Cargo profile for the local build: release by default — the same fat-LTO,
+# stripped binary the shipped npm bundles carry, so what gets installed
+# behaves like a real install (and runs fast enough for big workspaces).
+# DSH_TUI_CARGO_PROFILE=devlocal opts back into the fast debug-codegen loop
+# when a quick build/test turnaround matters more than fidelity. The names
+# map 1:1 to the [profile.*] sections in Cargo.toml.
+CARGO_PROFILE="${DSH_TUI_CARGO_PROFILE:-release}"
 
 # 1. Build first so the installed copy always reflects the current source.
 # The target dir must match where cargo actually writes (CARGO_TARGET_DIR
@@ -23,7 +25,7 @@ if [ "$TARGET_DIR" = "target" ]; then
   TARGET_DIR="$(pwd)/target"
 fi
 BIN="${TARGET_DIR}/${CARGO_PROFILE}/martty"
-echo "building $BIN (cargo build --profile $CARGO_PROFILE --locked)…" >&2
+echo "building $BIN (cargo build --profile $CARGO_PROFILE --locked; first release build takes a while — fat LTO)…" >&2
 cargo build --profile "$CARGO_PROFILE" --locked
 
 # 2. Resolve exactly the binary `dsh --profile $PROFILE` runs — no hardcoded
