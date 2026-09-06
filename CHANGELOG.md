@@ -20,6 +20,13 @@ All notable changes to this project are documented here. The project follows
   flow; Esc closes without switching. Removal dialogs support stepwise back navigation.
 - CLI and TUI walkthroughs, README quick starts and screenshots.
 - Plan progress uses an animated running marker and a distinct in-progress label.
+- Theme selection previews in both picker surfaces without confirming:
+  moving the highlight in the `/theme` dialog (↑/↓, pgup/pgdn, home/end,
+  mouse wheel) or across the `/theme ` slash popup candidates immediately
+  previews that palette on screen — stopped Theme Plugins preview from
+  their registered token maps. Only Enter confirms and switches the theme
+  (loading the owning Plugin and persisting the preference); Esc or moving
+  the highlight off the row reverts to the confirmed theme.
 
 ### Fixed
 
