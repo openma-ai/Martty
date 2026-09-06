@@ -1715,14 +1715,14 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
         let mut compact = Vec::new();
         if app.scroll_up > 0 {
             compact.push(Span::styled(
-                format!("▲{} · ", app.scroll_up),
+                format!("↓ {} · ", app.scroll_up),
                 Style::default().fg(theme.caption),
             ));
         }
         if let Some(shown_model) = &shown_model {
             compact.push(Span::styled(
                 format!("{shown_model} "),
-                Style::default().fg(theme.brand_soft),
+                Style::default().fg(theme.caption),
             ));
         }
         let compact_width = span_widths(&compact);
@@ -1735,7 +1735,7 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
             let shown_model = shown_model.expect("checked above");
             right_spans = vec![Span::styled(
                 format!("{shown_model} "),
-                Style::default().fg(theme.brand_soft),
+                Style::default().fg(theme.caption),
             )];
         } else {
             right_spans = Vec::new();
@@ -1992,7 +1992,7 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     if app.scroll_up > 0 {
         spans.push(Span::styled(
-            format!("▲{} · ", app.scroll_up),
+            format!("↓ {} · ", app.scroll_up),
             Style::default().fg(theme.caption),
         ));
     }
@@ -2001,7 +2001,7 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
         if let Some(shown_model) = displayed_model(app) {
             spans.push(Span::styled(
                 shown_model,
-                Style::default().fg(theme.brand_soft),
+                Style::default().fg(theme.caption),
             ));
             if let Some(effort) = &app.modes.effort {
                 spans.push(Span::styled(
