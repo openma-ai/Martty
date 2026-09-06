@@ -98,6 +98,17 @@ if (argv[0] === 'harness') {
   process.exit(exitCode)
 }
 
+// Validate startup arguments before resolving the native painter. A source
+// checkout must report the same usage errors as an installed package.
+let parsed
+if (!wantHelp && !wantVersion && !wantDemo && !wantDemoSkin) {
+  try { parsed = parseClientArgv(argv) }
+  catch (error) {
+    console.error(`martty: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(Number.isInteger(error?.exitCode) ? error.exitCode : 1)
+  }
+}
+
 if (!fs.existsSync(binaryPath)) {
   let available = []
   try {
@@ -145,10 +156,4 @@ if (wantDemoSkin) {
 }
 
 process.env.MARTTY_BIN ??= binaryPath
-let parsed
-try { parsed = parseClientArgv(argv) }
-catch (error) {
-  console.error(`martty: ${error instanceof Error ? error.message : String(error)}`)
-  process.exit(Number.isInteger(error?.exitCode) ? error.exitCode : 1)
-}
 await bootClient({ agent: parsed.agent, extraArgs: painterArgs(parsed) })

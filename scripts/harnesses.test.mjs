@@ -113,8 +113,12 @@ test('CLI wrapper runs add/list/use/remove against isolated settings and rejects
   const root = mkdtempSync(path.join(tmpdir(), 'martty-cli-wrapper-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const settingsPath = path.join(root, 'settings.json')
-  const cli = (...args) => spawnSync(process.execPath, [new URL('../npm/bin/martty.js', import.meta.url).pathname, ...args], {
-    env: { ...process.env, MARTTY_HOME: root, DSH_TUI_AGENT: '', PATH: '' }, encoding: 'utf8', timeout: 5000,
+  // Do not let a developer's bundled native binary mask early CLI validation.
+  mkdirSync(path.join(root, 'bin'))
+  fs.copyFileSync(new URL('../npm/bin/martty.js', import.meta.url), path.join(root, 'bin', 'martty.mjs'))
+  symlinkSync(new URL('../npm/lib', import.meta.url).pathname, path.join(root, 'lib'), 'junction')
+  const cli = (...args) => spawnSync(process.execPath, [path.join(root, 'bin', 'martty.mjs'), ...args], {
+    env: { ...process.env, MARTTY_HOME: root, MARTTY_BIN: '', DSH_TUI_BIN: '', DSH_TUI_AGENT: '', PATH: '' }, encoding: 'utf8', timeout: 5000,
   })
   let result = cli('harness', 'add', 'fixture', '--command', '/no-launch/fixture')
   assert.equal(result.status, 0, result.stderr)
