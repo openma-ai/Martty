@@ -30,6 +30,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The scroll-position indicator beside the model chip now reads `↓ N` instead
+  of an up-pointing triangle.
+- The model chip in the meta row now uses the same muted color as the reasoning
+  effort label beside it, instead of the brand accent.
 - Harness switching reinitializes ACP and starts a fresh empty session. All old
   connection projections and requests are cleared, while session-scoped state
   remains isolated across tabs within one connection. Saved configuration is
