@@ -201,7 +201,7 @@ test('standalone boot mounts the Cordis Client runner before the shell', async (
     )
     assert.deepEqual(
       ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.input.dock')?.occupants,
-      [{ id: 'plan-view', order: 0 }, { id: 'queue-view', order: -10 }],
+      [{ id: 'plan-view', order: 0 }, { id: 'queue-view', order: -10 }, { id: 'harness-downloads', order: -20 }],
     )
     assert.deepEqual(
       ctx.get('tuiSlots')?.list().find((slot) => slot.name === 'conversation.composer.dock')?.occupants,

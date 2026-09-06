@@ -52,6 +52,26 @@ fn streaming_text_appends_and_finalizes() {
 }
 
 #[test]
+fn structured_session_warning_renders_as_notice_not_assistant_copy() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::SessionNotice {
+        session: "s".into(),
+        severity: "warning".into(),
+        title: "Skill descriptions were shortened".into(),
+        details: Some("Disable unused skills or plugins.".into()),
+    });
+
+    assert!(matches!(
+        &tr.cells[0].kind,
+        CellKind::Notice {
+            level: NoticeLevel::Warn,
+            text,
+        } if text == "Skill descriptions were shortened — Disable unused skills or plugins."
+    ));
+    assert!(!matches!(&tr.cells[0].kind, CellKind::Assistant { .. }));
+}
+
+#[test]
 fn streaming_assistant_keeps_its_cursor_without_a_fallback_loading_icon() {
     let mut tr = t("s");
     tr.apply(UiEvent::TextDelta {

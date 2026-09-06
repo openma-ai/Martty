@@ -53,6 +53,33 @@ fn final_event(session: &str, text: &str) -> crate::events::UiEvent {
 }
 
 #[test]
+fn harness_handoff_discards_old_connection_tabs_and_pending_binds() {
+    let (mut app, ctl, _rx) = test_app();
+    app.open_new_session("old-second".into(), true);
+    assert_eq!(app.parked.len(), 1);
+    app.handle(AppEvent::Ctl(CtlEvent::Starting { runtime: "harness".into() }), &ctl);
+    assert!(app.parked.is_empty(), "old Agent tabs cannot target the new process");
+    assert!(app.awaiting_binds.is_empty());
+    assert!(!app.startup_bound);
+}
+
+#[test]
+fn acp_reported_models_follow_session_tabs() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.apply_ui(crate::events::UiEvent::SessionModel {
+        session: "dsh-test".into(), model: "first-model".into(),
+    });
+    app.open_new_session("s-two".into(), true);
+    assert_eq!(app.session_model, None, "fresh tab must not inherit the old model");
+    app.apply_ui(crate::events::UiEvent::SessionModel {
+        session: "dsh-test".into(), model: "updated-first-model".into(),
+    });
+    let slot = app.parked.remove(0);
+    app.put_live_slot(slot);
+    assert_eq!(app.session_model.as_deref(), Some("updated-first-model"));
+}
+
+#[test]
 fn parked_session_events_land_in_their_slot_only() {
     let (mut app, _ctl, _rx) = test_app();
     app.transcript.push_user("live prompt".into(), false);

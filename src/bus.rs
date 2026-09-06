@@ -80,7 +80,11 @@ pub enum CtlEvent {
     /// Spawning + initializing the runtime.
     Starting { runtime: String },
     /// initialize returned.
+    Initialized { server: String },
+    /// Initial session setup finished (possibly awaiting authentication).
     Ready { server: String },
+    /// Connection/session setup failed, distinct from an individual prompt error.
+    ConnectionFailed { target: String, error: String },
     /// session/prompt accepted into the durable inbox. `session_id` names
     /// the session the prompt belongs to when the sender knows it — the
     /// App must not settle the viewed tab's state for another session's

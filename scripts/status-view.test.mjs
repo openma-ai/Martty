@@ -7,6 +7,13 @@ const statusView = await import(pathToFileURL(
   path.join(import.meta.dirname, '../npm/lib/status-view.js'),
 ).href).catch(() => ({}))
 
+test('status shows the ACP authentication failure reason', () => {
+  const text = statusView.statusMarkdown({ auth: {
+    status: 'sign-in failed', method: 'Google', message: 'Account is not eligible in your location',
+  } }, {})
+  assert.ok(text.includes('Account is not eligible in your location'), text)
+})
+
 test('the status Client Plugin registers /status and opens the markdown overlay', () => {
   assert.deepEqual(
     statusView.inject,

@@ -2,7 +2,7 @@
  * Standard-ACP-backed run-state projection for the Client tree.
  *
  * Folds the non-statistics facts `/status` needs — connection, server,
- * authenticate state, session binding, model, effort, permission, plan,
+ * authenticate state, session binding/use, model, effort, permission, plan,
  * agent preset, and the running/idle state — from messages the mux already
  * observes. Statistics stay in `acpSessionStats`; this service never
  * counts tokens or timings, so there is exactly one stats source.
@@ -43,7 +43,7 @@ class AcpSessionStatusService extends Service {
 function zeroSession(sessionId, bound = sessionId !== undefined) {
   return {
     state: 'idle',
-    session: { sessionId, bound },
+    session: { sessionId, bound, started: false },
     model: undefined,
     effort: undefined,
     permission: undefined,
@@ -68,6 +68,8 @@ export function installAcpSessionStatus(ctx, options = {}) {
   let server
   const auth = { status: undefined, method: undefined }
   let initializeId
+  let authMethods = []
+  const pendingRequests = new Set()
   const pendingAuthenticate = new Set()
   const pendingSetup = new Map()
   const pendingPrompts = new Map()
@@ -131,22 +133,43 @@ export function installAcpSessionStatus(ctx, options = {}) {
   function observeClient(message) {
     if (!object(message) || typeof message.method !== 'string') return
     if (message.method === 'initialize' && message.id !== undefined) {
+      pendingRequests.clear()
+      sessions.clear()
+      Object.assign(fallback, zeroSession(undefined, false))
+      delete fallback.error
+      sessionId = undefined
+      selectionKnown = false
+      connection = 'connecting'
+      server = undefined
+      auth.status = undefined
+      auth.method = undefined
+      delete auth.message
+      authMethods = []
+      pendingAuthenticate.clear()
+      pendingSetup.clear()
+      pendingPrompts.clear()
       initializeId = message.id
+      publish()
       return
     }
+    if (message.id !== undefined) pendingRequests.add(message.id)
     if (message.method === 'authenticate' && message.id !== undefined) {
       pendingAuthenticate.add(message.id)
+      const methodId = readString(message.params, 'methodId')
+      const method = authMethods.find((candidate) => candidate?.id === methodId)
+      if (methodId !== undefined) auth.method = readString(method, 'name', 'label') ?? methodId
+      delete auth.message
       auth.status = 'signing in'
       publish()
       return
     }
     if (SETUP_METHODS.has(message.method) && message.id !== undefined) {
-      pendingSetup.set(
-        message.id,
-        message.method !== 'session/new'
+      pendingSetup.set(message.id, {
+        sessionId: message.method !== 'session/new'
           ? readString(message.params, 'sessionId', 'session_id')
           : undefined,
-      )
+        started: message.method !== 'session/new',
+      })
       return
     }
     if (message.method === 'session/prompt' && message.id !== undefined) {
@@ -155,6 +178,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
       if (!selectionKnown && sessionId === undefined) sessionId = promptSessionId
       pendingPrompts.set(message.id, promptSessionId)
       const value = stateFor(promptSessionId)
+      value.session.started = true
       if (value.state === 'idle') {
         value.state = 'starting'
         publishIf(promptSessionId)
@@ -166,42 +190,61 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (!object(message)) return
     if (message.id !== undefined && message.id === initializeId) {
       initializeId = undefined
-      connection = 'attached'
+      connection = message.error === undefined ? 'attached' : 'failed'
+      fallback.error = message.error?.message
       const result = object(message.result) ? message.result : undefined
       server = readString(result?.agentInfo, 'name')
       const methods = Array.isArray(result?.authMethods) ? result.authMethods : []
-      const method = methods.find((candidate) => object(candidate)
-        && typeof candidate.id === 'string' && candidate.id.length > 0)
-      if (method !== undefined && auth.status === undefined) {
-        auth.method = readString(method, 'name', 'label') ?? method.id
-      }
+      authMethods = methods
+      // initialize advertises choices, not the credential used by this process.
       publish()
       return
     }
+    // Unknown replies can belong to a replaced Agent. Never let them restore
+    // its authentication or run state in the new connection.
+    if (response(message) && !pendingRequests.delete(message.id)) return
     if (message.id !== undefined && pendingAuthenticate.has(message.id)) {
       pendingAuthenticate.delete(message.id)
       if (message.error === undefined) {
         auth.status = 'configured'
-      } else if (isAuthRequired(message.error)) {
-        auth.status = 'needs sign-in'
+        delete auth.message
       } else {
-        auth.status = undefined
+        auth.status = 'sign-in failed'
+        auth.message = readString(message.error?.data, 'details', 'message')
+          ?? readString(message.error, 'message') ?? 'Authentication failed'
       }
       publish()
       return
     }
     if (message.id !== undefined && pendingSetup.has(message.id)) {
-      const requested = pendingSetup.get(message.id)
+      const setup = pendingSetup.get(message.id)
       pendingSetup.delete(message.id)
       if (message.error !== undefined) {
         if (isAuthRequired(message.error)) auth.status = 'needs sign-in'
-        if (requested !== undefined) {
-          stateFor(requested, false).session.bound = false
+        else {
+          connection = 'failed'
+          const value = stateFor(setup.sessionId, false)
+          value.error = readString(message.error, 'message') ?? 'Session setup failed'
+          value.state = 'idle'
+          value.model = undefined
+          value.effort = undefined
         }
-        if (!selectionKnown) sessionId = requested
+        stateFor(setup.sessionId, false).session = {
+          sessionId: setup.sessionId, bound: false, started: false,
+        }
+        if (!selectionKnown) sessionId = setup.sessionId
       } else {
-        const bound = readString(message.result, 'sessionId', 'session_id') ?? requested
-        if (bound !== undefined) stateFor(bound).session = { sessionId: bound, bound: true }
+        connection = 'attached'
+        delete fallback.error
+        const bound = readString(message.result, 'sessionId', 'session_id') ?? setup.sessionId
+        if (bound !== undefined) {
+          stateFor(bound).session = { sessionId: bound, bound: true, started: setup.started }
+          delete stateFor(bound).error
+          if (authMethods.length > 0) {
+            auth.status = 'configured'
+            delete auth.message
+          }
+        }
         if (!selectionKnown) sessionId = bound
       }
       publish()
@@ -304,14 +347,16 @@ export function installAcpSessionStatus(ctx, options = {}) {
       ? snapshot.sessionId
       : sessionId
     const value = stateFor(configSessionId)
-    value.model = optionValue(snapshot.options, 'model') ?? value.model
-    value.effort = optionValue(snapshot.options, 'effort') ?? value.effort
+    if (!selectionKnown && sessionId === undefined) sessionId = configSessionId
+    value.model = optionValue(snapshot.options, 'model', 'model')
+    value.effort = optionValue(snapshot.options, 'thought_level', 'effort')
     publishIf(configSessionId)
   }
 
-  function optionValue(options, id) {
+  function optionValue(options, category, id) {
     if (!Array.isArray(options)) return undefined
-    const option = options.find((candidate) => candidate?.id === id)
+    const option = options.find((candidate) => candidate?.category === category)
+      ?? options.find((candidate) => candidate?.id === id)
     if (option === undefined) return undefined
     const raw = option.currentValue ?? option.current_value
     return typeof raw === 'string' ? raw : undefined

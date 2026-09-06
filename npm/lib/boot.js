@@ -67,6 +67,8 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * @param {{ stdin: import('node:stream').Writable, stdout: import('node:stream').Readable, child?: import('node:child_process').ChildProcess }} [options.stream]
  * @param {{ stdin: number | 'inherit', stdout: number | 'inherit' }} [options.tty]
  * @param {string} [options.settingsPath]
+ * Internal product-only forced Harness; null means no pinned Harness.
+ * @param {{ id: string, label: string, command: string, args?: string[] } | null} [options.forcedHarness]
  * @param {string} [options.artifactRoot]
  * @param {Array<{ id: string, label: string, command: string, args?: string[], source?: string }>} [options.harnessDefaults]
  * @param {string} [options.harnessPathValue]
@@ -75,10 +77,16 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
 export async function bootClient(options = {}) {
   const { Context } = await import('@deepseek-ai/cordis')
   const ctx = new Context()
+  const settingsPath = options.settingsPath ?? uiSettingsPath(options.extraArgs ?? [])
+  const forcedHarness = options.forcedHarness ?? null
   const acpConfig = options.stream !== undefined
     ? { stream: options.stream }
-    : { agent: options.agent ?? resolveStackedAgent() }
-  const settingsPath = options.settingsPath ?? uiSettingsPath(options.extraArgs ?? [])
+    : {
+        agent: options.agent ?? resolveStackedAgent(import.meta.url, {
+          settingsPath,
+          forcedHarness,
+        }),
+      }
   if (options.settingsPath === undefined) {
     migrateLegacyUiSettings(settingsPath, legacyUiSettingsPaths(options.extraArgs ?? []))
   }
@@ -96,9 +104,16 @@ export async function bootClient(options = {}) {
       harnessDefaults = []
     }
   }
+  if (forcedHarness !== null) {
+    const forcedEntry = { ...forcedHarness, source: 'forced' }
+    const forcedIndex = harnessDefaults.findIndex(({ id }) => id === forcedHarness.id)
+    if (forcedIndex === -1) harnessDefaults = [forcedEntry, ...harnessDefaults]
+    else harnessDefaults = harnessDefaults.map((entry, index) => index === forcedIndex ? forcedEntry : entry)
+  }
   const harnessConfig = {
     settingsPath,
     defaults: harnessDefaults,
+    forcedHarness,
     pathValue: options.harnessPathValue,
     hostOwned: options.stream !== undefined,
   }
@@ -292,10 +307,12 @@ export function migrateLegacyUiSettings(settingsPath, legacyPaths) {
 
 /**
  * Parse `--agent` / `--agent-arg` from argv. Remaining flags pass through to Rust.
+ * `forcedHarness` is an internal product initialization value, not a CLI
+ * argument; null/omitted means that no product Harness is forced.
  * `--agent` is also forwarded via {@link painterArgs} so Terminal Auth can
  * re-exec the same command.
  * @param {string[]} argv
- * @param {{ settingsPath?: string }} [options]
+ * @param {{ settingsPath?: string, forcedHarness?: { id: string, label: string, command: string, args?: string[] } | null }} [options]
  * @returns {{ agent: { command: string, args: string[] }, rustArgs: string[] }}
  */
 export function parseClientArgv(argv, options = {}) {
@@ -305,12 +322,16 @@ export function parseClientArgv(argv, options = {}) {
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]
     if (token === '--agent') {
+      if (!argv[i + 1]?.trim() || argv[i + 1].startsWith('--')) {
+        throw Object.assign(new Error('--agent needs a value'), { exitCode: 2 })
+      }
       command = argv[i + 1]
       i += 1
       continue
     }
     if (token === '--agent-arg') {
-      args.push(argv[i + 1] ?? '')
+      if (argv[i + 1] === undefined) throw Object.assign(new Error('--agent-arg needs a value'), { exitCode: 2 })
+      args.push(argv[i + 1])
       i += 1
       continue
     }
@@ -319,7 +340,10 @@ export function parseClientArgv(argv, options = {}) {
   if (command === undefined) {
     const settingsPath = options.settingsPath ?? uiSettingsPath(rustArgs)
     return {
-      agent: resolveStackedAgent(import.meta.url, { settingsPath }),
+      agent: resolveStackedAgent(import.meta.url, {
+        settingsPath,
+        forcedHarness: options.forcedHarness,
+      }),
       rustArgs,
     }
   }

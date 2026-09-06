@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createInterface } from 'node:readline/promises'
 import { resolveDependencyStack } from '../lib/agent.js'
 import { bootClient, parseClientArgv, painterArgs, uiSettingsPath } from '../lib/boot.js'
-import { runHarnessCommand } from '../lib/harnesses.js'
+import { runHarnessCommandAsync } from '../lib/harnesses.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const platformKey = process.platform + '-' + process.arch
@@ -35,6 +36,18 @@ const wantHelp = argv.includes('-h') || argv.includes('--help')
 const wantVersion = argv.includes('-V') || argv.includes('--version')
 
 if (argv[0] === 'harness') {
+  const controller = new AbortController()
+  let interrupted = 0
+  const interrupt = (code) => {
+    interrupted = code
+    controller.abort(new Error('Harness operation cancelled'))
+  }
+  const onInterrupt = () => interrupt(130)
+  const onTerminate = () => interrupt(143)
+  process.on('SIGINT', onInterrupt)
+  process.on('SIGTERM', onTerminate)
+  let lastPhase, lastProgress = 0
+  let exitCode = 0
   let defaults = []
   try {
     const agent = resolveDependencyStack()
@@ -48,16 +61,51 @@ if (argv[0] === 'harness') {
     // Source checkouts without installed dependencies still list PATH entries.
   }
   try {
-    const result = runHarnessCommand(argv.slice(1), {
+    const result = await runHarnessCommandAsync(argv.slice(1), {
       settingsPath: uiSettingsPath(),
       defaults,
+      columns: process.stdout.columns,
+      color: process.stdout.isTTY && process.env.NO_COLOR === undefined,
+      cwd: process.cwd(),
+      signal: controller.signal,
+      onProgress({ phase, receivedBytes }) {
+        const now = Date.now()
+        if (phase === lastPhase && now - lastProgress < 1000) return
+        lastPhase = phase; lastProgress = now
+        process.stderr.write(`Harness install: ${phase}${Number.isFinite(receivedBytes) ? ` · ${receivedBytes} bytes` : ''}\n`)
+      },
+      ...(process.stdin.isTTY && process.stderr.isTTY ? { async confirmRemoval(preview) {
+        process.stderr.write(preview)
+        const prompt = createInterface({ input: process.stdin, output: process.stderr })
+        prompt.once('SIGINT', onInterrupt)
+        try {
+          const closed = new Promise(resolve => prompt.once('close', () => resolve('')))
+          const answer = await Promise.race([prompt.question('Remove this Harness? [y/N] ', { signal: controller.signal }), closed])
+          return /^y(es)?$/i.test(answer.trim())
+        } finally { prompt.close() }
+      } } : {}),
     })
     if (result.stdout) process.stdout.write(result.stdout)
     if (result.stderr) process.stderr.write(result.stderr)
-    process.exit(result.code)
+    exitCode = interrupted || result.code
   } catch (error) {
     console.error(`martty harness: ${error instanceof Error ? error.message : String(error)}`)
-    process.exit(1)
+    exitCode = interrupted || (Number.isInteger(error?.exitCode) ? error.exitCode : 1)
+  } finally {
+    process.removeListener('SIGINT', onInterrupt)
+    process.removeListener('SIGTERM', onTerminate)
+  }
+  process.exit(exitCode)
+}
+
+// Validate startup arguments before resolving the native painter. A source
+// checkout must report the same usage errors as an installed package.
+let parsed
+if (!wantHelp && !wantVersion && !wantDemo && !wantDemoSkin) {
+  try { parsed = parseClientArgv(argv) }
+  catch (error) {
+    console.error(`martty: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(Number.isInteger(error?.exitCode) ? error.exitCode : 1)
   }
 }
 
@@ -108,5 +156,4 @@ if (wantDemoSkin) {
 }
 
 process.env.MARTTY_BIN ??= binaryPath
-const parsed = parseClientArgv(argv)
 await bootClient({ agent: parsed.agent, extraArgs: painterArgs(parsed) })

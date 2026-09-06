@@ -126,6 +126,8 @@ export function onJsonLines(source, onLine) {
  *   notifyTui: (method: string, params?: object) => void,
  *   requestAgent: (method: string, params?: object) => Promise<unknown>,
  *   requestTui: (method: string, params?: object) => Promise<unknown>,
+ *   resetAgent: () => void,
+ *   failAgent: (error: Error) => void,
  * }}
  */
 export function muxAcpAndCompositor(opts) {
@@ -137,6 +139,7 @@ export function muxAcpAndCompositor(opts) {
   /** @type {Map<string, { resolve: (value: unknown) => void, reject: (error: Error) => void }>} */
   const pendingAgent = new Map()
   const pendingTui = new Map()
+  const pendingClient = new Set()
   let nextHostId = 0
   let nextTuiId = 0
   /** @type {unknown} */
@@ -167,6 +170,7 @@ export function muxAcpAndCompositor(opts) {
       if (agentCordis !== null) onHost?.(message)
       return
     }
+    if (message?.id !== undefined && typeof message.method !== 'string') pendingClient.delete(message.id)
     onAcp?.('agent', message)
     tui.output.write(`${line}\n`)
     if (initializeId !== undefined && message && typeof message === 'object' && message.id === initializeId) {
@@ -244,10 +248,29 @@ export function muxAcpAndCompositor(opts) {
       initializeId = outgoing.id
     }
     onAcp?.('client', outgoing)
+    if (outgoing.id !== undefined && typeof outgoing.method === 'string') pendingClient.add(outgoing.id)
     writeJsonLine(agent.stdin, outgoing)
   })
 
+  const failAgent = (error) => {
+    for (const waiter of pendingAgent.values()) waiter.reject(error)
+    pendingAgent.clear()
+    const requests = [...pendingClient]
+    pendingClient.clear()
+    for (const id of requests) {
+      const response = { jsonrpc: '2.0', id, error: { code: -32603, message: error.message } }
+      onAcp?.('agent', response)
+      writeJsonLine(tui.output, response)
+    }
+  }
+
   return {
+    failAgent,
+    resetAgent() {
+      initializeId = undefined
+      agentCordis = null
+      failAgent(new Error('ACP Agent was replaced'))
+    },
     notifyTui(method, params) {
       writeJsonLine(
         tui.output,

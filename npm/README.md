@@ -64,24 +64,121 @@ profiles remain compatible.
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
 `martty` and use `--agent <cmd>` plus repeated `--agent-arg <arg>` for another
-ACP server. Named standalone harnesses can also be discovered, saved, and selected:
+ACP server.
+
+### Harness CLI quick start
+
+Run these commands in a system terminal. Browse first and replace `<id>` with the ID printed
+by `find`, not the display name. The angle brackets are placeholders, not literal shell input.
+
+```sh
+martty harness find         # Browse Registry and local candidates
+martty harness add <id>     # Install/save configuration
+martty harness use <id>     # Set the next-launch default
+martty                     # Start the TUI in the current directory
+```
+
+`add` and `use` do not switch a running TUI; use `/harness` inside it to switch now.
+To inspect, refresh, or remove configuration:
 
 ```sh
 martty harness list
-martty harness add local --command local-acp --arg --stdio
-martty harness use local
+martty harness find --refresh
+martty harness remove <id> --cleanup --dry-run  # Preview only
+martty harness remove <id>                     # Confirm configuration-only removal
+martty harness remove <id> --cleanup           # Also delete exclusive private binaries
 ```
+
+In a source checkout where `martty` is not on PATH, run `node npm/bin/martty.js harness --help`
+from the repository root and use that entrypoint in place of `martty` in the other commands.
+For an unlisted ACP server, use `martty harness add local --command /absolute/path/to/local-acp
+--arg --stdio`, replacing the path and arguments with your server's actual ACP invocation.
+
+### Registry and TUI setup
+
+`harness find` reads a cached/bundled snapshot of the official ACP Registry from
+`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` and supplements it
+with local `*-acp` / `*_acp` PATH discovery; it is not an npm package search or an immediate
+switch. `npx` / `uvx` entries become launch recipes without implicit `--yes` or
+`--prefer-offline` flags. Selecting a binary distribution downloads it into
+`$MARTTY_HOME/bin/<id>/<version>/<platform>`, verifies its declared SHA-256, and configures
+the resulting executable without modifying the system PATH. The same flow is available in
+the TUI with `/harness find`; manual `--command` remains available for unregistered agents.
+Use `harness find --refresh` for a network refresh; offline refresh keeps the local catalog.
+CLI `add` only installs/saves configuration and reuses saved recipes; `use` sets the next-launch
+default without starting/authenticating an agent. `harness remove <id>` previews and confirms
+configuration removal; `--cleanup` also removes exclusive private binary resources, `--dry-run`
+only previews, and `--yes` confirms in scripts. Global programs, shared caches, history and
+credentials are kept. Stop other instances using the target before cleanup. Downloads report
+progress to stderr, and Ctrl-C cancels and clears staging without saving incomplete configuration.
+Windows uses `%MARTTY_HOME%\bin\<id>\<version>\<platform>` (`windows-x86_64` or `windows-aarch64`) and
+resolves package runners through `PATHEXT` (`npx.cmd`, `uvx.exe`, and similar launchers).
+When a record also has a binary for the current platform, missing npx/uvx falls back to the
+managed binary installer. Package-only records explain how to install Node.js/npm or uv and
+are not persisted until their runner is available.
+Run `harness find` without a query to browse the full catalog; users do not need to know an
+agent name in advance. Query text is only an optional filter, and every unconfigured CLI result
+prints the corresponding `martty harness add <id>` command.
+
+### Harness TUI workflow
+
+Run `/harness` inside Martty. The current item is pinned first and disabled; selecting another
+configured item uses the normal switch flow. Choose **+ Add Harness…** to browse/search the Registry.
+Press Delete on a saved, non-current item in the switch menu to remove configuration and optionally
+exclusive private binaries. Escape returns from removal confirmation to removal mode, then to the
+list, preserving selection. Use `/auth` for sign-in and `/status` to inspect runtime state.
+Error panels show the reason and diagnostics directly; Enter retries.
+
+In the TUI, choose **+ Add Harness** from `/harness` or run `/harness add` to open the
+searchable catalog. Verified local npm/uv programs are reused where possible. Missing
+dependencies offer installation guidance and recheck; Registry failures keep local choices.
+Local discovery runs off the UI event loop alongside the Registry request. The picker
+fills progressively, keeping search and selection, with non-selectable dividers for
+`Installed / configured` and `Not downloaded`. A saved recipe is not proof that its
+package has already been downloaded. Binary transfers time out only on connection
+failure or lack of progress, not on total download duration.
+Binary transfer uses `node-downloader-helper` in the existing Node.js client;
+no separate downloader executable is required. Failed transfers can be retried
+from the panel; partial downloads are cleaned up, not resumed across restarts.
+npx/uvx preparation and binary downloads run in a progress panel. Enter keeps unfinished
+downloads open; Escape hides the panel and continues in the background while Martty stays
+open. Completion/failure is announced in the composer. Installation automatically saves
+configuration; Enter on completion uses the normal `/harness` switch flow, while Escape only
+closes the panel and Enter retries failures. Add/Install/Connect do not automatically switch or
+authenticate. Press Enter on completion or select the configured Harness from `/harness`
+to switch. Quitting stops unfinished jobs.
+Installer output is captured, never written over the terminal. A switch updates
+the default only after ACP `initialize` and `session/new` succeed, with retry on failure.
+
+From a source checkout, `node scripts/harness-discovery-scenario.mjs --check` creates
+and probes six isolated discovery states. Use `--tui` to open them in the local Martty
+binary, then `/harness add`. The fixture uses a private temporary directory and fake
+ACP replies; no real model, package download, or user Harness settings are used.
 
 The same registry is available through three entry points: edit
 `$MARTTY_HOME/settings.json`, use `martty harness`, or run `/harness` (or
-`/harness <id>`) inside the TUI. A saved choice takes effect on the next
-standalone launch, which starts a fresh ACP session. It does not replace a
-running or profile-owned Host, and it never carries a session across Harnesses.
+`/harness <id>`) inside the TUI. In a standalone TUI, `/harness` immediately
+switches before the current session has started. After the first prompt has
+started a session, or an existing session was loaded, it first confirms that
+the selected Harness will start another session; the current session remains
+available in `/session`. Confirming stops the current ACP child and initializes
+the selected Harness without closing Martty, then immediately sends `session/new`
+to bind an empty session. This does not start a model turn. It never carries one session
+across Harnesses. The settings and CLI entry points select the Harness for the
+next standalone launch; a profile-owned Host cannot be replaced by its Client.
 
-The selected entry is stored in `$MARTTY_HOME/settings.json` and takes effect
-on the next standalone launch through a new `session/new`. `--agent` and
-`DSH_TUI_AGENT` remain higher priority. This does not replace the Host-owned
-runtime or session of `dsh --profile martty`.
+Every selection is stored in `$MARTTY_HOME/settings.json` as `defaultHarness`. CLI/settings
+selection takes effect on the next standalone launch; TUI selection also
+updates the running standalone process immediately. Standalone startup only
+initializes the selected Harness and binds an empty ACP session before showing Ready.
+The product's internal `forcedHarness` initialization value is empty by
+default and is not a CLI/user startup argument. When the product supplies it,
+startup selects it before consulting the persisted `defaultHarness`; when
+empty, startup uses that saved default and otherwise the bundled fallback.
+`/harness` updates the saved `defaultHarness`, never the product forced value.
+`--agent` and `DSH_TUI_AGENT` remain higher startup priorities.
+None of these replace the Host-owned runtime or session of
+`dsh --profile martty`.
 
 The Node Client process owns a Cordis tree and starts the Rust painter. A sibling
 `tui-cordis-client-runner` publishes TUI Client capabilities and evaluates

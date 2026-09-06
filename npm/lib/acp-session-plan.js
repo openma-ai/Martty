@@ -101,7 +101,16 @@ export function installAcpSessionPlan(ctx) {
   }
 
   function observeClient(message) {
-    if (!isObject(message) || message.id === undefined || !SETUP_METHODS.has(message.method)) return
+    if (!isObject(message) || message.id === undefined) return
+    if (message.method === 'initialize') {
+      pending.clear()
+      plansBySession.clear()
+      sessionId = undefined
+      selectionKnown = false
+      publish()
+      return
+    }
+    if (!SETUP_METHODS.has(message.method)) return
     pending.set(message.id, {
       sessionId: message.method !== 'session/new'
         ? readString(message.params, 'sessionId', 'session_id')

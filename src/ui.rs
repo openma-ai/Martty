@@ -629,6 +629,7 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     let theme = app.theme;
+    let delete_hint = "↑/↓ select   enter apply   delete remove   esc cancel";
     // Fit the widest option (markers `▸ ● ` and the `    ` description
     // indent included); cap to the screen so one long option never exceeds
     // the terminal. Narrow terminals fall back to ellipsis per row.
@@ -643,20 +644,26 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
                 .filter(|text| !text.is_empty())
                 .map(|text| text.width() + 4)
                 .unwrap_or(0);
-            label_w.max(desc_w)
+            let group_w = option.group.as_deref().map_or(0, |group| group.width() + 4);
+            label_w.max(desc_w).max(group_w)
         })
         .max()
         .unwrap_or(0) as u16;
-    // The 28-column floor must not beat the screen cap on narrow
-    // terminals (24-27 columns would render the popup past the right
-    // edge): apply the floor first, then the cap wins.
-    let width = (needed + 2).max(28).min(screen.width.saturating_sub(4));
+    let needed = if select.options.iter().any(|option| option.deletable && !option.disabled) {
+        needed.max(delete_hint.width() as u16)
+    } else { needed };
+    let width = needed.saturating_add(2).max(28).min(screen.width.saturating_sub(4));
     let inner = width.saturating_sub(2) as usize;
     let label_cells = inner.saturating_sub(4);
     let desc_cells = inner.saturating_sub(4);
 
-    let mut lines = Vec::new();
-    for (index, option) in select.options.iter().enumerate() {
+    let visible = select.visible_indices();
+    let section_names: Vec<_> = visible.iter()
+        .map(|&index| select.options[index].group.as_deref()).collect();
+    let mut groups = Vec::new();
+    for &index in &visible {
+        let option = &select.options[index];
+        let mut lines = Vec::new();
         let selected = index == select.sel;
         lines.push(Line::from(vec![
             Span::styled(
@@ -670,7 +677,9 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
             Span::styled(
                 ellipsize_to(&option.label, label_cells),
                 Style::default()
-                    .fg(if selected {
+                    .fg(if option.disabled {
+                        theme.caption
+                    } else if selected {
                         theme.fg
                     } else {
                         theme.fg_secondary
@@ -692,12 +701,12 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
                 Style::default().fg(theme.caption),
             )));
         }
+        groups.push(lines);
     }
-    let option_rows = lines.len();
-    lines.push(Line::default());
+    let mut footer = vec![Line::default()];
     // Full text of the highlighted option, wrapped so a long choice stays
     // readable at the moment of confirming it.
-    if let Some(option) = select.options.get(select.sel) {
+    if let Some(option) = select.options.get(select.sel).filter(|_| !visible.is_empty()) {
         let mut preview = option.label.clone();
         if let Some(description) = option
             .description
@@ -714,27 +723,86 @@ fn draw_plugin_select(f: &mut Frame, app: &App, screen: Rect) {
             *last = ellipsize_to(&format!("{last}…"), inner);
         }
         for line in wrapped {
-            lines.push(Line::from(Span::styled(
+            footer.push(Line::from(Span::styled(
                 line,
                 Style::default().fg(theme.fg_tertiary),
             )));
         }
     }
-    lines.push(Line::from(Span::styled(
-        "↑/↓ select   enter apply   esc cancel",
-        Style::default().fg(theme.caption),
-    )));
-
-    let mut height = lines.len() as u16 + 2;
-    let max_height = screen.height.saturating_sub(2).max(5);
-    if height > max_height {
-        // Drop the earliest option rows first so the preview and the hint
-        // line stay visible; the list itself has no scroll window yet.
-        let overflow = (height - max_height) as usize;
-        let keep = option_rows.saturating_sub(overflow);
-        lines.drain(keep..option_rows);
-        height = max_height;
+    let controls = if select.options.get(select.sel).is_some_and(|option| option.deletable && !option.disabled)
+            && !visible.is_empty() {
+            delete_hint
+        } else { "↑/↓ select   enter apply   esc cancel" };
+    for line in wrap_line(controls, inner) {
+        footer.push(Line::from(Span::styled(line, Style::default().fg(theme.caption))));
     }
+
+    let max_height = screen.height.saturating_sub(2);
+    let body_budget = max_height.saturating_sub(2) as usize;
+    let mut lines = Vec::new();
+    if select.searchable && body_budget > 1 {
+        let query = if select.query.is_empty() { "type to filter" } else { &select.query };
+        lines.push(Line::from(Span::styled(
+            ellipsize_to(&format!("Search: {query}"), inner),
+            Style::default().fg(theme.fg_secondary),
+        )));
+    }
+    // Reserve space for the current choice and the controls, then move the
+    // option window with the selection instead of clipping later choices.
+    let selected = visible.iter().position(|&index| index == select.sel).unwrap_or(0);
+    // A section title is decorative, so reserve its row together with the
+    // actual selected label. On tiny screens, keep the label and omit headings.
+    let minimum_option_rows = if section_names.get(selected).is_some_and(Option::is_some)
+        && body_budget.saturating_sub(lines.len()) >= 2 { 2 } else { 1 };
+    let footer_budget = body_budget.saturating_sub(lines.len() + minimum_option_rows);
+    if footer.len() > footer_budget {
+        footer.drain(..footer.len() - footer_budget);
+    }
+    let option_budget = body_budget.saturating_sub(lines.len() + footer.len());
+    if visible.is_empty() && option_budget > 0 {
+        lines.push(Line::from(Span::styled("No matches · edit search", Style::default().fg(theme.caption))));
+    } else {
+        let show_sections = option_budget >= 2;
+        let first_heading = |index: usize| usize::from(show_sections
+            && section_names.get(index).is_some_and(Option::is_some));
+        let boundary_heading = |index: usize| usize::from(show_sections && index > 0
+            && section_names[index] != section_names[index - 1]);
+        let mut start = selected;
+        let mut rows = groups.get(selected).map_or(0, Vec::len) + first_heading(selected);
+        while start > 0 {
+            // Prepending an option moves the sticky first-group heading and
+            // may introduce an internal boundary. Count both before scrolling.
+            let next_rows = rows + groups[start - 1].len() + first_heading(start - 1)
+                + boundary_heading(start) - first_heading(start);
+            if next_rows > option_budget { break; }
+            start -= 1;
+            rows = next_rows;
+        }
+        let mut remaining = option_budget;
+        for (index, group) in groups.into_iter().enumerate().skip(start) {
+            let heading = if index == start { first_heading(index) } else { boundary_heading(index) };
+            if heading > 0 {
+                // Never end the viewport with an orphan heading and no option.
+                if remaining < 2 { break; }
+                let text = if let Some(name) = section_names[index].filter(|_| inner >= 4) {
+                    let prefix = format!("─ {} ", ellipsize_to(name, inner.saturating_sub(4)));
+                    format!("{prefix}{}", "─".repeat(inner.saturating_sub(prefix.width())))
+                } else {
+                    "─".repeat(inner)
+                };
+                lines.push(Line::from(Span::styled(text, Style::default().fg(theme.caption))));
+                remaining -= 1;
+            }
+            for line in group {
+                if remaining == 0 { break; }
+                lines.push(line);
+                remaining -= 1;
+            }
+            if remaining == 0 { break; }
+        }
+    }
+    lines.extend(footer);
+    let height = (lines.len() as u16 + 2).min(max_height);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 3,
@@ -1643,11 +1711,7 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
     if lw + rw + 2 > width {
         // Drop the contextual hints first, but keep the scroll position
         // beside the model so a longer left-side mode label never hides it.
-        let shown_model = app
-            .transcript
-            .last_model
-            .clone()
-            .unwrap_or_else(|| app.cfg.model.clone());
+        let shown_model = displayed_model(app);
         let mut compact = Vec::new();
         if app.scroll_up > 0 {
             compact.push(Span::styled(
@@ -1655,14 +1719,20 @@ fn meta_line(app: &App, width: usize) -> Line<'static> {
                 Style::default().fg(theme.caption),
             ));
         }
-        compact.push(Span::styled(
-            format!("{shown_model} "),
-            Style::default().fg(theme.brand_soft),
-        ));
+        if let Some(shown_model) = &shown_model {
+            compact.push(Span::styled(
+                format!("{shown_model} "),
+                Style::default().fg(theme.brand_soft),
+            ));
+        }
         let compact_width = span_widths(&compact);
         if lw + compact_width + 2 <= width {
             right_spans = compact;
-        } else if lw + shown_model.width() + 3 <= width {
+        } else if shown_model
+            .as_deref()
+            .is_some_and(|model| lw + model.width() + 3 <= width)
+        {
+            let shown_model = shown_model.expect("checked above");
             right_spans = vec![Span::styled(
                 format!("{shown_model} "),
                 Style::default().fg(theme.brand_soft),
@@ -1928,22 +1998,17 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     spans.extend(context_hints(app));
     if app.session_bound {
-        // Chip precedence: an explicit /model pick (until a turn realizes it)
-        // → the model that actually streamed last → the configured default.
-        let shown_model = app
-            .selected_model
-            .clone()
-            .or_else(|| app.transcript.last_model.clone())
-            .unwrap_or_else(|| app.cfg.model.clone());
-        spans.push(Span::styled(
-            shown_model,
-            Style::default().fg(theme.brand_soft),
-        ));
-        if let Some(effort) = &app.modes.effort {
+        if let Some(shown_model) = displayed_model(app) {
             spans.push(Span::styled(
-                format!(" · {effort}"),
-                Style::default().fg(theme.caption),
+                shown_model,
+                Style::default().fg(theme.brand_soft),
             ));
+            if let Some(effort) = &app.modes.effort {
+                spans.push(Span::styled(
+                    format!(" · {effort}"),
+                    Style::default().fg(theme.caption),
+                ));
+            }
         }
     }
     if app.demo {
@@ -1954,6 +2019,39 @@ fn status_right(app: &App) -> Vec<Span<'static>> {
     }
     spans.push(Span::raw(" "));
     spans
+}
+
+fn displayed_model(app: &App) -> Option<String> {
+    if app.connection_error.is_some() { return None; }
+    app.selected_model
+        .clone()
+        .or_else(|| app.transcript.last_model.clone())
+        .or_else(|| app.session_model.clone())
+        .or_else(|| app.demo.then(|| app.cfg.model.clone()))
+}
+
+fn active_runtime(app: &App) -> &str {
+    app.server_info.as_deref().unwrap_or_else(|| {
+        if app.attached && !app.demo { "waiting for ACP" } else { &app.cfg.bin }
+    })
+}
+
+fn welcome_model(app: &App) -> String {
+    if app.connection_error.is_some() {
+        return app.locale.tr("unavailable", "不可用").into();
+    }
+    if app.demo {
+        return format!(
+            "{} · {}",
+            app.cfg.provider,
+            app.session_model.as_deref().unwrap_or(&app.cfg.model)
+        );
+    }
+    app.session_model.clone().unwrap_or_else(|| {
+        app.locale
+            .tr("waiting for ACP", "等待 ACP 上报")
+            .to_string()
+    })
 }
 
 fn span_widths(spans: &[Span]) -> usize {
@@ -3158,7 +3256,9 @@ fn draw_slash_menu(f: &mut Frame, app: &App, input: Rect, chat: Rect) {
     for (i, cmd) in matches.iter().enumerate().skip(start).take(vis) {
         let selected = i == sel;
         let marker = if selected { "▸ " } else { "  " };
-        let name_style = if selected {
+        let name_style = if cmd.disabled {
+            Style::default().fg(theme.caption)
+        } else if selected {
             Style::default()
                 .fg(theme.brand)
                 .add_modifier(Modifier::BOLD)
@@ -3855,7 +3955,7 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
 
     let kv = |k: &str, v: String| -> Line<'static> {
         Line::from(vec![
-            Span::styled(format!("  {k:<10}"), Style::default().fg(theme.caption)),
+            Span::styled(format!("  {k:<11} "), Style::default().fg(theme.caption)),
             Span::styled(v, Style::default().fg(theme.fg_secondary)),
         ])
     };
@@ -3865,19 +3965,17 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     ));
     out.push(kv(
         app.locale.tr("model", "模型"),
-        format!("{} · {}", app.cfg.provider, app.cfg.model),
+        welcome_model(app),
     ));
     out.push(kv(
         app.locale.tr("workspace", "工作区"),
         shorten_home(&app.cfg.workspace),
     ));
     out.push(kv(app.locale.tr("session", "会话"), app.session_id.clone()));
-    let runtime_short = app
-        .cfg
-        .bin
+    let runtime_short = active_runtime(app)
         .rsplit('/')
         .next()
-        .unwrap_or(&app.cfg.bin)
+        .unwrap_or_else(|| active_runtime(app))
         .to_string();
     out.push(kv(app.locale.tr("runtime", "运行时"), runtime_short));
     if app.demo {
@@ -3890,6 +3988,16 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
                 )
                 .into(),
         ));
+    } else if let Some(error) = &app.connection_error {
+        out.push(kv(app.locale.tr("status", "状态"), format!("{} · {error}", app.locale.tr("connection failed", "连接失败"))));
+    } else if matches!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn | crate::acp_auth::AuthStatus::Failed) {
+        let detail = app.auth.method_name.as_deref().or(app.auth.method_id.as_deref()).unwrap_or("Agent");
+        let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
+            format!("{} · {detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
+        } else {
+            format!("{} · {detail} · /auth", app.locale.tr("sign-in failed", "登录失败"))
+        };
+        out.push(kv(app.locale.tr("credentials", "凭据"), message));
     } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
         let detail = app
             .auth
@@ -3914,16 +4022,17 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
             .method_name
             .as_deref()
             .or(app.auth.method_id.as_deref())
-            .unwrap_or("ACP");
+            .map(|method| format!("ACP authenticate · {method}"))
+            .unwrap_or_else(|| app.locale.tr("ready · credential source not reported", "已就绪 · 凭据来源未上报").into());
         out.push(kv(
             app.locale.tr("credentials", "凭据"),
-            format!("ACP authenticate · {detail}"),
+            detail,
         ));
     } else if app.attached {
         out.push(kv(
             app.locale.tr("credentials", "凭据"),
             app.locale
-                .tr("host dsh (credential seam)", "Host dsh（凭据边界）")
+                .tr("managed by Agent · source not reported", "由 Agent 管理 · 来源未上报")
                 .into(),
         ));
     } else if let Some(source) = app.cfg.credential_source() {

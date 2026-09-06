@@ -41,8 +41,10 @@ function statusMarkdown(status, stats) {
   const lines = []
   lines.push(`- state · ${status.state ?? 'idle'}`)
   lines.push(`- acp · ${status.connection ?? 'not attached'}`)
+  if (status.error) lines.push(`- connection error · ${status.error}`)
   if (status.auth?.status !== undefined) {
     lines.push(`- auth · ${status.auth.status}${status.auth.method ? ` · ${status.auth.method}` : ''}`)
+    if (status.auth.message) lines.push(`- auth error · ${status.auth.message}`)
   }
   lines.push(`- session · ${status.session?.bound ? status.session.sessionId : 'unbound'}`)
   if (status.server !== undefined) lines.push(`- server · ${status.server}`)

@@ -2,6 +2,48 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { installAcpSessionStatus } from '../npm/lib/acp-session-status.js'
+import { installAcpSessionConfig } from '../npm/lib/acp-session-config.js'
+import { installAcpSessionStats } from '../npm/lib/acp-session-stats.js'
+import { installAcpSessionPlan } from '../npm/lib/acp-session-plan.js'
+
+test('a new initialize clears every old Agent projection and ignores late request responses', () => {
+  const config = installAcpSessionConfig(makeCtx())
+  const status = installAcpSessionStatus(makeCtx(), { sessionConfig: config })
+  const stats = installAcpSessionStats(makeCtx())
+  const plan = installAcpSessionPlan(makeCtx())
+  const services = [config, status, stats, plan]
+  const client = (message) => services.forEach((service) => service.observeClient(message))
+  const agent = (message) => services.forEach((service) => service.observeAgent(message))
+  client({ id: 'init-a', method: 'initialize' })
+  agent({ id: 'init-a', result: { agentInfo: { name: 'old-agent' }, authMethods: [{ id: 'key', name: 'API Key' }] } })
+  client({ id: 'new-a', method: 'session/new' })
+  agent({ id: 'new-a', result: { sessionId: 'a', configOptions: [{ id: 'model', type: 'select', name: 'Model', category: 'model', currentValue: 'old-model', options: [] }] } })
+  client({ id: 'auth-a', method: 'authenticate', params: { methodId: 'key' } })
+  client({ id: 'prompt-a', method: 'session/prompt', params: { sessionId: 'a' } })
+  client({ id: 'config-a', method: 'session/set_config_option', params: { sessionId: 'a' } })
+  agent({ method: 'session/update', params: { sessionId: 'a', update: { sessionUpdate: 'plan', entries: [{ content: 'Old work', priority: 'medium', status: 'pending' }] } } })
+  assert.equal(status.current().model, 'old-model')
+  assert.equal(stats.current().stats.turns, 1)
+  assert.ok(plan.list().length)
+  client({ id: 'init-b', method: 'initialize' })
+  assert.equal(status.current().model, undefined)
+  assert.equal(status.current().server, undefined)
+  assert.equal(status.current().auth.method, undefined)
+  assert.equal(status.current().session.bound, false)
+  assert.equal(stats.current().stats.turns, 0)
+  assert.deepEqual(plan.list(), [])
+  assert.deepEqual(config.list(), [])
+  agent({ id: 'auth-a', result: {} })
+  agent({ id: 'config-a', result: { configOptions: [{ id: 'model', currentValue: 'stale' }] } })
+  agent({ id: 'prompt-a', error: { code: -32000, message: 'old auth failure' } })
+  agent({ id: 'init-b', result: { agentInfo: { name: 'new-agent' }, authMethods: [] } })
+  client({ id: 'new-b', method: 'session/new' })
+  agent({ id: 'new-b', result: { sessionId: 'b' } })
+  assert.equal(status.current().server, 'new-agent')
+  assert.equal(status.current().model, undefined)
+  assert.equal(status.current().auth.status, undefined)
+  assert.deepEqual(config.list(), [])
+})
 
 const PROGRESS_UPDATE_TYPES = [
   'user_message_chunk',
@@ -22,6 +64,43 @@ function makeCtx() {
     },
   }
 }
+
+test('Failed session setup reports failure and clears session credentials until a successful retry', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({ id: 'init', method: 'initialize' })
+  status.observeAgent({ id: 'init', result: { agentInfo: { name: 'Cline' }, authMethods: [] } })
+  status.observeClient({ id: 'new', method: 'session/new' })
+  status.observeAgent({ id: 'new', error: { code: -32603, message: 'missing executable' } })
+  assert.equal(status.current().connection, 'failed')
+  assert.equal(status.current().error, 'missing executable')
+  assert.equal(status.current().session.bound, false)
+  assert.equal(status.current().auth.status, undefined)
+  status.observeClient({ id: 'retry', method: 'session/new' })
+  status.observeAgent({ id: 'retry', result: { sessionId: 'recovered' } })
+  assert.equal(status.current().connection, 'attached')
+  assert.equal(status.current().error, undefined)
+})
+
+test('status reads model and effort by ACP category before legacy option ids', () => {
+  const config = installAcpSessionConfig(makeCtx())
+  const status = installAcpSessionStatus(makeCtx(), { sessionConfig: config })
+  config.observeClient({ id: 'new', method: 'session/new' })
+  config.observeAgent({ id: 'new', result: { sessionId: 'current', configOptions: [
+    { id: 'effort', currentValue: 'legacy' },
+    { id: 'reasoning_effort', category: 'thought_level', currentValue: 'ultra' },
+    { id: 'agent_model', category: 'model', currentValue: 'current-model' },
+  ] } })
+  assert.equal(status.current().model, 'current-model')
+  assert.equal(status.current().effort, 'ultra')
+})
+
+test('initialize failure is not an attached connection', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({ id: 'init', method: 'initialize' })
+  status.observeAgent({ id: 'init', error: { code: -32603, message: 'Agent failed to initialize' } })
+  assert.equal(status.current().connection, 'failed')
+  assert.equal(status.current().server, undefined)
+})
 
 function makeSessionConfig() {
   const listeners = new Set()
@@ -65,7 +144,11 @@ test('the status service folds connection, server, auth, and session facts', () 
   const current = service.current()
   assert.equal(current.state, 'idle')
   assert.equal(current.connection, 'connecting')
-  assert.equal(current.session.bound, false)
+  assert.deepEqual(current.session, {
+    sessionId: undefined,
+    bound: false,
+    started: false,
+  })
   // Seed folded from the already-advertised config options.
   assert.equal(current.model, 'deepseek-v4-flash')
   assert.equal(current.effort, 'high')
@@ -81,14 +164,38 @@ test('the status service folds connection, server, auth, and session facts', () 
   })
   assert.equal(service.current().connection, 'attached')
   assert.equal(service.current().server, 'dsh-acp')
-  assert.equal(service.current().auth.method, 'Agent')
+  assert.equal(service.current().auth.method, undefined, 'advertised methods are not active credentials')
   assert.equal(service.current().auth.status, undefined)
 
   service.observeClient({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} })
   service.observeAgent({ jsonrpc: '2.0', id: 2, result: { sessionId: 's-1' } })
-  assert.deepEqual(service.current().session, { sessionId: 's-1', bound: true })
+  assert.equal(service.current().auth.method, undefined, 'session/new does not report a credential source')
+  assert.deepEqual(service.current().session, {
+    sessionId: 's-1',
+    bound: true,
+    started: false,
+  })
 
-  // authRequired errors anywhere flip the authenticate state.
+  service.observeClient({
+    jsonrpc: '2.0', id: 'first-prompt', method: 'session/prompt', params: { sessionId: 's-1' },
+  })
+  assert.equal(service.current().session.started, true)
+  service.observeAgent({
+    jsonrpc: '2.0', id: 'first-prompt', result: { stopReason: 'end_turn' },
+  })
+
+  service.observeClient({
+    jsonrpc: '2.0', id: 'load', method: 'session/load', params: { sessionId: 'saved-session' },
+  })
+  service.observeAgent({ jsonrpc: '2.0', id: 'load', result: {} })
+  assert.deepEqual(service.current().session, {
+    sessionId: 'saved-session',
+    bound: true,
+    started: true,
+  })
+
+  // Auth failures on current tracked requests change authentication state.
+  service.observeClient({ id: 9, method: 'session/set_mode', params: { sessionId: 'saved-session' } })
   service.observeAgent({
     jsonrpc: '2.0',
     id: 9,
@@ -100,6 +207,33 @@ test('the status service folds connection, server, auth, and session facts', () 
   assert.equal(service.current().auth.status, 'signing in')
   service.observeAgent({ jsonrpc: '2.0', id: 3, result: {} })
   assert.equal(service.current().auth.status, 'configured')
+})
+
+test('authenticate rejection is a failed login with the selected method and agent reason', () => {
+  const service = installAcpSessionStatus(makeCtx(), {
+    events: { register: () => () => {} }, sessionConfig: makeSessionConfig(),
+  })
+  service.observeClient({ id: 1, method: 'initialize' })
+  service.observeAgent({ id: 1, result: { authMethods: [
+    { id: 'first', name: 'First method' }, { id: 'oauth-personal', name: 'Google' },
+  ] } })
+  service.observeClient({ id: 2, method: 'authenticate', params: { methodId: 'oauth-personal' } })
+  assert.equal(service.current().auth.method, 'Google')
+  assert.equal(service.current().auth.status, 'signing in')
+  const reason = 'Onboarding failed: account is not eligible in your location'
+  service.observeAgent({ id: 2, error: { code: -32000, message: reason } })
+  assert.equal(service.current().auth.status, 'sign-in failed')
+  assert.equal(service.current().auth.message, reason)
+  service.observeClient({ id: 3, method: 'authenticate', params: { methodId: 'oauth-personal' } })
+  assert.equal(service.current().auth.message, undefined, 'retry clears the previous failure')
+  service.observeAgent({ id: 3, result: {} })
+  assert.equal(service.current().auth.status, 'configured')
+  service.observeClient({ id: 4, method: 'authenticate', params: { methodId: 'oauth-personal' } })
+  service.observeAgent({ id: 4, error: { code: -32000, message: reason } })
+  service.observeClient({ id: 5, method: 'session/new', params: {} })
+  service.observeAgent({ id: 5, result: { sessionId: 'ready-session' } })
+  assert.equal(service.current().auth.status, 'configured', 'a successful session clears a stale auth failure')
+  assert.equal(service.current().auth.message, undefined)
 })
 
 test('the status service keeps the session.status run-state extension', () => {

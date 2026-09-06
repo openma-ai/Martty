@@ -167,10 +167,13 @@ async fn run_control(
                     });
             }
             if let Some(effort) = effort {
+                let config_id = surface.lock().unwrap_or_else(|e| e.into_inner())
+                    .session(&sid.0).effort_config_id.clone()
+                    .unwrap_or_else(|| "effort".into());
                 let _ = cx
                     .send_request(SetSessionConfigOptionRequest::new(
                         sid,
-                        "effort",
+                        config_id,
                         SessionConfigOptionValue::value_id(effort),
                     ))
                     .block_task_deadline()
@@ -544,13 +547,16 @@ async fn run_control(
             if let Some(meta) = authenticate_meta_from_method(&method, &values) {
                 req = req.meta(meta);
             }
-            let result = cx.send_request(req).block_task_deadline().await.map(|_| ());
+            let mut signing_in = configured_snapshot(methods.clone(), Some(&method));
+            signing_in.status = AuthStatus::SigningIn;
+            emit_auth(&bus, signing_in);
+            let result = cx.send_request(req).block_task_setup_deadline().await.map(|_| ());
             let _ = done.send(ControlFinish::Authenticated { method, result });
         }
         Cmd::NewSession => {
             let result = cx
                 .send_request(NewSessionRequest::new(cwd.clone()))
-                .block_task_deadline()
+                .block_task_setup_deadline()
                 .await
                 .map(|created| {
                     let sid = created.session_id.clone();
@@ -627,20 +633,20 @@ async fn run_control(
             let restored = if resume_session {
                 match cx
                     .send_request(ResumeSessionRequest::new(sid.clone(), cwd.clone()))
-                    .block_task_deadline()
+                    .block_task_setup_deadline()
                     .await
                 {
                     Ok(resumed) => Ok((serde_json::to_value(resumed).unwrap_or(Value::Null), true)),
                     Err(err) if load_session && !is_auth_required_error(&err) => cx
                         .send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
-                        .block_task_deadline()
+                        .block_task_setup_deadline()
                         .await
                         .map(|loaded| (serde_json::to_value(loaded).unwrap_or(Value::Null), false)),
                     Err(err) => Err(err),
                 }
             } else {
                 cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
-                    .block_task_deadline()
+                    .block_task_setup_deadline()
                     .await
                     .map(|loaded| (serde_json::to_value(loaded).unwrap_or(Value::Null), false))
             };
@@ -669,10 +675,8 @@ async fn run_control(
             // This method belongs to the local Client compositor.
             // Direct native launches may not have one, so absence is
             // intentionally silent and never affects prompt flow.
-            // Guarded by the initialize negotiation: an
-            // un-negotiated agent gets no `_dsh/cordis`
-            // traffic at all (protocol 0 rule).
-            if agent_cordis_negotiated(&surface) {
+            // The mux consumes local Client projections before Agent forwarding.
+            if client_projection_available(&surface) {
                 let _ = call_tui_extension(
                     &cx,
                     crate::cordis::QUEUE_UPDATE,
@@ -705,7 +709,7 @@ async fn run_control(
             // Agent transcript navigation is Client chrome;
             // it never becomes an ACP prompt or timeline cell.
             // Same negotiation guard as the queue snapshot.
-            if agent_cordis_negotiated(&surface) {
+            if client_projection_available(&surface) {
                 let _ = call_tui_extension(
                     &cx,
                     crate::cordis::AGENTS_UPDATE,
@@ -720,7 +724,7 @@ async fn run_control(
             }
         }
         Cmd::ActiveSession { session_id } => {
-            if agent_cordis_negotiated(&surface) {
+            if client_projection_available(&surface) {
                 let _ = call_tui_extension(
                     &cx,
                     crate::cordis::SESSION_ACTIVE,

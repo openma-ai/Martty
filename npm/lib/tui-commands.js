@@ -75,7 +75,7 @@ function validateInput(input) {
         throw new Error('tuiCommands.register: each input option must be an object')
       }
       const unknown = Object.keys(option)
-        .filter((key) => !['value', 'label', 'description'].includes(key))
+        .filter((key) => !['value', 'label', 'description', 'disabled'].includes(key))
       if (unknown.length > 0) {
         throw new Error(`tuiCommands.register: unknown input option field(s) ${unknown.join(', ')}`)
       }
@@ -90,12 +90,18 @@ function validateInput(input) {
       }
       return {
         value: option.value,
+        ...(option.disabled === undefined ? {} : { disabled: booleanOption(option.disabled) }),
         ...(option.label === undefined ? {} : { label: option.label }),
         ...(option.description === undefined ? {} : { description: option.description }),
       }
     })
   }
   return normalized
+}
+
+function booleanOption(value) {
+  if (typeof value !== 'boolean') throw new Error('tuiCommands.register: input option disabled must be a boolean')
+  return value
 }
 
 /**

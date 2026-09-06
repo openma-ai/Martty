@@ -16,7 +16,9 @@ session history.
 `plan_removed` messages into structured state with `list()`, `current()`, and
 `subscribe(listener)`. The builtin `plan-view` Client Plugin consumes it like any
 other plugin: it owns the `conversation.input.dock` summary and registers local
-`/plan-view` to open the full list with `tuiOverlay.openView()`. Agent `/plan`
+`/plan-view` to open the full list with `tuiOverlay.openView()`. The active entry uses
+a distinct `◐` marker in the review and the animated running marker in the dock, and is
+explicitly labeled `in progress` in both surfaces. Agent `/plan`
 command or mode semantics remain separate.
 
 ## Open: `acpSessionStats`
@@ -223,6 +225,18 @@ It is not a persistent value or another status color.
 share one modal seat and return a lifecycle-owned `close()` controller. Views scroll
 with up/down and close through Enter or Escape; the primitive has no Plan-specific
 behavior.
+
+Select options may carry `group?: string`, a single-line decorative heading and
+divider, never a navigable or submitted option. Calling `openSelect` with the same
+id refreshes options and handlers without closing the modal. The painter preserves
+the search query and selected value when still visible; an old controller cannot
+close the refreshed panel.
+
+Select options may opt into `deletable?: boolean` with `handlers.onDelete(value)`.
+Delete closes the form and dispatches a separate `delete` event, not a submit.
+Disabled or non-deletable rows and absent handlers do nothing. Non-searchable forms
+also accept Backspace (Mac Delete); searchable forms keep Backspace for editing.
+The owning plugin presents confirmation and performs any deletion.
 
 Local commands may declare
 `input: { hint, options: [{ value, label, description }] }` in

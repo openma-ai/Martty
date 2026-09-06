@@ -956,6 +956,24 @@ impl Transcript {
                         .trf("session · {}", "会话 · {}", &[title.clone()]),
                 );
             }
+            UiEvent::SessionNotice {
+                severity,
+                title,
+                details,
+                ..
+            } => {
+                let level = match severity.as_str() {
+                    "warning" | "warn" => NoticeLevel::Warn,
+                    "error" => NoticeLevel::Error,
+                    _ => NoticeLevel::Info,
+                };
+                let text = details
+                    .filter(|details| details != &title)
+                    .map(|details| format!("{title} — {details}"))
+                    .unwrap_or(title);
+                self.push_notice(level, text);
+            }
+            UiEvent::SessionModel { .. } => {}
             UiEvent::Plan { summary, .. } => {
                 if let Some(idx) = self.plan_cell {
                     if let Some(cell) = self.cells.get_mut(idx) {

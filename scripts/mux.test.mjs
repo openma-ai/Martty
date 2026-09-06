@@ -156,6 +156,34 @@ test('mux enables host Cordis requests only after the agent advertises the proto
   assert.deepEqual(await request, { ok: true })
 })
 
+test('mux forgets the previous Agent capabilities when its Harness is replaced', async () => {
+  const agentIn = new PassThrough()
+  const agentOut = new PassThrough()
+  const tuiIn = new PassThrough()
+  const tuiOut = new PassThrough()
+  const mux = muxAcpAndCompositor({
+    agent: { stdin: agentIn, stdout: agentOut },
+    tui: { input: tuiIn, output: tuiOut },
+  })
+
+  tuiIn.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`)
+  agentOut.write(`${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    result: {
+      protocolVersion: 1,
+      agentCapabilities: { _meta: { dsh: { cordis: { protocol: 0 } } } },
+    },
+  })}\n`)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  mux.resetAgent()
+  await assert.rejects(
+    mux.requestAgent('_dsh/cordis/inspect/sync', { providers: [] }),
+    /agent has not advertised _dsh\/cordis/,
+  )
+})
+
 test('mux keeps Cordis disabled when the initialize response omits the capability', async () => {
   const agentIn = new PassThrough()
   const agentOut = new PassThrough()

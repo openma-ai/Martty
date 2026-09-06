@@ -453,6 +453,9 @@ fn main() -> Result<()> {
     let run = (|| -> Result<()> {
         let mut last_tick = std::time::Instant::now();
         loop {
+            if app.harness_switch_in_progress() {
+                let _ = repair_tui_raw_mode();
+            }
             if app.needs_redraw {
                 // One atomic frame. Synchronized updates (DECSET 2026) make
                 // supporting terminals apply the whole frame without tearing.
@@ -498,7 +501,12 @@ fn main() -> Result<()> {
                     Ok(())
                 })??;
             }
-            match bus_rx.recv_timeout(Duration::from_millis(50)) {
+            let event_wait = if app.harness_switch_in_progress() {
+                Duration::from_millis(10)
+            } else {
+                Duration::from_millis(50)
+            };
+            match bus_rx.recv_timeout(event_wait) {
                 Ok(ev) => {
                     let render_boundary = event_requires_immediate_frame(&ev);
                     app.handle(ev, &controller);
@@ -529,6 +537,9 @@ fn main() -> Result<()> {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if app.harness_switch_in_progress() {
+                let _ = repair_tui_raw_mode();
             }
             if last_tick.elapsed() >= Duration::from_millis(100) {
                 app.tick();
@@ -629,6 +640,33 @@ impl InputGate {
         self.parked.store(false, Ordering::SeqCst);
         self.paused.store(false, Ordering::SeqCst);
     }
+}
+
+#[cfg(unix)]
+fn repair_raw_mode_fd(fd: libc::c_int) -> std::io::Result<()> {
+    let mut mode = unsafe { std::mem::zeroed::<libc::termios>() };
+    if unsafe { libc::tcgetattr(fd, &mut mode) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let cooked = libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN;
+    if mode.c_lflag & cooked == 0 {
+        return Ok(());
+    }
+    unsafe { libc::cfmakeraw(&mut mode) };
+    if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &mode) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn repair_tui_raw_mode() -> std::io::Result<()> {
+    repair_raw_mode_fd(libc::STDIN_FILENO)
+}
+
+#[cfg(not(unix))]
+fn repair_tui_raw_mode() -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -833,3 +871,7 @@ mod cli_args_tests;
 #[cfg(test)]
 #[path = "../tests/unit/main__event_batch_tests.rs"]
 mod event_batch_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/main__tty_mode_tests.rs"]
+mod tty_mode_tests;

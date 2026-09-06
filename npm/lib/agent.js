@@ -6,11 +6,12 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { selectedHarness } from './harnesses.js'
+import { tokenizeCommandArgs } from './command-args.js'
 
 /**
  * Resolve the ACP package and TUI's internal Creator overlay bundle.
  * @param {string | URL} [anchor]
- * @returns {{ command: string, args: string[] }}
+ * @returns {{ command: string, args: string[], env?: Record<string, string> }}
  */
 export function resolveDependencyStack(anchor = import.meta.url) {
   const req = createRequire(anchor)
@@ -31,20 +32,39 @@ export function resolveDependencyStack(anchor = import.meta.url) {
 
 /**
  * Resolve the standalone ACP command without affecting the profile path.
+ * `forcedHarness` is an internal product initialization value, not a CLI
+ * argument; null/omitted means that no product Harness is forced.
  * @param {string | URL} [anchor]
- * @param {{ settingsPath?: string }} [options]
+ * @param {{ settingsPath?: string, forcedHarness?: { id: string, label: string, command: string, args?: string[] } | null }} [options]
  * @returns {{ command: string, args: string[] }}
  */
 export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
   const envCmd = process.env.DSH_TUI_AGENT
   if (typeof envCmd === 'string' && envCmd.trim().length > 0) {
-    const tokens = envCmd.trim().split(/\s+/)
+    const tokens = tokenizeCommandArgs(envCmd)
+    if (!tokens[0]) throw new Error('DSH_TUI_AGENT needs a non-empty command')
     return { command: tokens[0], args: tokens.slice(1) }
+  }
+  if (options.forcedHarness !== undefined && options.forcedHarness !== null) {
+    const configured = options.forcedHarness
+    if (typeof configured !== 'object' || Array.isArray(configured)
+      || typeof configured.command !== 'string' || configured.command.trim().length === 0) {
+      throw new Error('forcedHarness must declare a non-empty command')
+    }
+    return {
+      command: configured.command,
+      args: Array.isArray(configured.args) ? configured.args.map(String) : [],
+      ...(configured.env !== undefined ? { env: { ...configured.env } } : {}),
+    }
   }
   if (typeof options.settingsPath === 'string') {
     const selected = selectedHarness(options.settingsPath)
     if (selected !== undefined) {
-      return { command: selected.command, args: selected.args }
+      return {
+        command: selected.command,
+        args: selected.args,
+        ...(selected.env !== undefined ? { env: { ...selected.env } } : {}),
+      }
     }
   }
   try {

@@ -80,7 +80,7 @@ subagent、Plan、token 用量和持久化会话。图片可以从文件或剪�
 | `esc` | 中断当前回合并保留草稿 |
 | `/` | 打开命令与参数候选 |
 | `/model` · `/agent` | 选择模型和 Agent Preset |
-| `/harness [id]` | 为下次 standalone 启动的新会话选择 Harness |
+| `/harness [id]` | 在 TUI 内切换 Harness 并启动新的空会话 |
 | `/permission` · `shift+tab` | 选择或轮换权限模式 |
 | `/image <path>` · `/clip` | 添加本地图片或剪贴板图片 |
 | `!cmd` | 在 workspace 的会话级本地 shell 中执行命令 |
@@ -224,29 +224,115 @@ Standalone 模式可以指定启动命令：
 DSH_TUI_AGENT="<acp-command> [args...]" martty
 ```
 
-也可以把多个 ACP harness 保存到 Martty settings，并选择下次 standalone 启动使用的
-一项：
+### Harness CLI 快速上手
+
+在系统终端先浏览目录，再复制目标条目的 ID。下方 `<id>` 必须替换为 `find` 输出的 ID，
+不是显示名称，也不要原样输入尖括号。
+
+```sh
+martty harness find         # 浏览 Registry 与本地候选
+martty harness add <id>     # 安装／保存配置
+martty harness use <id>     # 设置下次启动的默认 Harness
+martty                     # 在当前工作目录启动 TUI
+```
+
+`add` 和 `use` 不会切换已经运行的 TUI；需要切换当前会话时，在 TUI 中使用 `/harness`。
+查看、刷新和移除配置：
 
 ```sh
 martty harness list
-martty harness add local --label "Local ACP" --command local-acp --arg --stdio
-martty harness use local
-martty --check-runtime
+martty harness find --refresh
+martty harness remove <id> --cleanup --dry-run  # 只预览
+martty harness remove <id>                     # 确认后仅移除配置
+martty harness remove <id> --cleanup           # 同时清理独占私有安装目录
 ```
 
-三个入口共享同一份 registry：可以直接编辑 `settings.json`，使用上述
-`martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单；
-`/harness <id>` 可直接保存。TUI 选择同样只影响下一次 standalone 启动，并创建新会话。
+如果提示 `martty: command not found`，在仓库根目录执行
+`node npm/bin/martty.js harness --help`；其他命令同样将 `martty` 替换成
+`node npm/bin/martty.js`。完整步骤、临时 shell 入口、手动配置与清理边界见
+[Harness CLI 使用指南](docs/harness-cli.md)。
 
-`harness list` 会列出已保存项、包内置 DSH runtime，以及 `PATH` 中名称以
+### Registry 与 TUI 配置流程
+
+三个入口共享同一份 ACP Registry：可以直接编辑 `settings.json`，使用上述
+`martty harness` CLI，或在运行中的 TUI 输入 `/harness` 打开原生单选表单。
+`harness find` 默认读取缓存或随包的官方目录快照，`harness find --refresh` 才联网刷新
+（`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`），并把本地
+PATH 扫描结果作为补充；它不是 npm 包搜索，也不会在后台切换。Registry 的 `npx` / `uvx`
+分发会显示可直接配置的命令，不会添加 `--yes` 或 `--prefer-offline`。Registry 的
+`binary` 分发在选择后明确确认，并下载到 `$MARTTY_HOME/bin/<id>/<version>/<platform>`，
+校验 SHA-256 后再配置；不会写系统 PATH。TUI 中的 `/harness find` 提供同样的发现、配置、
+安装流程，`/harness <id>` 可直接切换。未收录但命名为 `*-acp` / `*_acp` 的本地程序也会被发现。
+Windows 使用 `%MARTTY_HOME%\bin\<id>\<version>\<platform>`（`windows-x86_64` 或 `windows-aarch64`），
+并通过 `PATHEXT` 识别 `npx.cmd`、`uvx.exe` 等入口。若某条目同时提供 package 与当前
+平台 binary，而本机缺少 npx/uvx，Martty 会回落到受管 binary 安装；只有 package
+分发时则说明应安装 Node.js/npm 或 uv，不会保存一个无法启动的 Harness。
+无参 `harness find` 会展示完整目录，用户不需要预先知道 Codex 或任何其他 Harness 的名字；
+只有在已经知道目标时才把后续文字作为可选过滤条件。CLI 会在每个未配置候选下直接给出
+可复制的 `martty harness add <id>` 命令。
+
+CLI `add` 只安装、保存配置，已配置项会直接复用；`use <id>` 只设置下次启动的默认项，
+不启动或认证 Agent。`martty harness remove <id>` 在终端列出清理范围并确认，默认只移除
+配置；`--cleanup` 同时清理独占的私有 binary 目录，`--dry-run` 只预览，非交互调用需显式
+`--yes`。全局程序、共享 npx/uvx 缓存、历史和凭据均保留。清理资源前请退出使用它的其他
+Martty 实例。下载进度输出到 stderr，Ctrl-C 会取消并清理临时目录，不写入半完成配置。
+TUI 选择会立即替换 standalone ACP 子进程；若当前会话
+已经发送过 prompt 或由 `/session` 恢复，则先确认，且原会话仍可从 `/session` 返回。
+
+### Harness TUI 操作
+
+在 Martty 输入 `/harness` 打开切换菜单：当前项置顶并标记 `(current)`，选择其他
+已配置项后按 Enter 走正常切换流程。需要新增时选择 **＋ Add Harness…**。
+
+![Harness 切换菜单，当前项置顶](assets/screenshots/harness-switch.png)
+
+Add 面板支持输入搜索，已安装或配置的项目与未下载项目分组展示，无需预先知道 ID。
+
+![Add Harness 的搜索与安装分组](assets/screenshots/harness-add.png)
+
+在切换列表选中已保存项按 Delete 可移除配置，并可选择清理私有安装资源；当前项不能删除。
+删除确认页按 Esc 返回删除方式，再按 Esc 返回列表并保留选择。
+登录使用 `/auth`，状态查看使用 `/status`；失败面板直接展示错误，Enter 重试。
+完整操作见 [Harness TUI 使用指南](docs/harness-tui.md)。
+
+在 `/harness` 选择 **＋ Add Harness**，或直接输入 `/harness add`，即可打开可搜索的
+目录，不必先知道命令或 Registry ID。目录优先复用经包元数据核对的本地 npm/uv 工具；
+运行器存在只表示 `Available via npx/uvx`，不代表 ACP 已连接。缺依赖时有安装指引与
+重新检测，Registry 离线仍保留本地项。npx/uvx 包准备与 binary 的下载、解压、验证
+都在面板中进行；下载中 Enter 不关闭，Esc 隐藏面板后仍在后台继续（须保持 Martty 运行）。
+完成或失败会在 composer 提示，可从 `/harness` 重新打开进度。安装完成自动保存配置，
+完成面板 Enter 走 `/harness` 的正常切换流程，Esc 只关闭；失败后 Enter 重试。
+Add / Install / Connect 本身不自动切换或认证；用户在完成面板按 Enter，或从 `/harness`
+明确选择后才切换。退出 Martty 会停止未完成的任务。
+安装输出不会直接写入终端；下载和解压有超时。切换只有在实际 `initialize` + `session/new` 成功后
+才更新 `defaultHarness`；失败保留原默认值，并提供重试入口。
+
+本地探测在后台 worker 中与 Registry 请求并行进行，面板先打开再逐步补齐结果，
+保留搜索文字与当前选择。`Installed / configured` 与 `Not downloaded` 之间有不可选中的
+分组线；“已配置”不等于包已下载。binary 下载只限制连接等待与无进展时间，不限制总时长。
+源码目录可运行 `node scripts/harness-discovery-scenario.mjs --check` 构造六种隔离探测状态，
+或用 `--tui` 打开后输入 `/harness add` 手测；不使用真实模型、不下载真实包、不改用户配置。
+
+`harness list` 会列出已保存项、包内置 DSH runtime，以及已配置命令和 `PATH` 中名称以
 `-acp` / `_acp` 结尾的可执行文件；当前项以 `*` 标记。`add` / `use` 写入
-`$MARTTY_HOME/settings.json` 的 `harnesses` 与 `activeHarness`，并保留同文件中的主题、
-语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，并固定通过 ACP
-`session/new` 创建新会话；不会把旧 Harness 的会话带到新 Harness，也不会热切换当前会话；
+`$MARTTY_HOME/settings.json` 的 `harnesses` 与 `defaultHarness`，并保留同文件中的主题、
+语言和 UI Plugin 设置。选择在**下一次 standalone 启动**生效，启动时依次通过 ACP
+`initialize` 与 `session/new` 连接选中的 Harness，因此欢迎页在首条消息前就能显示
+Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
 
-Standalone 启动优先级是 `--agent`、`DSH_TUI_AGENT`、`activeHarness`、包内置默认值。
-因此 `--agent` 仍适合一次性覆盖，不会修改保存的选择。
+运行中的 standalone TUI 也可以直接添加并切换（Registry binary 会先确认安装）：
+
+```text
+/harness add local --label "Local ACP" --command local-acp --arg --stdio
+```
+
+这会保存 Harness、设为 `defaultHarness`，并立即切到新的空会话；已有会话时先确认。
+
+Standalone 启动优先级是显式 `--agent`、`DSH_TUI_AGENT`、产品内部初始化配置
+`forcedHarness`（默认为空）、持久化的 `defaultHarness`、包内置回退值。
+`forcedHarness` 不是 CLI/用户启动参数；它由产品宿主在需要时注入，存在时每次启动优先于
+用户默认。`--agent` 仍是不改保存选择的一次性覆盖。
 
 Cordis 嵌入场景可以使用 `config.agent: { command, args }` 启动 ACP server，或使用
 `config.stream` 接入调用方已有的标准管道。单次运行也可以使用 `--agent` 与重复的

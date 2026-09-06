@@ -7,6 +7,41 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Harness management through `/harness` and `martty harness`: official ACP
+  Registry discovery, local command detection, saved recipes, configuration-only
+  setup, explicit runtime switching, and confirmed configuration/private-installation
+  removal. Binary packages install into Martty-owned directories with SHA-256
+  validation; shared caches, global programs, credentials and history are protected.
+- Registry pickers open from a bundled snapshot or validated local cache immediately,
+  then probe asynchronously. Installed/configured and downloadable entries are grouped;
+  the current Harness stays first and cannot be selected again.
+- Background-capable downloads with progress, bounded diagnostics, cancellation,
+  completion notices and retry. Enter on completion uses the normal Harness switch
+  flow; Esc closes without switching. Removal dialogs support stepwise back navigation.
+- CLI and TUI walkthroughs, README quick starts and screenshots.
+- Plan progress uses an animated running marker and a distinct in-progress label.
+
+### Fixed
+
+- Harness switching reinitializes ACP and starts a fresh empty session. All old
+  connection projections and requests are cleared, while session-scoped state
+  remains isolated across tabs within one connection. Saved configuration is
+  independent of authentication/readiness; the default changes only after readiness.
+- Authentication follows ACP responses, not browser completion or advertised
+  methods. Pending, failed and successful login states are distinct; unknown
+  credential sources are not labeled as API keys. Connection errors show the actual
+  reason, structured data and captured stderr directly, with Enter to retry.
+- Welcome runtime/model/effort follow the active Agent and session, including
+  semantic ACP model and thought-level categories, without stale startup defaults.
+- Harness setup/authentication allows twenty minutes; archive extraction allows
+  ten minutes. Windows command discovery honors PATHEXT and uses cross-spawn.
+  Registry npx/uvx recipes receive no implicit runner flags.
+- Completed installs persist independently of runtime/session setup; older background
+  jobs cannot overwrite newer configuration. CLI removal supports previews and
+  private-resource cleanup, and source-checkout command arguments are validated.
+
+### Added
+
 - The `/agent`, `/effort`, `/model`, `/theme` and `/permission` pickers now
   open with the row that is actually in effect preselected and ✓-marked
   (issue #102): the effort picker follows the host-echoed effort (falling
@@ -42,7 +77,7 @@ All notable changes to this project are documented here. The project follows
   subagent labels, tool preview chrome), elicitation form validation
   errors, auth notices (sign-in hints, terminal-auth failures), the
   write-outside permission ask, and the composer/subagent chrome. ACP and
-  plugin payloads stay authored by their owner. `Locale::trf` fills `{}` 
+  plugin payloads stay authored by their owner. `Locale::trf` fills `{}`
   holes left-to-right for parameterized messages.
 
 - `/close` closes the current session tab (issue #94): everything bound to

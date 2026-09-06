@@ -20,6 +20,8 @@ pub const ACP_AUTH_REQUIRED_CODE: i32 = -32000;
 pub enum AuthStatus {
     Configured,
     NeedsAuth,
+    SigningIn,
+    Failed,
     None,
     Unknown,
 }
@@ -94,18 +96,10 @@ impl AuthSnapshot {
     ) -> Option<(crate::transcript::NoticeLevel, String)> {
         use crate::transcript::NoticeLevel;
         match self.status {
-            AuthStatus::Configured | AuthStatus::None => None,
-            AuthStatus::Unknown => Some((
-                NoticeLevel::Warn,
-                self.message.clone().unwrap_or_else(|| {
-                    locale
-                        .tr(
-                            "no supported ACP auth method is available",
-                            "没有可用的 ACP 认证方式",
-                        )
-                        .into()
-                }),
-            )),
+            AuthStatus::Configured | AuthStatus::None | AuthStatus::SigningIn => None,
+            AuthStatus::Failed => Some((NoticeLevel::Error,
+                self.message.clone().unwrap_or_else(|| locale.tr("ACP sign-in failed", "ACP 登录失败").into()))),
+            AuthStatus::Unknown => self.message.clone().map(|message| (NoticeLevel::Warn, message)),
             AuthStatus::NeedsAuth => Some((NoticeLevel::Warn, needs_auth_notice(self, locale))),
         }
     }
@@ -119,6 +113,12 @@ pub fn client_capability_meta() -> Meta {
     meta.insert(
         "dsh".into(),
         json!({ "cordis": { "protocol": crate::cordis::PROTOCOL } }),
+    );
+    // Codex ACP 1.7+ keeps adapter diagnostics out of assistant text when
+    // the client negotiates its typed session-failure record.
+    meta.insert(
+        "jetbrains".into(),
+        json!({ "air": { "version": 1, "capabilities": ["sessionFailure"] } }),
     );
     meta
 }
@@ -225,9 +225,9 @@ pub fn snapshot_from_methods(
         return needs_auth_snapshot(methods, Some(&method), None);
     }
     AuthSnapshot {
-        status: AuthStatus::Configured,
-        method_id: Some(method.id.clone()),
-        method_name: method.name.clone(),
+        status: AuthStatus::Unknown,
+        method_id: None,
+        method_name: None,
         methods,
         message: None,
     }

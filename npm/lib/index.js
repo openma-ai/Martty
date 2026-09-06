@@ -223,8 +223,10 @@ export async function applyShell(ctx, options = {}) {
       },
       onAcp(direction, message) {
         if (direction === 'client') {
+          agent.observeClient?.(message)
           clientEvents.observeClient(message)
         } else {
+          agent.observeAgent?.(message)
           clientEvents.observeAgent(message)
         }
       },
@@ -260,6 +262,8 @@ export async function applyShell(ctx, options = {}) {
         throw new Error(`unsupported Cordis TUI method: ${String(message.method)}`)
       },
     })
+    agent.onSwitch?.(() => mux.resetAgent())
+    agent.onFailure?.((error) => mux.failAgent(error))
     const notifyTui = (method, params) => mux.notifyTui(method, params)
     republishCompositorState = () => {
       handle.bindNotify(notifyTui)

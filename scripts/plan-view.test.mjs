@@ -76,7 +76,8 @@ test('the Plan Client Plugin owns its dock, fallback command, and modal together
       action: { kind: 'command', name: 'plan-view', args: '' },
     },
     {
-      id: 'focus', kind: 'generic', title: 'Implement', body: '', tone: 'caption',
+      id: 'focus', kind: 'generic', title: 'Implement', body: 'in progress',
+      status: 'running', tone: 'caption',
       action: { kind: 'command', name: 'plan-view', args: '' },
     },
   ])
@@ -86,15 +87,15 @@ test('the Plan Client Plugin owns its dock, fallback command, and modal together
 
   await command.handler('')
   assert.equal(opened.id, 'plan-view')
-  // The counter lives in the window title; the body is a task-list review
-  // the transcript pipeline can fully render ([x]/[ ], bold, strikethrough).
+  // The counter lives in the window title; the body is a markdown review the
+  // transcript pipeline can fully render ([x], ◐, bold, strikethrough).
   assert.equal(opened.title, 'Plan 1/2')
   assert.equal(opened.nodes.length, 1)
   assert.equal(opened.nodes[0].kind, 'markdown')
   const md = opened.nodes[0].text
   assert.ok(!md.includes('## Plan'), md)
   assert.match(md, /- \[x\] Inspect · priority · high/)
-  assert.match(md, /- \[ \] \*\*Implement\*\* · priority · medium/)
+  assert.match(md, /- ◐ \*\*Implement\*\* · in progress · priority · medium/)
 
   current = null
   listener({ sessionId: 's-1', plans: [] })

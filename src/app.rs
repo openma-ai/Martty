@@ -578,6 +578,7 @@ pub(crate) const PICKER_LABEL_COL: usize = 30;
 /// lines ship as prompts the host expands.
 #[derive(Clone)]
 pub struct SlashEntry {
+    pub disabled: bool,
     pub name: String,
     pub usage: String,
     pub desc: String,
@@ -608,6 +609,8 @@ struct PluginCommandInput {
 
 #[derive(Clone, serde::Deserialize)]
 struct PluginCommandOption {
+    #[serde(default)]
+    disabled: bool,
     value: String,
     #[serde(default)]
     label: Option<String>,
@@ -653,16 +656,49 @@ pub struct SelectOverlay {
     pub title: String,
     pub value: String,
     pub options: Vec<SelectOption>,
+    #[serde(default)]
+    pub searchable: bool,
+    #[serde(skip)]
+    pub query: String,
     #[serde(skip)]
     pub sel: usize,
 }
 
+impl SelectOverlay {
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let query = self.query.to_lowercase();
+        let terms: Vec<_> = query.split_whitespace().collect();
+        self.options.iter().enumerate().filter_map(|(index, option)| {
+            let text = format!("{} {} {}", option.value, option.label,
+                option.description.as_deref().unwrap_or("")).to_lowercase();
+            (!self.searchable || terms.iter().all(|term| text.contains(*term))).then_some(index)
+        }).collect()
+    }
+
+    fn reconcile_search(&mut self) {
+        let visible = self.visible_indices();
+        if !visible.contains(&self.sel) {
+            if let Some(&first) = visible.first() { self.sel = first; }
+        }
+        if let Some(option) = self.options.get(self.sel) {
+            self.value = option.value.clone();
+        }
+    }
+}
+
 #[derive(Clone, serde::Deserialize)]
 pub struct SelectOption {
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub deletable: bool,
     pub value: String,
     pub label: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Decorative section label; never contributes an option index or value.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn select_initial_index(select: &SelectOverlay) -> Option<usize> {
@@ -673,6 +709,8 @@ fn select_initial_index(select: &SelectOverlay) -> Option<usize> {
     for option in &select.options {
         if option.value.is_empty()
             || option.label.is_empty()
+            || option.group.as_ref().is_some_and(|group| group.trim().is_empty()
+                || group.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')))
             || !values.insert(option.value.as_str())
         {
             return None;
@@ -806,6 +844,7 @@ pub struct SessionSlot {
     /// Model explicitly picked on this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
     pub selected_model: Option<String>,
+    pub session_model: Option<String>,
     /// Welcome banner: shown until this session sends its first prompt.
     pub show_banner: bool,
     /// Meta-row chrome while the session runs: state note text and the
@@ -867,6 +906,7 @@ impl SessionSlot {
             file_menu_dismissed: None,
             scroll_up: 0,
             selected_model: None,
+            session_model: None,
             // A fresh tab has not prompted yet — the welcome banner paints
             // until its first send (resume paths force it off).
             show_banner: true,
@@ -1453,6 +1493,8 @@ pub struct App {
     /// Model explicitly picked this session (`/model`); wins over
     /// `transcript.last_model` in the chip until a turn realizes it.
     pub selected_model: Option<String>,
+    /// Current model reported by this ACP session's config snapshot.
+    pub session_model: Option<String>,
     pub demo: bool,
     /// A live ACP agent owns runtime, credentials, and its advertised catalog.
     pub attached: bool,
@@ -1491,6 +1533,7 @@ pub struct App {
     shell_worker: Option<ShellWorker>,
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
+    pub connection_error: Option<String>,
     pub needs_redraw: bool,
 }
 
@@ -1510,6 +1553,8 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::UserInjected { session, .. }
         | UiEvent::UserMessage { session, .. }
         | UiEvent::SessionTitle { session, .. }
+        | UiEvent::SessionNotice { session, .. }
+        | UiEvent::SessionModel { session, .. }
         | UiEvent::Plan { session, .. }
         | UiEvent::PlanMode { session, .. }
         | UiEvent::SandboxMode { session, .. }
@@ -1869,6 +1914,7 @@ impl App {
             tab_strip_offset: 0,
             cfg,
             selected_model: None,
+            session_model: None,
             demo,
             attached,
             session_bound: demo,
@@ -1891,6 +1937,7 @@ impl App {
             shell_worker: None,
             bus_tx,
             server_info: None,
+            connection_error: None,
             needs_redraw: true,
         };
         app.transcript.locale = locale;
@@ -1938,6 +1985,7 @@ impl App {
             file_menu_dismissed: self.file_menu_dismissed.take(),
             scroll_up: std::mem::take(&mut self.scroll_up),
             selected_model: std::mem::take(&mut self.selected_model),
+            session_model: self.session_model.take(),
             show_banner: std::mem::take(&mut self.show_banner),
             state_note: std::mem::take(&mut self.state_note),
             run_started: self.run_started.take(),
@@ -2014,6 +2062,7 @@ impl App {
         self.file_menu_dismissed = slot.file_menu_dismissed;
         self.scroll_up = slot.scroll_up;
         self.selected_model = slot.selected_model;
+        self.session_model = slot.session_model;
         self.show_banner = slot.show_banner;
         let running = slot.running || slot.prompt_pending;
         self.state = if running {
@@ -2215,6 +2264,10 @@ impl App {
                 apply_to_transcript = false;
             }
             E::SessionTitle { title, .. } => slot.title = Some(title.clone()),
+            E::SessionModel { model, .. } => {
+                slot.session_model = Some(model.clone());
+                apply_to_transcript = false;
+            }
             _ => {}
         }
         match &ui {
@@ -2791,6 +2844,7 @@ impl App {
             .iter()
             .filter(|c| c.name.starts_with(prefix))
             .map(|c| SlashEntry {
+                disabled: false,
                 name: c.name.to_string(),
                 usage: c.usage.to_string(),
                 desc: self.locale.command_desc(c.name, c.desc).to_string(),
@@ -2811,6 +2865,7 @@ impl App {
         plugins.sort_by(|a, b| a.name.cmp(&b.name));
         for command in plugins {
             out.push(SlashEntry {
+                disabled: false,
                 name: command.name.clone(),
                 usage: command
                     .input
@@ -2843,6 +2898,7 @@ impl App {
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         for s in skills {
             out.push(SlashEntry {
+                disabled: false,
                 name: s.name.clone(),
                 usage: s
                     .input_hint
@@ -2880,6 +2936,7 @@ impl App {
                     .flat_map(|input| input.options.iter())
                     .filter(|option| option.value.starts_with(prefix))
                     .map(|option| SlashEntry {
+                        disabled: option.disabled,
                         name: name.to_string(),
                         usage: option.label.clone().unwrap_or_else(|| option.value.clone()),
                         desc: option.description.clone().unwrap_or_default(),
@@ -2896,6 +2953,7 @@ impl App {
             .into_iter()
             .filter(|(value, _, _)| value.starts_with(prefix))
             .map(|(value, label, desc)| SlashEntry {
+                disabled: false,
                 section: match (name, value.as_str()) {
                     ("theme", "toggle") => {
                         Some(self.locale.tr("Appearance", "明暗模式").to_string())
@@ -3376,6 +3434,18 @@ impl App {
                             Some(PluginOverlay::Select(mut select)) => {
                                 if let Some(sel) = select_initial_index(&select) {
                                     select.sel = sel;
+                                    if let Some(previous) = self.select_overlay.as_ref()
+                                        .filter(|previous| previous.id == select.id) {
+                                        if select.searchable { select.query = previous.query.clone(); }
+                                        if let Some(index) = select.options.iter()
+                                            .position(|option| option.value == previous.value) {
+                                            select.sel = index;
+                                        }
+                                        // A refreshed catalog can move, remove or rename rows.
+                                        // Keep the user's filter and stable choice when visible;
+                                        // otherwise select a real matching option, never a header.
+                                        select.reconcile_search();
+                                    }
                                     self.slider_overlay = None;
                                     self.view_overlay = None;
                                     self.select_overlay = Some(select);
@@ -3543,18 +3613,52 @@ impl App {
             }
             AppEvent::Ctl(ctl_ev) => {
                 match ctl_ev {
-                    CtlEvent::Starting { .. } => {
+                    CtlEvent::Starting { runtime } => {
+                        self.connection_error = None;
+                        if runtime == "harness" {
+                            self.parked.clear();
+                            self.awaiting_binds.clear();
+                            self.startup_bound = false;
+                            self.reset_session_ui();
+                            self.show_banner = true;
+                            self.server_info = None;
+                            self.auth = crate::acp_auth::AuthSnapshot::none();
+                            self.session_id = "pending".into();
+                        }
                         self.state = RunState::Starting;
                         self.run_started = Some(Instant::now());
-                        self.state_note = "starting runtime".into();
+                        self.state_note = if runtime == "harness" {
+                            "switching Harness".into()
+                        } else {
+                            "starting runtime".into()
+                        };
+                    }
+                    CtlEvent::Initialized { server } => {
+                        self.server_info = Some(server);
                     }
                     CtlEvent::Ready { server } => {
+                        self.connection_error = None;
                         self.server_info = Some(server.clone());
                         if !self.prompt_pending {
                             self.state = RunState::Idle;
                             self.run_started = None;
                             self.state_note.clear();
                         }
+                    }
+                    CtlEvent::ConnectionFailed { target, error } => {
+                        if !target.is_empty() { self.server_info = Some(target); }
+                        if self.server_info.is_none() { self.server_info = Some("ACP".into()); }
+                        self.connection_error = Some(error.clone());
+                        self.session_id = "unavailable".into();
+                        self.session_bound = false;
+                        self.session_model = None;
+                        self.selected_model = None;
+                        self.auth = crate::acp_auth::AuthSnapshot::none();
+                        self.prompt_pending = false;
+                        self.state = RunState::Idle;
+                        self.run_started = None;
+                        self.state_note.clear();
+                        self.transcript.push_notice(NoticeLevel::Error, error);
                     }
                     CtlEvent::PromptQueued {
                         session_id: Some(sid),
@@ -3920,7 +4024,11 @@ impl App {
                         }
                     }
                     CtlEvent::TuiOpDone(desc) => {
-                        self.transcript.push_notice(NoticeLevel::Info, desc);
+                        if self.show_banner {
+                            self.show_tip(desc);
+                        } else {
+                            self.transcript.push_notice(NoticeLevel::Info, desc);
+                        }
                     }
                     CtlEvent::TuiOpFailed(desc) => {
                         self.transcript.push_notice(NoticeLevel::Warn, desc);
@@ -3932,6 +4040,9 @@ impl App {
                             self.transcript.push_notice(level, text);
                         }
                         if snap.status == crate::acp_auth::AuthStatus::Configured {
+                            if self.view_overlay.as_ref().is_some_and(|view| view.id == "builtin.auth.failure") {
+                                self.view_overlay = None;
+                            }
                             if matches!(
                                 self.picker.as_ref().map(|p| p.kind),
                                 Some(PickerKind::Auth)
@@ -3939,11 +4050,18 @@ impl App {
                                 self.picker = None;
                             }
                         }
-                        if snap.status == crate::acp_auth::AuthStatus::NeedsAuth {
+                        if matches!(snap.status, crate::acp_auth::AuthStatus::NeedsAuth | crate::acp_auth::AuthStatus::Failed) {
                             self.prompt_pending = retrying_prompt;
                             self.state = RunState::Idle;
                             self.run_started = None;
                             self.state_note.clear();
+                        }
+                        if snap.status == crate::acp_auth::AuthStatus::Failed {
+                            self.open_text_overlay("builtin.auth.failure",
+                                self.locale.tr("Sign-in failed", "登录失败").into(),
+                                format!("{}\n\n{}", snap.message.as_deref().unwrap_or("ACP authenticate failed"),
+                                    self.locale.tr("Close this panel, then use /auth to retry or choose another method. Browser authorization alone does not mean the Agent accepted sign-in.",
+                                        "关闭面板后可用 /auth 重试或选择其他方式。浏览器授权完成不代表 Agent 已接受登录。")));
                         }
                         self.auth = snap;
                     }
@@ -3960,6 +4078,7 @@ impl App {
                         self.resume_session_cap = resume_session;
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
+                        self.connection_error = None;
                         // The session that just bound, for the queue dispatch
                         // below (prompts submitted while the tab was unbound
                         // are held in its queue — acp.rs rejects unbound ids).
@@ -4002,6 +4121,7 @@ impl App {
                                     {
                                         if self.session_id != session_id {
                                             self.reset_subagent_views();
+                                self.session_model = None;
                                         }
                                         let old_id = self.session_id.clone();
                                         self.session_id = session_id.clone();
@@ -4101,6 +4221,7 @@ impl App {
                             self.startup_bound = true;
                             if self.session_id != session_id {
                                 self.reset_subagent_views();
+                                self.session_model = None;
                             }
                             let old_id = self.session_id.clone();
                             self.session_id = session_id.clone();
@@ -4364,6 +4485,10 @@ impl App {
             E::SessionTitle { session, title } if *session == self.session_id => {
                 self.session_title = Some(title.clone());
             }
+            E::SessionModel { session, model } if *session == self.session_id => {
+                self.session_model = Some(model.clone());
+                apply_to_transcript = false;
+            }
             _ => {}
         }
 
@@ -4412,6 +4537,15 @@ impl App {
                 if let Some(ask) = &mut self.elicitation_ask {
                     ask.form.paste(&text);
                     self.needs_redraw = true;
+                    return;
+                }
+                if let Some(select) = &mut self.select_overlay {
+                    if select.searchable {
+                        select.query.extend(text.chars().filter(|ch| !ch.is_control())
+                            .take(256_usize.saturating_sub(select.query.chars().count())));
+                        select.reconcile_search();
+                        self.needs_redraw = true;
+                    }
                     return;
                 }
                 self.slash_completion_dismissed = false;
@@ -4481,6 +4615,9 @@ impl App {
                     tree.state.scroll_up(3);
                 } else if self.view_overlay.is_some() {
                     self.view_scroll_by(-3);
+                } else if self.select_overlay.is_some() {
+                    self.handle_select_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), ctl);
+                    self.needs_redraw = true;
                 } else if self.picker.is_some() {
                     self.picker_scroll_by(-1);
                 } else {
@@ -4496,6 +4633,9 @@ impl App {
                     tree.state.scroll_down(3);
                 } else if self.view_overlay.is_some() {
                     self.view_scroll_by(3);
+                } else if self.select_overlay.is_some() {
+                    self.handle_select_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), ctl);
+                    self.needs_redraw = true;
                 } else if self.picker.is_some() {
                     self.picker_scroll_by(1);
                 } else {
@@ -5372,10 +5512,45 @@ impl App {
     }
 
     fn handle_select_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        if let Some(select) = self.select_overlay.as_mut().filter(|select| select.searchable) {
+            let edited = match (key.code, key.modifiers) {
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => { select.query.clear(); true }
+                (KeyCode::Char(ch), modifiers)
+                    if (modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT)
+                        && !ch.is_control() => {
+                    if select.query.chars().count() < 256 { select.query.push(ch); }
+                    true
+                }
+                (KeyCode::Backspace, KeyModifiers::NONE) => { select.query.pop(); true }
+                _ => false,
+            };
+            if edited {
+                select.reconcile_search();
+                return;
+            }
+        }
         if key.modifiers != KeyModifiers::NONE {
             return;
         }
+        if matches!(key.code, KeyCode::Delete | KeyCode::Backspace) {
+            if !self.select_overlay.as_ref().is_some_and(|select|
+                !select.visible_indices().is_empty()
+                    && select.options.get(select.sel).is_some_and(|option| option.deletable && !option.disabled)) {
+                return;
+            }
+            if let Some(select) = self.select_overlay.take() {
+                ctl.send(Cmd::PluginOverlayEvent {
+                    id: select.id,
+                    event: "delete".into(),
+                    value: Some(serde_json::json!(select.options[select.sel].value)),
+                });
+            }
+            return;
+        }
         if key.code == KeyCode::Enter {
+            if self.select_overlay.as_ref().is_some_and(|select| select.visible_indices().is_empty() || select.options[select.sel].disabled) {
+                return;
+            }
             if let Some(select) = self.select_overlay.take() {
                 let value = select.options[select.sel].value.clone();
                 ctl.send(Cmd::PluginOverlayEvent {
@@ -5400,16 +5575,19 @@ impl App {
         let Some(select) = self.select_overlay.as_mut() else {
             return;
         };
+        let visible = select.visible_indices();
+        if visible.is_empty() { return; }
+        let position = visible.iter().position(|&index| index == select.sel).unwrap_or(0);
         let previous = select.sel;
         match key.code {
             KeyCode::Up => {
-                select.sel = select.sel.saturating_sub(1);
+                select.sel = visible[position.saturating_sub(1)];
             }
             KeyCode::Down => {
-                select.sel = (select.sel + 1).min(select.options.len() - 1);
+                select.sel = visible[(position + 1).min(visible.len() - 1)];
             }
-            KeyCode::Home => select.sel = 0,
-            KeyCode::End => select.sel = select.options.len() - 1,
+            KeyCode::Home => select.sel = visible[0],
+            KeyCode::End => select.sel = visible[visible.len() - 1],
             _ => return,
         }
         if select.sel == previous {
@@ -5899,6 +6077,7 @@ impl App {
                 let menu = self.slash_matches();
                 if !menu.is_empty() {
                     let entry = &menu[self.slash_sel.min(menu.len() - 1)];
+                    if entry.disabled { return; }
                     self.input.set(
                         entry
                             .completion
@@ -6982,6 +7161,7 @@ impl App {
         self.permission_choices.clear();
         self.effort_choices.clear();
         self.selected_model = None;
+        self.session_model = None;
         self.session_title = None;
         self.show_banner = false;
         self.queued = 0;
@@ -7529,6 +7709,11 @@ impl App {
     }
 
     fn handle_ctrl_c(&mut self, _ctl: &Controller) {
+        if self.harness_switch_in_progress() {
+            self.ctrl_c_armed = None;
+            self.show_tip("Harness is switching — Ctrl+C ignored");
+            return;
+        }
         if !self.input.is_empty() {
             // Clearing the draft never counts as the first press of the
             // double-Ctrl+C quit chord.
@@ -7564,6 +7749,10 @@ impl App {
                 &[remaining.to_string()],
             )
         });
+    }
+
+    pub(crate) fn harness_switch_in_progress(&self) -> bool {
+        matches!(self.state, RunState::Starting) && self.state_note == "switching Harness"
     }
 
     fn history_prev(&mut self) {
@@ -7619,6 +7808,7 @@ impl App {
     }
 
     fn accept_slash(&mut self, entry: &SlashEntry, ctl: &Controller) {
+        if entry.disabled { return; }
         if let Some(completion) = &entry.completion {
             self.input.set(completion.clone());
         }
@@ -7950,6 +8140,10 @@ impl App {
                 );
             return;
         }
+        if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
+            self.show_tip(self.locale.tr("sign-in is still pending — waiting for the Agent", "登录仍在进行中，等待 Agent 返回结果"));
+            return;
+        }
         if self.auth.methods.is_empty() {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
@@ -8047,6 +8241,13 @@ impl App {
                 return;
             }
         }
+        self.auth.status = crate::acp_auth::AuthStatus::SigningIn;
+        self.auth.method_id = Some(method.id.clone());
+        self.auth.method_name = method.name.clone();
+        self.auth.message = None;
+        if self.view_overlay.as_ref().is_some_and(|view| view.id == "builtin.auth.failure") {
+            self.view_overlay = None;
+        }
         ctl.send(Cmd::Authenticate {
             method_id: method.id,
             values,
@@ -8143,8 +8344,12 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 .or(self.auth.method_id.as_deref())
             {
                 Some(name) => format!("ACP authenticate · {name}"),
-                None => "ACP authenticate · configured".into(),
+                None => "ready · credential source not reported".into(),
             }
+        } else if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
+            "signing in — waiting for Agent response".into()
+        } else if self.auth.status == crate::acp_auth::AuthStatus::Failed {
+            format!("sign-in failed · {} · /auth", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
         } else if self.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
             match self
                 .auth
@@ -8293,12 +8498,16 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         // the server banner when the runtime has reported it.
         let acp = if self.demo {
             "demo".to_string()
+        } else if self.connection_error.is_some() {
+            "failed".to_string()
         } else if self.attached {
             "attached".to_string()
         } else {
             "not attached".to_string()
         };
         let auth_line = match self.auth.status {
+            crate::acp_auth::AuthStatus::SigningIn => Some("signing in — waiting for Agent response".into()),
+            crate::acp_auth::AuthStatus::Failed => Some(format!("sign-in failed · {}", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))),
             crate::acp_auth::AuthStatus::Configured => {
                 let method = self
                     .auth

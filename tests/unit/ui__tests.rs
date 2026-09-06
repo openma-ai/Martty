@@ -384,11 +384,151 @@ fn live_meta_row_hides_session_options_until_session_bound() {
     );
 
     let bound_left = flat_line(status_title(&app));
-    let bound_right = flat_spans(status_right(&app));
     assert!(bound_left.contains("minimal"), "{bound_left}");
     assert!(bound_left.contains("Full access"), "{bound_left}");
+    assert!(!flat_spans(status_right(&app)).contains("deepseek-chat"));
+    app.handle(
+        crate::bus::AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session: "acp-session".into(), model: "deepseek-chat".into(),
+        }), &ctl,
+    );
+    let bound_right = flat_spans(status_right(&app));
     assert!(bound_right.contains("deepseek-chat"), "{bound_right}");
     assert!(bound_right.contains("high"), "{bound_right}");
+}
+
+#[test]
+fn codex_model_chip_waits_for_acp_then_uses_the_reported_session_model() {
+    let flat = |spans: Vec<Span>| -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    };
+    let mut app = live_test_app();
+    app.cfg.bin = "npx -y @agentclientprotocol/codex-acp".into();
+    app.server_info = Some("@agentclientprotocol/codex-acp".into());
+    app.session_bound = true;
+
+    let pending = flat(status_right(&app));
+    assert!(!pending.contains("deepseek-chat"), "{pending}");
+
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(
+        crate::bus::AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session: app.session_id.clone(),
+            model: "gpt-5.6-codex".into(),
+        }),
+        &ctl,
+    );
+
+    let reported = flat(status_right(&app));
+    assert!(reported.contains("gpt-5.6-codex"), "{reported}");
+    assert!(!reported.contains("deepseek-chat"), "{reported}");
+}
+
+#[test]
+fn live_deepseek_landing_also_uses_acp_instead_of_startup_provider_and_model() {
+    let mut app = live_test_app();
+    app.server_info = Some("dsh-acp".into());
+    assert_eq!(welcome_model(&app), "waiting for ACP");
+    assert_eq!(displayed_model(&app), None);
+    app.session_model = Some("current-deepseek-model".into());
+    assert_eq!(welcome_model(&app), "current-deepseek-model");
+}
+
+#[test]
+fn failed_connection_landing_has_target_and_error_not_waiting_or_credentials() {
+    let mut app = live_test_app();
+    app.server_info = Some("Cline".into());
+    app.connection_error = Some("process exited (1)".into());
+    app.session_id = "unavailable".into();
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("Cline"), "{text}");
+    assert!(text.contains("connection failed"), "{text}");
+    assert!(!text.contains("waiting for ACP"), "{text}");
+    assert!(!text.contains("source not reported"), "{text}");
+}
+
+#[test]
+fn attached_landing_does_not_guess_runtime_before_initialize_or_after_failure() {
+    let mut app = live_test_app();
+    app.cfg.bin = "dsh-acp".into();
+    app.server_info = None;
+    for state in [crate::app::RunState::Starting, crate::app::RunState::Idle] {
+        app.state = state;
+        let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref()).collect::<String>();
+        assert!(!text.contains("dsh-acp"), "{text}");
+        assert!(!text.contains("deepseek-chat"), "{text}");
+        assert!(text.contains("waiting for ACP"), "{text}");
+    }
+}
+
+#[test]
+fn switching_landing_never_falls_back_to_old_runtime_or_auth() {
+    let mut app = live_test_app();
+    app.server_info = Some("dsh-acp".into());
+    app.auth.status = crate::acp_auth::AuthStatus::Configured;
+    app.auth.method_name = Some("Old credential".into());
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.handle(crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Starting { runtime: "harness".into() }), &ctl);
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(!text.contains("dsh-acp"), "{text}");
+    assert!(!text.contains("deepseek-chat"), "{text}");
+    assert!(!text.contains("Old credential"), "{text}");
+}
+
+#[test]
+fn welcome_auth_unknown_source_does_not_claim_authenticate() {
+    let mut app = live_test_app();
+    app.auth = crate::acp_auth::configured_snapshot(vec![], None);
+    let lines = welcome_info_lines(&app);
+    let text = lines.iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("source not reported"), "{text}");
+    assert!(!text.contains("ACP authenticate"), "{text}");
+    assert!(text.contains("credentials "), "label and value need spacing: {text}");
+}
+
+#[test]
+fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
+    let flat = |lines: Vec<Line>| lines.iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<Vec<_>>().join("\n");
+    let mut app = live_test_app();
+    app.auth.status = crate::acp_auth::AuthStatus::SigningIn;
+    app.auth.method_name = Some("Log in with Google".into());
+    let pending = flat(welcome_info_lines(&app));
+    assert!(pending.contains("signing in"), "{pending}");
+    assert!(!pending.contains("sign-in needed"), "{pending}");
+    app.auth.status = crate::acp_auth::AuthStatus::Failed;
+    let failed = flat(welcome_info_lines(&app));
+    assert!(failed.contains("sign-in failed"), "{failed}");
+    assert!(failed.contains("/auth"), "{failed}");
+    assert!(!failed.contains("host dsh"), "{failed}");
+}
+
+#[test]
+fn welcome_info_uses_the_active_acp_runtime_and_reported_session_model() {
+    let flat = |lines: Vec<Line>| -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = live_test_app();
+    app.server_info = Some("@agentclientprotocol/codex-acp".into());
+
+    let pending = flat(welcome_info_lines(&app));
+    assert!(pending.contains("waiting for ACP"), "{pending}");
+    assert!(pending.contains("codex-acp"), "{pending}");
+    assert!(!pending.contains("deepseek-chat"), "{pending}");
+
+    app.session_model = Some("gpt-5.6-sol".into());
+    let reported = flat(welcome_info_lines(&app));
+    assert!(reported.contains("gpt-5.6-sol"), "{reported}");
+    assert!(!reported.contains("deepseek-chat"), "{reported}");
 }
 
 #[test]
@@ -1432,6 +1572,58 @@ fn welcome_and_conversation_are_two_states_without_a_mixed_third_state() {
     assert!(
         first.abs_diff(bottom) <= 1,
         "Welcome remains centered: top={first}, bottom={bottom}"
+    );
+}
+
+#[test]
+fn harness_switch_returns_the_fresh_empty_session_to_the_landing_page() {
+    let mut app = live_test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.show_banner = false;
+    app.transcript.push_user("old Harness turn".into(), false);
+
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Starting {
+            runtime: "harness".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::SessionBound {
+            session_id: "fresh-empty-session".into(),
+            notice: None,
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::Ready {
+            server: "dsh-acp".into(),
+        }),
+        &ctl,
+    );
+    app.handle(
+        crate::bus::AppEvent::Ctl(crate::bus::CtlEvent::TuiOpDone(
+            "Harness switched to Bundled DeepSeek Harness".into(),
+        )),
+        &ctl,
+    );
+
+    assert!(
+        app.show_banner,
+        "a fresh empty Harness session is a landing state"
+    );
+    assert!(
+        app.transcript.cells.is_empty(),
+        "the switch result must not become session transcript"
+    );
+    let frame = dump_frame(&mut app, 140, 60);
+    assert!(
+        frame.contains("https://martty.sh"),
+        "landing page is visible:\n{frame}"
+    );
+    assert!(
+        frame.contains("Harness switched to Bundled DeepSeek Harness"),
+        "the switch result remains visible as chrome:\n{frame}"
     );
 }
 
@@ -2670,6 +2862,77 @@ fn box_line(line: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
+fn grouped_select_test_app(count: usize, selected: usize) -> App {
+    let mut app = test_app();
+    let options: Vec<_> = (0..count).map(|index| serde_json::json!({
+        "value": format!("item-{index:02}"), "label": format!("Candidate {index:02}"),
+        "description": "An ACP agent",
+        "group": if index < count / 2 { "Downloaded" } else { "Not downloaded" },
+    })).collect();
+    let mut select: crate::app::SelectOverlay = serde_json::from_value(serde_json::json!({
+        "id": "catalog", "title": "Harnesses", "value": format!("item-{selected:02}"),
+        "searchable": true, "options": options,
+    })).expect("select snapshot");
+    select.sel = selected;
+    app.select_overlay = Some(select);
+    app
+}
+
+fn select_only_frame(app: &App, width: u16, height: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal.draw(|frame| draw_plugin_select(frame, app, frame.area())).expect("select frame");
+    let buffer = terminal.backend().buffer();
+    (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol())
+        .collect::<String>()).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn grouped_select_overlay_separates_groups_without_selectable_heading_rows() {
+    let app = grouped_select_test_app(4, 0);
+    let frame = select_only_frame(&app, 70, 22);
+    assert_eq!(frame.matches("Downloaded").count(), 1, "one first-group heading:\n{frame}");
+    assert_eq!(frame.matches("Not downloaded").count(), 1, "one second-group heading:\n{frame}");
+    let rows: Vec<_> = frame.lines().collect();
+    for label in ["Downloaded", "Not downloaded"] {
+        let heading = rows.iter().find(|line| line.contains(label)).expect("heading");
+        assert!(heading.contains('─'), "heading has a divider:\n{frame}");
+        assert!(!heading.contains('○') && !heading.contains('●'), "heading is not an option:\n{frame}");
+    }
+    assert_eq!(frame.matches('○').count(), 3, "only real unselected options:\n{frame}");
+    assert_eq!(frame.matches('●').count(), 1, "one real selected option:\n{frame}");
+}
+
+#[test]
+fn grouped_select_overlay_scrolls_with_the_selection_and_repeats_visible_group_title() {
+    let mut app = grouped_select_test_app(40, 39);
+    let frame = select_only_frame(&app, 70, 12);
+    assert!(frame.contains("Not downloaded"), "window repeats its group heading:\n{frame}");
+    assert!(frame.contains("▸ ● Candidate 39"), "selected row stays visible:\n{frame}");
+    assert!(!frame.contains("Downloaded"), "offscreen group heading is not retained:\n{frame}");
+    app.select_overlay.as_mut().unwrap().query = "candidate 39".into();
+    let frame = select_only_frame(&app, 70, 12);
+    assert!(frame.contains("Not downloaded"), "filtered result keeps its heading:\n{frame}");
+    assert!(!frame.contains("Candidate 38"), "nonmatches excluded:\n{frame}");
+    app.select_overlay.as_mut().unwrap().query = "no such candidate".into();
+    let frame = select_only_frame(&app, 70, 12);
+    assert!(frame.contains("No matches"), "empty filter state:\n{frame}");
+    assert!(!frame.contains("Not downloaded"), "no empty group headings:\n{frame}");
+}
+
+#[test]
+fn grouped_select_overlay_small_terminals_prioritize_the_actual_choice() {
+    let mut app = grouped_select_test_app(40, 39);
+    // The overlay can omit decorative headings when only one body row remains.
+    let frame = select_only_frame(&app, 34, 7);
+    assert!(frame.contains("▸ ● Candidate 39"), "heading cannot replace the selected row:\n{frame}");
+    assert_eq!(frame.lines().count(), 7);
+    app.select_overlay.as_mut().unwrap().searchable = false;
+    let frame = select_only_frame(&app, 22, 12);
+    assert!(frame.contains("Not downloa…"), "long heading ellipsized within the narrow panel:\n{frame}");
+    assert!(frame.lines().all(|line| line.chars().count() == 22), "all rows stay inside the screen:\n{frame}");
+}
+
 #[test]
 fn select_overlay_ellipsizes_long_rows_and_previews_the_selection() {
     use crate::app::{SelectOption, SelectOverlay};
@@ -2683,18 +2946,26 @@ fn select_overlay_ellipsizes_long_rows_and_previews_the_selection() {
     app.select_overlay = Some(SelectOverlay {
         id: "ui-preset".into(),
         title: "UI preset".into(),
+        searchable: false,
+        query: String::new(),
         value: "long".into(),
         sel: 0,
         options: vec![
             SelectOption {
+                deletable: false,
                 value: "long".into(),
+                disabled: false,
                 label: long_label,
                 description: Some(long_desc),
+                group: None,
             },
             SelectOption {
+                deletable: false,
                 value: "short".into(),
+                disabled: false,
                 label: "Short".into(),
                 description: Some("second option".into()),
+                group: None,
             },
         ],
     });
@@ -2801,12 +3072,17 @@ fn select_overlay_preview_wraps_and_caps_three_lines() {
     app.select_overlay = Some(SelectOverlay {
         id: "long".into(),
         title: "Long".into(),
+        searchable: false,
+        query: String::new(),
         value: "v".into(),
         sel: 0,
         options: vec![SelectOption {
+            deletable: false,
+            disabled: false,
             value: "v".into(),
             label: "x".repeat(400),
             description: None,
+            group: None,
         }],
     });
 

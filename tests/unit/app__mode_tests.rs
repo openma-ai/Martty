@@ -1439,6 +1439,27 @@ fn prompt_jump_without_user_prompts_tips_instead_of_jumping() {
 }
 
 #[test]
+fn harness_restart_clears_the_old_session_before_reconnecting() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.transcript.push_user("old Harness turn".into(), false);
+    app.session_model = Some("old-harness-model".into());
+    assert!(!app.transcript.cells.is_empty());
+
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Starting {
+            runtime: "harness".into(),
+        }),
+        &ctl,
+    );
+
+    assert!(app.transcript.cells.is_empty());
+    assert!(app.session_model.is_none());
+    assert!(!app.session_bound);
+    assert_eq!(app.state, RunState::Starting);
+}
+
+#[test]
 fn agent_preset_event_updates_chrome_without_adding_a_transcript_row() {
     let (mut app, _ctl, _rx) = test_app();
     let cells_before = app.transcript.cells.len();
@@ -1999,6 +2020,23 @@ fn first_prompt_after_agent_ready_is_not_marked_queued() {
 }
 
 #[test]
+fn connection_failure_clears_pending_surface_and_recovers_on_ready() {
+    let (mut app, ctl, _rx) = test_app();
+    app.handle(AppEvent::Ctl(CtlEvent::Starting { runtime: "harness".into() }), &ctl);
+    app.session_model = Some("stale-model".into());
+    app.handle(AppEvent::Ctl(CtlEvent::ConnectionFailed { target: "Cline".into(), error: "process exited (1)".into() }), &ctl);
+    assert_eq!(app.state, RunState::Idle);
+    assert!(!app.prompt_pending);
+    assert!(app.run_started.is_none());
+    assert!(app.session_model.is_none());
+    assert_eq!(app.session_id, "unavailable");
+    assert_eq!(app.server_info.as_deref(), Some("Cline"));
+    assert_eq!(app.connection_error.as_deref(), Some("process exited (1)"));
+    app.handle(AppEvent::Ctl(CtlEvent::Ready { server: "recovered-acp".into() }), &ctl);
+    assert!(app.connection_error.is_none());
+}
+
+#[test]
 fn startup_lifecycle_updates_state_without_adding_transcript_rows() {
     let (mut app, ctl, _rx) = test_app();
     let cells_before = app.transcript.cells.len();
@@ -2093,6 +2131,33 @@ fn bracketed_paste_wrapped_csi_u_ctrl_c_still_quits() {
     }
 
     assert!(app.quit, "two Ctrl+C presses should quit from idle");
+    assert!(
+        app.input.is_empty(),
+        "the CSI-u bytes must never enter the composer"
+    );
+}
+
+#[test]
+fn bracketed_paste_wrapped_ctrl_c_cannot_quit_during_a_harness_switch() {
+    let (mut app, ctl, _rx) = test_app();
+    app.state = RunState::Starting;
+    app.state_note = "switching Harness".into();
+
+    for _ in 0..2 {
+        app.handle(
+            AppEvent::Term(Event::Paste("\u{1b}[99;5u".to_string())),
+            &ctl,
+        );
+    }
+
+    assert!(
+        !app.quit,
+        "Ctrl+C must not tear down an in-flight Harness switch"
+    );
+    assert!(
+        app.ctrl_c_armed.is_none(),
+        "the switch must not leave a latent quit chord armed"
+    );
     assert!(
         app.input.is_empty(),
         "the CSI-u bytes must never enter the composer"
@@ -3422,6 +3487,30 @@ fn editing_a_dismissed_slash_draft_reopens_completion() {
 }
 
 #[test]
+fn effort_picker_selects_the_current_session_value() {
+    let (mut app, _ctl, _rx) = test_app();
+
+    app.open_effort_picker(
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        Some("high".into()),
+    );
+
+    let picker = app.picker.as_ref().expect("effort picker");
+    assert_eq!(
+        picker
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+    assert_eq!(picker.sel, 2, "the live ACP value should be highlighted");
+}
+
+#[test]
 fn plugin_slider_moves_between_effort_marks_for_material_preview() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
@@ -3466,6 +3555,81 @@ fn plugin_slider_moves_between_effort_marks_for_material_preview() {
                 && event == "change"
                 && value == Some(serde_json::json!(16.0))
     ));
+}
+
+#[test]
+fn select_delete_emits_only_for_an_eligible_visible_row() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    for code in [KeyCode::Delete, KeyCode::Backspace] {
+        app.handle(AppEvent::Rpc { method: crate::cordis::OVERLAY_UPDATE.into(), params: serde_json::json!({
+            "protocol": 0, "overlay": { "kind": "select", "id": "items", "title": "Items",
+            "options": [
+                { "value": "current", "label": "Current", "disabled": true, "deletable": true },
+                { "value": "add", "label": "Add" },
+                { "value": "saved", "label": "Saved", "deletable": true }
+            ], "value": "current" }
+        }) }, &ctl);
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctl);
+        assert!(app.select_overlay.is_some());
+        assert!(commands.try_recv().is_err());
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        let _ = commands.try_recv();
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctl);
+        assert!(app.select_overlay.is_some());
+        assert!(commands.try_recv().is_err());
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+        let _ = commands.try_recv();
+        let frame = crate::ui::dump_frame(&mut app, 100, 30);
+        assert!(frame.contains("delete remove"), "selected row action must be discoverable: {frame}");
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctl);
+        assert!(app.select_overlay.is_none(), "delete opens the selected row action");
+        assert!(matches!(commands.try_recv().unwrap(), Cmd::PluginOverlayEvent { id, event, value }
+            if id == "items" && event == "delete" && value == Some(serde_json::json!("saved"))));
+    }
+}
+
+#[test]
+fn searchable_select_backspace_edits_and_delete_never_targets_a_hidden_row() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(AppEvent::Rpc { method: crate::cordis::OVERLAY_UPDATE.into(), params: serde_json::json!({
+        "protocol": 0, "overlay": { "kind": "select", "id": "items", "title": "Items", "searchable": true,
+        "options": [{ "value": "saved", "label": "Saved", "deletable": true }], "value": "saved" }
+    }) }, &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), &ctl);
+    assert!(app.select_overlay.is_some());
+    assert!(commands.try_recv().is_err());
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.select_overlay.as_ref().unwrap().query, "");
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    assert!(app.select_overlay.is_some(), "empty search does not turn Backspace into deletion");
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn disabled_plugin_choices_cannot_submit_from_picker_or_composer() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(AppEvent::Rpc { method: crate::cordis::OVERLAY_UPDATE.into(), params: serde_json::json!({
+        "protocol": 0, "overlay": { "kind": "select", "id": "current", "title": "Harness",
+        "options": [{ "value": "live", "label": "Live (current)", "disabled": true }], "value": "live" }
+    }) }, &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.select_overlay.is_some(), "disabled row must not close or submit");
+    assert!(commands.try_recv().is_err());
+    app.select_overlay = None;
+    app.plugin_commands = serde_json::from_value(serde_json::json!([{
+        "name": "harness", "description": "Switch", "input": { "hint": "id", "options": [
+            { "value": "live", "label": "Live (current)", "disabled": true }
+        ] }
+    }])).unwrap();
+    app.input.set("/harness ".into());
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "/harness ");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(commands.try_recv().is_err());
 }
 
 #[test]
@@ -3527,6 +3691,158 @@ fn plugin_select_form_renders_rows_and_submits_the_selected_value() {
                 && event == "submit"
                 && value == Some(serde_json::json!("deepseek"))
     ));
+}
+
+#[test]
+fn plugin_select_search_filters_and_keeps_selected_rows_visible() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    let options: Vec<_> = (0..40).map(|index| serde_json::json!({
+        "value": format!("agent-{index:02}"), "label": format!("Harness {index:02}"),
+        "description": "Available locally"
+    })).collect();
+    app.handle(AppEvent::Rpc {
+        method: crate::cordis::OVERLAY_UPDATE.into(),
+        params: serde_json::json!({ "protocol": 0, "overlay": {
+            "kind": "select", "id": "catalog", "title": "Add Harness",
+            "searchable": true, "value": "agent-00", "options": options
+        } }),
+    }, &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &ctl);
+    let frame = crate::ui::dump_frame(&mut app, 80, 24);
+    assert!(frame.contains("▸ ● Harness 39"), "selected row must be in viewport:\n{frame}");
+    for char in "12".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(char), KeyModifiers::NONE), &ctl);
+    }
+    let frame = crate::ui::dump_frame(&mut app, 80, 24);
+    assert!(frame.contains("Search: 12"), "visible search field:\n{frame}");
+    assert!(frame.contains("Harness 12"), "matching entry:\n{frame}");
+    assert!(!frame.contains("Harness 39"), "nonmatches hidden:\n{frame}");
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.select_overlay.is_some(), "no match must not submit a hidden option");
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT), &ctl);
+    app.handle_term(crossterm::event::Event::Paste("ARness 12".into()), &ctl);
+    assert_eq!(app.select_overlay.as_ref().unwrap().query, "HARness 12");
+    let frame = crate::ui::dump_frame(&mut app, 80, 24);
+    assert!(frame.contains("▸ ● Harness 12"), "paste filters case-insensitively by every term:\n{frame}");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(commands.try_iter().any(|cmd| matches!(cmd,
+        Cmd::PluginOverlayEvent { event, value, .. }
+        if event == "submit" && value == Some(serde_json::json!("agent-12"))
+    )));
+}
+
+#[test]
+fn grouped_select_navigation_and_search_only_submit_real_options() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(AppEvent::Rpc {
+        method: crate::cordis::OVERLAY_UPDATE.into(),
+        params: serde_json::json!({ "protocol": 0, "overlay": {
+            "kind": "select", "id": "catalog", "title": "Harnesses", "searchable": true,
+            "value": "a", "options": [
+                { "value": "a", "label": "Alpha", "group": "Downloaded" },
+                { "value": "b", "label": "Beta", "group": "Not downloaded" },
+                { "value": "c", "label": "Gamma", "group": "Not downloaded" }
+            ]
+        } }),
+    }, &ctl);
+    let frame = crate::ui::dump_frame(&mut app, 80, 24);
+    assert!(frame.contains("Downloaded"), "native group metadata rendered:\n{frame}");
+    assert_eq!(app.select_overlay.as_ref().unwrap().options.len(), 3);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.select_overlay.as_ref().unwrap().value, "b");
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::ScrollDown, column: 10, row: 10,
+        modifiers: KeyModifiers::NONE,
+    }, &ctl);
+    assert_eq!(app.select_overlay.as_ref().unwrap().value, "c");
+    app.handle_term(crossterm::event::Event::Paste("Beta".into()), &ctl);
+    assert_eq!(app.select_overlay.as_ref().unwrap().visible_indices(), vec![1]);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    let events: Vec<_> = commands.try_iter().filter_map(|command| match command {
+        Cmd::PluginOverlayEvent { event, value, .. } => Some((event, value)),
+        _ => None,
+    }).collect();
+    assert_eq!(events, vec![
+        ("change".into(), Some(serde_json::json!("b"))),
+        ("change".into(), Some(serde_json::json!("c"))),
+        ("submit".into(), Some(serde_json::json!("b"))),
+    ]);
+}
+
+#[test]
+fn plugin_select_refresh_preserves_search_and_selected_value_across_reordering() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    let publish = |app: &mut App, id: &str, options: serde_json::Value| {
+        app.handle(AppEvent::Rpc {
+            method: crate::cordis::OVERLAY_UPDATE.into(),
+            params: serde_json::json!({ "protocol": 0, "overlay": {
+                "kind": "select", "id": id, "title": "Harnesses", "searchable": true,
+                "value": "a", "options": options,
+            } }),
+        }, &ctl);
+    };
+    publish(&mut app, "catalog", serde_json::json!([
+        { "value": "a", "label": "Alpha" }, { "value": "b", "label": "Beta", "group": "Downloaded" }
+    ]));
+    app.handle_term(crossterm::event::Event::Paste("Beta".into()), &ctl);
+    publish(&mut app, "catalog", serde_json::json!([
+        { "value": "a", "label": "Alpha" }, { "value": "c", "label": "Beta cloud" },
+        { "value": "b", "label": "Beta local", "group": "Downloaded" }
+    ]));
+    let select = app.select_overlay.as_ref().unwrap();
+    assert_eq!(select.query, "Beta", "background discovery must not clear the user's filter");
+    assert_eq!(select.value, "b", "selection follows stable value, not the old index");
+    assert_eq!(select.sel, 2);
+    assert_eq!(select.visible_indices(), vec![1, 2]);
+    assert!(commands.try_iter().next().is_none(), "refresh itself emits no selection action");
+
+    publish(&mut app, "catalog", serde_json::json!([
+        { "value": "a", "label": "Alpha" }, { "value": "c", "label": "Beta cloud" }
+    ]));
+    assert_eq!(app.select_overlay.as_ref().unwrap().value, "c", "removed choice falls back to a visible row");
+    assert_eq!(app.select_overlay.as_ref().unwrap().query, "Beta");
+
+    publish(&mut app, "other", serde_json::json!([
+        { "value": "a", "label": "Alpha" }, { "value": "c", "label": "Beta cloud" }
+    ]));
+    assert_eq!(app.select_overlay.as_ref().unwrap().query, "", "a new id is a new form");
+    assert_eq!(app.select_overlay.as_ref().unwrap().value, "a");
+}
+
+#[test]
+fn plugin_select_refresh_does_not_keep_a_choice_that_stops_matching_the_filter() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    let publish = |app: &mut App, options: serde_json::Value| {
+        app.handle(AppEvent::Rpc {
+            method: crate::cordis::OVERLAY_UPDATE.into(),
+            params: serde_json::json!({ "protocol": 0, "overlay": {
+                "kind": "select", "id": "catalog", "title": "Harnesses", "searchable": true,
+                "value": "a", "options": options,
+            } }),
+        }, &ctl);
+    };
+    publish(&mut app, serde_json::json!([
+        { "value": "a", "label": "Alpha" }, { "value": "b", "label": "Beta" }
+    ]));
+    app.handle_term(crossterm::event::Event::Paste("Beta".into()), &ctl);
+    publish(&mut app, serde_json::json!([
+        { "value": "a", "label": "Alpha" }, { "value": "b", "label": "Renamed" },
+        { "value": "c", "label": "Beta cloud" }
+    ]));
+    assert_eq!(app.select_overlay.as_ref().unwrap().value, "c");
+    publish(&mut app, serde_json::json!([{ "value": "a", "label": "Alpha" }]));
+    assert_eq!(app.select_overlay.as_ref().unwrap().query, "Beta");
+    assert!(app.select_overlay.as_ref().unwrap().visible_indices().is_empty());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.select_overlay.is_some(), "an empty refreshed result cannot submit a hidden option");
+    assert!(commands.try_iter().next().is_none());
 }
 
 #[test]
@@ -3983,6 +4299,50 @@ fn auth_slash_queues_terminal_launch_like_backchat_sign_in() {
     assert_eq!(launch.command, "dsh-acp");
     assert_eq!(launch.args, ["login"]);
     assert_eq!(launch.method_id, "terminal-login");
+}
+
+#[test]
+fn agent_auth_reports_in_progress_before_the_agent_replies() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([{ "id": "oauth-personal", "name": "Log in with Google" }]),
+        &["antigravity-acp".into()], "/tmp", &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.run_slash("auth", "", &ctl);
+    assert_eq!(format!("{:?}", app.auth.status), "SigningIn");
+    assert_eq!(app.auth.method_id.as_deref(), Some("oauth-personal"));
+    assert!(!app.prompt_pending, "authentication is not a model prompt");
+    assert!(app.show_banner, "sign-in stays on the landing page");
+    app.run_slash("auth", "", &ctl);
+    assert!(app.tip.as_ref().is_some_and(|(text, _)| text.contains("still pending")));
+}
+
+#[test]
+fn auth_failure_is_visible_on_landing_and_retry_clears_it() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([{ "id": "oauth-personal", "name": "Google" }]),
+        &["antigravity-acp".into()], "/tmp", &Default::default(),
+    );
+    let mut failure = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(),
+        Some("Account is not eligible in your location".into()));
+    failure.status = crate::acp_auth::AuthStatus::Failed;
+    app.handle(AppEvent::Ctl(CtlEvent::Auth(failure)), &ctl);
+    assert!(app.show_banner);
+    let view = app.view_overlay.as_ref().expect("visible failure dialog, not hidden transcript");
+    assert_eq!(view.id, "builtin.auth.failure");
+    assert!(matches!(&view.nodes[0], crate::slots::TuiNode::Markdown { text, .. }
+        if text.contains("Account is not eligible") && text.contains("/auth")));
+    app.run_slash("auth", "", &ctl);
+    assert!(app.view_overlay.is_none());
+    assert_eq!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn);
+    assert!(app.auth.message.is_none());
+    app.handle(AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::configured_snapshot(methods.clone(), methods.first()))), &ctl);
+    assert_eq!(app.auth.status, crate::acp_auth::AuthStatus::Configured);
+    assert!(app.view_overlay.is_none());
 }
 
 #[test]

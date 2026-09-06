@@ -4,6 +4,44 @@ use agent_client_protocol::schema::v1::{
     SetSessionConfigOptionResponse, StopReason,
 };
 
+#[tokio::test(start_paused = true)]
+async fn browser_auth_outlives_the_short_control_deadline() {
+    use agent_client_protocol::schema::v1::AuthenticateResponse;
+    let (release, release_rx) = tokio::sync::watch::channel(false);
+    let (started, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent.builder().on_receive_request(
+        async move |_req: AuthenticateRequest, responder, cx| {
+            let _ = started.send(());
+            let mut release_rx = release_rx.clone();
+            cx.spawn(async move {
+                release_rx.wait_for(|ready| *ready).await.unwrap();
+                responder.respond(AuthenticateResponse::new())
+            })?;
+            Ok(())
+        }, on_receive_request!(),
+    );
+    Client.builder().connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+        let (bus, _events) = std::sync::mpsc::channel();
+        let (done, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+        let methods = parse_auth_methods(&json!([{"id":"login", "name":"Browser login"}]),
+            &[], "/tmp", &Default::default());
+        let mut workers = ControlWorkers::default();
+        workers.enqueue(Cmd::Authenticate { method_id: "login".into(), values: Default::default() },
+            &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+            std::path::Path::new("/tmp"), false, false, false, &done);
+        started_rx.recv().await.unwrap();
+        tokio::time::advance(Duration::from_secs(19 * 60)).await;
+        for _ in 0..5 { tokio::task::yield_now().await; }
+        assert!(done_rx.try_recv().is_err(), "browser login must have twenty minutes");
+        release.send(true).unwrap();
+        match done_rx.recv().await.unwrap() {
+            ControlFinish::Authenticated { result, .. } => assert!(result.is_ok()),
+            _ => panic!("expected authenticate result"),
+        }
+        Ok(())
+    }).await.unwrap();
+}
+
 async fn wait_event(rx: &Receiver<AppEvent>, predicate: impl Fn(&AppEvent) -> bool) {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
