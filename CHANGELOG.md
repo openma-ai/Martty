@@ -132,6 +132,12 @@ All notable changes to this project are documented here. The project follows
   instead of being wrapped apart like prose. Tables that already fit the
   width are painted unchanged.
 
+- `scripts/devlocalinstall.sh` now builds the shipped `release` Cargo
+  profile (fat LTO, stripped) by default and swaps the built binary into
+  the installed bundle under `dsh --profile <name>`;
+  `DSH_TUI_CARGO_PROFILE=devlocal` opts back into the fast debug build
+  loop when quick turnaround matters more than release fidelity.
+
 ### Fixed
 
 - High CPU usage while multiple subagents stream into a long conversation:
