@@ -134,6 +134,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- High CPU usage while multiple subagents stream into a long conversation:
+  hidden subagent output no longer repaints the visible transcript, ordinary
+  streaming redraws are paced, and event batches are bounded so painting and
+  input keep progressing. Tool requests and user input still paint immediately.
+
 - Bold Markdown table text now follows the selected body color mode while
   retaining its emphasis, fixing emphasized text appearing darker than
   surrounding text in single-tone mode, especially with the One theme.

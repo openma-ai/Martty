@@ -32,7 +32,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -255,11 +255,12 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
     })
 }
 
-/// A tool request is a semantic UI transition, not just another foldable
-/// transport update. Stop the current receive burst after applying it so the
-/// pending request gets one real frame before a fast result can complete it.
+/// Input must stay responsive, and a tool request needs one real frame
+/// before a fast result can complete it. Both end the receive batch and
+/// bypass the ordinary streaming frame interval.
 fn event_requires_immediate_frame(event: &AppEvent) -> bool {
     match event {
+        AppEvent::Term(_) | AppEvent::PermissionAsk { .. } | AppEvent::ElicitationAsk { .. } => true,
         AppEvent::Ui(events::UiEvent::ToolCall { .. }) => true,
         AppEvent::Rpc { method, params } if method == "session/update" => {
             params
@@ -279,6 +280,64 @@ fn event_requires_immediate_frame(event: &AppEvent) -> bool {
         }
         _ => false,
     }
+}
+
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const IDLE_WAIT: Duration = Duration::from_millis(50);
+const MAX_EVENT_BATCH: usize = 256;
+
+struct FramePacer {
+    next_frame: Instant,
+    immediate: bool,
+}
+
+impl FramePacer {
+    fn new(now: Instant) -> Self {
+        Self {
+            next_frame: now,
+            immediate: false,
+        }
+    }
+
+    fn ready(&self, now: Instant, dirty: bool) -> bool {
+        dirty && (self.immediate || now >= self.next_frame)
+    }
+
+    fn painted(&mut self, now: Instant) {
+        // Leave time for input/transport even when a long history makes
+        // painting itself take longer than the target frame interval.
+        self.next_frame = now + FRAME_INTERVAL;
+        self.immediate = false;
+    }
+
+    fn wait(&self, now: Instant, dirty: bool) -> Duration {
+        if !dirty {
+            IDLE_WAIT
+        } else if self.immediate {
+            Duration::ZERO
+        } else {
+            self.next_frame
+                .saturating_duration_since(now)
+                .min(IDLE_WAIT)
+        }
+    }
+}
+
+fn collect_event_batch(first: AppEvent, rx: &mpsc::Receiver<AppEvent>) -> (Vec<AppEvent>, bool) {
+    let mut immediate = event_requires_immediate_frame(&first);
+    let mut batch = Vec::new();
+    // A continuously fed channel must still yield to painting, ticks and
+    // shutdown. Keep the first tool request/input event as the last item.
+    while !immediate && batch.len() + 1 < MAX_EVENT_BATCH {
+        let Ok(event) = rx.try_recv() else { break };
+        immediate = event_requires_immediate_frame(&event);
+        batch.push(event);
+    }
+    // Coalesce the queued tail, keeping the received event as a separate
+    // transition just as in the unpaced event loop.
+    crate::events::coalesce_session_updates(&mut batch);
+    batch.insert(0, first);
+    (batch, immediate)
 }
 
 fn main() -> Result<()> {
@@ -452,11 +511,12 @@ fn main() -> Result<()> {
 
     let run = (|| -> Result<()> {
         let mut last_tick = std::time::Instant::now();
+        let mut frames = FramePacer::new(Instant::now());
         loop {
             if app.harness_switch_in_progress() {
                 let _ = repair_tui_raw_mode();
             }
-            if app.needs_redraw {
+            if frames.ready(Instant::now(), app.needs_redraw) {
                 // One atomic frame. Synchronized updates (DECSET 2026) make
                 // supporting terminals apply the whole frame without tearing.
                 // The caret itself is painted as buffer cells (ui::paint_caret)
@@ -500,40 +560,26 @@ fn main() -> Result<()> {
                     }
                     Ok(())
                 })??;
+                frames.painted(Instant::now());
             }
+            // While a harness switch owns the terminal, poll tightly so
+            // raw-mode repair and switch progress stay prompt; otherwise
+            // defer to the frame pacer (input stays immediate through
+            // frames.immediate).
             let event_wait = if app.harness_switch_in_progress() {
-                Duration::from_millis(10)
+                frames
+                    .wait(Instant::now(), app.needs_redraw)
+                    .min(Duration::from_millis(10))
             } else {
-                Duration::from_millis(50)
+                frames.wait(Instant::now(), app.needs_redraw)
             };
             match bus_rx.recv_timeout(event_wait) {
                 Ok(ev) => {
-                    let render_boundary = event_requires_immediate_frame(&ev);
-                    app.handle(ev, &controller);
-                    // Drain ordinary transport chatter into one frame, but
-                    // never fold a tool start together with its result. Fast
-                    // background tools can otherwise begin and finish inside
-                    // the same receive burst, making the request invisible.
-                    if !render_boundary {
-                        // Buffer the burst and coalesce adjacent session
-                        // deltas first: agents may stream updates at extreme
-                        // rates (session/load replay storm, issue #94), and
-                        // applying each delta individually melts the loop.
-                        // The buffer stops right after a frame-boundary
-                        // event, preserving the original drain semantics.
-                        let mut burst: Vec<bus::AppEvent> = Vec::new();
-                        while let Ok(ev) = bus_rx.try_recv() {
-                            let boundary = event_requires_immediate_frame(&ev);
-                            burst.push(ev);
-                            if boundary {
-                                break;
-                            }
-                        }
-                        crate::events::coalesce_session_updates(&mut burst);
-                        for ev in burst {
-                            app.handle(ev, &controller);
-                        }
+                    let (batch, immediate) = collect_event_batch(ev, &bus_rx);
+                    for ev in batch {
+                        app.handle(ev, &controller);
                     }
+                    frames.immediate |= immediate && app.needs_redraw;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -558,6 +604,7 @@ fn main() -> Result<()> {
                 enter_tui()?;
                 input_gate.unpark();
                 app.needs_redraw = true;
+                frames.immediate = true;
                 while let Ok(ev) = bus_rx.try_recv() {
                     if !matches!(ev, AppEvent::Term(_)) {
                         app.handle(ev, &controller);
