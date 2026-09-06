@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- A Chinese and English workflow article on trying Codex and Claude Code in one
+  terminal interface, with a concrete task handoff and explicit context/account boundaries.
+- Bilingual website guides for ACP Registry / Harness management and session tabs,
+  resume, and message queues, linked from the homepage and docs navigation with
+  localized search metadata and sitemap language alternates. Homepage commands now
+  document Ctrl+Enter steering, Harness authentication, and tab navigation.
 - Harness management through `/harness` and `martty harness`: official ACP
   Registry discovery, local command detection, saved recipes, configuration-only
   setup, explicit runtime switching, and confirmed configuration/private-installation
@@ -34,6 +40,7 @@ All notable changes to this project are documented here. The project follows
   of an up-pointing triangle.
 - The model chip in the meta row now uses the same muted color as the reasoning
   effort label beside it, instead of the brand accent.
+- Website test modules no longer become public Astro routes that return HTTP 500.
 - Harness switching reinitializes ACP and starts a fresh empty session. All old
   connection projections and requests are cleared, while session-scoped state
   remains isolated across tabs within one connection. Saved configuration is

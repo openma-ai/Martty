@@ -4,7 +4,7 @@ import "../styles/global.css";
 
 const title = "Martty — Rust TUI for DeepSeek Harness & ACP Agents";
 const description =
-  "Martty is a Rust/ratatui terminal client for DeepSeek Harness and ACP coding agents, with streamed reasoning, tools, subagents, images, durable sessions, and Cordis UI plugins.";
+  "Martty is a terminal client for DeepSeek Harness and ACP agents. Browse the ACP Registry, switch harnesses, resume session tabs, and queue or steer messages.";
 const year = new Date().getFullYear();
 ---
 
@@ -24,6 +24,7 @@ const year = new Date().getFullYear();
           <a href="#install" class="hover:text-[#e7eaee]">Install</a>
           <a href="#ui" class="hover:text-[#e7eaee]">UI overview</a>
           <a href="#usage" class="hover:text-[#e7eaee]">Usage</a>
+          <a href="/en/docs/harness-management" class="hover:text-[#e7eaee]">Docs</a>
           <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
           <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#1f4a73] px-2.5 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">GitHub</a>
           <a href="/" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">中文</a>
@@ -46,6 +47,7 @@ const year = new Date().getFullYear();
             join prompts from files or the clipboard. Themes, views, commands, and interactions
             are composed from Cordis plugins instead of being welded into the shell.
           </p>
+          <p class="mt-4 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">Browse the ACP Registry to configure harnesses. Keep drafts and queues separate across session tabs within one connection. Authentication and history restoration follow the capabilities and results reported by the agent.</p>
           <div class="mt-8 flex flex-wrap gap-3">
             <a href="#install" class="rounded border border-[#1f4a73] bg-[rgba(58,160,255,0.12)] px-5 py-2.5 text-sm no-underline hover:border-[#3aa0ff]">Install Martty</a>
             <a href="#ui" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">See the UI</a>
@@ -56,7 +58,7 @@ const year = new Date().getFullYear();
         <!-- Install -->
         <section id="install" class="border-b border-[#171d25] py-14">
           <h2 class="mb-2 text-2xl font-semibold">How to install</h2>
-          <p class="mb-6 text-sm text-[#66707c]">Requires Node.js 18+. Launch it and it connects to DSH by default.</p>
+          <p class="mb-6 text-sm text-[#66707c]">The Martty npm package requires Node.js 18+; agents may need additional runtimes. The first launch defaults to DSH. Later launches can use your saved harness default.</p>
 
           <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">Global install (recommended)</h3>
           <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npm install --global martty
@@ -93,7 +95,7 @@ const year = new Date().getFullYear();
           <div class="grid gap-8 md:grid-cols-2">
             <figure>
               <img src="/ui_resume.png" alt="Martty session resume" width="1098" height="1598" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
-              <figcaption class="mt-2 text-xs text-[#66707c]">Session resume: `/resume` or `--session-id` restores durable JSONL sessions, along with workspace, model, and permission settings.</figcaption>
+              <figcaption class="mt-2 text-xs text-[#66707c]">Session resume: browse recent sessions with `/resume`. Remote ACP restoration and local history replay depend on agent capabilities. <a href="/en/docs/sessions" class="text-[#3aa0ff]">Read the session guide</a>.</figcaption>
             </figure>
             <figure>
               <img src="/ui_modelsel.png" alt="Martty model selection" width="1272" height="474" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
@@ -121,6 +123,8 @@ const year = new Date().getFullYear();
           <h2 id="guides-heading" class="mb-2 text-2xl font-semibold">Guides and architecture</h2>
           <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">Go deeper into a specific setup or implementation path.</p>
           <div class="grid gap-4 sm:grid-cols-2">
+            <a href="/en/blog/codex-claude-code-one-terminal" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Use Codex and Claude Code in one terminal UI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Want a second approach to a stubborn bug? Try another agent, keep familiar controls, and learn what context does not transfer.</span></a>
+            <a href="/en/docs/sessions" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Session tabs, resume, and message queues</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Use tabs, /resume, and Ctrl+Enter without confusing drafts, queues, history, or remote tasks.</span></a>
             <a href="/deepseek-harness-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">DeepSeek Harness TUI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Install Martty in three commands, then trace the Host, Client, and TTY boundary.</span></a>
             <a href="/acp-terminal-client" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">ACP terminal client</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Trace spawn/stream ownership, initialize, session/update, and cancellation.</span></a>
             <a href="/ratatui-agent-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Ratatui agent TUI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">Stateful frames, Unicode composer layout, scroll anchors, and semantic plugins.</span></a>
@@ -144,15 +148,18 @@ const year = new Date().getFullYear();
               </thead>
               <tbody class="text-[#e7eaee]">
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>enter</code></td><td class="px-4 py-3 text-[#9aa5b1]">Send; queue a follow-up while a turn is running</td></tr>
-                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>ctrl+x</code></td><td class="px-4 py-3 text-[#9aa5b1]">Steer the active turn immediately</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>ctrl+enter</code></td><td class="px-4 py-3 text-[#9aa5b1]">Steer the active turn immediately (also ⌘⏎ on macOS)</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>esc</code></td><td class="px-4 py-3 text-[#9aa5b1]">Interrupt the current turn (draft survives)</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/</code></td><td class="px-4 py-3 text-[#9aa5b1]">Open the upward command and argument menu</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/model</code> · <code>/agent</code></td><td class="px-4 py-3 text-[#9aa5b1]">Pick a model or an agent preset</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/harness</code> · <code>/auth</code></td><td class="px-4 py-3 text-[#9aa5b1]">Configure or switch harnesses; authenticate using the agent's methods</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/permission</code> · <code>shift+tab</code></td><td class="px-4 py-3 text-[#9aa5b1]">Pick or cycle permission modes</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/image &lt;path&gt;</code> · <code>/clip</code></td><td class="px-4 py-3 text-[#9aa5b1]">Add a local image or the clipboard image</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/theme</code> · <code>ctrl+t</code></td><td class="px-4 py-3 text-[#9aa5b1]">Pick a Theme Plugin or toggle dark/light variant</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/ui</code></td><td class="px-4 py-3 text-[#9aa5b1]">Switch the whole UI composition (e.g. Martty / DeepSeek)</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/new</code> · <code>/resume</code></td><td class="px-4 py-3 text-[#9aa5b1]">Start or resume a durable session</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/session prev</code> · <code>/session next</code></td><td class="px-4 py-3 text-[#9aa5b1]">Navigate tabs with separate drafts and queues</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/close</code></td><td class="px-4 py-3 text-[#9aa5b1]">Close this tab without deleting history or cancelling remote work</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>!cmd</code></td><td class="px-4 py-3 text-[#9aa5b1]">Run a command in the session-local shell in the workspace</td></tr>
                 <tr><td class="px-4 py-3"><code>/help</code> · <code>/keys</code></td><td class="px-4 py-3 text-[#9aa5b1]">List commands and the full shortcut reference</td></tr>
               </tbody>

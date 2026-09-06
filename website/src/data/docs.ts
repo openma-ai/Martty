@@ -6,9 +6,13 @@ import migrationEn from "../../../docs/migration.en.md?raw";
 import migrationZh from "../../../docs/migration.md?raw";
 import pluginsEn from "../../../docs/plugins.en.md?raw";
 import pluginsZh from "../../../docs/plugins.md?raw";
+import harnessEn from "../../../docs/harness-management.en.md?raw";
+import harnessZh from "../../../docs/harness-management.md?raw";
+import sessionsEn from "../../../docs/sessions.en.md?raw";
+import sessionsZh from "../../../docs/sessions.md?raw";
 
 export type DocsLocale = "zh" | "en";
-export type ReferenceDocSlug = "architecture" | "plugins" | "migration";
+export type ReferenceDocSlug = "architecture" | "plugins" | "migration" | "harness-management" | "sessions";
 export type DocsSlug = "plugin-systems" | ReferenceDocSlug;
 
 export interface DocSeo {
@@ -29,12 +33,20 @@ export interface RenderedDoc {
 }
 
 const SOURCES: Record<DocsLocale, Record<ReferenceDocSlug, string>> = {
-  zh: { architecture: architectureZh, plugins: pluginsZh, migration: migrationZh },
-  en: { architecture: architectureEn, plugins: pluginsEn, migration: migrationEn },
+  zh: { architecture: architectureZh, plugins: pluginsZh, migration: migrationZh, "harness-management": harnessZh, sessions: sessionsZh },
+  en: { architecture: architectureEn, plugins: pluginsEn, migration: migrationEn, "harness-management": harnessEn, sessions: sessionsEn },
 };
 
 const DOCS_SEO: Record<DocsLocale, Record<DocsSlug, DocSeo>> = {
   zh: {
+    "harness-management": {
+      title: "Martty ACP Registry 指南：安装、切换与管理 Harness",
+      description: "在 Martty 中浏览 ACP Registry，使用 CLI 或 TUI 安装与配置 Harness，了解本地路径、npx、uvx、binary 下载、切换、认证和安全移除的区别。",
+    },
+    sessions: {
+      title: "Martty 多会话指南：标签切换、历史恢复与消息队列",
+      description: "使用 Martty 的 /new、/session、/resume 和 /close 管理会话标签与历史，了解消息排队、Ctrl+Enter steer、草稿隔离，以及关闭标签与取消远端任务的区别。",
+    },
     "plugin-systems": {
       title: "Martty 两套插件体系：Loader 与 Cordis — 文档",
       description: "了解 Martty 如何区分静态 Loader Plugin 与动态 Cordis Plugin，包括来源、进程归属、生命周期和对应管理入口。",
@@ -53,6 +65,14 @@ const DOCS_SEO: Record<DocsLocale, Record<DocsSlug, DocSeo>> = {
     },
   },
   en: {
+    "harness-management": {
+      title: "Martty ACP Registry: Install and Switch Harnesses",
+      description: "Browse the ACP Registry in Martty, install and configure harnesses with CLI or TUI, then switch agents, authenticate, and safely remove private installations.",
+    },
+    sessions: {
+      title: "Martty Session Tabs, Resume, and Message Queues",
+      description: "Manage Martty session tabs, resume agent history, queue follow-ups, and steer with Ctrl+Enter. Learn what closing a tab retains and what it discards.",
+    },
     "plugin-systems": {
       title: "Martty Loader and Cordis Plugin Systems — Docs",
       description: "Compare Martty's static Loader Plugins with dynamic Cordis Plugins, including their sources, process ownership, lifecycle states, and management surfaces.",
@@ -99,6 +119,8 @@ function docsHref(href: string, locale: DocsLocale) {
     "architecture.md": "architecture",
     "plugins.md": "plugins",
     "migration.md": "migration",
+    "harness-management.md": "harness-management",
+    "sessions.md": "sessions",
   };
   const slug = referenceRoutes[filename];
   if (slug) return `${locale === "en" ? "/en" : ""}/docs/${slug}${suffix}`;
