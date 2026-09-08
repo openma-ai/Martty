@@ -10,7 +10,7 @@ use ratatui::widgets::{
 };
 use ratatui::widgets::Widget;
 use ratatui::Frame;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, RunState};
 use crate::logo;
@@ -166,6 +166,14 @@ fn pet_rect(area: Rect, app: &App) -> Option<Rect> {
     ))
 }
 
+/// Take up to `*over` rows out of `*rows`, for compressing the chrome stack
+/// on terminals too short for the full composer + dock + queue layout.
+fn shrink_rows(over: &mut u16, rows: &mut u16) {
+    let take = (*over).min(*rows);
+    *rows -= take;
+    *over -= take;
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme;
@@ -245,7 +253,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The box's top border is the cap row and its bottom border carries
     // the meta row, so the box costs no extra rows — the input well stays
     // exactly as tall as the borderless layout.
-    let composer_h = if child_view {
+    let mut composer_h = if child_view {
         1
     } else {
         resolved_composer_height(main, app)
@@ -254,8 +262,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // the box when the terminal is tall enough.
     let composer_dock_h = composer_dock_height(app, main.height, child_view);
     let navigation_dock_h = navigation_dock_height(app, main.height);
-    let input_dock_body_h = input_dock_body_height(app, main.width, main.height, child_view);
-    let queue_shelf_h = queue_shelf_height(app, main.height, child_view);
+    let mut input_dock_body_h = input_dock_body_height(app, main.width, main.height, child_view);
+    let mut queue_shelf_h = queue_shelf_height(app, main.height, child_view);
+    // A full queue shelf, a tall input dock and an expanded draft can outgrow
+    // a short terminal. Compress the flexible rows *before* laying anything
+    // out: `draw_input` writes the prompt gutter straight into the buffer, so
+    // a composer that extends past the frame would panic in ratatui's
+    // `Buffer::index_of` instead of merely clipping. Optional dock content
+    // gives way first, then the draft viewport (down to its minimum), then
+    // the queue shelf. The rects below are also clipped to the frame, so even
+    // a terminal too small for the minimum stack cannot write out of bounds.
+    let fixed_h = cap_h + composer_dock_h + navigation_dock_h + approval_h + gap_h;
+    let min_composer_h = if child_view {
+        1
+    } else {
+        composer_height(main.height).max(1)
+    };
+    let mut over =
+        (fixed_h + composer_h + input_dock_body_h + queue_shelf_h).saturating_sub(main.height);
+    shrink_rows(&mut over, &mut input_dock_body_h);
+    let mut composer_extra = composer_h.saturating_sub(min_composer_h);
+    shrink_rows(&mut over, &mut composer_extra);
+    composer_h = min_composer_h + composer_extra;
+    shrink_rows(&mut over, &mut queue_shelf_h);
     let chat_h = main.height.saturating_sub(
         composer_h
             + cap_h
@@ -267,16 +296,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             + gap_h,
     );
 
-    let chat = Rect::new(main.x, main.y, main.width, chat_h);
+    let frame = f.area();
+    let chat = Rect::new(main.x, main.y, main.width, chat_h).intersection(frame);
     let chrome_y = main.y + chat_h + gap_h;
-    let approval = Rect::new(main.x, chrome_y, main.width, approval_h);
-    let queue_shelf = Rect::new(main.x, chrome_y + approval_h, main.width, queue_shelf_h);
+    let approval = Rect::new(main.x, chrome_y, main.width, approval_h).intersection(frame);
+    let queue_shelf = Rect::new(main.x, chrome_y + approval_h, main.width, queue_shelf_h)
+        .intersection(frame);
     let composer_box = Rect::new(
         main.x,
         queue_shelf.y + queue_shelf.height,
         main.width,
         cap_h + input_dock_body_h + composer_h + navigation_dock_h,
-    );
+    )
+    .intersection(frame);
     let composer = if child_view {
         Rect::new(
             main.x,
@@ -293,13 +325,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             main.width,
             composer_h,
         )
-    };
+    }
+    .intersection(frame);
     let composer_dock = Rect::new(
         main.x,
         composer_box.y + composer_box.height,
         main.width,
         composer_dock_h,
-    );
+    )
+    .intersection(frame);
     let navigation_dock = if child_view {
         Rect::new(main.x, composer_box.y, main.width, navigation_dock_h)
     } else {
@@ -309,7 +343,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             main.width,
             navigation_dock_h,
         )
-    };
+    }
+    .intersection(frame);
 
     draw_chat(f, app, chat);
     if approval_h > 0 {
@@ -833,12 +868,11 @@ fn ellipsize_to(s: &str, cells: usize) -> String {
     }
     let mut out = String::new();
     let mut used = 0;
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (g, cw) in crate::transcript::graphemes_with_width(s) {
         if used + cw > cells.saturating_sub(1) {
             break;
         }
-        out.push(ch);
+        out.push_str(g);
         used += cw;
     }
     out.push('…');
@@ -854,13 +888,12 @@ fn wrap_line(s: &str, cells: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut used = 0usize;
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (g, cw) in crate::transcript::graphemes_with_width(s) {
         if used > 0 && used + cw > cells {
             out.push(std::mem::take(&mut cur));
             used = 0;
         }
-        cur.push(ch);
+        cur.push_str(g);
         used += cw;
     }
     if !cur.is_empty() {
@@ -1408,6 +1441,12 @@ fn draw_navigation_dock(f: &mut Frame, app: &mut App, area: Rect, embedded: bool
 
 fn draw_agent_rail(f: &mut Frame, app: &App, area: Rect, embedded: bool) {
     let theme = app.theme;
+    // The embedded borders index cells directly; a clipped rail must not be
+    // able to panic in `Buffer::index_of`.
+    let area = area.intersection(f.area());
+    if area.is_empty() {
+        return;
+    }
     let choosing = app.agent_selection.is_some();
     f.render_widget(
         Block::default().style(Style::default().bg(theme.panel)),
@@ -2073,12 +2112,11 @@ fn truncate_spans(spans: &[Span<'static>], budget: usize) -> Vec<Span<'static>> 
         let remaining = budget.saturating_sub(used);
         let mut text = String::new();
         let mut taken = 0usize;
-        for c in span.content.chars() {
-            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        for (g, cw) in crate::transcript::graphemes_with_width(&span.content) {
             if taken + cw > remaining {
                 break;
             }
-            text.push(c);
+            text.push_str(g);
             taken += cw;
         }
         if budget > 0 {
@@ -2609,12 +2647,11 @@ fn compact_workspace(path: &str, max_width: usize) -> String {
     }
     let mut suffix = String::new();
     let mut used = 0;
-    for ch in leaf.chars().rev() {
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (g, width) in crate::transcript::graphemes_with_width(leaf).rev() {
         if used + width > max_width - 1 {
             break;
         }
-        suffix.insert(0, ch);
+        suffix.insert_str(0, g);
         used += width;
     }
     format!("…{suffix}")
@@ -2681,12 +2718,11 @@ fn ellipsize_line(line: Line<'static>, max_width: usize, style: Style) -> Line<'
             break;
         }
         let mut text = String::new();
-        for ch in span.content.chars() {
-            let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        for (g, width) in crate::transcript::graphemes_with_width(&span.content) {
             if width > remaining {
                 break;
             }
-            text.push(ch);
+            text.push_str(g);
             remaining -= width;
         }
         if !text.is_empty() {
@@ -2965,6 +3001,10 @@ fn layout_expand_btn(app: &mut App, cap: Rect) {
 /// always wins the pixels.
 fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
+    // Button rects are derived from the (already clipped) composer layout,
+    // but `set_string` indexes the buffer directly: skip any cell that a
+    // pathological frame put outside it.
+    let frame = f.area();
     let b = f.buffer_mut();
     if let Some(rect) = app.prompt_jump_btn {
         if rect.width >= JUMP_BTN_W && rect.height >= EXPAND_BTN_H {
@@ -2974,12 +3014,10 @@ fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
                 theme.caption
             };
             // Glyph = the rect's rightmost cell, one cell left of the ⛶.
-            b.set_string(
-                rect.x.saturating_add(rect.width).saturating_sub(1),
-                rect.y,
-                "↥",
-                Style::default().fg(tone),
-            );
+            let x = rect.x.saturating_add(rect.width).saturating_sub(1);
+            if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
+                b.set_string(x, rect.y, "↥", Style::default().fg(tone));
+            }
         }
     }
     let Some(rect) = app.expand_btn else {
@@ -2996,7 +3034,9 @@ fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
     } else {
         theme.caption
     };
-    b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
+    if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
+        b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
+    }
 }
 
 /// The input well. Long prompts wrap across the (now taller) well, and the
@@ -3012,6 +3052,11 @@ fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let composer_owns_cursor = app.elicitation_ask.is_none();
+    // The prompt gutter below writes cells straight into the buffer, and
+    // `Buffer::index_of` panics (rather than clipping) on an out-of-bounds
+    // index. Clip to the frame first; the layout above already keeps the
+    // composer inside it, this is the last line of defense.
+    let area = area.intersection(f.area());
     if area.width < 4 || area.height == 0 {
         return;
     }
@@ -3411,12 +3456,11 @@ fn pad_or_ellipsize(s: &str, w: usize) -> String {
     }
     let mut out = String::new();
     let mut used = 0;
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (g, cw) in crate::transcript::graphemes_with_width(s) {
         if used + cw > w.saturating_sub(1) {
             break;
         }
-        out.push(ch);
+        out.push_str(g);
         used += cw;
     }
     out.push('…');

@@ -36,6 +36,27 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Transcript wrapping, picker/status truncation and the composer layout mirror
+  now measure grapheme clusters (via `UnicodeWidthStr`) instead of summing
+  per-`char` widths. ZWJ family emoji, skin-tone modifiers and variation
+  selectors stay on one line and no longer push a line past its pane budget
+  (a family emoji counted as 6 cells instead of 2).
+- A rejected `/model` or effort switch is reported instead of silently dropped:
+  the agent's error lands in the owning session's transcript and the optimistic
+  chip/effort reverts, while a successful switch folds the response's
+  `configOptions` back even when the agent sends no notification.
+- `settings.json` is written through a same-directory temp file plus rename
+  (painter and compositor both write it), and a file that exists but cannot be
+  parsed is quarantined as `settings.json.corrupt-<timestamp>` instead of being
+  silently replaced with `{}` (which dropped theme/UI-preset/harness keys).
+- A full queue shelf or input dock plus an expanded draft on a short terminal
+  no longer overflows the frame and panics (`index outside of buffer`): the
+  chrome stack compresses the optional dock rows, then the draft viewport, then
+  the queue shelf before layout, and the composer's direct buffer writes are
+  clipped to the frame as a fallback.
+- ACP frames no longer corrupt multi-byte UTF-8 characters split across stream
+  chunk boundaries. The mux now decodes with a `StringDecoder` (agent→TUI and
+  TUI→agent), instead of decoding each chunk independently into U+FFFD.
 - Markdown rendering no longer emits stray emoji/text variation selectors
   (`U+FE0F` / `U+FE0E`, e.g. the one that makes `⚠️` a black block): a terminal
   monospace font without the emoji glyph draws the orphaned selector as a tofu

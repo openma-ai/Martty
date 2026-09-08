@@ -11,7 +11,8 @@ use std::time::Instant;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::events::UiEvent;
 use crate::locale::Locale;
@@ -1568,6 +1569,18 @@ fn one_line(s: &str) -> String {
     clamp_str(&s.replace('\n', " ⏎ "), 120)
 }
 
+/// Grapheme clusters of `s` with their terminal display width.
+///
+/// Cells are painted per grapheme (ratatui measures with
+/// `UnicodeSegmentation` + `UnicodeWidthStr`), so wrapping and truncation must
+/// use the same unit. A ZWJ family emoji is one 2-cell cluster even though its
+/// chars sum to 6 cells, and `❤️` is 2 cells though its chars sum to 1 — the
+/// per-`char` sums this module used before split clusters and mismeasured
+/// lines.
+pub(crate) fn graphemes_with_width(s: &str) -> impl DoubleEndedIterator<Item = (&str, usize)> {
+    UnicodeSegmentation::graphemes(s, true).map(|g| (g, UnicodeWidthStr::width(g)))
+}
+
 pub(crate) fn clamp_str(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -1579,12 +1592,11 @@ pub(crate) fn clamp_str(s: &str, max: usize) -> String {
     let mut out = String::new();
     let mut w = 0usize;
     let budget = max.saturating_sub(1);
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (g, cw) in graphemes_with_width(&s) {
         if w + cw > budget {
             break;
         }
-        out.push(ch);
+        out.push_str(g);
         w += cw;
     }
     out.push('…');
@@ -1596,14 +1608,14 @@ pub(crate) fn clamp_str(s: &str, max: usize) -> String {
 fn expand_tabs(s: &str) -> String {
     let mut out = String::new();
     let mut col = 0usize;
-    for ch in s.chars() {
-        if ch == '\t' {
+    for (g, cw) in graphemes_with_width(s) {
+        if g == "\t" {
             let pad = 8 - (col % 8);
             out.push_str(&" ".repeat(pad));
             col += pad;
         } else {
-            out.push(ch);
-            col += UnicodeWidthChar::width(ch).unwrap_or(0);
+            out.push_str(g);
+            col += cw;
         }
     }
     out
@@ -1623,8 +1635,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
         let raw = expand_tabs(raw);
         let mut line = String::new();
         let mut w = 0usize;
-        for ch in raw.chars() {
-            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        for (g, cw) in graphemes_with_width(&raw) {
             if w + cw > width && !line.is_empty() {
                 // Prefer breaking at the last space when it is not too early.
                 match line.rfind(' ') {
@@ -1644,7 +1655,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
                 out.push(std::mem::take(&mut line));
                 w = 0;
             }
-            line.push(ch);
+            line.push_str(g);
             w += cw;
         }
         out.push(line);

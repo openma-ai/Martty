@@ -594,3 +594,49 @@ fn stats_accumulate_turns_steps_and_ttft() {
     assert_eq!(tr.stats.ttft_count, 1, "only the first delta samples TTFT");
     assert!(tr.stats.tool_millis <= tr.stats.turn_millis);
 }
+
+/// ZWJ emoji clusters must be measured as one 2-cell grapheme. Summing the
+/// per-`char` widths (6 for a family emoji) used to overflow the line budget
+/// and split the sequence across lines.
+#[test]
+fn wrap_keeps_zwj_emoji_clusters_whole() {
+    let lines = wrap("aaaa👨‍👩‍👧bbbb", 4);
+    assert_eq!(lines.len(), 3, "cluster occupies its own row: {lines:?}");
+    for line in &lines {
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= 4,
+            "line over budget: {line:?}",
+        );
+        if line.contains('👨') || line.contains('👩') || line.contains('👧') {
+            assert!(
+                line.contains("👨‍👩‍👧"),
+                "cluster split across lines: {line:?}",
+            );
+        }
+    }
+}
+
+/// A variation-selector cluster is 2 cells, not the 1 its chars sum to; the
+/// wrapped line must stay inside the budget instead of being clipped.
+#[test]
+fn wrap_measures_variation_selector_clusters_as_two_cells() {
+    let lines = wrap("ab❤️cd", 4);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for line in &lines {
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= 4,
+            "line over budget: {line:?}",
+        );
+    }
+    assert!(lines.concat().contains("❤️"), "cluster kept: {lines:?}");
+}
+
+/// `clamp_str` ellipsizes on cluster boundaries: the ZWJ sequence either fits
+/// whole or moves entirely into the dropped tail.
+#[test]
+fn clamp_str_never_splits_an_emoji_cluster() {
+    let out = clamp_str("abc👨‍👩‍👧def", 6);
+    assert!(out.ends_with('…'), "{out:?}");
+    assert!(UnicodeWidthStr::width(out.as_str()) <= 6, "{out:?}");
+    assert!(out.contains("👨‍👩‍👧"), "cluster split: {out:?}");
+}

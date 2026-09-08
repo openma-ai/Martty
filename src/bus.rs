@@ -142,6 +142,15 @@ pub enum CtlEvent {
         session_id: String,
         message: String,
     },
+    /// A `/model` or effort switch was rejected by the agent (non-auth).
+    /// The UI had already set the optimistic chip: revert the value it sent
+    /// and surface the error instead of silently keeping a lie.
+    ModelSwitchFailed {
+        session_id: String,
+        model: Option<String>,
+        effort: Option<String>,
+        message: String,
+    },
     /// A failed prompt: settle this session's delivery state and report the error.
     SessionError {
         session_id: String,

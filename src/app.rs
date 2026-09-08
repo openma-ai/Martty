@@ -3849,6 +3849,44 @@ impl App {
                             slot.transcript.push_notice(NoticeLevel::Error, message);
                         }
                     }
+                    CtlEvent::ModelSwitchFailed {
+                        session_id,
+                        model,
+                        effort,
+                        message,
+                    } => {
+                        // The agent rejected a switch the UI had already shown
+                        // optimistically: revert that value in the owning tab
+                        // and surface the error instead of leaving a lie.
+                        if session_id == self.session_id {
+                            if let Some(model) = &model {
+                                if self.selected_model.as_deref() == Some(model.as_str()) {
+                                    self.selected_model = None;
+                                }
+                            }
+                            if let Some(effort) = &effort {
+                                if self.modes.effort.as_deref() == Some(effort.as_str()) {
+                                    self.modes.effort = None;
+                                }
+                            }
+                            self.transcript.push_notice(NoticeLevel::Error, message);
+                        } else if let Some(slot) = self.parked.iter_mut()
+                            .find(|slot| slot.id == session_id)
+                        {
+                            if let Some(model) = &model {
+                                if slot.selected_model.as_deref() == Some(model.as_str()) {
+                                    slot.selected_model = None;
+                                }
+                            }
+                            if let Some(effort) = &effort {
+                                if slot.modes.effort.as_deref() == Some(effort.as_str()) {
+                                    slot.modes.effort = None;
+                                }
+                            }
+                            slot.transcript.push_notice(NoticeLevel::Error, message);
+                        }
+                        self.needs_redraw = true;
+                    }
                     CtlEvent::SessionError {
                         session_id,
                         message,
@@ -5457,9 +5495,9 @@ impl App {
         {
             return settings;
         }
-        if current.exists() {
-            return UiSettings::default();
-        }
+        // A current file that exists but does not parse is quarantined by the
+        // next save; until then fall through to the legacy file rather than
+        // silently dropping the user's preferences.
         let legacy = legacy_settings_path(&cfg.session_root);
         let Some((text, settings)) = std::fs::read_to_string(legacy).ok().and_then(|text| {
             serde_json::from_str::<UiSettings>(&text)
@@ -5482,16 +5520,31 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let mut current: serde_json::Value = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .filter(|value: &serde_json::Value| value.is_object())
-            .unwrap_or_else(|| serde_json::json!({}));
+        let existing = std::fs::read_to_string(&path).ok();
+        let mut current = match existing
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .filter(serde_json::Value::is_object)
+        {
+            Some(value) => value,
+            None => {
+                // The same file carries compositor-owned keys (theme,
+                // uiPreset, harness recipes). An unparseable file must not be
+                // silently replaced with `{}`: keep it for recovery.
+                if existing
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+                {
+                    let _ = std::fs::rename(&path, quarantined_settings_path(&path));
+                }
+                serde_json::json!({})
+            }
+        };
         current["language"] = serde_json::json!(self.locale);
         current["themeMode"] = serde_json::json!(self.theme.mode.as_str());
         current["markdownTone"] = serde_json::json!(self.tone_mode.as_str());
         if let Ok(text) = serde_json::to_string_pretty(&current) {
-            let _ = std::fs::write(path, text);
+            let _ = write_settings_atomic(&path, &text);
         }
     }
 
@@ -9493,6 +9546,34 @@ impl App {
 #[cfg(test)]
 #[path = "../tests/unit/app__persistent_shell_tests.rs"]
 mod persistent_shell_tests;
+
+/// `settings.json` → `settings.json.corrupt-<timestamp>`, preserving a file
+/// that exists but cannot be parsed for manual recovery.
+fn quarantined_settings_path(path: &std::path::Path) -> std::path::PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{name}.corrupt-{}", timestamp()))
+}
+
+/// Write `text` to `path` through a same-directory temporary file plus a
+/// rename: a crash or full disk can never leave a truncated settings.json
+/// (the painter and the compositor both write this file).
+fn write_settings_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(
+        "{name}.{}.{}.tmp",
+        std::process::id(),
+        timestamp()
+    ));
+    if let Err(err) = std::fs::write(&tmp, text) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    Ok(())
+}
 
 pub fn timestamp() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
