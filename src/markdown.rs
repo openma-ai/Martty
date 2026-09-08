@@ -32,6 +32,8 @@ use tui_markdown::{AlertKind, ImageFallback, Options, StyleSheet};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use std::borrow::Cow;
+
 use crate::theme::{
     Theme, DEEPSEEK_200, DEEPSEEK_300, DEEPSEEK_400, DEEPSEEK_450, DEEPSEEK_500, DEEPSEEK_600,
     DEEPSEEK_800, DEEPSEEK_900,
@@ -70,9 +72,15 @@ impl ToneMode {
 /// `tone` picks the body-color scheme (see [`ToneMode`]).
 pub fn render(text: &str, theme: &Theme, tone: ToneMode, width: usize) -> Vec<Line<'static>> {
     let width = width.max(8);
+    // Emoji presentation selectors (U+FE0F / U+FE0E) are zero-width and only
+    // meaningful when the terminal font has the matching emoji glyph. A plain
+    // monospace font without one draws the orphaned selector as a solid tofu
+    // box — the stray "black block" that showed up in table cells (issue #120).
+    // Strip them so the base glyph falls back to its text presentation.
+    let text = strip_emoji_variation_selectors(text);
     let options =
         Options::new(DeepSeekStyleSheet(*theme)).image_fallback(ImageFallback::AltTextAndUrl);
-    let parsed = tui_markdown::from_str_with_options(text, &options);
+    let parsed = tui_markdown::from_str_with_options(&text, &options);
 
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut in_code = false;
@@ -109,7 +117,7 @@ pub fn render(text: &str, theme: &Theme, tone: ToneMode, width: usize) -> Vec<Li
                 out.push(with_prefix(&code_prefix, code_frame_top(lang, frame_width, theme)));
                 // tui-markdown joins separate Text events in quoted code.
                 // Preserve their exact newlines from the parser instead.
-                let content = code_blocks.get_or_insert_with(|| code_block_texts(text))
+                let content = code_blocks.get_or_insert_with(|| code_block_texts(&text))
                     .pop_front().unwrap_or_default();
                 let inner = frame_width - 4;
                 for raw in content.lines() {
@@ -349,6 +357,22 @@ fn code_block_texts(text: &str) -> std::collections::VecDeque<String> {
 
 fn segments_width(segs: &[Seg]) -> usize {
     segs.iter().map(|s| s.text.width()).sum()
+}
+
+/// Drop emoji/text variation selectors (U+FE0F, U+FE0E) — zero-width
+/// presentational-form modifiers. A terminal font that only ships the text
+/// presentation of the base glyph (e.g. `⚠`) paints the orphaned selector as a
+/// tofu black block; stripping it lets the base glyph render cleanly in every
+/// font. Cheap for the common case: borrowed as-is when no selector is present.
+fn strip_emoji_variation_selectors(text: &str) -> Cow<'_, str> {
+    if !text.contains('\u{fe0f}') && !text.contains('\u{fe0e}') {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        text.chars()
+            .filter(|c| *c != '\u{fe0f}' && *c != '\u{fe0e}')
+            .collect(),
+    )
 }
 
 fn with_prefix(prefix: &[Seg], mut line: Line<'static>) -> Line<'static> {

@@ -36,6 +36,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Markdown rendering no longer emits stray emoji/text variation selectors
+  (`U+FE0F` / `U+FE0E`, e.g. the one that makes `⚠️` a black block): a terminal
+  monospace font without the emoji glyph draws the orphaned selector as a tofu
+  black block, so it is stripped to let the base glyph fall back to its
+  always-renderable text form (issue #120).
 - The scroll-position indicator beside the model chip now reads `↓ N` instead
   of an up-pointing triangle.
 - The model chip in the meta row now uses the same muted color as the reasoning

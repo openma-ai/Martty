@@ -744,3 +744,39 @@ fn deeply_nested_lists_keep_the_body_inside_the_viewport() {
         assert!(plain(&lines).contains("long"));
     }
 }
+
+#[test]
+fn emoji_variation_selectors_do_not_leak_tofu_black_blocks() {
+    // `⚠️` (U+26A0 + U+FE0F) in a table cell: a monospace terminal font
+    // without the emoji-presentation glyph draws the orphaned variation
+    // selector as a tofu black block. The fallback must be the bare `⚠`.
+    let md = "| 项目 | 结果 |\n|---|---|\n| zig build test (PR head) | ⚠️ 8577 过 / 18 跳过 / 30 失败 / 7 崩溃 |";
+    let lines = render_dark(md, 60);
+    let text = plain(&lines);
+    assert!(!text.contains('\u{fe0f}'), "stray variation selector-16 in: {text:?}");
+    assert!(!text.contains('\u{fe0e}'), "stray variation selector-15 in: {text:?}");
+    assert!(text.contains('\u{26a0}'), "warning base glyph kept: {text:?}");
+    assert!(text.contains("8577"), "cell content kept: {text:?}");
+    // Every rendered line keeps the box width — no half-width leftover from
+    // the selector shifting the frame geometry.
+    let widths: Vec<usize> = lines.iter().map(|l| line_width(l)).collect();
+    let first = widths[0];
+    for (l, w) in lines.iter().zip(&widths) {
+        assert_eq!(*w, first, "all frame lines share the box width: {}", plain(std::slice::from_ref(l)));
+    }
+}
+
+#[test]
+fn emoji_variation_selectors_are_stripped_in_prose_code_and_blockquote() {
+    for md in [
+        "before ⚠️ after",
+        "> quoted ⚠️ text",
+        "`inline ⚠️ code`",
+        "```\ncode ⚠️ line\n```",
+    ] {
+        let lines = render_dark(md, 40);
+        let text = plain(&lines);
+        assert!(!text.contains('\u{fe0f}'), "selector leaked for {md:?}: {text:?}");
+        assert!(text.contains('\u{26a0}'), "base glyph dropped for {md:?}: {text:?}");
+    }
+}
