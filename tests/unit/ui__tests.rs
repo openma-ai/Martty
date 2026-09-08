@@ -3650,3 +3650,73 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
         "idle tone restored when the pointer leaves"
     );
 }
+
+/// Regression: a full queue shelf plus an expanded draft used to push the
+/// composer past the frame; `draw_input` then wrote the prompt gutter at
+/// y == frame height and ratatui's `Buffer::index_of` panicked
+/// (`index outside of buffer`). The chrome stack must compress instead.
+#[test]
+fn overflowing_chrome_stack_keeps_the_composer_inside_the_frame() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.queued = 12;
+    app.input
+        .set((0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"));
+    let backend = TestBackend::new(80, 22);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    assert!(
+        app.input_area.height > 0,
+        "the composer must keep at least one row: {:?}",
+        app.input_area,
+    );
+    assert!(
+        app.input_area.bottom() <= 22,
+        "composer escaped the 22-row frame: {:?}",
+        app.input_area,
+    );
+    assert!(app.chat_view.area.bottom() <= 22);
+}
+
+/// The 20-row / 8-queued configuration sat exactly at the old boundary; it
+/// must keep fitting (and must not panic) without extra compression.
+#[test]
+fn queue_shelf_and_expanded_draft_at_the_old_boundary_still_fit() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.queued = 8;
+    app.input
+        .set((0..30).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"));
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    assert!(
+        app.input_area.bottom() <= 20,
+        "composer escaped the 20-row frame: {:?}",
+        app.input_area,
+    );
+}
+
+/// A roomy terminal must keep a real conversation area: the compression pass
+/// only engages when the chrome stack actually overflows.
+#[test]
+fn roomy_chrome_stack_keeps_the_conversation_visible() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.queued = 3;
+    app.input.set("one\ntwo\nthree\nfour\nfive".into());
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    assert!(
+        app.chat_view.area.height > 0,
+        "chat collapsed on a terminal with room to spare",
+    );
+    assert!(app.input_area.bottom() <= 30);
+}

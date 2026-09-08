@@ -147,7 +147,7 @@ async fn run_control(
                         _ => model.clone(),
                     }
                 };
-                let _ = cx
+                match cx
                     .send_request(SetSessionConfigOptionRequest::new(
                         sid.clone(),
                         "model",
@@ -155,39 +155,71 @@ async fn run_control(
                     ))
                     .block_task_deadline()
                     .await
-                    .map_err(|err| {
-                        if is_auth_required_error(&err) {
-                            emit_needs_auth_open(
-                                &bus,
-                                methods.clone(),
-                                selected.as_ref(),
-                                Some(acp_error_message(&err)),
-                            );
+                {
+                    Ok(response) => {
+                        // Fold the authoritative configOptions back even when
+                        // the agent sends no notification, like SetConfigOption.
+                        if let Ok(value) = serde_json::to_value(&response) {
+                            let _ = apply_config_response(&value, &sid, &surface, &bus);
                         }
-                    });
+                    }
+                    Err(err) if is_auth_required_error(&err) => {
+                        emit_needs_auth_open(
+                            &bus,
+                            methods.clone(),
+                            selected.as_ref(),
+                            Some(acp_error_message(&err)),
+                        );
+                    }
+                    Err(err) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ModelSwitchFailed {
+                            session_id: sid.to_string(),
+                            model: Some(model),
+                            effort: None,
+                            message: format!("model switch failed: {err}"),
+                        }));
+                    }
+                }
             }
             if let Some(effort) = effort {
-                let config_id = surface.lock().unwrap_or_else(|e| e.into_inner())
-                    .session(&sid.0).effort_config_id.clone()
+                let config_id = surface
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .session(&sid.0)
+                    .effort_config_id
+                    .clone()
                     .unwrap_or_else(|| "effort".into());
-                let _ = cx
+                match cx
                     .send_request(SetSessionConfigOptionRequest::new(
-                        sid,
+                        sid.clone(),
                         config_id,
-                        SessionConfigOptionValue::value_id(effort),
+                        SessionConfigOptionValue::value_id(effort.clone()),
                     ))
                     .block_task_deadline()
                     .await
-                    .map_err(|err| {
-                        if is_auth_required_error(&err) {
-                            emit_needs_auth_open(
-                                &bus,
-                                methods.clone(),
-                                selected.as_ref(),
-                                Some(acp_error_message(&err)),
-                            );
+                {
+                    Ok(response) => {
+                        if let Ok(value) = serde_json::to_value(&response) {
+                            let _ = apply_config_response(&value, &sid, &surface, &bus);
                         }
-                    });
+                    }
+                    Err(err) if is_auth_required_error(&err) => {
+                        emit_needs_auth_open(
+                            &bus,
+                            methods.clone(),
+                            selected.as_ref(),
+                            Some(acp_error_message(&err)),
+                        );
+                    }
+                    Err(err) => {
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ModelSwitchFailed {
+                            session_id: sid.to_string(),
+                            model: None,
+                            effort: Some(effort),
+                            message: format!("effort switch failed: {err}"),
+                        }));
+                    }
+                }
             }
         }
         Cmd::FetchStaticPlugins => match fetch_static_plugins(&cx).await {
