@@ -204,3 +204,120 @@ fn list_sessions_limit_keeps_the_most_recent_n() {
     assert_eq!(one[0].id, "dsh-newest");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn unreadable_logs_do_not_consume_a_limit_slot() {
+    let tmp = std::env::temp_dir().join(format!("dsh-sess-badlog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let slug = workspace_slug("/w");
+    write_session(&tmp, &slug, "dsh-old", &[header("dsh-old")]);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_session(&tmp, &slug, "dsh-mid", &[header("dsh-mid")]);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_session(&tmp, &slug, "dsh-junk", &["not json at all".to_string()]);
+
+    // The newest candidate is foreign; `/resume 2` still returns two real
+    // sessions because the junk file does not eat a row.
+    let two = list_sessions(tmp.to_str().unwrap(), "/w", "none", 2);
+    let ids: Vec<&str> = two.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["dsh-mid", "dsh-old"]);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn resolve_session_handles_unique_exact_ambiguous_and_missing_prefixes() {
+    let tmp = std::env::temp_dir().join(format!("dsh-sess-resolve-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let slug = workspace_slug("/w");
+    write_session(&tmp, &slug, "dsh-alpha", &[header("dsh-alpha")]);
+    write_session(&tmp, &slug, "dsh-alphabet", &[header("dsh-alphabet")]);
+    write_session(&tmp, &slug, "dsh-beta", &[header("dsh-beta")]);
+    let root = tmp.to_str().unwrap();
+
+    match resolve_session(root, "/w", "none", "dsh-beta") {
+        SessionResolution::One(s) => assert_eq!(s.id, "dsh-beta"),
+        other => panic!("unique prefix should resolve: {other:?}"),
+    }
+    match resolve_session(root, "/w", "none", "dsh-alpha") {
+        SessionResolution::Exact(s) => assert_eq!(s.id, "dsh-alpha"),
+        other => panic!("exact id beats its longer sibling: {other:?}"),
+    }
+    match resolve_session(root, "/w", "none", "dsh-al") {
+        SessionResolution::Ambiguous(2) => {}
+        other => panic!("two matches without an exact id are ambiguous: {other:?}"),
+    }
+    assert!(
+        matches!(resolve_session(root, "/w", "none", "zzz"), SessionResolution::None),
+        "unknown prefix finds nothing"
+    );
+    assert!(
+        matches!(
+            resolve_session(root, "/w", "dsh-beta", "dsh-beta"),
+            SessionResolution::None
+        ),
+        "the active session is never offered"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn sessions_for_ids_only_returns_requested_summaries() {
+    let tmp = std::env::temp_dir().join(format!("dsh-sess-ids-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let slug = workspace_slug("/w");
+    write_session(
+        &tmp,
+        &slug,
+        "dsh-keep",
+        &[
+            header("dsh-keep"),
+            r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#.into(),
+            user_msg("kept"),
+        ],
+    );
+    write_session(&tmp, &slug, "dsh-skip", &[header("dsh-skip"), user_msg("skipped")]);
+
+    let ids = vec!["dsh-keep".to_string(), "dsh-missing".to_string()];
+    let summaries = sessions_for_ids(tmp.to_str().unwrap(), "/w", "none", &ids);
+    assert_eq!(summaries.len(), 1);
+    let kept = summaries.get("dsh-keep").expect("requested id summarized");
+    assert_eq!(kept.turns, 1);
+    assert_eq!(kept.preview, "kept");
+    assert!(!summaries.contains_key("dsh-skip"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A JSONL line can straddle two concatenated zstd frames; the streaming
+/// summary must join the carry instead of treating the halves as lines.
+#[test]
+fn summaries_join_lines_split_across_zstd_frames() {
+    let tmp = std::env::temp_dir().join(format!("dsh-sess-split-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dir = tmp.join(workspace_slug("/w")).join("dsh-split");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = format!(
+        "{}\n{}\n{}\n",
+        header("dsh-split"),
+        user_msg("split across frames"),
+        r#"{"type":"turn/start","seq":1,"data":{"turn":1}}"#
+    );
+    let cut = text.find("across").unwrap() + 3;
+    let frames: Vec<u8> = [&text[..cut], &text[cut..]]
+        .iter()
+        .flat_map(|chunk| {
+            ruzstd::encoding::compress_to_vec(
+                chunk.as_bytes(),
+                ruzstd::encoding::CompressionLevel::Fastest,
+            )
+        })
+        .collect();
+    std::fs::write(dir.join("session.jsonl.zstd"), frames).unwrap();
+
+    let sessions = list_sessions(tmp.to_str().unwrap(), "/w", "other", usize::MAX);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, "dsh-split");
+    assert_eq!(sessions[0].preview, "split across frames");
+    assert_eq!(sessions[0].turns, 1);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+

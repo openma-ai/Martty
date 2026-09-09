@@ -36,6 +36,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `/resume` no longer decompresses and JSON-parses every durable session log
+  on each invocation. Logs are streamed line by line and pre-filtered instead
+  of parsed whole, candidate logs are summarized a few files at a time in
+  parallel, `/resume <id>` resolves the prefix by reading only session headers,
+  and the ACP picker summarizes only the ids the agent listed.
 - Transcript wrapping, picker/status truncation and the composer layout mirror
   now measure grapheme clusters (via `UnicodeWidthStr`) instead of summing
   per-`char` widths. ZWJ family emoji, skin-tone modifiers and variation
