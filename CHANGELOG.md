@@ -36,6 +36,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- The embedded ACP adapter moves to `@openma/deepseek-harness-acp` 0.4.31,
+  which carries DSH 0.1.5-rc.1 with session write ownership and keeps ACP
+  events and question routing intact in Web hosts. The development and CI
+  harness baseline moves to `@deepseek-ai/dsh` 0.1.5-rc.1 as well, so the
+  profile install matrix exercises the same DSH generation the adapter ships.
 - `/resume` works again after a DeepSeek Harness update to 0.1.5: the Host's
   `sessionPersistence` service now resolves `list()` to `{ header, revision }`
   snapshots and reads one stored log through `open(id, 'read')`, while the ACP
