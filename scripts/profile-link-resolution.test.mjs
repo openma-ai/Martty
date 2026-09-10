@@ -217,3 +217,108 @@ test('ACP Host lets legacy ACP read dsh 0.1.2 permission state from events', asy
   }])
   assert.equal(acpHost.installPermissionPresetsCompatibility(permissionPresets), false)
 })
+
+test('ACP Host projects dsh 0.1.5 persistence snapshots back to headers and inspection', async () => {
+  const acpHost = await import(
+    pathToFileURL(path.join(packageLib, 'acp-host.js')).href
+  )
+  const headers = [
+    {
+      id: 'a',
+      version: 3,
+      createdAt: 20,
+      cwd: '/work/one',
+      isSeeded: false,
+      delegationDepth: 0,
+    },
+    {
+      id: 'b',
+      version: 3,
+      createdAt: 10,
+      cwd: '/work/two',
+      isSeeded: false,
+      delegationDepth: 0,
+    },
+  ]
+  const events = Object.freeze([{ type: 'turn/start' }])
+  const opened = []
+  const closed = []
+  const service = {
+    async list() {
+      return headers.map((header) => ({
+        header,
+        revision: `rev-${header.id}`,
+        sizeBytes: 7,
+      }))
+    },
+    async open(id, access, options) {
+      opened.push({ id, access, options })
+      return {
+        header: headers.find((header) => header.id === id),
+        inheritedEventCount: 0,
+        async read() {
+          return { eventState: 'shared-frozen', events }
+        },
+        async close() {
+          closed.push(id)
+        },
+      }
+    },
+  }
+  const originalList = service.list
+  const effects = []
+  const ctx = {
+    get(name) {
+      return name === 'sessionPersistence' ? service : undefined
+    },
+    effect(callback) {
+      effects.push(callback())
+    },
+  }
+
+  assert.equal(acpHost.installSessionPersistenceCompatibility(ctx), true)
+  assert.equal(acpHost.installSessionPersistenceCompatibility(ctx), false)
+
+  const listed = await service.list()
+  assert.deepEqual(listed.map((row) => row.id), ['a', 'b'])
+  assert.deepEqual(listed.map((row) => row.cwd), ['/work/one', '/work/two'])
+  // Newer Host consumers read the same row through its snapshot wrapper.
+  assert.equal(listed[0].header, headers[0])
+  assert.equal(listed[0].revision, 'rev-a')
+  assert.equal(listed[0].sizeBytes, 7)
+
+  const signal = new AbortController().signal
+  const inspection = await service.inspect('b', signal)
+  assert.equal(inspection.header, headers[1])
+  assert.equal(inspection.meta, headers[1])
+  assert.equal(inspection.events, events)
+  assert.deepEqual(opened, [{ id: 'b', access: 'read', options: { signal } }])
+  assert.deepEqual(closed, ['b'])
+
+  await Promise.all(effects.map((dispose) => dispose()))
+  assert.equal(service.list, originalList)
+  assert.equal(service.inspect, undefined)
+})
+
+test('ACP Host leaves an older persistence service and a missing one untouched', async () => {
+  const acpHost = await import(
+    pathToFileURL(path.join(packageLib, 'acp-host.js')).href
+  )
+  const legacy = {
+    async list() {
+      return [{ id: 'a', cwd: '/work/one' }]
+    },
+    async inspect() {
+      return { meta: { id: 'a' }, events: [] }
+    },
+  }
+  assert.equal(
+    acpHost.installSessionPersistenceCompatibility({ get: () => legacy }),
+    false,
+  )
+  assert.deepEqual(await legacy.list(), [{ id: 'a', cwd: '/work/one' }])
+  assert.equal(
+    acpHost.installSessionPersistenceCompatibility({ get: () => undefined }),
+    false,
+  )
+})
