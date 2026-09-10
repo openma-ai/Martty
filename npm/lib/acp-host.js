@@ -115,10 +115,101 @@ export function installPermissionPresetsCompatibility(permissionPresets) {
   return true
 }
 
+function snapshotRowHeader(row) {
+  if (row === null || typeof row !== 'object') return undefined
+  const header = row.header
+  if (header === null || typeof header !== 'object' || typeof header.id !== 'string') {
+    return undefined
+  }
+  return header
+}
+
+/**
+ * One legacy `list()` row: the header itself, plus the snapshot fields a newer
+ * Host consumer reads off the same row (`header`, `revision`, sizes).
+ */
+function legacyListRow(snapshot) {
+  const header = snapshotRowHeader(snapshot)
+  if (header === undefined) return undefined
+  const row = { ...header }
+  for (const key of ['header', 'revision', 'eventCount', 'sizeBytes']) {
+    if (snapshot[key] === undefined) continue
+    Object.defineProperty(row, key, {
+      configurable: true,
+      value: key === 'header' ? header : snapshot[key],
+    })
+  }
+  return row
+}
+
+/**
+ * dsh 0.1.5 folded `listSnapshots()` into `list()` and replaced `inspect()`
+ * with per-session handles: `list()` now resolves to `{ header, revision }`
+ * snapshots, and one stored log is read through `open(id, 'read')`. ACP 0.4.x
+ * still filters listed rows by the row's own `cwd` and replays titles and
+ * resume history through `inspect()`, so project the removed header/inspection
+ * surface back onto the live service until ACP can require the handle API.
+ *
+ * Rows stay snapshot-compatible, so a newer Host consumer reading `.header`
+ * keeps working while ACP reads the header fields directly.
+ */
+export function installSessionPersistenceCompatibility(ctx) {
+  const service = ctx?.get?.('sessionPersistence')
+  if (service === undefined || service === null) return false
+  const list = service.list
+  if (typeof list !== 'function' || typeof service.open !== 'function') return false
+  if (list.dshTuiReturnsHeaders === true) return false
+
+  const compatibleList = async function (options) {
+    const listed = await list.call(this, options)
+    if (!Array.isArray(listed)) return listed
+    return listed.map((row) => legacyListRow(row) ?? row)
+  }
+  Object.defineProperty(compatibleList, 'dshTuiReturnsHeaders', { value: true })
+
+  // The class methods live on the prototype: restore by deleting the own
+  // property when the patch shadowed one instead of replacing an own value.
+  const listDescriptor = Object.getOwnPropertyDescriptor(service, 'list')
+  Object.defineProperty(service, 'list', { configurable: true, value: compatibleList })
+
+  let compatibleInspect
+  if (typeof service.inspect !== 'function') {
+    compatibleInspect = async function (id, signal) {
+      const options = signal === undefined ? undefined : { signal }
+      const handle = await service.open(id, 'read', options)
+      try {
+        const { events } = await handle.read(0, undefined, options)
+        const header = handle.header
+        // `meta` is the old coordinator's field; `header` is what ACP reads.
+        return Object.freeze({
+          meta: header,
+          header,
+          inheritedEventCount: handle.inheritedEventCount,
+          events,
+        })
+      } finally {
+        await handle.close().catch(() => {})
+      }
+    }
+    Object.defineProperty(service, 'inspect', { configurable: true, value: compatibleInspect })
+  }
+
+  ctx.effect?.(() => () => {
+    if (service.list !== compatibleList) return
+    if (listDescriptor === undefined) delete service.list
+    else Object.defineProperty(service, 'list', listDescriptor)
+    if (service.inspect === compatibleInspect) delete service.inspect
+  }, 'dsh-tui.session-persistence-compatibility')
+  return true
+}
+
 async function mountHostCompatibility(ctx) {
   // The service can come from the active Host even when module resolution
   // below lands on ACP's older peer copy, so adapt the live instance directly.
   installPermissionPresetsCompatibility(ctx.permissionPresets ?? ctx.get?.('permissionPresets'))
+  // Not injected here on purpose: the profile's base bundle owns persistence,
+  // and `ctx.get` reads the live service without adding a mount dependency.
+  installSessionPersistenceCompatibility(ctx)
 
   const sessionModule = resolvedHostModule(ctx, '@deepseek-ai/dsh-session')
   if (sessionModule !== undefined) {

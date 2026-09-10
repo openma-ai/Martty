@@ -6,7 +6,7 @@ import test from 'node:test'
 
 import * as creatorOverlay from '../npm/lib/creator-overlay.js'
 
-function harness() {
+function harness(options = {}) {
   const skills = new Map()
   const promptSections = []
   const tools = new Map()
@@ -24,6 +24,31 @@ function harness() {
     code: { client: 'return { apply() {} }' },
     currentPackageId: 'dyn-1',
   }
+  const header = {
+    id: 'stored-1',
+    version: 3,
+    createdAt: 1,
+    cwd: '/work/one',
+    isSeeded: false,
+    delegationDepth: 0,
+  }
+  const persistence = options.persistence === true
+    ? {
+        async list() {
+          return [{ header, revision: 'rev-1', sizeBytes: 3 }]
+        },
+        async open() {
+          return {
+            header,
+            inheritedEventCount: 0,
+            async read() {
+              return { events: [] }
+            },
+            async close() {},
+          }
+        },
+      }
+    : undefined
 
   const overlay = {
     ctx: {
@@ -61,6 +86,9 @@ function harness() {
   }
 
   const ctx = {
+    get(name) {
+      return name === 'sessionPersistence' ? persistence : undefined
+    },
     agentPresets: {
       async standingKeyFor(id) {
         requestedPreset = id
@@ -96,6 +124,7 @@ function harness() {
   return {
     ctx,
     effects,
+    persistence,
     promptSections,
     skills,
     tools,
@@ -112,6 +141,16 @@ test('exports one internal Host overlay with the required injected services', ()
     creatorOverlay.inject,
     ['agentPresets', 'skills', 'systemPrompt', 'loader', 'tools', 'dynamicCordisRunner'],
   )
+})
+
+test('applies the standalone Host compatibility shim to the ACP persistence service', async () => {
+  const fixture = harness({ persistence: true })
+  await creatorOverlay.apply(fixture.ctx)
+
+  const listed = await fixture.persistence.list()
+  assert.deepEqual(listed.map((row) => row.id), ['stored-1'])
+  assert.equal(listed[0].cwd, '/work/one')
+  assert.equal(typeof fixture.persistence.inspect, 'function')
 })
 
 test('adds the TUI companion skill only to the requested preset scope', async () => {

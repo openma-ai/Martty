@@ -36,6 +36,14 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- `/resume` works again after a DeepSeek Harness update to 0.1.5: the Host's
+  `sessionPersistence` service now resolves `list()` to `{ header, revision }`
+  snapshots and reads one stored log through `open(id, 'read')`, while the ACP
+  adapter still filters rows by the row's own `cwd` and replays through the
+  removed `inspect()`. The Host compatibility layer projects the older header
+  row and `inspect()` surface back onto the live service for both
+  `dsh --profile martty` and standalone launches, so the `/resume` picker
+  opens and the chosen session resumes instead of silently listing nothing.
 - Transcript wrapping, picker/status truncation and the composer layout mirror
   now measure grapheme clusters (via `UnicodeWidthStr`) instead of summing
   per-`char` widths. ZWJ family emoji, skin-tone modifiers and variation
