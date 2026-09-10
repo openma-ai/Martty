@@ -7125,41 +7125,12 @@ impl App {
     /// keeps appending to the same log.
     fn resume_session(&mut self, id_or_prefix: &str, ctl: &Controller) {
         if self.resume_candidates.is_empty() {
-            // Direct `/resume <id>`: resolve the prefix against the store
-            // without summarizing every session — only the chosen log is
-            // fully read. (The picker path below reuses its rows.)
-            match crate::sessions::resolve_session(
+            self.resume_candidates = crate::sessions::list_sessions(
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
-                id_or_prefix,
-            ) {
-                crate::sessions::SessionResolution::One(session)
-                | crate::sessions::SessionResolution::Exact(session) => {
-                    self.replay_local_session(session, ctl);
-                }
-                crate::sessions::SessionResolution::None => {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        self.locale.trf(
-                            "no session matches “{}” — /resume lists them",
-                            "没有会话匹配「{}」—— /resume 可列出全部",
-                            &[id_or_prefix.into()],
-                        ),
-                    );
-                }
-                crate::sessions::SessionResolution::Ambiguous(count) => {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        self.locale.trf(
-                            "“{}” is ambiguous ({} matches) — /resume lists them",
-                            "「{}」有 {} 个匹配，存在歧义 —— /resume 可列出全部",
-                            &[id_or_prefix.into(), count.to_string()],
-                        ),
-                    );
-                }
-            }
-            return;
+                usize::MAX,
+            );
         }
         let matches: Vec<crate::sessions::SessionSummary> = self
             .resume_candidates
@@ -7195,16 +7166,6 @@ impl App {
                 }
             },
         };
-        self.replay_local_session(session, ctl);
-    }
-
-    /// Replay one chosen session log into a tab and point the next prompt at
-    /// the same id. Shared by the picker and the direct `/resume <id>` path.
-    fn replay_local_session(
-        &mut self,
-        session: crate::sessions::SessionSummary,
-        ctl: &Controller,
-    ) {
         let events = match crate::sessions::read_session_events(&session.file) {
             Ok(events) => events,
             Err(err) => {
@@ -7546,15 +7507,16 @@ impl App {
         }
         // Local JSONL summaries (turns, age, prompt preview) for the same
         // workspace; the local log is the only source for those fields.
-        // Only the listed ids are summarized — never the whole local store.
-        let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
         let local_by_id: std::collections::HashMap<String, crate::sessions::SessionSummary> =
-            crate::sessions::sessions_for_ids(
+            crate::sessions::list_sessions(
                 &self.cfg.session_root,
                 &self.cfg.workspace,
                 &self.session_id,
-                &ids,
-            );
+                usize::MAX,
+            )
+            .into_iter()
+            .map(|s| (s.id.clone(), s))
+            .collect();
         let items: Vec<PickerItem> = sessions
             .iter()
             .map(|s| {
