@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { SEARCH_LANDINGS } from "../data/search-landings";
-import { GET } from "./sitemap.xml";
+import { GET } from "../pages/sitemap.xml";
 
 const LANDINGS = [
   {

@@ -141,7 +141,10 @@ Cordis Plugin Package
 
 Theme Plugin 与明暗模式彼此独立。使用 `/theme` 选择 Theme Plugin，使用
 `/theme toggle` 或 `ctrl+t` 切换当前 Theme Plugin 的 dark/light 变体。输入
-`/theme ` 时，上拉候选会把 `toggle` 与 Theme Plugin 分区显示。
+`/theme ` 时，上拉候选会把 `toggle` 与 Theme Plugin 分区显示。在 `/theme`
+对话框与 `/theme ` 上拉候选里移动高亮（↑/↓、翻页键、滚轮）会**即时预览**
+高亮所在的主题包，方便逐套对比——此时只是预览，并未确定；按 **Enter** 才真正
+切换 Theme Plugin 并持久化；按 Esc 或把高亮移开则会回到已经确定的主题。
 
 ### 六个 Slot
 

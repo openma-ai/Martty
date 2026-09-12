@@ -13,7 +13,7 @@
 
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Tab stops, matching the widget's default `tab_length`.
 const TAB_LEN: u8 = 4;
@@ -52,7 +52,15 @@ pub struct LayoutMap {
 
 /// Display width of one grapheme starting at display column `col`
 /// (tab advances to the next stop; control chars have no width).
+///
+/// The cluster is measured as a whole: ZWJ/modifier/variation-selector
+/// sequences render as a single 2-cell glyph, so summing their `char` widths
+/// (6 cells for a family emoji) would desynchronize this mirror from the
+/// widget's own grapheme-based wrap.
 fn grapheme_width(grapheme: &str, col: usize) -> usize {
+    if !grapheme.contains('\t') {
+        return UnicodeWidthStr::width(grapheme);
+    }
     let mut width = 0usize;
     for c in grapheme.chars() {
         if c == '\t' {

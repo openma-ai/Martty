@@ -3,6 +3,7 @@ import ContentPage from "../../components/ContentPage.astro";
 const title = "Martty Blog — ACP, DeepSeek Harness, and Terminal UI";
 const description = "Practical guides about running DeepSeek Harness, connecting ACP coding agents, and building extensible Rust and ratatui terminal interfaces with Martty.";
 const posts = [
+  { href: "/en/blog/codex-claude-code-one-terminal", title: "Use Codex and Claude Code in One Terminal UI", body: "Want a second approach to a stubborn bug? Try another agent without relearning the interface, and understand what context and accounts do not transfer.", alternateHref: "/blog/codex-claude-code-one-terminal", alternateLabel: "中文" },
   { href: "/en/blog/plug-in-and-be-plugged-into", title: "I Added Four Essential Agent Components to DeepSeek Harness", body: "The complete Plugin loading, composition, inheritance, Web, dynamic Plugin, Preset, and Martty architecture story.", alternateHref: "/blog/plug-in-and-be-plugged-into", alternateLabel: "中文原文" },
   { href: "/blog/using-deepseek-harness-in-martty", title: "Using DeepSeek Harness in Martty", body: "Install the dedicated profile, understand the Host/client boundary, and start a durable coding session.", alternateHref: undefined, alternateLabel: undefined },
   { href: "/blog/connect-acp-agent-to-martty", title: "Connect an ACP Agent to Martty", body: "Attach an ACP-compatible command and see how Martty maps advertised capabilities into terminal controls.", alternateHref: undefined, alternateLabel: undefined },
@@ -10,9 +11,11 @@ const posts = [
 ];
 ---
 <ContentPage {title} {description} path="/blog" eyebrow="Blog">
-  <h2>Guides for terminal-native agent workflows</h2>
-  <p>These articles focus on reproducible setup, protocol boundaries, and implementation details. Product reference pages live under <a href="/deepseek-harness-tui">DeepSeek Harness TUI</a>, <a href="/acp-terminal-client">ACP terminal client</a>, <a href="/ratatui-agent-tui">Ratatui agent TUI</a>, and <a href="/plugins">UI plugins</a>.</p>
+  <h2>Working with coding agents in the terminal</h2>
+  <p>Try a different agent on a problem, decide what context to hand over, or adapt the interface to the way you work. These articles explain the choices behind a workflow; step-by-step commands live in the <a href="/en/docs/harness-management">Harness reference</a> and <a href="/en/docs/sessions">session reference</a>.</p>
   <div class="content-grid">
     {posts.map((post) => <div class="content-card"><h3><a href={post.href}>{post.title}</a></h3><p>{post.body}</p><a href={post.href}>Read guide →</a>{post.alternateHref && <span> · <a href={post.alternateHref}>{post.alternateLabel} →</a></span>}</div>)}
   </div>
+  <h2>Building on Martty</h2>
+  <p>For implementation details, read about the <a href="/deepseek-harness-tui">DeepSeek Harness integration</a>, <a href="/acp-terminal-client">ACP client boundary</a>, <a href="/ratatui-agent-tui">Ratatui rendering</a>, and <a href="/plugins">UI plugin API</a>.</p>
 </ContentPage>

@@ -9,6 +9,7 @@
  * off the painter.
  */
 
+import { StringDecoder } from 'node:string_decoder'
 import { CORDIS_CAPABILITY, CORDIS_METHODS, readCordisCapability } from './cordis-protocol.js'
 
 const COMPOSITOR_METHODS = Object.freeze(new Set([
@@ -95,13 +96,20 @@ export function writeJsonLine(dest, value) {
 
 /**
  * Pipe NDJSON, invoking `onLine` for each complete line (trimmed, non-empty).
+ *
+ * Frames are UTF-8: decoding each chunk with `chunk.toString('utf8')` would
+ * turn any multi-byte character split across a chunk boundary into U+FFFD
+ * replacement characters (silent corruption in both directions). A
+ * `StringDecoder` carries the incomplete tail across chunks, and `end()`
+ * flushes a final frame that arrived without a trailing newline.
+ *
  * @param {import('node:stream').Readable} source
  * @param {(line: string) => void} onLine
  */
 export function onJsonLines(source, onLine) {
   let buffer = ''
-  source.on('data', (chunk) => {
-    buffer += chunk.toString('utf8')
+  const decoder = new StringDecoder('utf8')
+  const drain = () => {
     for (;;) {
       const newline = buffer.indexOf('\n')
       if (newline < 0) break
@@ -110,6 +118,17 @@ export function onJsonLines(source, onLine) {
       if (line.length === 0) continue
       onLine(line)
     }
+  }
+  source.on('data', (chunk) => {
+    buffer += typeof chunk === 'string' ? chunk : decoder.write(chunk)
+    drain()
+  })
+  source.on('end', () => {
+    buffer += decoder.end()
+    drain()
+    const line = buffer.trim()
+    buffer = ''
+    if (line.length > 0) onLine(line)
   })
 }
 

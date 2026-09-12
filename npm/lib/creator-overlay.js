@@ -4,6 +4,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { installSessionPersistenceCompatibility } from './acp-host.js'
 import { createTuiPluginStore } from './tui-plugin-store.js'
 
 export const name = 'tui-creator-overlay'
@@ -192,6 +193,11 @@ const skillContent = skillDocument.slice(skillFrontmatter[0].length)
  * @param {{ preset?: string }} [config]
  */
 export async function apply(ctx, config = {}) {
+  // Standalone launches mount this overlay directly into the ACP Host tree,
+  // which never loads martty/acp-host; both trees need the ACP compatibility
+  // surface, and the installer is idempotent when the profile path already
+  // applied it on this service instance.
+  installSessionPersistenceCompatibility(ctx)
   const preset = config.preset ?? 'cordis'
   if (typeof preset !== 'string' || preset.length === 0) {
     throw new Error('tui-creator-overlay: preset must be a non-empty string')

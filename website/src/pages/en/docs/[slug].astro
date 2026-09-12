@@ -1,7 +1,7 @@
 ---
 import DocsLayout from "../../../layouts/DocsLayout.astro";
 
-const VALID_SLUGS = new Set(["plugin-systems", "architecture", "plugins", "migration"]);
+const VALID_SLUGS = new Set(["plugin-systems", "architecture", "plugins", "migration", "harness-management", "sessions"]);
 const slug = Astro.params.slug ?? "plugin-systems";
 if (!VALID_SLUGS.has(slug)) return new Response("Not Found", { status: 404 });
 ---

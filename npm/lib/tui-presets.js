@@ -1,6 +1,6 @@
 /** UI Presets compose several UI plugin contributions into one saved choice. */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import { CORDIS_METHODS } from './cordis-protocol.js'
@@ -72,7 +72,13 @@ function writePreferred(settingsPath, id) {
   const settings = readSettings(settingsPath)
   settings.uiPreset = id
   mkdirSync(path.dirname(settingsPath), { recursive: true })
-  writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+  // Atomic write (temp + rename), matching tui-theme.js: a crash mid-write
+  // must never leave a truncated settings.json behind — every later launch
+  // would otherwise start from an unreadable file that also carries the
+  // painter's language/themeMode keys.
+  const temporary = `${settingsPath}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`)
+  renameSync(temporary, settingsPath)
 }
 
 function releaseOf(value) {

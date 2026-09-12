@@ -1,0 +1,42 @@
+---
+import ContentPage from "../../../components/ContentPage.astro";
+import switchScreenshot from "../../../../../assets/screenshots/harness-switch.png?url";
+
+const title = "Use Codex and Claude Code in One Terminal UI | Martty";
+const description = "Try another coding agent without relearning your terminal UI. Use Codex and Claude Code through Martty, and learn what happens to context, accounts, and tools.";
+---
+
+<ContentPage {title} {description} path="/en/blog/codex-claude-code-one-terminal" alternatePath="/blog/codex-claude-code-one-terminal" lang="en" eyebrow="Coding agent workflows" article showDescription={false}>
+  <p class="content-article__lede">A bug has survived several rounds of changes. You want another coding agent to take a look. What you need is a second approach to the problem, not another tooling project.</p>
+  <p>You can open another terminal and launch a different CLI. If you know both tools well, that may be all you need. But if you have just learned where to inspect tool output, resume a conversation, send a follow-up, and interrupt a task, changing agents can mean learning those interactions again.</p>
+  <p>Martty offers another option: use one terminal interface for agents that support ACP. You can connect Codex or use an adapter for Claude Code. The agent doing the work changes; the interface where you read its output and write your next message remains Martty.</p>
+
+  <h2>Change the approach, not all your terminal habits</h2>
+  <p>This is different from choosing another model inside the same agent. Changing agents may also change how tasks are organized, tools are called, and context is handled. Martty's harness selector changes the agent program, not just its model.</p>
+  <p>Martty does not make every agent behave identically. It gives you a consistent place to read replies and tool output, send messages, and check status. Available models, permissions, and sign-in methods still come from each agent.</p>
+  <p>That makes a small experiment more useful than an immediate migration. Pick one bounded problem in a familiar repository and see whether another agent's process works for you.</p>
+
+  <h2>Try one problem in a repository you already know</h2>
+  <p>Let the current task finish and inspect its changes before switching. Changing agents does not roll back your files, and two agents should not edit the same files concurrently. To compare independent approaches, commit a common starting point or give each agent a separate Git worktree.</p>
+  <p>Start Martty from the repository where you want the agent to work:</p>
+  <pre><code>npx --yes martty</code></pre>
+  <p>Enter <code>/harness</code> and choose <strong>+ Add Harness…</strong>. Browse the catalog before selecting Codex or Claude Agent; you do not need to know the npm package name. The ACP Registry is a directory of agent launch recipes, not a shared model account.</p>
+  <img src={switchScreenshot} width="3526" height="1928" loading="lazy" decoding="async" alt="Martty's harness menu with the current entry first and options including Codex Harness and Claude Agent" />
+  <p>Once an entry is prepared, select it to switch. If a download is needed, Enter on its completion panel follows the same switching flow. If sign-in is required, use the agent's authentication method. Configured entries can be selected directly on later visits. The <a href="/en/docs/harness-management">installation, switching, and authentication reference</a> covers the individual steps.</p>
+  <p>Switching creates a new session; it does not automatically hand the old conversation to the new agent. Instead of saying “keep fixing it,” give the second agent a short, self-contained handoff:</p>
+  <pre><code>Problem: After saving a form, the list still shows the old value.
+Reproduction: Edit a record, save successfully, then return to the list.
+Already checked: Refreshing the detail page shows the new value.
+No code changed yet. Identify the cause and a way to verify it;
+do not modify files yet.</code></pre>
+  <p>Add the relevant file paths and the actual results from your project. The second agent gets a concrete investigation, and you can judge whether it finds new evidence rather than merely rephrasing the previous answer.</p>
+
+  <h2>One interface does not mean everything transfers</h2>
+  <p><strong>Accounts remain separate.</strong> You still need whatever credentials, subscription, or API access the selected agent requires. Martty does not provide a shared usage allowance or convert one service's login into another's. Browser sign-in completion also needs to be followed by a successful result from the agent.</p>
+  <p><strong>The same repository is not the same conversation.</strong> Subject to its permissions, the new agent can read workspace files, including uncommitted changes. A successful switch does not give it the previous agent's chat context. Put necessary background in the handoff; do not assume saved conversations can be restored across agents.</p>
+  <p><strong>A shared UI does not reproduce every native CLI feature.</strong> Martty connects through ACP rather than embedding each vendor's terminal UI. Model selection, session restoration, and tool access depend on what the agent or adapter exposes. Some adapters also require a separate CLI installation, so a catalog entry is not proof that all dependencies are present.</p>
+
+  <h2>If you use one agent, you may not need another interface</h2>
+  <p>Staying with a native CLI is reasonable when you know it well and rely on its particular interactions. Martty is worth trying when you move between agents and want to change the program doing the work without also relearning where to find input, output, and sessions.</p>
+  <p>Start with one small problem. Judge whether it is easier to inspect tool output, hand off the investigation, and assess the result. When you need to manage another task, the <a href="/en/docs/sessions">session tabs and message queues reference</a> explains those controls separately.</p>
+</ContentPage>

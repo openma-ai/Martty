@@ -181,6 +181,93 @@ fn lang_switch_repaints_immediately_and_persists_for_the_workspace() {
     );
 }
 
+/// A settings.json that cannot be parsed must be quarantined for recovery,
+/// not silently replaced with `{}` (the same file carries the compositor's
+/// theme/uiPreset keys and the harness recipes).
+#[test]
+fn corrupt_settings_are_quarantined_instead_of_clobbered() {
+    let cfg = test_cfg();
+    let dir = std::path::Path::new(&cfg.session_root).to_path_buf();
+    let current = dir.join("settings.json");
+    std::fs::write(&current, "{ this is not json").expect("seed corrupt settings");
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let mut app = App::new(Some(Theme::dark()), cfg.clone(), "s1".into(), true, false, tx);
+
+    app.run_slash("lang", "zh", &ctl);
+
+    let quarantined: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("read settings dir")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("settings.json.corrupt-"))
+        })
+        .collect();
+    assert_eq!(quarantined.len(), 1, "corrupt file kept for recovery: {quarantined:?}");
+    assert_eq!(
+        std::fs::read_to_string(&quarantined[0]).expect("read quarantined file"),
+        "{ this is not json",
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&current).expect("read new settings"))
+            .expect("new settings parse");
+    assert_eq!(saved["language"], "zh", "the save still landed");
+}
+
+/// A normal save keeps every key it does not own (compositor theme/uiPreset,
+/// harness recipes, future fields) and leaves no temp file behind.
+#[test]
+fn settings_save_preserves_unknown_keys_and_cleans_up_temp_files() {
+    let cfg = test_cfg();
+    let dir = std::path::Path::new(&cfg.session_root).to_path_buf();
+    let current = dir.join("settings.json");
+    std::fs::write(
+        &current,
+        r#"{"uiPreset":"deepseek","theme":"ember","harnesses":[{"id":"x"}],"customKey":7}"#,
+    )
+    .expect("seed settings");
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&current).expect("stat settings").ino()
+    };
+    let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let mut app = App::new(Some(Theme::dark()), cfg.clone(), "s1".into(), true, false, tx);
+
+    app.run_slash("lang", "zh", &ctl);
+
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&current).expect("read settings"))
+            .expect("settings parse");
+    assert_eq!(saved["language"], "zh");
+    assert_eq!(saved["uiPreset"], "deepseek", "compositor key preserved");
+    assert_eq!(saved["theme"], "ember", "compositor key preserved");
+    assert_eq!(saved["harnesses"][0]["id"], "x", "harness recipes preserved");
+    assert_eq!(saved["customKey"], 7, "unknown keys preserved");
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read settings dir")
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "atomic write left temp files: {leftovers:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // temp + rename replaces the directory entry, so the inode changes;
+        // an in-place `std::fs::write` would keep the original inode.
+        assert_ne!(
+            std::fs::metadata(&current).expect("stat settings").ino(),
+            inode_before,
+            "expected a rename-based (atomic) write",
+        );
+    }
+}
+
 /// The markdown body tone is a quiet, settings-only preference: no command
 /// surface. Absent `markdownTone` → single (the default look); `"two"`
 /// opts back into the two-tone CJK/Latin body.

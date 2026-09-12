@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { DocsPage } from "./DocsPage";
 
 describe("documentation information architecture", () => {
+  it.each(["zh", "en"] as const)("makes user guides discoverable with a language counterpart in %s", (locale) => {
+    render(<DocsPage locale={locale} slug="harness-management" />);
+    const nav = screen.getByRole("navigation", { name: locale === "zh" ? "文档导航" : "Documentation" });
+    const prefix = locale === "en" ? "/en" : "";
+    expect(within(nav).getByRole("link", { name: locale === "zh" ? "Harness 管理" : "Harness management" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("link", { name: locale === "zh" ? "会话与消息队列" : "Sessions and queues" })).toHaveAttribute("href", `${prefix}/docs/sessions`);
+    expect(screen.getByRole("link", { name: locale === "zh" ? "English" : "中文" })).toHaveAttribute("href", `${locale === "zh" ? "/en" : ""}/docs/harness-management`);
+  });
   it("keeps static Loader plugins and dynamic Cordis plugins as separate systems", () => {
     render(<DocsPage locale="zh" slug="plugin-systems" />);
 

@@ -433,3 +433,15 @@ fn explicit_range_kills_ignore_an_active_selection() {
     e.kill_to_start(80);
     assert_eq!(e.buf(), "rld", "kill_to_start killed from the row head to the cursor");
 }
+
+/// A ZWJ family emoji is one 2-cell grapheme, not the 6 cells its chars sum
+/// to: the mirror must keep it and the following glyph on the same row.
+#[test]
+fn zwj_emoji_is_one_two_cell_grapheme() {
+    let map = LayoutMap::new(&lines(&["👨‍👩‍👧x"]), 4);
+    assert_eq!(map.row_count(), 1, "cluster + x fit one 4-cell row");
+    assert_eq!(map.rows[0].graphemes.len(), 2);
+    assert_eq!(map.rows[0].graphemes[0].width, 2, "cluster is one 2-cell glyph");
+    assert_eq!(map.rows[0].graphemes[0].start_col, 0);
+    assert_eq!(map.rows[0].graphemes[1].start_col, 2, "x follows the cluster");
+}

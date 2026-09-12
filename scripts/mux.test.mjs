@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
-import { isCompositorMessage, muxAcpAndCompositor } from '../npm/lib/mux.js'
+import { isCompositorMessage, muxAcpAndCompositor, onJsonLines } from '../npm/lib/mux.js'
 
 test('compositor methods stay off the agent stream', () => {
   assert.equal(isCompositorMessage({ method: '_dsh/cordis/tui/theme/update' }), true)
@@ -246,4 +246,88 @@ test('mux keeps Cordis disabled when the initialize response omits the capabilit
       error: { code: -32601, message: 'agent has not advertised _dsh/cordis' },
     },
   )
+})
+
+test('mux decodes multi-byte UTF-8 split across chunks in both directions', async () => {
+  const agentIn = new PassThrough()
+  const agentOut = new PassThrough()
+  const tuiIn = new PassThrough()
+  const tuiOut = new PassThrough()
+  const toAgent = []
+  const toTui = []
+  // Keep Buffers: decoding each chunk with String(chunk) in the assertion
+  // harness would itself mangle a split character and hide the regression.
+  agentIn.on('data', (chunk) => toAgent.push(chunk))
+  tuiOut.on('data', (chunk) => toTui.push(chunk))
+
+  muxAcpAndCompositor({
+    agent: { stdin: agentIn, stdout: agentOut },
+    tui: { input: tuiIn, output: tuiOut },
+  })
+
+  const agentFrame = Buffer.from(`${JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: 's',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '中文测试 👨‍👩‍👧' },
+      },
+    },
+  })}\n`, 'utf8')
+  // Split inside the 3-byte 中 and the 4-byte family emoji.
+  const agentCut = agentFrame.indexOf(Buffer.from('中', 'utf8')) + 1
+  const agentCut2 = agentFrame.indexOf(Buffer.from('👨', 'utf8')) + 2
+  agentOut.write(agentFrame.subarray(0, agentCut))
+  await new Promise((resolve) => setImmediate(resolve))
+  agentOut.write(agentFrame.subarray(agentCut, agentCut2))
+  await new Promise((resolve) => setImmediate(resolve))
+  agentOut.write(agentFrame.subarray(agentCut2))
+
+  const tuiFrame = Buffer.from(`${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 9,
+    method: 'initialize',
+    params: { clientInfo: { name: '中文' } },
+  })}\n`, 'utf8')
+  const tuiCut = tuiFrame.indexOf(Buffer.from('中', 'utf8')) + 2
+  tuiIn.write(tuiFrame.subarray(0, tuiCut))
+  await new Promise((resolve) => setImmediate(resolve))
+  tuiIn.write(tuiFrame.subarray(tuiCut))
+
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  const updates = Buffer.concat(toTui)
+    .toString('utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+  const update = updates.find((message) => message.method === 'session/update')
+  assert.equal(update.params.update.content.text, '中文测试 👨‍👩‍👧')
+
+  const requests = Buffer.concat(toAgent)
+    .toString('utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+  const initialize = requests.find((message) => message.method === 'initialize')
+  assert.equal(initialize.params.clientInfo.name, '中文')
+})
+
+test('onJsonLines carries split characters and flushes a final unterminated line', async () => {
+  const source = new PassThrough()
+  const lines = []
+  onJsonLines(source, (line) => lines.push(line))
+  const frame = Buffer.from(JSON.stringify({ text: '👨‍👩‍👧 中文' }), 'utf8')
+  const cut = frame.indexOf(Buffer.from('👨', 'utf8')) + 2
+  source.write(frame.subarray(0, cut))
+  await new Promise((resolve) => setImmediate(resolve))
+  source.write(frame.subarray(cut))
+  source.end()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(lines.length, 1)
+  assert.equal(JSON.parse(lines[0]).text, '👨‍👩‍👧 中文')
 })

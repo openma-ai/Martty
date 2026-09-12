@@ -301,3 +301,109 @@ async fn prompts_and_steers_outlive_the_control_request_deadline() {
         .await
         .unwrap();
 }
+
+fn model_switch_agent(reject: bool) -> impl ConnectTo<Client> + 'static {
+    Agent
+        .builder()
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new()),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: SetSessionConfigOptionRequest, responder, _cx| {
+                if reject {
+                    responder.respond_with_error(AcpError::new(-32602, "unknown model"))
+                } else {
+                    responder.respond(SetSessionConfigOptionResponse::new(vec![]))
+                }
+            },
+            on_receive_request!(),
+        )
+}
+
+fn model_switch_cfg() -> RuntimeConfig {
+    RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "test".into(),
+        model: "test".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    }
+}
+
+/// A rejected `/model` switch used to be dropped silently while the UI kept
+/// showing the optimistic pick. It must report the failure for rollback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_model_switch_reports_failure() {
+    let (bus, events) = std::sync::mpsc::channel();
+    let (cmds, commands) = std::sync::mpsc::channel();
+    let task = tokio::spawn(connect(model_switch_agent(true), model_switch_cfg(), bus, commands));
+    wait_event(&events, |event| {
+        matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")
+    })
+    .await;
+    cmds.send(Cmd::SelectModel {
+        session_id: "s1".into(),
+        provider: None,
+        model: Some("ghost".into()),
+        effort: None,
+    })
+    .unwrap();
+    wait_event(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Ctl(CtlEvent::ModelSwitchFailed {
+                session_id,
+                model: Some(model),
+                ..
+            }) if session_id == "s1" && model == "ghost"
+        )
+    })
+    .await;
+    let _ = cmds.send(Cmd::Shutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+}
+
+/// A successful switch folds the response's `configOptions` back (Catalog
+/// event) instead of relying on a follow-up notification.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_model_switch_folds_config_response() {
+    let (bus, events) = std::sync::mpsc::channel();
+    let (cmds, commands) = std::sync::mpsc::channel();
+    let task = tokio::spawn(connect(model_switch_agent(false), model_switch_cfg(), bus, commands));
+    wait_event(&events, |event| {
+        matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")
+    })
+    .await;
+    cmds.send(Cmd::SelectModel {
+        session_id: "s1".into(),
+        provider: None,
+        model: Some("next".into()),
+        effort: None,
+    })
+    .unwrap();
+    wait_event(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Ctl(CtlEvent::Catalog { session_id: Some(sid), .. }) if sid == "s1"
+        )
+    })
+    .await;
+    let _ = cmds.send(Cmd::Shutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+}

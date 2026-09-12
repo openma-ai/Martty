@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -163,4 +163,46 @@ test('UI Plugin catalog retains stopped dynamic owners and routes restore throug
   await commands.run('focused')
   assert.deepEqual(restored, [{ id: 'focused', owner: 'panel-1' }])
   service.dispose()
+})
+
+test('UI preset writes are atomic and preserve unrelated settings keys', async () => {
+  assert.equal(typeof presetsPlugin.installTuiPresets, 'function')
+  if (typeof presetsPlugin.installTuiPresets !== 'function') return
+
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-ui-presets-atomic-'))
+  const settingsPath = path.join(root, 'settings.json')
+  writeFileSync(
+    settingsPath,
+    JSON.stringify({ language: 'zh', theme: 'ember', customKey: 7 }),
+  )
+  const inodeBefore = statSync(settingsPath).ino
+  const commands = commandService()
+  const service = presetsPlugin.installTuiPresets({ tuiCommands: commands }, { settingsPath })
+  service.register({ id: 'default', label: 'Martty' }, () => () => {})
+  service.register({ id: 'deepseek', label: 'DeepSeek' }, () => () => {})
+
+  service.activate('deepseek')
+
+  assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')), {
+    language: 'zh',
+    theme: 'ember',
+    customKey: 7,
+    uiPreset: 'deepseek',
+  })
+  assert.deepEqual(
+    readdirSync(root).filter((name) => name.endsWith('.tmp')),
+    [],
+    'atomic write must not leave temp files behind',
+  )
+  if (process.platform !== 'win32') {
+    // temp + rename replaces the directory entry, so the inode changes; an
+    // in-place writeFileSync would keep the original inode.
+    assert.notEqual(
+      statSync(settingsPath).ino,
+      inodeBefore,
+      'expected a rename-based (atomic) write',
+    )
+  }
+  service.dispose()
+  rmSync(root, { recursive: true, force: true })
 })

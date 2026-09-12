@@ -11,6 +11,8 @@ export const GET: APIRoute = ({ site, url }) => {
     "/plugins",
     "/guides/migrate-to-martty",
     "/blog",
+    "/blog/codex-claude-code-one-terminal",
+    "/en/blog/codex-claude-code-one-terminal",
     "/blog/plug-in-and-be-plugged-into",
     "/en/blog/plug-in-and-be-plugged-into",
     "/blog/using-deepseek-harness-in-martty",
@@ -24,14 +26,20 @@ export const GET: APIRoute = ({ site, url }) => {
     "/en/docs/architecture",
     "/en/docs/plugins",
     "/en/docs/migration",
+    "/docs/harness-management",
+    "/docs/sessions",
+    "/en/docs/harness-management",
+    "/en/docs/sessions",
   ];
   const translated = new Map<string, { zh: string; en: string }>([
+    ["/blog/codex-claude-code-one-terminal", { zh: "/blog/codex-claude-code-one-terminal", en: "/en/blog/codex-claude-code-one-terminal" }],
+    ["/en/blog/codex-claude-code-one-terminal", { zh: "/blog/codex-claude-code-one-terminal", en: "/en/blog/codex-claude-code-one-terminal" }],
     ["/", { zh: "/", en: "/en" }],
     ["/en", { zh: "/", en: "/en" }],
     ["/blog/plug-in-and-be-plugged-into", { zh: "/blog/plug-in-and-be-plugged-into", en: "/en/blog/plug-in-and-be-plugged-into" }],
     ["/en/blog/plug-in-and-be-plugged-into", { zh: "/blog/plug-in-and-be-plugged-into", en: "/en/blog/plug-in-and-be-plugged-into" }],
   ]);
-  for (const slug of ["plugin-systems", "architecture", "plugins", "migration"]) {
+  for (const slug of ["plugin-systems", "architecture", "plugins", "migration", "harness-management", "sessions"]) {
     const pair = { zh: `/docs/${slug}`, en: `/en/docs/${slug}` };
     translated.set(pair.zh, pair);
     translated.set(pair.en, pair);

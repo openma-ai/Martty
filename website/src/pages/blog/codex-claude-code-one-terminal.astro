@@ -1,0 +1,41 @@
+---
+import ContentPage from "../../components/ContentPage.astro";
+import switchScreenshot from "../../../../assets/screenshots/harness-switch.png?url";
+
+const title = "在同一个终端界面里用 Codex 和 Claude Code | Martty";
+const description = "想让另一个 Coding Agent 帮忙排查问题，却不想重新适应终端操作？用 Martty 在同一仓库切换 Codex 与 Claude Code，保留界面习惯，同时弄清对话上下文、账号与工具权限不会自动迁移。";
+---
+
+<ContentPage {title} {description} path="/blog/codex-claude-code-one-terminal" alternatePath="/en/blog/codex-claude-code-one-terminal" lang="zh-CN" eyebrow="Coding Agent 工作流" article showDescription={false}>
+  <p class="content-article__lede">一个 bug 来回改了几轮，还是没找到原因。你想把它交给另一个 Coding Agent 看看。你要的是第二种排查思路，不是再折腾一遍工具。</p>
+  <p>当然可以另开一个终端，启动另一个 CLI。如果你熟悉两套工具，这就够了。但如果你刚找到查看工具输出、恢复历史、追加消息和中断任务的方式，换一个 Agent 时，还得弄清这些操作在哪里。</p>
+  <p>Martty 提供的是另一种选择：让支持 ACP 的 Agent 使用同一个终端界面。你可以用 Codex，也可以通过适配器连接 Claude Code；模型和执行任务的 Agent 变了，查看对话、处理工具输出和输入消息的界面仍然是 Martty。</p>
+
+  <h2>想换的是解题方式，不是整套操作习惯</h2>
+  <p>这个需求和“把模型从 A 切到 B”不完全一样。换模型可能仍由同一个 Agent 组织任务；换 Agent，则可能连工具调用、上下文处理和执行方式都不同。Martty 的 Harness 选择器用于后者。</p>
+  <p>它不试图把各个 Agent 的能力变成一模一样。它统一的是你面对它们的入口：在哪里读回复和工具输出、怎样提交下一条消息、到哪里查当前状态。模型、权限和登录方式仍由各个 Agent 提供。</p>
+  <p>因此，更合适的尝试方式不是立刻迁移全部工作，而是在熟悉的仓库里挑一个边界清楚的问题，看看另一个 Agent 的处理过程是否适合你。</p>
+
+  <h2>拿同一个仓库里的小问题试一次</h2>
+  <p>先等当前任务结束，检查工作区改动，再换 Agent。切换界面不会替你回滚代码，也不应让两个 Agent 同时修改同一批文件。若要比较两种方案，先提交一个共同起点，或分别使用独立的 Git worktree。</p>
+  <p>在希望它工作的仓库目录中启动 Martty：</p>
+  <pre><code>npx --yes martty</code></pre>
+  <p>输入 <code>/harness</code>，选择 <strong>+ Add Harness…</strong>。先浏览目录，再选 Codex 或 Claude Agent，不需要事先知道 npm 包名。目录来自 ACP Registry：可以把它理解成 Agent 启动方式的目录，而不是一个统一的模型账号。</p>
+  <img src={switchScreenshot} width="3526" height="1928" loading="lazy" decoding="async" alt="Martty 的 Harness 菜单把当前项置顶，并列出 Codex Harness、Claude Agent 等可选程序" />
+  <p>准备好相应条目后，选择它切换。需要下载时，完成面板的 Enter 走同一个切换流程；需要登录时，再按 Agent 提供的方式认证。以后回来用已配置项，不必重新从添加流程开始。完整步骤放在 <a href="/docs/harness-management">安装、切换与认证指南</a>。</p>
+  <p>切换会创建新的会话，而不是把旧对话自动交给新 Agent。与其只说“接着修”，不如给它一份能独立理解的交接说明。例如：</p>
+  <pre><code>问题：保存表单后，返回列表看不到刚才的修改。
+复现：编辑一条记录，保存成功后返回列表。
+已尝试：刷新详情页能看到新值；尚未改代码。
+请先定位原因，给出验证方式，暂时不要修改文件。</code></pre>
+  <p>补上项目里相关的文件路径和实际结果。这让第二个 Agent 知道你要排查什么，也让你更容易判断它是否提出了新的证据，而不是仅仅换了一种说法。</p>
+
+  <h2>同一个界面，不代表所有东西都能带过去</h2>
+  <p><strong>账号不会自动互通。</strong> 你仍需要所选 Agent 要求的凭据、订阅或 API 访问。Martty 不提供统一额度，也不会把一个服务的登录转换成另一个服务的登录。浏览器显示认证完成后，还要以 Agent 返回的认证结果为准。</p>
+  <p><strong>同一个仓库，不等于同一段对话。</strong> 新 Agent 可以在授权范围内读取工作区文件，包括尚未提交的改动，但不会因为切换成功就拥有前一个 Agent 的聊天上下文。需要延续的背景，应明确放进交接说明；不要假设历史会话可以跨 Agent 直接恢复。</p>
+  <p><strong>统一界面，也不等于原生 CLI 功能全部照搬。</strong> Martty 通过 ACP 连接 Agent，不是在嵌入各家的原生终端 UI。能否选择某个模型、恢复会话或使用某项工具，要看对应 Agent 或适配器暴露的能力。有些适配器还需要额外安装原 CLI，目录里能找到不代表依赖已全部齐备。</p>
+
+  <h2>如果你只用一个 Agent，不必为了统一而统一</h2>
+  <p>已经熟悉某个原生 CLI，而且依赖它的专属交互时，继续用它完全合理。Martty 更值得尝试的情况是：你会在几个 Agent 之间切换，希望更换的是执行任务的程序，而不是每次都重新适应输入、输出和会话入口。</p>
+  <p>先拿一个小问题试一次就够了。看你能不能更轻松地读懂工具输出、交接问题并判断结果；需要同时处理另一件事时，再看 <a href="/docs/sessions">会话标签与消息队列的操作说明</a>。</p>
+</ContentPage>

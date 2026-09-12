@@ -33,7 +33,7 @@ describe("repository-backed documentation", () => {
   });
 
   it("gives every localized documentation page unique search metadata", () => {
-    const slugs = ["plugin-systems", "architecture", "plugins", "migration"];
+    const slugs = ["plugin-systems", "architecture", "plugins", "migration", "harness-management", "sessions"];
     for (const locale of ["zh", "en"] as const) {
       const entries = slugs.map((slug) => getDocSeo(locale, slug));
       expect(entries.every(Boolean)).toBe(true);
@@ -46,5 +46,25 @@ describe("repository-backed documentation", () => {
         expect(entry?.description.length).toBeLessThanOrEqual(165);
       }
     }
+  });
+
+  it.each(["zh", "en"] as const)("renders practical, linked workflow guides in %s", (locale) => {
+    const harness = getDoc(locale, "harness-management");
+    const sessions = getDoc(locale, "sessions");
+    const prefix = locale === "en" ? "/en" : "";
+    expect(harness?.html).toContain("martty harness find");
+    expect(harness?.html).toContain("--cleanup --dry-run");
+    expect(harness?.html).toContain("authenticate");
+    expect(harness?.html).toContain(`href="${prefix}/docs/sessions"`);
+    expect(sessions?.html).toContain("/session next");
+    expect(sessions?.html).toContain("/resume 10");
+    expect(sessions?.html).toContain("/close");
+    expect(sessions?.html).toContain("Ctrl+Enter");
+    expect(sessions?.html).toContain(`href="${prefix}/docs/harness-management"`);
+    for (const page of [harness, sessions]) {
+      expect(page?.headings.length).toBeGreaterThanOrEqual(4);
+      expect(page?.html.match(/<h1 /g)).toHaveLength(1);
+    }
+    expect(harness?.html).not.toBe(getDoc(locale === "en" ? "zh" : "en", "harness-management")?.html);
   });
 });

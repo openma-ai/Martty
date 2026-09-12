@@ -4,7 +4,7 @@ import "../styles/global.css";
 
 const title = "Martty — DeepSeek Harness 与 ACP Agent 终端客户端";
 const description =
-  "Martty 是面向 DeepSeek Harness 和 ACP coding agents 的 Rust/ratatui 终端客户端，支持流式推理、工具调用、subagent、多图提示词、持久会话与 Cordis UI 插件。";
+  "Martty 是面向 DeepSeek Harness 与 ACP coding agents 的终端客户端。通过 ACP Registry 配置和切换 Harness，管理多会话、历史恢复与消息队列，并查看流式推理、工具调用和图片。";
 const year = new Date().getFullYear();
 ---
 
@@ -24,6 +24,7 @@ const year = new Date().getFullYear();
           <a href="#install" class="hover:text-[#e7eaee]">安装</a>
           <a href="#ui" class="hover:text-[#e7eaee]">UI 简介</a>
           <a href="#usage" class="hover:text-[#e7eaee]">使用方法</a>
+          <a href="/docs/harness-management" class="hover:text-[#e7eaee]">文档</a>
           <a href="/blog" class="hover:text-[#e7eaee]">Blog</a>
           <a href="https://github.com/openma-ai/Martty" class="rounded border border-[#1f4a73] px-2.5 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">GitHub</a>
           <a href="/en" class="rounded border border-[#202832] px-2 py-1 text-xs text-[#3aa0ff] hover:border-[#3aa0ff]">English</a>
@@ -45,6 +46,7 @@ const year = new Date().getFullYear();
             subagent、token 用量和持久化会话;图片可从文件或剪贴板加入 prompt。界面、主题、
             命令与视图都由 Cordis 插件组合,而不是写死在 shell 里。
           </p>
+          <p class="mt-4 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">从 ACP Registry 浏览和配置 Harness，在同一连接内用多会话标签保留草稿与队列。连接、认证和历史恢复能力以 Agent 返回的结果为准。</p>
           <div class="mt-8 flex flex-wrap gap-3">
             <a href="#install" class="rounded border border-[#1f4a73] bg-[rgba(58,160,255,0.12)] px-5 py-2.5 text-sm no-underline hover:border-[#3aa0ff]">安装 Martty</a>
             <a href="#ui" class="rounded border border-[#202832] px-5 py-2.5 text-sm no-underline hover:border-[#66707c]">看看界面</a>
@@ -55,7 +57,7 @@ const year = new Date().getFullYear();
         <!-- Install -->
         <section id="install" class="border-b border-[#171d25] py-14">
           <h2 class="mb-2 text-2xl font-semibold">如何安装</h2>
-          <p class="mb-6 text-sm text-[#66707c]">需要 Node.js 18+。安装后直接启动,默认连接 DSH。</p>
+          <p class="mb-6 text-sm text-[#66707c]">Martty npm 包要求 Node.js 18+，所选 Agent 可能有额外运行环境要求。首次启动默认连接 DSH；之后可使用保存的 Harness 默认项。</p>
 
           <h3 class="mb-2 text-sm font-semibold text-[#9aa5b1]">全局安装(推荐)</h3>
           <pre class="mb-6 overflow-x-auto rounded border border-[#202832] bg-[#0a0e13] p-4 text-sm text-[#e7eaee]"><code><span class="text-[#3aa0ff]">$ </span>npm install --global martty
@@ -91,7 +93,7 @@ const year = new Date().getFullYear();
           <div class="grid gap-8 md:grid-cols-2">
             <figure>
               <img src="/ui_resume.png" alt="Martty 会话恢复界面" width="1098" height="1598" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
-              <figcaption class="mt-2 text-xs text-[#66707c]">会话恢复:`/resume` 或 `--session-id` 恢复持久化 JSONL 会话,workspace、模型与权限设置一并还原。</figcaption>
+              <figcaption class="mt-2 text-xs text-[#66707c]">会话恢复：`/resume` 浏览近期会话；ACP 远端恢复与本地历史回放取决于 Agent 能力。<a href="/docs/sessions" class="text-[#3aa0ff]">查看恢复与标签指南</a>。</figcaption>
             </figure>
             <figure>
               <img src="/ui_modelsel.png" alt="Martty 模型选择界面" width="1272" height="474" class="w-full rounded border border-[#202832]" loading="lazy" decoding="async" />
@@ -117,8 +119,10 @@ const year = new Date().getFullYear();
 
         <section class="border-b border-[#171d25] py-14" aria-labelledby="guides-heading">
           <h2 id="guides-heading" class="mb-2 text-2xl font-semibold">指南与架构</h2>
-          <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">针对 DeepSeek Harness、ACP、Ratatui 和插件开发的英文专题页。</p>
+          <p class="mb-8 max-w-2xl text-sm leading-relaxed text-[#9aa5b1]">先按使用指南配置 Agent、管理会话；需要实现细节时，再阅读 ACP、Ratatui 与插件专题。</p>
           <div class="grid gap-4 sm:grid-cols-2">
+            <a href="/blog/codex-claude-code-one-terminal" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">用 Codex 和 Claude Code，不必换一套终端操作</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">想让另一个 Agent 换个思路排查问题？从一次小任务开始，弄清能复用的习惯与不能自动迁移的上下文。</span></a>
+            <a href="/docs/sessions" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">多会话、恢复与消息队列</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">使用标签、/resume 和 Ctrl+Enter，区分草稿、队列、历史与远端任务。</span></a>
             <a href="/deepseek-harness-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">DeepSeek Harness TUI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">三条命令安装 Martty，并从源码理解 Host、Client 与 TTY 边界。</span></a>
             <a href="/acp-terminal-client" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">ACP terminal client</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">拆解 spawn/stream、initialize、session/update 与取消时序。</span></a>
             <a href="/ratatui-agent-tui" class="rounded border border-[#202832] bg-[#0a0e13] p-5 no-underline hover:border-[#3aa0ff]"><strong class="text-[#3aa0ff]">Ratatui agent TUI</strong><span class="mt-2 block text-xs leading-relaxed text-[#9aa5b1]">状态帧、Unicode composer、滚动锚点与语义插件边界。</span></a>
@@ -142,15 +146,18 @@ const year = new Date().getFullYear();
               </thead>
               <tbody class="text-[#e7eaee]">
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>enter</code></td><td class="px-4 py-3 text-[#9aa5b1]">发送消息;回合运行时排队 follow-up</td></tr>
-                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>ctrl+x</code></td><td class="px-4 py-3 text-[#9aa5b1]">立即 steer 当前 agent</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>ctrl+enter</code></td><td class="px-4 py-3 text-[#9aa5b1]">立即 steer 当前 agent（macOS 也可用 ⌘⏎）</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>esc</code></td><td class="px-4 py-3 text-[#9aa5b1]">中断当前回合并保留草稿</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/</code></td><td class="px-4 py-3 text-[#9aa5b1]">打开命令与参数候选菜单</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/model</code> · <code>/agent</code></td><td class="px-4 py-3 text-[#9aa5b1]">选择模型和 Agent Preset</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/harness</code> · <code>/auth</code></td><td class="px-4 py-3 text-[#9aa5b1]">配置或切换 Harness；按 Agent 提供的方式认证</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/permission</code> · <code>shift+tab</code></td><td class="px-4 py-3 text-[#9aa5b1]">选择或轮换权限模式</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/image &lt;path&gt;</code> · <code>/clip</code></td><td class="px-4 py-3 text-[#9aa5b1]">添加本地图片或剪贴板图片</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/theme</code> · <code>ctrl+t</code></td><td class="px-4 py-3 text-[#9aa5b1]">选择 Theme Plugin 或切换明暗变体</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/ui</code></td><td class="px-4 py-3 text-[#9aa5b1]">切换整套 UI 组合(如 Martty / DeepSeek)</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/new</code> · <code>/resume</code></td><td class="px-4 py-3 text-[#9aa5b1]">新建或恢复持久化会话</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/session prev</code> · <code>/session next</code></td><td class="px-4 py-3 text-[#9aa5b1]">切换会话标签，各自保留草稿与队列</td></tr>
+                <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>/close</code></td><td class="px-4 py-3 text-[#9aa5b1]">关闭当前标签；不删除历史或取消远端任务</td></tr>
                 <tr class="border-b border-[#171d25]"><td class="px-4 py-3"><code>!cmd</code></td><td class="px-4 py-3 text-[#9aa5b1]">在 workspace 的会话级本地 shell 中执行命令</td></tr>
                 <tr><td class="px-4 py-3"><code>/help</code> · <code>/keys</code></td><td class="px-4 py-3 text-[#9aa5b1]">查看命令与完整快捷键列表</td></tr>
               </tbody>

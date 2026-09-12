@@ -52,6 +52,20 @@ fn final_event(session: &str, text: &str) -> crate::events::UiEvent {
     }
 }
 
+fn child_chunk(child: &str, text: &str) -> AppEvent {
+    AppEvent::Rpc {
+        method: "session/update".into(),
+        params: serde_json::json!({
+            "sessionId": "dsh-test",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": text },
+                "_meta": { "dsh": { "subagent": { "childSessionId": child } } }
+            }
+        }),
+    }
+}
+
 #[test]
 fn harness_new_session_action_preserves_old_tabs_from_every_position() {
     for active_tab in 0..3 {
@@ -307,7 +321,7 @@ fn unknown_session_events_never_reach_any_transcript() {
 
 #[test]
 fn parked_subagent_events_land_in_parked_subagent_transcript() {
-    let (mut app, _ctl, _rx) = test_app();
+    let (mut app, ctl, _rx) = test_app();
     app.apply_ui(crate::events::UiEvent::SubagentStarted {
         parent: "dsh-test".into(),
         child: "sub-1".into(),
@@ -319,7 +333,9 @@ fn parked_subagent_events_land_in_parked_subagent_transcript() {
     assert_eq!(app.parked[0].id, "dsh-test");
     assert_eq!(app.parked[0].subagents.len(), 1);
 
-    app.apply_ui(final_event("sub-1", "subagent answer in background"));
+    app.needs_redraw = false;
+    app.handle(child_chunk("sub-1", "subagent answer in background"), &ctl);
+    assert!(!app.needs_redraw, "a parked child cannot change the visible frame");
 
     let sub_text = transcript_text(&mut app.parked[0].subagents[0].transcript);
     assert!(
@@ -327,6 +343,52 @@ fn parked_subagent_events_land_in_parked_subagent_transcript() {
         "subagent event reached parked subagent transcript:\n{sub_text}"
     );
     assert!(!transcript_text(&mut app.transcript).contains("subagent answer"));
+}
+
+#[test]
+fn hidden_subagent_streams_are_retained_without_repainting_the_parent() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    for child in ["sub-1", "sub-2", "sub-3"] {
+        app.apply_ui(crate::events::UiEvent::SubagentStarted {
+            parent: "dsh-test".into(), child: child.into(),
+        });
+    }
+    app.needs_redraw = false;
+    for _ in 0..10 {
+        for child in ["sub-1", "sub-2", "sub-3"] {
+            app.handle(child_chunk(child, "chunk "), &ctl);
+        }
+    }
+    assert!(!app.needs_redraw);
+    assert_eq!(commands.try_iter().count(), 0, "chunks do not republish navigation snapshots");
+    for view in &mut app.subagents {
+        let crate::transcript::CellKind::Assistant { text, .. } = &view.transcript.cells[0].kind else {
+            panic!("expected the child's streamed message");
+        };
+        assert_eq!(text, &"chunk ".repeat(10));
+    }
+
+    app.handle(AppEvent::Rpc {
+        method: crate::cordis::AGENTS_SELECT.into(),
+        params: serde_json::json!({ "protocol": 0, "id": "sub-2" }),
+    }, &ctl);
+    assert!(app.needs_redraw, "switching to a child immediately reveals its saved output");
+    assert_eq!(transcript_text(app.displayed_transcript_mut()).matches("chunk").count(), 10);
+    app.needs_redraw = false;
+    app.apply_ui(final_event("sub-1", "hidden final"));
+    assert!(!app.needs_redraw, "a sibling's final does not repaint the selected child");
+    app.apply_ui(final_event("sub-2", "visible final"));
+    assert!(app.needs_redraw);
+    assert!(transcript_text(app.displayed_transcript_mut()).contains("visible final"));
+
+    app.needs_redraw = false;
+    app.apply_ui(crate::events::UiEvent::SubagentFinished {
+        child: "sub-1".into(), failed: false,
+    });
+    assert!(app.needs_redraw, "completion still updates navigation for a hidden child");
+    assert!(!app.subagents[0].running);
 }
 
 #[test]

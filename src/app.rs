@@ -1283,6 +1283,15 @@ pub struct App {
     pub tone_mode: ToneMode,
     pub palettes: Vec<crate::theme::PalettePack>,
     pub active_palette_id: String,
+    /// Palette currently only *previewed* (dialog row or `/theme ` slash
+    /// candidate under the highlight) but not yet confirmed with Enter.
+    /// Preview repaints `theme` without touching `active_palette_id`, so
+    /// Esc or a moved highlight reverts to the committed theme.
+    theme_preview: Option<String>,
+    /// Palette confirmed with Enter whose Theme Plugin has not delivered
+    /// its loaded palette yet. The preview colors stay on screen (no flash
+    /// back to the old theme) until the palette arrival commits it.
+    theme_pending: Option<String>,
     /// Persisted UI Preset id. The Client compositor owns activation; Rust
     /// keeps this only as a startup fallback before slot snapshots arrive.
     pub ui_preset: String,
@@ -1829,6 +1838,8 @@ impl App {
             tone_mode,
             palettes,
             active_palette_id: "default".into(),
+            theme_preview: None,
+            theme_pending: None,
             ui_preset: settings.ui_preset,
             slot_snapshots: HashMap::new(),
             transcript: Transcript::new(session_id.clone()),
@@ -2528,6 +2539,10 @@ impl App {
         if !self.palettes.iter().any(|p| p.id == id) {
             return;
         }
+        // A commit (Enter, or the palette arrival of a pending Enter)
+        // supersedes any preview still on screen.
+        self.theme_preview = None;
+        self.theme_pending = None;
         self.active_palette_id = id.to_string();
         self.sync_theme_from_active();
         self.show_tip(self.locale.trf(
@@ -2541,7 +2556,12 @@ impl App {
     }
 
     fn select_palette(&mut self, id: &str, ctl: &Controller) {
-        let Some(palette) = self.palettes.iter().find(|palette| palette.id == id) else {
+        let Some(palette) = self
+            .palettes
+            .iter()
+            .find(|palette| palette.id == id)
+            .cloned()
+        else {
             return;
         };
         if palette.loaded {
@@ -2552,6 +2572,18 @@ impl App {
                 "正在加载主题插件 {}…",
                 &[id.to_string()],
             ));
+            // Enter confirmed this pack: paint its registered colors right
+            // away and keep them on screen while the Plugin loads, so the
+            // commit never flashes back to the previous theme. The loaded
+            // palette arrival converts the pending preview into the
+            // committed theme (`activate_palette`).
+            if self.active_palette_id != id {
+                let mode = self.theme.mode;
+                self.theme = palette.theme(mode);
+                self.theme_preview = Some(id.to_string());
+                self.theme_pending = Some(id.to_string());
+                self.needs_redraw = true;
+            }
         }
         ctl.send(Cmd::PluginThemeSelected {
             agent_id: self.session_id.clone(),
@@ -2567,6 +2599,105 @@ impl App {
             .find(|p| p.id == self.active_palette_id)
         {
             self.theme = pack.theme(mode);
+        }
+    }
+
+    /// Live-switch the painter to a palette's colors without committing it:
+    /// arrows over the theme dialog rows or the `/theme ` slash candidates
+    /// only *preview*. The committed palette stays `active_palette_id`
+    /// until Enter (`select_palette`); Esc or a moved highlight restores
+    /// the committed theme. Stopped packs carry their full token maps from
+    /// registration, so previews are pixel-exact either way.
+    fn preview_palette(&mut self, id: &str) {
+        if self.active_palette_id == id {
+            // Highlight back on the committed pack — nothing to preview.
+            self.clear_theme_preview();
+            return;
+        }
+        let Some(pack) = self.palettes.iter().find(|palette| palette.id == id) else {
+            return;
+        };
+        let mode = self.theme.mode;
+        self.theme = pack.theme(mode);
+        self.theme_preview = Some(id.to_string());
+        // A different palette was previewed → the pending Enter commit for
+        // the previous one is stale; only Enter re-arms it.
+        if self.theme_pending.as_deref().is_some_and(|pending| pending != id) {
+            self.theme_pending = None;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Drop a pending palette preview and repaint the committed theme.
+    fn clear_theme_preview(&mut self) {
+        if self.theme_preview.take().is_some() || self.theme_pending.is_some() {
+            self.theme_pending = None;
+            self.sync_theme_from_active();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The palette candidate under the open `/theme ` slash popup highlight,
+    /// if the row names a registered pack (never the dark/light toggle row).
+    fn slash_theme_candidate(&self) -> Option<String> {
+        if self.slash_completion_dismissed {
+            return None;
+        }
+        let matches = self.slash_matches();
+        if matches.is_empty() {
+            return None;
+        }
+        let entry = matches.get(self.slash_sel.min(matches.len() - 1))?;
+        if entry.plugin || entry.skill || entry.name != "theme" {
+            return None;
+        }
+        entry
+            .completion
+            .as_deref()
+            .and_then(|completion| completion.strip_prefix("/theme "))
+            .map(str::to_string)
+    }
+
+    /// The open theme dialog applies the row under the highlight.
+    fn preview_picker_theme(&mut self) {
+        let Some(id) = self.picker.as_ref().and_then(|picker| {
+            (picker.kind == PickerKind::Theme)
+                .then(|| picker.items.get(picker.sel))
+                .flatten()
+                .map(|item| item.id.clone())
+        }) else {
+            return;
+        };
+        self.preview_palette(&id);
+    }
+
+    /// The open `/theme ` slash popup applies the palette candidate under
+    /// the highlight; non-palette rows (`toggle` dark/light) never fire.
+    fn preview_slash_theme(&mut self) {
+        if let Some(id) = self.slash_theme_candidate() {
+            self.preview_palette(&id);
+        }
+    }
+
+    /// A palette preview only lives while its row is still highlighted (or
+    /// its Enter commit is still loading its Plugin). Every handled event
+    /// ends here, so Esc, a closed list, a moved highlight or an edited
+    /// draft reverts to the committed theme — preview never sticks.
+    fn reconcile_theme_preview(&mut self) {
+        if self.theme_preview.is_none() {
+            return;
+        }
+        let preview = match self.theme_preview.clone() {
+            Some(preview) => preview,
+            None => return,
+        };
+        let still_highlighted = self.picker.as_ref().is_some_and(|picker| {
+            picker.kind == PickerKind::Theme
+                && picker.items.get(picker.sel).is_some_and(|item| item.id == preview)
+        }) || self.slash_theme_candidate().as_deref() == Some(preview.as_str());
+        let commit_loading = self.theme_pending.as_deref() == Some(preview.as_str());
+        if !still_highlighted && !commit_loading {
+            self.clear_theme_preview();
         }
     }
 
@@ -2633,8 +2764,8 @@ impl App {
             title: self
                 .locale
                 .tr(
-                    " theme · enter apply · esc close · /theme toggle · ctrl+t ",
-                    " 主题 · enter 应用 · esc 关闭 · /theme toggle · ctrl+t ",
+                    " theme · ↑↓ preview · enter apply · esc close · ctrl+t ",
+                    " 主题 · ↑↓ 预览 · enter 确定 · esc 关闭 · ctrl+t ",
                 )
                 .into(),
             sel,
@@ -3173,6 +3304,10 @@ impl App {
         let agents_before = (!self.demo).then(|| self.agents_fingerprint());
         let active_before = (!self.demo).then(|| (self.session_id.clone(), self.session_bound));
         self.handle_inner(ev, ctl);
+        // Previewed palettes never stick: after every event, a preview that
+        // is no longer under a highlight (and whose Enter commit is not
+        // still loading) reverts the painter to the committed theme.
+        self.reconcile_theme_preview();
         // A turn ran on the picked model → the stream is the truth again.
         if self.selected_model.is_some()
             && self.selected_model.as_deref() == self.transcript.last_model.as_deref()
@@ -3582,7 +3717,8 @@ impl App {
                         self.dispatch_session_queue(&session, ctl);
                     }
                 }
-                self.needs_redraw = true;
+                // apply_ui decides whether a fact affects the visible
+                // frame; background chunks and unknown notifications do not.
             }
             AppEvent::RuntimeStderr(_line) => {
                 // kept in proto's tail buffer for diagnostics; stay quiet here
@@ -3742,6 +3878,44 @@ impl App {
                         {
                             slot.transcript.push_notice(NoticeLevel::Error, message);
                         }
+                    }
+                    CtlEvent::ModelSwitchFailed {
+                        session_id,
+                        model,
+                        effort,
+                        message,
+                    } => {
+                        // The agent rejected a switch the UI had already shown
+                        // optimistically: revert that value in the owning tab
+                        // and surface the error instead of leaving a lie.
+                        if session_id == self.session_id {
+                            if let Some(model) = &model {
+                                if self.selected_model.as_deref() == Some(model.as_str()) {
+                                    self.selected_model = None;
+                                }
+                            }
+                            if let Some(effort) = &effort {
+                                if self.modes.effort.as_deref() == Some(effort.as_str()) {
+                                    self.modes.effort = None;
+                                }
+                            }
+                            self.transcript.push_notice(NoticeLevel::Error, message);
+                        } else if let Some(slot) = self.parked.iter_mut()
+                            .find(|slot| slot.id == session_id)
+                        {
+                            if let Some(model) = &model {
+                                if slot.selected_model.as_deref() == Some(model.as_str()) {
+                                    slot.selected_model = None;
+                                }
+                            }
+                            if let Some(effort) = &effort {
+                                if slot.modes.effort.as_deref() == Some(effort.as_str()) {
+                                    slot.modes.effort = None;
+                                }
+                            }
+                            slot.transcript.push_notice(NoticeLevel::Error, message);
+                        }
+                        self.needs_redraw = true;
                     }
                     CtlEvent::SessionError {
                         session_id,
@@ -4471,8 +4645,12 @@ impl App {
         if let Some(session) = ui_session(&ui) {
             if session != self.session_id {
                 if let Some(view) = self.subagents.iter_mut().find(|view| view.id == session) {
+                    let visible = self.active_subagent.as_deref() == Some(session);
                     view.transcript.apply(ui);
-                    self.needs_redraw = true;
+                    // Hidden child output only changes its own transcript.
+                    // Lifecycle events above still redraw the Agents dock;
+                    // tick drives its running animation independently.
+                    self.needs_redraw |= visible;
                     return;
                 }
                 for slot in &mut self.parked {
@@ -4483,7 +4661,6 @@ impl App {
                     }
                     if let Some(view) = slot.subagents.iter_mut().find(|view| view.id == session) {
                         view.transcript.apply(ui);
-                        self.needs_redraw = true;
                         return;
                     }
                 }
@@ -5120,6 +5297,8 @@ impl App {
     /// notch never teleports the highlight to the list tail.
     fn picker_scroll_by(&mut self, delta: i64) {
         let Some(picker) = &mut self.picker else { return };
+        let kind = picker.kind;
+        let sel_before = picker.sel;
         let last = picker.items.len().saturating_sub(1);
         if delta < 0 {
             picker.sel = picker
@@ -5130,6 +5309,16 @@ impl App {
             picker.sel = picker.sel.saturating_add(delta as usize).min(last);
         }
         self.needs_redraw = true;
+        // One notch equals one ↑/↓ press, so the theme dialog previews the
+        // pack the wheel moved the highlight onto.
+        if kind == PickerKind::Theme
+            && self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.sel != sel_before)
+        {
+            self.preview_picker_theme();
+        }
     }
 
     /// Wheel over an ACP permission ask (which floats above host pickers)
@@ -5344,9 +5533,9 @@ impl App {
         {
             return settings;
         }
-        if current.exists() {
-            return UiSettings::default();
-        }
+        // A current file that exists but does not parse is quarantined by the
+        // next save; until then fall through to the legacy file rather than
+        // silently dropping the user's preferences.
         let legacy = legacy_settings_path(&cfg.session_root);
         let Some((text, settings)) = std::fs::read_to_string(legacy).ok().and_then(|text| {
             serde_json::from_str::<UiSettings>(&text)
@@ -5369,16 +5558,31 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let mut current: serde_json::Value = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .filter(|value: &serde_json::Value| value.is_object())
-            .unwrap_or_else(|| serde_json::json!({}));
+        let existing = std::fs::read_to_string(&path).ok();
+        let mut current = match existing
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .filter(serde_json::Value::is_object)
+        {
+            Some(value) => value,
+            None => {
+                // The same file carries compositor-owned keys (theme,
+                // uiPreset, harness recipes). An unparseable file must not be
+                // silently replaced with `{}`: keep it for recovery.
+                if existing
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+                {
+                    let _ = std::fs::rename(&path, quarantined_settings_path(&path));
+                }
+                serde_json::json!({})
+            }
+        };
         current["language"] = serde_json::json!(self.locale);
         current["themeMode"] = serde_json::json!(self.theme.mode.as_str());
         current["markdownTone"] = serde_json::json!(self.tone_mode.as_str());
         if let Ok(text) = serde_json::to_string_pretty(&current) {
-            let _ = std::fs::write(path, text);
+            let _ = write_settings_atomic(&path, &text);
         }
     }
 
@@ -5897,6 +6101,9 @@ impl App {
                     _ => {}
                 }
                 if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                    // The `/theme ` candidate popup previews the palette the
+                    // highlight just landed on (mirrors the theme dialog).
+                    self.preview_slash_theme();
                     return;
                 }
             }
@@ -6484,10 +6691,12 @@ impl App {
         let Some(picker) = &mut self.picker else {
             return;
         };
+        let kind = picker.kind;
         let n = picker.items.len().max(1);
         // Page keys jump a screenful of the open popup (rows recorded by the
         // draw pass); they never wrap, unlike ↑/↓.
         let page = self.picker_page_rows.max(1);
+        let sel_before = picker.sel;
         match key.code {
             KeyCode::Esc => self.picker = None,
             KeyCode::Up => picker.sel = picker.sel.checked_sub(1).unwrap_or(n - 1),
@@ -6596,6 +6805,26 @@ impl App {
                 }
             }
             _ => {}
+        }
+        // The theme dialog lives on its highlight: moving the selection
+        // instantly applies the palette row under it, without waiting for
+        // Enter. Enter above still closes and commits (Theme-Plugin load +
+        // persisted preference); Esc just closes and keeps the preview.
+        if kind == PickerKind::Theme
+            && matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Home
+                    | KeyCode::End
+            )
+            && self.picker.as_ref().is_some_and(|picker| {
+                picker.kind == PickerKind::Theme && picker.sel != sel_before
+            })
+        {
+            self.preview_picker_theme();
         }
     }
 
@@ -9363,6 +9592,34 @@ impl App {
 #[cfg(test)]
 #[path = "../tests/unit/app__persistent_shell_tests.rs"]
 mod persistent_shell_tests;
+
+/// `settings.json` → `settings.json.corrupt-<timestamp>`, preserving a file
+/// that exists but cannot be parsed for manual recovery.
+fn quarantined_settings_path(path: &std::path::Path) -> std::path::PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{name}.corrupt-{}", timestamp()))
+}
+
+/// Write `text` to `path` through a same-directory temporary file plus a
+/// rename: a crash or full disk can never leave a truncated settings.json
+/// (the painter and the compositor both write this file).
+fn write_settings_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(
+        "{name}.{}.{}.tmp",
+        std::process::id(),
+        timestamp()
+    ));
+    if let Err(err) = std::fs::write(&tmp, text) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    Ok(())
+}
 
 pub fn timestamp() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};

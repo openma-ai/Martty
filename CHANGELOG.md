@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- A Chinese and English workflow article on trying Codex and Claude Code in one
+  terminal interface, with a concrete task handoff and explicit context/account boundaries.
+- Bilingual website guides for ACP Registry / Harness management and session tabs,
+  resume, and message queues, linked from the homepage and docs navigation with
+  localized search metadata and sitemap language alternates. Homepage commands now
+  document Ctrl+Enter steering, Harness authentication, and tab navigation.
 - Harness management through `/harness` and `martty harness`: official ACP
   Registry discovery, local command detection, saved recipes, configuration-only
   setup, default selection and new-session actions, and confirmed configuration/private-installation
@@ -20,6 +26,13 @@ All notable changes to this project are documented here. The project follows
   new tab; Esc closes the panel. Removal dialogs support stepwise back navigation.
 - CLI and TUI walkthroughs, README quick starts and screenshots.
 - Plan progress uses an animated running marker and a distinct in-progress label.
+- Theme selection previews in both picker surfaces without confirming:
+  moving the highlight in the `/theme` dialog (↑/↓, pgup/pgdn, home/end,
+  mouse wheel) or across the `/theme ` slash popup candidates immediately
+  previews that palette on screen — stopped Theme Plugins preview from
+  their registered token maps. Only Enter confirms and switches the theme
+  (loading the owning Plugin and persisting the preference); Esc or moving
+  the highlight off the row reverts to the confirmed theme.
 
 ### Fixed
 
@@ -31,6 +44,50 @@ All notable changes to this project are documented here. The project follows
 - Isolate ACP requests, notifications, authentication and retries across Harness
   connections, including colliding session and RPC ids. Failed new-session
   requests retain their own tab and cannot take over another pending session.
+- The embedded ACP adapter moves to `@openma/deepseek-harness-acp` 0.4.31,
+  which carries DSH 0.1.5-rc.1 with session write ownership and keeps ACP
+  events and question routing intact in Web hosts. The development and CI
+  harness baseline moves to `@deepseek-ai/dsh` 0.1.5-rc.1 as well, so the
+  profile install matrix exercises the same DSH generation the adapter ships.
+- `/resume` works again after a DeepSeek Harness update to 0.1.5: the Host's
+  `sessionPersistence` service now resolves `list()` to `{ header, revision }`
+  snapshots and reads one stored log through `open(id, 'read')`, while the ACP
+  adapter still filters rows by the row's own `cwd` and replays through the
+  removed `inspect()`. The Host compatibility layer projects the older header
+  row and `inspect()` surface back onto the live service for both
+  `dsh --profile martty` and standalone launches, so the `/resume` picker
+  opens and the chosen session resumes instead of silently listing nothing.
+- Transcript wrapping, picker/status truncation and the composer layout mirror
+  now measure grapheme clusters (via `UnicodeWidthStr`) instead of summing
+  per-`char` widths. ZWJ family emoji, skin-tone modifiers and variation
+  selectors stay on one line and no longer push a line past its pane budget
+  (a family emoji counted as 6 cells instead of 2).
+- A rejected `/model` or effort switch is reported instead of silently dropped:
+  the agent's error lands in the owning session's transcript and the optimistic
+  chip/effort reverts, while a successful switch folds the response's
+  `configOptions` back even when the agent sends no notification.
+- `settings.json` is written through a same-directory temp file plus rename
+  (painter and compositor both write it), and a file that exists but cannot be
+  parsed is quarantined as `settings.json.corrupt-<timestamp>` instead of being
+  silently replaced with `{}` (which dropped theme/UI-preset/harness keys).
+- A full queue shelf or input dock plus an expanded draft on a short terminal
+  no longer overflows the frame and panics (`index outside of buffer`): the
+  chrome stack compresses the optional dock rows, then the draft viewport, then
+  the queue shelf before layout, and the composer's direct buffer writes are
+  clipped to the frame as a fallback.
+- ACP frames no longer corrupt multi-byte UTF-8 characters split across stream
+  chunk boundaries. The mux now decodes with a `StringDecoder` (agent→TUI and
+  TUI→agent), instead of decoding each chunk independently into U+FFFD.
+- Markdown rendering no longer emits stray emoji/text variation selectors
+  (`U+FE0F` / `U+FE0E`, e.g. the one that makes `⚠️` a black block): a terminal
+  monospace font without the emoji glyph draws the orphaned selector as a tofu
+  black block, so it is stripped to let the base glyph fall back to its
+  always-renderable text form (issue #120).
+- The scroll-position indicator beside the model chip now reads `↓ N` instead
+  of an up-pointing triangle.
+- The model chip in the meta row now uses the same muted color as the reasoning
+  effort label beside it, instead of the brand accent.
+- Website test modules no longer become public Astro routes that return HTTP 500.
 - Authentication follows ACP responses, not browser completion or advertised
   methods. Pending, failed and successful login states are distinct; unknown
   credential sources are not labeled as API keys. Connection errors show the actual
@@ -136,7 +193,18 @@ All notable changes to this project are documented here. The project follows
   instead of being wrapped apart like prose. Tables that already fit the
   width are painted unchanged.
 
+- `scripts/devlocalinstall.sh` now builds the shipped `release` Cargo
+  profile (fat LTO, stripped) by default and swaps the built binary into
+  the installed bundle under `dsh --profile <name>`;
+  `DSH_TUI_CARGO_PROFILE=devlocal` opts back into the fast debug build
+  loop when quick turnaround matters more than release fidelity.
+
 ### Fixed
+
+- High CPU usage while multiple subagents stream into a long conversation:
+  hidden subagent output no longer repaints the visible transcript, ordinary
+  streaming redraws are paced, and event batches are bounded so painting and
+  input keep progressing. Tool requests and user input still paint immediately.
 
 - Bold Markdown table text now follows the selected body color mode while
   retaining its emphasis, fixing emphasized text appearing darker than
