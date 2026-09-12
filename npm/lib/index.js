@@ -248,6 +248,7 @@ export async function applyShell(ctx, options = {}) {
         }
         if (message.method === CORDIS_METHODS.sessionActive) {
           const active = message.params?.sessionId
+          agent.selectSession?.(active)
           clientEvents.selectSession(
             typeof active === 'string' && active.length > 0 ? active : undefined,
           )

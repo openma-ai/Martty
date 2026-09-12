@@ -61,6 +61,8 @@ export function installAcpSessionStatus(ctx, options = {}) {
 
   const listeners = new Set()
   const sessions = new Map()
+  const connections = new Map()
+  const connectionAuthMethods = new Map()
   const fallback = zeroSession(undefined, false)
   let sessionId
   let selectionKnown = false
@@ -70,7 +72,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
   let initializeId
   let authMethods = []
   const pendingRequests = new Set()
-  const pendingAuthenticate = new Set()
+  const pendingAuthenticate = new Map()
   const pendingSetup = new Map()
   const pendingPrompts = new Map()
 
@@ -90,8 +92,9 @@ export function installAcpSessionStatus(ctx, options = {}) {
 
   function current() {
     const value = stateFor(sessionId)
-    const { permissionPreset: _permissionPreset, sandboxMode: _sandboxMode, ...visible } = value
-    return structuredClone({ connection, server, auth, ...visible })
+    const { permissionPreset: _permissionPreset, sandboxMode: _sandboxMode,
+      connectionFacts, ...visible } = value
+    return structuredClone({ connection, server, auth, ...connectionFacts, ...visible })
   }
 
   function publish() {
@@ -135,6 +138,8 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (message.method === 'initialize' && message.id !== undefined) {
       pendingRequests.clear()
       sessions.clear()
+      connections.clear()
+      connectionAuthMethods.clear()
       Object.assign(fallback, zeroSession(undefined, false))
       delete fallback.error
       sessionId = undefined
@@ -154,12 +159,14 @@ export function installAcpSessionStatus(ctx, options = {}) {
     }
     if (message.id !== undefined) pendingRequests.add(message.id)
     if (message.method === 'authenticate' && message.id !== undefined) {
-      pendingAuthenticate.add(message.id)
       const methodId = readString(message.params, 'methodId')
-      const method = authMethods.find((candidate) => candidate?.id === methodId)
-      if (methodId !== undefined) auth.method = readString(method, 'name', 'label') ?? methodId
-      delete auth.message
-      auth.status = 'signing in'
+      const owned = connectionAuthMethods.get(methodId)
+      const target = owned?.facts.auth ?? auth
+      pendingAuthenticate.set(message.id, target)
+      const method = owned?.method ?? authMethods.find((candidate) => candidate?.id === methodId)
+      if (methodId !== undefined) target.method = readString(method, 'name', 'label') ?? methodId
+      delete target.message
+      target.status = 'signing in'
       publish()
       return
     }
@@ -204,13 +211,14 @@ export function installAcpSessionStatus(ctx, options = {}) {
     // its authentication or run state in the new connection.
     if (response(message) && !pendingRequests.delete(message.id)) return
     if (message.id !== undefined && pendingAuthenticate.has(message.id)) {
+      const target = pendingAuthenticate.get(message.id)
       pendingAuthenticate.delete(message.id)
       if (message.error === undefined) {
-        auth.status = 'configured'
-        delete auth.message
+        target.status = 'configured'
+        delete target.message
       } else {
-        auth.status = 'sign-in failed'
-        auth.message = readString(message.error?.data, 'details', 'message')
+        target.status = 'sign-in failed'
+        target.message = readString(message.error?.data, 'details', 'message')
           ?? readString(message.error, 'message') ?? 'Authentication failed'
       }
       publish()
@@ -239,6 +247,17 @@ export function installAcpSessionStatus(ctx, options = {}) {
         const bound = readString(message.result, 'sessionId', 'session_id') ?? setup.sessionId
         if (bound !== undefined) {
           stateFor(bound).session = { sessionId: bound, bound: true, started: setup.started }
+          const owner = message.result?._meta?.marttyConnection
+          if (owner) {
+            let facts = connections.get(owner.id)
+            if (!facts) {
+              facts = { connection: 'attached', server: owner.agentInfo?.name,
+                auth: { status: owner.authMethods?.length ? 'configured' : undefined, method: undefined } }
+              connections.set(owner.id, facts)
+            }
+            stateFor(bound).connectionFacts = facts
+            for (const method of owner.authMethods ?? []) connectionAuthMethods.set(method.id, { facts, method })
+          }
           delete stateFor(bound).error
           if (authMethods.length > 0) {
             auth.status = 'configured'
@@ -254,12 +273,13 @@ export function installAcpSessionStatus(ctx, options = {}) {
       const promptSessionId = pendingPrompts.get(message.id)
       pendingPrompts.delete(message.id)
       let changed = false
+      const value = stateFor(promptSessionId)
+      const target = value.connectionFacts?.auth ?? auth
       if (message.error !== undefined && isAuthRequired(message.error)
-        && auth.status !== 'needs sign-in') {
-        auth.status = 'needs sign-in'
+        && target.status !== 'needs sign-in') {
+        target.status = 'needs sign-in'
         changed = true
       }
-      const value = stateFor(promptSessionId)
       if (!hasPendingPrompt(promptSessionId) && value.state !== 'idle') {
         value.state = 'idle'
         changed = true

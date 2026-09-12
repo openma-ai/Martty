@@ -75,8 +75,23 @@ pub fn permission_ask_default_sel(options: &[PermissionAskOption]) -> usize {
 
 /// Controller → UI status updates.
 #[derive(Debug, Clone)]
+pub struct SessionConnection {
+    pub server: Option<String>,
+    pub auth: crate::acp_auth::AuthSnapshot,
+    pub load_session: bool,
+    pub list_session: bool,
+    pub resume_session: bool,
+}
+
+#[derive(Debug, Clone)]
 #[allow(dead_code)] // message_id: protocol fidelity; surfaced in debug logs only
 pub enum CtlEvent {
+    /// A Client command requests the same new-tab flow as `/new`.
+    NewSessionRequested,
+    SessionBoundTo { previous_id: String, session_id: String, notice: Option<String> },
+    BindFailedTo { previous_id: String, message: String },
+    /// Negotiated facts of the connection that owns this session.
+    SessionConnection { session_id: String, connection: SessionConnection },
     /// Spawning + initializing the runtime.
     Starting { runtime: String },
     /// initialize returned.
@@ -153,6 +168,7 @@ pub enum CtlEvent {
     TuiOpFailed(String),
     /// ACP initialize / authenticate status (Backchat probe equivalent).
     Auth(crate::acp_auth::AuthSnapshot),
+    SessionAuth { session_id: String, snapshot: crate::acp_auth::AuthSnapshot, open: bool },
     /// Open the client `/auth` surface (method picker or the one method).
     OpenAuth,
     /// Agent-advertised session lifecycle capabilities.
@@ -458,7 +474,7 @@ pub enum Cmd {
         values: std::collections::BTreeMap<String, String>,
     },
     /// Live ACP `/new` → `session/new` (cwd = workspace).
-    NewSession,
+    NewSession { requester: Option<String>, retry_auth: Option<String> },
     /// Live ACP `/resume` listing (`session/list`). `prefix` is the typed id;
     /// `limit` caps how many entries come back (`/resume n`).
     ListSessions {

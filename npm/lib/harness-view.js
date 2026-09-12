@@ -1,7 +1,7 @@
-/** Built-in Client Plugin: discover, prepare, and switch standalone ACP Harnesses. */
+/** Built-in Client Plugin: configure default ACP Harnesses and open new sessions. */
 import {
   addHarnessAsync, discoverHarnessCandidates, discoverHarnesses, fetchAcpRegistry,
-  setDefaultHarness, tokenizeHarnessArgs, upsertHarness, savedHarnesses,
+  setDefaultHarness, selectedHarness, tokenizeHarnessArgs, upsertHarness, savedHarnesses,
 } from './harnesses.js'
 import { planHarnessRemoval, removeHarness } from './harness-removal.js'
 import { scanHarnessCandidates } from './harness-discovery.js'
@@ -47,7 +47,6 @@ export function apply(ctx, options = {}) {
   let registrySnapshot = options.registry ?? readAcpRegistrySnapshot({ ...options, settingsPath })
   let candidateSnapshot = []
   let flow = 0
-  let switchVersion = 0
   let disposed = false
   let operation
   let ownedOverlay
@@ -64,9 +63,9 @@ export function apply(ctx, options = {}) {
     downloadNotice = ctx.tuiSlots.register({ name: 'conversation.input.dock', id: 'harness-downloads', order: -20 }, [])
     return () => downloadNotice.dispose()
   })
-  let runningRecipe = options.forcedHarness
-  let failedRecipe
+  const runningRecipe = options.forcedHarness
   const isRunning = (entry) => {
+    if (typeof ctx.acpClient?.hasAgent === 'function') return ctx.acpClient.hasAgent(entry)
     const child = ctx.acpClient?.child
     if (child?.exitCode != null || child?.signalCode != null) return false
     const live = ctx.acpClient?.command ? ctx.acpClient : runningRecipe
@@ -74,16 +73,15 @@ export function apply(ctx, options = {}) {
       id: '', command: live.command, args: live.args, env: live.env,
     })
   }
-  const isCurrent = (entry) => isRunning(entry) && recipeIdentity(entry) !== failedRecipe
-  const currentOption = (entry) => isCurrent(entry) ? { label: `${entry.label} (current)`, disabled: true } : {}
-  const currentFirst = (left, right) => Number(isCurrent(right)) - Number(isCurrent(left))
+  const currentOption = (entry) => entry.id === selectedHarness(settingsPath)?.id ? { label: `${entry.label} (default)` } : {}
+  const currentFirst = (left, right) => Number(right.id === selectedHarness(settingsPath)?.id) - Number(left.id === selectedHarness(settingsPath)?.id)
   const choices = () => discoverHarnesses(settingsPath, options).sort(currentFirst).map((entry) => ({
     value: entry.id, label: entry.label, description: `${entry.source} · ${commandText(entry)}`,
     ...currentOption(entry),
   }))
   const commandChoices = () => [...choices(), { ...addOption, value: 'add' }]
   const refreshCommandChoices = () => commandRegistration?.update({ input: {
-    hint: '[id] | add | remove [id] | find [query]', options: commandChoices(),
+    hint: '[id] [--new] | add | remove [id] | find [query]', options: commandChoices(),
   } })
 
   function openView(spec, handlers) {
@@ -226,84 +224,31 @@ export function apply(ctx, options = {}) {
     } finally { removing.delete(id) }
   }
 
-  async function switchNow(entry, download) {
-    if (disposed) return
-    if (removing.has(entry.id)) throw new Error('This Harness is being removed; wait until removal finishes')
-    const version = ++switchVersion
-    failedRecipe = undefined
-    pendingFailure = undefined
-    try {
-      if (typeof ctx.acpClient?.switchAgent !== 'function') throw new Error('Harness switching is unavailable on this ACP transport')
-      // Connect registers the prepared recipe, independently of sign-in/session setup.
-      // A failed or cancelled login must not make an explicitly added Harness disappear.
-      upsertHarness(settingsPath, entry)
-      refreshCommandChoices()
-      const handoff = await ctx.acpClient.switchAgent({ command: entry.command, args: entry.args,
-        ...(entry.env !== undefined ? { env: entry.env } : {}) })
-      if (disposed || version !== switchVersion) {
-        void handoff?.ready?.catch(() => {})
-        return
-      }
-      // The process is current already; readiness controls persistence, not
-      // which running recipe the picker/composer identifies.
-      refreshCommandChoices()
-      const commit = () => {
-        if (disposed || version !== switchVersion) return
-        setDefaultHarness(settingsPath, entry.id)
-        runningRecipe = entry
-        refreshCommandChoices()
-        if (download !== undefined && downloads.get(download.key) === download) {
-          downloads.delete(download.key)
-          notifyDownloads()
-        }
-      }
-      // The action lets the painter initialize/session/new; awaiting ready here deadlocks it.
-      if (handoff?.ready !== undefined) {
-        void handoff.ready.then(commit).catch((error) => {
-          if (!disposed && version === switchVersion) {
-            failedRecipe = recipeIdentity(entry)
-            refreshCommandChoices()
-            retryView(`Could not connect ${entry.label}`, error, () => switchNow(entry, download))
-          }
-        })
-      } else commit() // Older stream integrations keep their existing contract.
-      return { action: 'harness-switched', harness: {
-        id: entry.id, label: entry.label, command: entry.command, args: entry.args,
-        ...(entry.env !== undefined ? { env: entry.env } : {}),
-      } }
-    } catch (error) { retryView(`Could not connect ${entry.label}`, error, () => switchNow(entry, download)) }
-  }
-
-  async function save(id, preparedEntry, download) {
-    if (disposed) return
-    const entry = preparedEntry ?? discoverHarnesses(settingsPath, options).find((candidate) => candidate.id === id)
+  async function save(id, preparedEntry, download, openNow = false) {
+    const entry = preparedEntry ?? discoverHarnesses(settingsPath, options).find(entry => entry.id === id)
     if (entry === undefined) throw new Error(`unknown harness ${JSON.stringify(id)}`)
-    if (!options.hostOwned && isCurrent(entry)) return
-    if (options.hostOwned) {
-      upsertHarness(settingsPath, entry)
-      setDefaultHarness(settingsPath, id)
-      refreshCommandChoices()
-      if (download !== undefined && downloads.get(download.key) === download) {
-        downloads.delete(download.key)
-        notifyDownloads()
-      }
-      openView({ id: 'harness-saved', title: 'Harness saved', nodes: [{
-        id: 'notice', kind: 'notice', level: 'info',
-        text: `${entry.label} is saved for a new standalone session. The current dsh profile and session remain Host-owned.`,
-      }] })
-      return
+    if (removing.has(id)) throw new Error('This Harness is being removed; wait until removal finishes')
+    upsertHarness(settingsPath, entry)
+    setDefaultHarness(settingsPath, id)
+    ctx.acpClient?.setDefaultAgent?.({ command: entry.command, args: entry.args ?? [],
+      ...(entry.env !== undefined ? { env: entry.env } : {}) })
+    refreshCommandChoices()
+    if (download !== undefined && downloads.get(download.key) === download) {
+      downloads.delete(download.key)
+      notifyDownloads()
     }
-    // Selecting a registered recipe is a switch, not Add/Install. The saved
-    // launcher owns its cache; a per-process preparation flag is not evidence
-    // that the package needs downloading again.
-    if (ctx.acpSessionStatus?.current?.().session?.started === true) {
-      openSelect({ id: 'harness-confirm', title: 'Switch Harness? · starts a new session', value: 'switch', options: [
-        { value: 'switch', label: `Switch to ${entry.label}`, description: 'Current session stays available in /session' },
-        { value: 'cancel', label: 'Stay in current session', description: 'Keep using the current Harness' },
-      ] }, { onSubmit: (action) => action === 'switch' ? switchNow(entry, download) : undefined })
-      return
-    }
-    return switchNow(entry, download)
+    const newSession = () => ({ action: 'new-session' })
+    if (openNow && !options.hostOwned) return newSession()
+    openView({ id: 'harness-saved', title: 'Default Harness saved', nodes: [{
+      id: 'notice', kind: 'notice', level: 'info',
+      text: options.hostOwned
+        ? `${entry.label} is saved for the next standalone session. The current profile owns its Harness.`
+        : `${entry.label} will be used for new sessions. Enter opens a new tab now. Esc keeps the current session.`,
+    }] }, options.hostOwned ? undefined : { onSubmit: newSession })
+    if (!options.hostOwned) return { action: 'harness-selected', harness: {
+      id: entry.id, label: entry.label, command: entry.command, args: entry.args ?? [],
+      ...(entry.env !== undefined ? { env: entry.env } : {}),
+    } }
   }
 
   function configured(entry) {
@@ -372,14 +317,14 @@ export function apply(ctx, options = {}) {
         downloads.delete(job.key)
         hide()
       }
-      openView({ id: 'harness-installing', title: `Download complete · ${job.entry.label} · enter switch · esc close`, nodes: [
+      openView({ id: 'harness-installing', title: `Download complete · ${job.entry.label} · enter new session · esc close`, nodes: [
         { id: 'complete', kind: 'notice', level: 'info', text: job.registered
           ? `${job.entry.label} is installed and configured.`
           : `${job.entry.label} is installed. Your newer configuration is unchanged.` },
-        { id: 'next', kind: 'text', text: 'Setup is complete. Enter switches to this Harness using its saved configuration. Esc closes without switching.' },
+        { id: 'next', kind: 'text', text: 'Setup is complete. Enter opens a new session with this Harness. Esc closes without switching.' },
       ] }, { onSubmit: () => {
         acknowledge()
-        return save(job.entry.id)
+        return save(job.entry.id, undefined, undefined, true)
       }, onCancel: acknowledge })
       return
     }
@@ -591,8 +536,8 @@ export function apply(ctx, options = {}) {
     } })()
   }
 
-  commandRegistration = ctx.tuiCommands.register({ name: 'harness', description: 'Switch or add a Harness; switching starts a new session',
-    input: { hint: '[id] | add | remove [id] | find [query]', options: commandChoices() },
+  commandRegistration = ctx.tuiCommands.register({ name: 'harness', description: 'Choose the default Harness for new sessions',
+    input: { hint: '[id] [--new] | add | remove [id] | find [query]', options: commandChoices() },
   }, async (args) => {
     if (disposed) return
     refreshCommandChoices()
@@ -620,7 +565,7 @@ export function apply(ctx, options = {}) {
     }
     if (tokens[0] !== undefined) {
       const saved = discoverHarnesses(settingsPath, options).find((entry) => entry.id === tokens[0])
-      if (saved !== undefined) return save(saved.id, saved)
+      if (saved !== undefined) return save(saved.id, saved, undefined, tokens.includes('--new'))
       const job = [...downloads.values()].filter((job) => job.entry.id === tokens[0]).at(-1)
       return job === undefined ? save(tokens[0]) : showDownload(job)
     }
@@ -640,14 +585,14 @@ export function apply(ctx, options = {}) {
     }
     const downloaded = downloadOptions()
     if (entries.length === 0 && downloaded.length === 0) return browse()
-    openSelect({ id: 'harness', title: 'Switch Harness · starts a new session',
-      value: (entries.find(entry => entry.value === selected) ?? entries.find((entry) => entry.disabled) ?? entries[0] ?? downloaded[0]).value,
+    openSelect({ id: 'harness', title: 'Default Harness · for new sessions',
+      value: (entries.find(entry => entry.value === selected) ?? entries.find((entry) => entry.value === selectedHarness(settingsPath)?.id) ?? entries[0] ?? downloaded[0]).value,
       options: [...entries, ...downloaded, addOption],
     }, { onDelete: id => removal(id),
       onSubmit: (id) => id === ADD ? browse() : id.startsWith(DOWNLOAD) ? showDownload(downloads.get(id.slice(DOWNLOAD.length))) : save(id) })
   }
   return () => {
-    disposed = true; ++flow; ++switchVersion; operation?.abort()
+    disposed = true; ++flow; operation?.abort()
     for (const job of downloads.values()) job.controller.abort()
     ownedOverlay?.close(); stopDownloadSlot?.(); commandRegistration?.()
   }

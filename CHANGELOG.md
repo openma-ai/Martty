@@ -9,24 +9,28 @@ All notable changes to this project are documented here. The project follows
 
 - Harness management through `/harness` and `martty harness`: official ACP
   Registry discovery, local command detection, saved recipes, configuration-only
-  setup, explicit runtime switching, and confirmed configuration/private-installation
+  setup, default selection and new-session actions, and confirmed configuration/private-installation
   removal. Binary packages install into Martty-owned directories with SHA-256
   validation; shared caches, global programs, credentials and history are protected.
 - Registry pickers open from a bundled snapshot or validated local cache immediately,
   then probe asynchronously. Installed/configured and downloadable entries are grouped;
-  the current Harness stays first and cannot be selected again.
+  the default Harness stays first and can be selected again.
 - Background-capable downloads with progress, bounded diagnostics, cancellation,
-  completion notices and retry. Enter on completion uses the normal Harness switch
-  flow; Esc closes without switching. Removal dialogs support stepwise back navigation.
+  completion notices and retry. Enter on completion saves the default and opens a
+  new tab; Esc closes the panel. Removal dialogs support stepwise back navigation.
 - CLI and TUI walkthroughs, README quick starts and screenshots.
 - Plan progress uses an animated running marker and a distinct in-progress label.
 
 ### Fixed
 
-- Harness switching reinitializes ACP and starts a fresh empty session. All old
-  connection projections and requests are cleared, while session-scoped state
-  remains isolated across tabs within one connection. Saved configuration is
-  independent of authentication/readiness; the default changes only after readiness.
+- Decouple Harness defaults from session lifetimes: `/harness` saves
+  `defaultHarness`, and every `/new` opens a new tab using that default. Enter
+  after selection and `/harness <id> --new` use the same new-tab flow. Existing
+  tabs retain their connection, history and settings; switching from an empty
+  or later tab no longer clears old tabs or crashes on the next `/new` (#117).
+- Isolate ACP requests, notifications, authentication and retries across Harness
+  connections, including colliding session and RPC ids. Failed new-session
+  requests retain their own tab and cannot take over another pending session.
 - Authentication follows ACP responses, not browser completion or advertised
   methods. Pending, failed and successful login states are distinct; unknown
   credential sources are not labeled as API keys. Connection errors show the actual

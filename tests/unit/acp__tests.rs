@@ -749,7 +749,7 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn harness_switch_reinitializes_the_agent_and_binds_an_empty_session() {
+async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeResponse, NewSessionResponse,
     };
@@ -803,15 +803,7 @@ async fn harness_switch_reinitializes_the_agent_and_binds_an_empty_session() {
         .on_receive_request(
             async move |request: UntypedMessage, responder, _cx| {
                 assert_eq!(request.method(), crate::cordis::COMMAND_INVOKE);
-                responder.respond(json!({
-                    "action": "harness-switched",
-                    "harness": {
-                        "id": "builtin-dsh",
-                        "label": "Bundled DeepSeek Harness",
-                        "command": "/pkg/dsh-acp",
-                        "args": ["--stdio"]
-                    }
-                }))
+                responder.respond(json!({ "action": "new-session" }))
             },
             on_receive_request!(),
         );
@@ -861,11 +853,11 @@ async fn harness_switch_reinitializes_the_agent_and_binds_an_empty_session() {
         .expect("switch Harness");
 
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut rebound = false;
+    let mut requested = false;
     while Instant::now() < deadline {
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) if session_id == "s2" => {
-                rebound = true;
+            Ok(AppEvent::Ctl(CtlEvent::NewSessionRequested)) => {
+                requested = true;
                 break;
             }
             Ok(_) => {}
@@ -873,17 +865,22 @@ async fn harness_switch_reinitializes_the_agent_and_binds_an_empty_session() {
             Err(error) => panic!("bus disconnected: {error}"),
         }
     }
-
-    assert!(
-        rebound,
-        "Harness switch must bind the new Agent's empty session"
-    );
-    assert_eq!(initializes.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        sessions.load(Ordering::SeqCst),
-        2,
-        "Harness switch must create one empty session on each Agent"
-    );
+    assert!(requested, "the painter must own creation of the new tab");
+    assert_eq!(initializes.load(Ordering::SeqCst), 1);
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut rebound = false;
+    while Instant::now() < deadline {
+        if let Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) =
+            bus_rx.recv_timeout(Duration::from_millis(20))
+        {
+            if session_id == "s2" { rebound = true; break; }
+        }
+    }
+    assert!(rebound);
+    assert_eq!(initializes.load(Ordering::SeqCst), 1);
+    assert_eq!(sessions.load(Ordering::SeqCst), 2);
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
@@ -1415,7 +1412,7 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession).expect("explicit new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut form_reply = None;
@@ -1519,7 +1516,7 @@ async fn new_session_binds_before_applying_initial_config() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession).expect("explicit new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut order = Vec::new();
@@ -1601,7 +1598,7 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession).expect("explicit new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -1711,7 +1708,7 @@ async fn effort_selection_uses_the_advertised_thought_level_config_id() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession).expect("create ACP session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -1834,7 +1831,7 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
 
-    cmd_tx.send(Cmd::NewSession).expect("create ACP session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
 
     let result = tokio::time::timeout(Duration::from_secs(2), result_rx.recv())
         .await
@@ -3725,7 +3722,7 @@ async fn sessions_run_concurrent_prompts_on_one_connection() {
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
 
     // Startup binds s1; /new binds s2 and becomes the fallback session.
-    cmd_tx.send(Cmd::NewSession).expect("new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("new session");
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut bound = std::collections::HashSet::new();
     while Instant::now() < deadline && !bound.contains("s2") {
@@ -4092,4 +4089,45 @@ fn file_uris_are_percent_encoded() {
         "file:///tmp/%E6%88%AA%E5%9B%BE.png",
         "non-ASCII is encoded byte-wise (RFC 3986)"
     );
+}
+
+#[test]
+fn auth_stalls_and_retries_stay_on_the_owning_harness() {
+    let surface = Arc::new(Mutex::new(Surface::default()));
+    {
+        let mut s = surface.lock().unwrap();
+        for (id, owner) in [("a", "alpha"), ("a2", "alpha"), ("b", "beta")] {
+            s.session_mut(Some(id)).connection = Some(json!({"id":owner}));
+        }
+    }
+    let mut parked = VecDeque::from([ParkedPrompt {
+        session: Some("b".into()), kind: ParkedPromptKind::Text("beta retry".into()),
+    }]);
+    assert!(!auth_stalled_for("a", &parked, &surface));
+    assert!(auth_stalled_for("b", &parked, &surface));
+    let mut sessions = HashMap::from([("a".into(), SessionHandle::default()), ("b".into(), SessionHandle::default())]);
+    assert_eq!(requeue_connection_prompts(&mut sessions, &None, &mut parked, &surface, Some("alpha")), 0);
+    assert_eq!(parked.len(), 1);
+    assert_eq!(requeue_connection_prompts(&mut sessions, &None, &mut parked, &surface, Some("beta")), 1);
+    assert!(parked.is_empty());
+    assert_eq!(sessions["b"].queue.len(), 1);
+    assert!(sessions["a"].queue.is_empty());
+}
+
+#[test]
+fn stream_owned_new_session_keeps_the_negotiated_connection_facts() {
+    let surface = Arc::new(Mutex::new(Surface::default()));
+    surface.lock().unwrap().initial_connection = Some(crate::bus::SessionConnection {
+        server: Some("profile-host".into()), auth: AuthSnapshot::none(),
+        load_session: true, list_session: true, resume_session: false,
+    });
+    let (bus, events) = std::sync::mpsc::channel();
+    apply_setup(&json!({"sessionId":"stream-second"}), None, &surface, &bus);
+    let snapshot = events.try_iter().find_map(|event| match event {
+        AppEvent::Ctl(CtlEvent::SessionConnection { session_id, connection }) if session_id == "stream-second" => Some(connection),
+        _ => None,
+    }).expect("Every stream-owned tab receives the same negotiated connection");
+    assert_eq!(snapshot.server.as_deref(), Some("profile-host"));
+    assert!(snapshot.load_session);
+    assert!(snapshot.list_session);
 }

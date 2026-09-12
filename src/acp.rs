@@ -67,6 +67,7 @@ pub enum AcpEndpoint {
 
 #[derive(Clone, Default)]
 struct SessionSurface {
+    connection: Option<Value>,
     composition_id: Option<String>,
     models: Vec<crate::bus::CatalogModel>,
     presets: Vec<CatalogPreset>,
@@ -79,6 +80,11 @@ struct SessionSurface {
 
 #[derive(Default)]
 struct Surface {
+    /// Stream-owned clients have one negotiated connection for every tab.
+    initial_connection: Option<crate::bus::SessionConnection>,
+    auth_methods: HashMap<String, AuthMethodInfo>,
+    failed_auth_setups: HashMap<String, Vec<String>>,
+    active_session: Option<String>,
     sessions: HashMap<String, SessionSurface>,
     fallback: SessionSurface,
     /// A local Client compositor advertised one of its TUI projections.
@@ -90,12 +96,12 @@ struct Surface {
 }
 
 impl Surface {
-    fn reset_agent(&mut self) {
-        let client_compositor = self.client_compositor;
-        *self = Self {
-            client_compositor,
-            ..Self::default()
-        };
+    fn active_connection(&self) -> Option<&Value> {
+        self.active_session.as_deref().and_then(|id| self.session(id).connection.as_ref())
+    }
+
+    fn prompt_image_for(&self, id: &str) -> bool {
+        self.session(id).connection.as_ref().map(prompt_image_supported).unwrap_or(self.prompt_image)
     }
 
     fn session_mut(&mut self, session_id: Option<&str>) -> &mut SessionSurface {
@@ -309,7 +315,7 @@ struct PromptFinish {
     gen: u64,
 }
 
-/// Per-session turn state on one shared ACP connection. The server allows one
+/// Per-session turn state behind the ACP transport. Each server allows one
 /// in-flight `session/prompt` per session, so every bound session gets its own
 /// handle; completions are demultiplexed by the id inside `PromptFinish`.
 #[derive(Default)]
@@ -532,7 +538,7 @@ fn begin_prompt(
             let prompt_image = surface
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .prompt_image;
+                .prompt_image_for(&sid.0);
             match prompt_content_blocks(blocks, prompt_image, workspace) {
                 Ok(content) if !content.is_empty() => Some(spawn_session_prompt(
                     cx.clone(),
@@ -579,7 +585,7 @@ fn begin_prompt(
             let prompt_image = surface
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .prompt_image;
+                .prompt_image_for(&sid.0);
             match prompt_content_blocks(blocks, prompt_image, workspace) {
                 Ok(content) if !content.is_empty() => Some(spawn_session_prompt(
                     cx.clone(),
@@ -610,6 +616,49 @@ fn begin_prompt(
     }
 }
 
+fn connection_id(surface: &Arc<Mutex<Surface>>, session: &str) -> Option<String> {
+    surface.lock().unwrap_or_else(|e| e.into_inner()).session(session).connection.as_ref()
+        .and_then(|value| value.get("id")).and_then(Value::as_str).map(str::to_string)
+}
+
+fn auth_stalled_for(session: &str, parked: &VecDeque<ParkedPrompt>, surface: &Arc<Mutex<Surface>>) -> bool {
+    let owner = connection_id(surface, session);
+    parked.iter().any(|prompt| prompt.session.as_deref()
+        .map(|id| connection_id(surface, id) == owner).unwrap_or(true))
+}
+
+fn requeue_connection_prompts(
+    sessions: &mut HashMap<String, SessionHandle>, current: &Option<SessionId>,
+    parked: &mut VecDeque<ParkedPrompt>, surface: &Arc<Mutex<Surface>>, owner: Option<&str>,
+) -> usize {
+    let (mut ready, waiting): (VecDeque<_>, VecDeque<_>) = parked.drain(..).partition(|prompt| {
+        owner.is_none() || prompt.session.as_deref()
+            .is_some_and(|id| connection_id(surface, id).as_deref() == owner)
+    });
+    let retried = requeue_parked_prompts(sessions, current, &mut ready);
+    *parked = waiting;
+    parked.extend(ready);
+    retried
+}
+
+fn emit_method_auth(bus: &Sender<AppEvent>, surface: &Arc<Mutex<Surface>>, snapshot: AuthSnapshot) {
+    let targets: Vec<_> = {
+        let s = surface.lock().unwrap_or_else(|e| e.into_inner());
+        s.sessions.iter().filter_map(|(id, session)| {
+            let connection = session.connection.as_ref()?;
+            let methods = session_connection_snapshot(connection).auth.methods;
+            if !methods.iter().any(|method| Some(&method.id) == snapshot.method_id.as_ref()) { return None; }
+            let mut scoped = snapshot.clone();
+            scoped.methods = methods;
+            Some((id.clone(), scoped))
+        }).collect()
+    };
+    if targets.is_empty() { emit_auth(bus, snapshot); }
+    else { for (session_id, snapshot) in targets {
+        let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, snapshot, open: false }));
+    } }
+}
+
 /// Start queued prompts whose session is free. Each session runs at most one
 /// in-flight `session/prompt`; a busy session simply keeps its FIFO.
 #[allow(clippy::too_many_arguments)]
@@ -626,14 +675,10 @@ fn drain_ready_sessions(
     next_gen: &mut u64,
     done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) {
-    // While any prompt is stalled on auth, new prompts are not started:
-    // they would only fail the same way (and the stall release drains
-    // everything in order).
-    if !parked.is_empty() {
-        return;
-    }
+    // A credential stall applies only to sessions owned by that connection.
     let keys: Vec<String> = sessions.keys().cloned().collect();
     for key in keys {
+        if auth_stalled_for(&key, parked, surface) { continue; }
         let Some(handle) = sessions.get_mut(&key) else {
             continue;
         };
@@ -658,11 +703,6 @@ fn drain_ready_sessions(
             done,
         )
         .map(|task| (*next_gen, task));
-        // If the begin parked a prompt (only possible without a session,
-        // which drain never passes) stop starting more.
-        if !parked.is_empty() {
-            return;
-        }
     }
 }
 
@@ -756,15 +796,17 @@ fn apply_prompt_finish(
                 kind: finish.payload,
             });
             let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
-                session: finish.session_id,
+                session: finish.session_id.clone(),
                 kind: "interrupted".into(),
             }));
-            emit_needs_auth_open(
-                bus,
-                methods.to_vec(),
-                selected,
-                Some(acp_error_message(&err)),
-            );
+            if let Some(value) = err.data.as_ref().and_then(|data| data.get("marttyConnection")) {
+                let mut snapshot = session_connection_snapshot(value).auth;
+                snapshot.status = AuthStatus::NeedsAuth;
+                snapshot.message = Some(acp_error_message(&err));
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id: finish.session_id, snapshot, open: true }));
+            } else {
+                emit_needs_auth_open(bus, methods.to_vec(), selected, Some(acp_error_message(&err)));
+            }
         }
         Err(err) => {
             let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
@@ -841,6 +883,22 @@ async fn create_prompt_session(
     }
 }
 
+fn session_connection_snapshot(value: &Value) -> crate::bus::SessionConnection {
+    let mut argv = value.get("command").and_then(Value::as_str)
+        .map(|command| vec![command.to_string()]).unwrap_or_default();
+    argv.extend(value.get("args").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_string));
+    let methods = parse_auth_methods(value.get("authMethods").unwrap_or(&Value::Null),
+        &argv, value.get("cwd").and_then(Value::as_str).unwrap_or("."), &process_env());
+    let auth = if methods.is_empty() { AuthSnapshot::none() } else { configured_snapshot(methods, None) };
+    let load_session = load_session_supported(value);
+    crate::bus::SessionConnection {
+        server: value.pointer("/agentInfo/name").and_then(Value::as_str).map(str::to_string),
+        auth, load_session, list_session: list_session_supported(value) || load_session,
+        resume_session: resume_session_supported(value),
+    }
+}
+
 fn apply_setup(
     value: &Value,
     session_hint: Option<&str>,
@@ -854,6 +912,19 @@ fn apply_setup(
             .and_then(Value::as_str)
             .or(session_hint);
         surface.session_mut(session).modes.clear();
+        if let (Some(session_id), Some(connection)) = (session, value.pointer("/_meta/marttyConnection")) {
+            surface.session_mut(Some(session_id)).connection = Some(connection.clone());
+            for method in session_connection_snapshot(connection).auth.methods {
+                surface.auth_methods.insert(method.id.clone(), method);
+            }
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionConnection {
+                session_id: session_id.to_string(), connection: session_connection_snapshot(connection),
+            }));
+        } else if let (Some(session_id), Some(connection)) = (session, &surface.initial_connection) {
+            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionConnection {
+                session_id: session_id.to_string(), connection: connection.clone(),
+            }));
+        }
         if let Some(options) = value
             .get("configOptions")
             .or_else(|| value.get("config_options"))
@@ -1332,10 +1403,10 @@ async fn fetch_static_plugins(
 }
 
 fn ensure_agent_cordis(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent>) -> bool {
-    let advertised = surface
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .cordis;
+    let advertised = {
+        let surface = surface.lock().unwrap_or_else(|error| error.into_inner());
+        surface.active_connection().map(crate::cordis::advertised_by_agent).unwrap_or(surface.cordis)
+    };
     if !advertised {
         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
             "agent does not advertise _dsh/cordis".into(),
@@ -1355,138 +1426,6 @@ fn ensure_client_compositor(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent
         )));
     }
     advertised
-}
-
-struct HarnessSwitch {
-    label: String,
-    agent_argv: Vec<String>,
-}
-
-fn switched_harness(value: &Value) -> Option<HarnessSwitch> {
-    if value.get("action").and_then(Value::as_str) != Some("harness-switched") {
-        return None;
-    }
-    let harness = value.get("harness")?;
-    let label = harness
-        .get("label")
-        .and_then(Value::as_str)
-        .filter(|label| !label.is_empty())
-        .map(str::to_string)?;
-    let mut agent_argv = harness
-        .get("command")
-        .and_then(Value::as_str)
-        .filter(|command| !command.is_empty())
-        .map(|command| vec![command.to_string()])
-        .unwrap_or_default();
-    agent_argv.extend(
-        harness
-            .get("args")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_string),
-    );
-    Some(HarnessSwitch { label, agent_argv })
-}
-
-struct SwitchedAgent {
-    name: String,
-    load_session: bool,
-    list_session: bool,
-    resume_session: bool,
-    methods: Vec<AuthMethodInfo>,
-    selected: Option<AuthMethodInfo>,
-    session_id: Option<SessionId>,
-    session_auth_pending: bool,
-}
-
-async fn initialize_switched_agent(
-    cx: &ConnectionTo<Agent>,
-    cfg: &RuntimeConfig,
-    agent_argv: &[String],
-    cwd: &std::path::Path,
-    surface: &Arc<Mutex<Surface>>,
-    bus: &Sender<AppEvent>,
-) -> std::result::Result<SwitchedAgent, AcpError> {
-    let init = cx.send_request(initialize_request()).block_task_setup_deadline().await?;
-    let name = init
-        .agent_info
-        .as_ref()
-        .map(|info| info.name.clone())
-        .unwrap_or_else(|| "acp".into());
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::Initialized { server: name.clone() }));
-    let init_value = serde_json::to_value(&init).unwrap_or(Value::Null);
-    if let Ok(mut surface) = surface.lock() {
-        surface.prompt_image = init.agent_capabilities.prompt_capabilities.image
-            || prompt_image_supported(&init_value);
-        surface.cordis = crate::cordis::advertised_by_agent(&init_value);
-    }
-    let load_session = init.agent_capabilities.load_session
-        || load_session_supported(&init_value);
-    let resume_session = resume_session_supported(&init_value);
-    // Before sessionCapabilities.list existed, Martty-compatible agents paired
-    // session/list with the top-level loadSession flag. Keep that legacy route.
-    let list_session = list_session_supported(&init_value) || load_session;
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
-        load_session,
-        list_session,
-        resume_session,
-    }));
-    let auth_raw = init_value
-        .get("authMethods")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let env = process_env();
-    let agent_argv = if agent_argv.is_empty() {
-        cfg.agent_argv()
-    } else {
-        agent_argv.to_vec()
-    };
-    let methods = parse_auth_methods(&auth_raw, &agent_argv, &cfg.workspace, &env);
-    let declared = declared_auth_methods(&auth_raw);
-    let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
-    let selected: Option<AuthMethodInfo> = None;
-    if auth.status == AuthStatus::NeedsAuth
-        && methods.first().is_some_and(|method| method.form)
-    {
-        auth = configured_snapshot(methods.clone(), None);
-        auth.status = AuthStatus::Unknown;
-    }
-    let needs_open = auth.status == AuthStatus::NeedsAuth;
-    emit_auth(bus, auth);
-    emit_open_auth_if_needed(
-        bus,
-        if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None },
-    );
-    let mut session_auth_pending = false;
-    let session_id = match create_prompt_session(
-        cx,
-        cwd,
-        surface,
-        bus,
-        &methods,
-        selected.as_ref(),
-    )
-    .await?
-    {
-        Some(session_id) => Some(session_id),
-        None => {
-            session_auth_pending = true;
-            None
-        }
-    };
-    let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: name.clone() }));
-    Ok(SwitchedAgent {
-        name,
-        load_session,
-        list_session,
-        resume_session,
-        methods,
-        selected,
-        session_id,
-        session_auth_pending,
-    })
 }
 
 /// The local compositor owns client projections independently of Agent Cordis.
@@ -2046,13 +1985,18 @@ where
                     surface.prompt_image = init.agent_capabilities.prompt_capabilities.image
                         || prompt_image_supported(&init_value);
                     surface.cordis = crate::cordis::advertised_by_agent(&init_value);
+                    let mut connection = init_value.clone();
+                    connection["command"] = json!(cfg.agent_argv().first());
+                    connection["args"] = json!(cfg.agent_argv().into_iter().skip(1).collect::<Vec<_>>());
+                    connection["cwd"] = json!(cfg.workspace);
+                    surface.initial_connection = Some(session_connection_snapshot(&connection));
                 }
-                let mut load_session = init.agent_capabilities.load_session
+                let load_session = init.agent_capabilities.load_session
                     || load_session_supported(&init_value);
-                let mut resume_session = resume_session_supported(&init_value);
+                let resume_session = resume_session_supported(&init_value);
                 // Before sessionCapabilities.list existed, Martty-compatible agents paired
                 // session/list with the top-level loadSession flag. Keep that legacy route.
-                let mut list_session = list_session_supported(&init_value) || load_session;
+                let list_session = list_session_supported(&init_value) || load_session;
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
                     load_session,
                     list_session,
@@ -2063,7 +2007,7 @@ where
                     .cloned()
                     .unwrap_or(Value::Null);
                 let env = process_env();
-                let mut methods = parse_auth_methods(
+                let methods = parse_auth_methods(
                     &auth_raw,
                     &cfg.agent_argv(),
                     &cfg.workspace,
@@ -2163,7 +2107,6 @@ where
                             active_plugin_cancelled = false;
                         }
                     }
-                    let mut harness_switch = None;
                     let deferred = if active_plugin_operation.is_none() {
                         deferred_commands.pop_front()
                     } else {
@@ -2244,7 +2187,7 @@ where
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt") {
                                 Ok(Some(sid)) => {
                                     let handle = sessions.entry(sid.to_string()).or_default();
-                                    if handle.inflight.is_some() || controls.busy(&sid.0) || !parked.is_empty() {
+                                    if handle.inflight.is_some() || controls.busy(&sid.0) || auth_stalled_for(&sid.0, &parked, &surface) {
                                         handle.queue.push_back(next);
                                     } else {
                                         prompt_gen += 1;
@@ -2287,7 +2230,7 @@ where
                                             message_id,
                                             steer_done_tx.clone(),
                                         );
-                                    } else if !parked.is_empty() {
+                                    } else if auth_stalled_for(&sid.0, &parked, &surface) {
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                             message_id,
                                             deferred: true,
@@ -2341,7 +2284,7 @@ where
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt_images") {
                                 Ok(Some(sid)) => {
                                     let handle = sessions.entry(sid.to_string()).or_default();
-                                    if handle.inflight.is_some() || controls.busy(&sid.0) || !parked.is_empty() {
+                                    if handle.inflight.is_some() || controls.busy(&sid.0) || auth_stalled_for(&sid.0, &parked, &surface) {
                                         handle.queue.push_back(next);
                                     } else {
                                         prompt_gen += 1;
@@ -2380,7 +2323,7 @@ where
                                         let prompt_image = surface
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner())
-                                            .prompt_image;
+                                            .prompt_image_for(&sid.0);
                                         match prompt_content_blocks(blocks, prompt_image, &cfg.workspace) {
                                             Ok(content) if !content.is_empty() => spawn_steer_prompt(
                                                 cx.clone(),
@@ -2401,7 +2344,7 @@ where
                                             }));
                                             }
                                         }
-                                    } else if !parked.is_empty() {
+                                    } else if auth_stalled_for(&sid.0, &parked, &surface) {
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                             message_id,
                                             deferred: true,
@@ -2675,10 +2618,9 @@ where
                             }
                             match finished {
                                 Some(Ok((_, PluginOperationFinish { result: Ok(value), .. }))) if primary => {
-                                    // An acknowledged handoff already changed the process.
-                                    // Even if Esc raced its reply, finish that one handshake;
-                                    // skipping it would leave the new Agent uninitialized.
-                                    harness_switch = switched_harness(&value);
+                                    if !cancelled && value.get("action").and_then(Value::as_str) == Some("new-session") {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::NewSessionRequested));
+                                    }
                                 }
                                 Some(Ok((_, PluginOperationFinish { context, result: Err(error) }))) if !cancelled => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
@@ -2696,24 +2638,63 @@ where
                         completion = control_done_rx.recv(), if active_plugin_operation.is_none() => {
                             match completion {
                                 Some(ControlFinish::SessionOperationDone { session_id }) => controls.settled(&session_id),
-                                Some(ControlFinish::Setup { result }) => match result {
+                                Some(ControlFinish::Setup { result, requester }) => match result {
                                     Ok((sid, setup, notice)) => {
                                         bind_session(&mut sessions, &mut current, &mut pending, sid.clone());
                                         session_auth_pending = false;
-                                        emit_session_bound(&bus, &sid, notice);
+                                        if let Some(previous_id) = requester {
+                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionBoundTo {
+                                                previous_id, session_id: sid.to_string(), notice,
+                                            }));
+                                        } else { emit_session_bound(&bus, &sid, notice); }
                                         apply_setup(&setup, Some(&sid.0), &surface, &bus);
                                     }
                                     Err(err) => {
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed { message: acp_error_message(&err) }));
-                                        if is_auth_required_error(&err) {
-                                            emit_needs_auth_open(&bus, methods.clone(), selected.as_ref(), Some(acp_error_message(&err)));
+                                        let message = acp_error_message(&err);
+                                        if let Some(previous_id) = &requester {
+                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailedTo { previous_id: previous_id.clone(), message: message.clone() }));
+                                        } else {
+                                            let _ = bus.send(AppEvent::Ctl(CtlEvent::BindFailed { message: message.clone() }));
+                                        }
+                                        if let Some(value) = err.data.as_ref().and_then(|data| data.get("marttyConnection")) {
+                                            let mut connection = session_connection_snapshot(value);
+                                            if is_auth_required_error(&err) {
+                                                connection.auth.status = AuthStatus::NeedsAuth;
+                                                connection.auth.message = Some(message.clone());
+                                                let mut surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                                if let Some(id) = &requester { surface.session_mut(Some(id)).connection = Some(value.clone()); }
+                                                for method in &connection.auth.methods {
+                                                    surface.auth_methods.insert(method.id.clone(), method.clone());
+                                                    if let Some(requester) = &requester {
+                                                        surface.failed_auth_setups.entry(method.id.clone()).or_default().push(requester.clone());
+                                                    }
+                                                }
+                                            }
+                                            if let Some(session_id) = requester {
+                                                let snapshot = connection.auth.clone();
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionConnection { session_id: session_id.clone(), connection }));
+                                                if is_auth_required_error(&err) { let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, snapshot, open: true })); }
+                                            }
+                                        } else if is_auth_required_error(&err) {
+                                            emit_needs_auth_open(&bus, methods.clone(), selected.as_ref(), Some(message));
                                         }
                                     }
                                 },
                                 Some(ControlFinish::Authenticated { method, result }) => match result {
                                     Ok(()) => {
                                         selected = Some(method.clone());
-                                        emit_auth(&bus, configured_snapshot(methods.clone(), Some(&method)));
+                                        emit_method_auth(&bus, &surface, configured_snapshot(methods.clone(), Some(&method)));
+                                        let retries = {
+                                            let mut surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                            let retries = surface.failed_auth_setups.remove(&method.id).unwrap_or_default();
+                                            for pending in surface.failed_auth_setups.values_mut() { pending.retain(|id| !retries.contains(id)); }
+                                            retries
+                                        };
+                                        for session_id in retries {
+                                            controls.enqueue(Cmd::NewSession { requester: Some(session_id), retry_auth: Some(method.id.clone()) },
+                                                &cx, &bus, &surface, &methods, &selected, &cwd,
+                                                load_session, resume_session, list_session, &control_done_tx);
+                                        }
                                         if current.is_none() {
                                             match create_prompt_session(&cx, &cwd, &surface, &bus, &methods, Some(&method)).await {
                                                 Ok(Some(sid)) => {
@@ -2727,7 +2708,13 @@ where
                                                 }
                                             }
                                         }
-                                        let retried = requeue_parked_prompts(&mut sessions, &current, &mut parked);
+                                        let owner = {
+                                            let s = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                            s.sessions.values().filter_map(|session| session.connection.as_ref()).find(|connection|
+                                                session_connection_snapshot(connection).auth.methods.iter().any(|known| known.id == method.id))
+                                                .and_then(|connection| connection.get("id")).and_then(Value::as_str).map(str::to_string)
+                                        };
+                                        let retried = requeue_connection_prompts(&mut sessions, &current, &mut parked, &surface, owner.as_deref());
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(if retried > 0 {
                                             format!("signed in — retried {retried} parked prompt{s}", s = if retried == 1 { "" } else { "s" })
                                         } else { "signed in".into() })));
@@ -2736,7 +2723,7 @@ where
                                         selected = Some(method.clone());
                                         let mut failure = needs_auth_snapshot(methods.clone(), Some(&method), Some(acp_error_message(&err)));
                                         failure.status = AuthStatus::Failed;
-                                        emit_auth(&bus, failure);
+                                        emit_method_auth(&bus, &surface, failure);
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!("authenticate: {}", acp_error_message(&err)))));
                                     }
                                 },
@@ -2819,17 +2806,15 @@ where
                                     selected.as_ref(),
                                 );
                                 if ok && !parked.is_empty() {
-                                    // A success proves the auth stall is
-                                    // over: requeue every stalled prompt
-                                    // into its owning session.
-                                    requeue_parked_prompts(
-                                        &mut sessions,
-                                        &current,
-                                        &mut parked,
+                                    // A success releases stalls only for
+                                    // sessions on the same connection.
+                                    requeue_connection_prompts(
+                                        &mut sessions, &current, &mut parked, &surface,
+                                        connection_id(&surface, &key).as_deref(),
                                     );
                                 }
                             }
-                            let queued = parked.is_empty()
+                            let queued = !auth_stalled_for(&key, &parked, &surface)
                                 && sessions
                                     .get(&key)
                                     .is_some_and(|handle| !handle.queue.is_empty());
@@ -2855,50 +2840,6 @@ where
                                         "status": "idle"
                                     }),
                                 });
-                            }
-                        }
-                    }
-                    if let Some(HarnessSwitch { label, agent_argv }) = harness_switch {
-                        for handle in sessions.values_mut() {
-                            if let Some((_, task)) = handle.inflight.take() { task.abort(); }
-                        }
-                        sessions.clear();
-                        pending.clear();
-                        parked.clear();
-                        current = None;
-                        session_auth_pending = false;
-                        controls = ControlWorkers::default();
-                        while control_done_rx.try_recv().is_ok() {}
-                        if let Ok(mut surface) = surface.lock() {
-                            surface.reset_agent();
-                        }
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
-                            runtime: "harness".into(),
-                        }));
-                        match initialize_switched_agent(
-                            &cx, &cfg, &agent_argv, &cwd, &surface, &bus,
-                        ).await {
-                            Ok(next) => {
-                                load_session = next.load_session;
-                                list_session = next.list_session;
-                                resume_session = next.resume_session;
-                                methods = next.methods;
-                                selected = next.selected;
-                                if let Some(sid) = next.session_id {
-                                    bind_session(&mut sessions, &mut current, &mut pending, sid);
-                                }
-                                session_auth_pending = next.session_auth_pending;
-                                let notice = if session_auth_pending {
-                                    format!("Harness {label} connected · sign in to start a session")
-                                } else {
-                                    format!("Harness switched to {label} · new session via {}", next.name)
-                                };
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(notice)));
-                            }
-                            Err(error) => {
-                                let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
-                                    target: label, error: format!("{error}")
-                                }));
                             }
                         }
                     }

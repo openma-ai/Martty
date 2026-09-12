@@ -46,7 +46,7 @@ export function planHarnessRemoval(settingsPath, id, options = {}) {
   const entries = savedHarnesses(settingsPath)
   const entry = entries.find(entry => entry.id === id)
   if (!entry) throw new Error('Only a saved Harness configuration can be removed')
-  if (options.isCurrent?.(entry)) throw new Error('Switch to another Harness before removing the current Harness')
+  if (options.isCurrent?.(entry)) throw new Error('This Harness is still running. Restart Martty with another default before removing it')
   const forced = [options.forcedHarness, ...(options.defaults ?? []).filter(entry => entry.source === 'forced')].filter(Boolean)
   if (forced.some(value => value.id === id || value.command === entry.command)) throw new Error('This Harness is product-forced and cannot be removed here')
   const installation = privateInstallation(settingsPath, entry)

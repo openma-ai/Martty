@@ -57,7 +57,7 @@ def requests(role, count):
 try:
     c.expect('fixture-initial-model')
     c.send('/harness\r')
-    c.expect('Switch Harness')
+    c.expect('Default Harness')
     c.send('\x1b[3~') # Current row is protected.
     c.send('\x1b[B') # Select the saved private installation.
     c.expect('delete') # Incremental terminal paint may reuse cells in "remove".
@@ -68,7 +68,7 @@ try:
     c.send('\x1b'); time.sleep(.15)
     c.expect('Remove configuration only')
     c.send('\x1b'); time.sleep(.15)
-    c.expect('Switch Harness')
+    c.expect('Default Harness')
     c.send('\x1b[3~') # Returned to the same removable row, not the current Harness.
     c.expect('Remove configuration only')
     c.send('\x1b[B\r')
@@ -77,13 +77,13 @@ try:
     c.expect('Harness removed')
     c.send('\x1b'); time.sleep(.15)
     c.send('/harness fixture-failure\r')
+    c.expect('Default Harness saved')
+    c.send('\r')
     c.expect('Fixture executable is missing')
     c.expect('fixture diagnostic: missing dependency')
-    c.send('\r')
+    c.send('/new\r')
     requests('failure', 2)
-    c.expect('Fixture executable is missing')
-    c.send('\x1b'); time.sleep(.15)
-    c.send('/harness fixture-initial\r')
+    c.send('/harness fixture-initial --new\r')
     requests('initial', 2)
     c.expect('fixture-initial-model')
     c.send('/quit\r')

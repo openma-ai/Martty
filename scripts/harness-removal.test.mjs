@@ -61,7 +61,7 @@ test('Shared resources, external commands and symlinks cannot be cleaned', t => 
 
 test('Running and product-forced Harnesses cannot be removed; stale confirmations cannot delete replacements', t => {
   const { settings, command } = fixture(t)
-  assert.throws(() => planHarnessRemoval(settings, 'agent', { isCurrent: () => true }), /switch/i)
+  assert.throws(() => planHarnessRemoval(settings, 'agent', { isCurrent: () => true }), /still running/i)
   assert.throws(() => planHarnessRemoval(settings, 'agent', { forcedHarness: { id: 'agent', command } }), /forced/i)
   const plan = planHarnessRemoval(settings, 'agent')
   upsertHarness(settings, { id: 'agent', command: 'replacement' })

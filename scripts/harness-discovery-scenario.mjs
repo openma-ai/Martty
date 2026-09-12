@@ -53,13 +53,14 @@ exports.run = async (mode, args) => {
   const role = args[0] || 'local-binary';
   if (role === 'failure') process.stderr.write('fixture diagnostic: missing dependency\n');
   const sessionId = 'fixture-'+role+'-session';
+  let sessionCount = 0;
   const model = 'fixture-'+role+'-model';
   record({kind:'fixture-acp',role});
   const lines = readline.createInterface({input:process.stdin});
   lines.on('line', line => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
-    record({kind:'request',role,method:request.method});
+    record({kind:'request',role,method:request.method,sessionId:request.params?.sessionId,prompt:request.params?.prompt});
     if (request.id === undefined) return;
     const send = value => process.stdout.write(JSON.stringify(value)+'\n');
     const reply = result => send({jsonrpc:'2.0',id:request.id,result});
@@ -67,7 +68,7 @@ exports.run = async (mode, args) => {
       agentCapabilities:{loadSession:false,promptCapabilities:{},_meta:{dsh:{cordis:{protocol:0}}}},authMethods:[]});
     else if (request.method === 'session/new' && role === 'failure') send({jsonrpc:'2.0',id:request.id,
       error:{code:-32603,message:'Fixture executable is missing',data:{code:'ENOENT'}}});
-    else if (request.method === 'session/new') reply({sessionId,
+    else if (request.method === 'session/new') reply({sessionId: sessionId + (++sessionCount === 1 ? '' : '-'+sessionCount),
       configOptions:[{id:'model',name:'Model',type:'select',category:'model',currentValue:model,options:[{value:model,name:model}]}]});
     else if (request.method === 'session/prompt') {
       send({jsonrpc:'2.0',method:'session/update',params:{sessionId:request.params?.sessionId || sessionId,

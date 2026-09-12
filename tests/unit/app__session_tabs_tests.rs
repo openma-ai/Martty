@@ -53,14 +53,50 @@ fn final_event(session: &str, text: &str) -> crate::events::UiEvent {
 }
 
 #[test]
-fn harness_handoff_discards_old_connection_tabs_and_pending_binds() {
+fn harness_new_session_action_preserves_old_tabs_from_every_position() {
+    for active_tab in 0..3 {
+        let (mut app, ctl, _rx) = test_app();
+        app.demo = false;
+        app.startup_bound = true;
+        app.open_new_session("old-second".into(), true);
+        app.open_new_session("old-third".into(), true);
+        app.switch_to_session(active_tab);
+        app.handle(AppEvent::Ctl(CtlEvent::NewSessionRequested), &ctl);
+        assert_eq!(app.session_tabs().len(), 4);
+        assert!(app.session_tabs()[3].current);
+        app.handle(AppEvent::Ctl(CtlEvent::SessionBound {
+            session_id: "new-harness".into(), notice: None,
+        }), &ctl);
+        for (tab, id) in ["dsh-test", "old-second", "old-third", "new-harness"].iter().enumerate() {
+            app.switch_to_session(tab);
+            assert_eq!(&app.session_id, id);
+        }
+    }
+}
+
+#[test]
+fn empty_session_then_harness_new_chat_and_new_always_adds_a_tab() {
     let (mut app, ctl, _rx) = test_app();
-    app.open_new_session("old-second".into(), true);
-    assert_eq!(app.parked.len(), 1);
-    app.handle(AppEvent::Ctl(CtlEvent::Starting { runtime: "harness".into() }), &ctl);
-    assert!(app.parked.is_empty(), "old Agent tabs cannot target the new process");
-    assert!(app.awaiting_binds.is_empty());
-    assert!(!app.startup_bound);
+    app.demo = false;
+    app.startup_bound = true;
+    app.handle(AppEvent::Ctl(CtlEvent::NewSessionRequested), &ctl);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionBound {
+        session_id: "new-harness".into(), notice: None,
+    }), &ctl);
+    app.transcript.push_user("hello".into(), false);
+    app.apply_ui(final_event("new-harness", "hello back"));
+    app.new_session_flow("", &ctl);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionBound {
+        session_id: "new-second".into(), notice: None,
+    }), &ctl);
+    assert_eq!(app.session_tabs().len(), 3);
+    assert!(app.session_tabs()[2].current);
+    assert_eq!(app.session_id, "new-second");
+    app.switch_to_session(1);
+    assert_eq!(app.session_id, "new-harness");
+    assert!(transcript_text(&mut app.transcript).contains("hello back"));
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
 }
 
 #[test]
@@ -77,6 +113,52 @@ fn acp_reported_models_follow_session_tabs() {
     let slot = app.parked.remove(0);
     app.put_live_slot(slot);
     assert_eq!(app.session_model.as_deref(), Some("updated-first-model"));
+}
+
+#[test]
+fn harness_identity_and_capabilities_follow_the_owning_tab() {
+    let (mut app, ctl, _rx) = test_app();
+    app.server_info = Some("alpha".into());
+    app.load_session = true;
+    app.open_new_session("beta-session".into(), true);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionConnection {
+        session_id: "beta-session".into(),
+        connection: crate::bus::SessionConnection {
+            server: Some("beta".into()), auth: crate::acp_auth::AuthSnapshot::none(),
+            load_session: false, list_session: true, resume_session: true,
+        },
+    }), &ctl);
+    assert_eq!(app.server_info.as_deref(), Some("beta"));
+    assert!(!app.load_session);
+    assert!(app.resume_session_cap);
+    app.switch_to_session(0);
+    assert_eq!(app.server_info.as_deref(), Some("alpha"));
+    assert!(app.load_session);
+    assert!(!app.resume_session_cap);
+    app.switch_to_session(1);
+    assert_eq!(app.server_info.as_deref(), Some("beta"));
+}
+
+#[test]
+fn a_failed_harness_session_retry_binds_its_original_tab_after_a_later_new_session() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.startup_bound = true;
+    app.new_session_flow("", &ctl);
+    let first = app.session_id.clone();
+    app.handle(AppEvent::Ctl(CtlEvent::BindFailedTo { previous_id: first.clone(), message: "Sign in".into() }), &ctl);
+    assert!(crate::ui::dump_frame(&mut app, 100, 34).contains("Sign in"));
+    app.new_session_flow("", &ctl);
+    let second = app.session_id.clone();
+    app.handle(AppEvent::Ctl(CtlEvent::SessionBoundTo { previous_id: second, session_id: "second".into(), notice: None }), &ctl);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionBoundTo { previous_id: first, session_id: "first-retried".into(), notice: None }), &ctl);
+    assert_eq!(app.session_id, "second");
+    assert!(app.session_bound);
+    assert_eq!(app.session_tabs().len(), 3);
+    app.switch_to_session(1);
+    assert_eq!(app.session_id, "first-retried");
+    assert!(app.session_bound);
+    assert!(app.awaiting_binds.is_empty());
 }
 
 #[test]

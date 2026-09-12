@@ -55,6 +55,28 @@ function makeCtx(acpClient, session = {}) {
   return ctx
 }
 
+test('/harness selects the default without touching the current session; Enter uses new-session', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-default-session-'))
+  t.after(() => rmSync(root, {recursive:true,force:true}))
+  const settingsPath = path.join(root, 'settings.json')
+  const entry = {id:'beta',label:'Beta',command:'beta-acp',args:[]}
+  upsertHarness(settingsPath, entry)
+  const defaults = []
+  const ctx = makeCtx({
+    command:'alpha-acp',args:[],
+    setDefaultAgent(spec) { defaults.push(spec) },
+    switchAgent() { assert.fail('Changing the default must not replace an ACP process') },
+  }, {sessionId:'alpha-session',bound:true,started:true})
+  harnessView.apply(ctx, {settingsPath,pathValue:'',defaults:[]})
+  await ctx.tuiCommands.dispatch({protocol:0,name:'harness',args:'beta'})
+  assert.equal(selectedHarness(settingsPath).id, 'beta')
+  assert.deepEqual(defaults, [{command:'beta-acp',args:[]}])
+  assert.equal(ctx.acpSessionStatus.current().session.sessionId, 'alpha-session')
+  assert.equal(ctx.tuiOverlay.active().id, 'harness-saved')
+  const result = await ctx.tuiOverlay.dispatch({protocol:0,id:'harness-saved',event:'submit'})
+  assert.deepEqual(result, {action:'new-session'})
+})
+
 test('/harness opens a native picker over configured and discovered entries', async () => {
   assert.equal(typeof harnessView.apply, 'function')
   if (typeof harnessView.apply !== 'function') return
@@ -84,11 +106,11 @@ test('/harness opens a native picker over configured and discovered entries', as
 
     assert.deepEqual(ctx.tuiCommands.list(), [{
       name: 'harness',
-      description: 'Switch or add a Harness; switching starts a new session',
+      description: 'Choose the default Harness for new sessions',
       input: {
-        hint: '[id] | add | remove [id] | find [query]',
+        hint: '[id] [--new] | add | remove [id] | find [query]',
         options: [
-          { value: 'local', label: 'Local ACP', description: 'configured · local-acp --stdio' },
+          { value: 'local', label: 'Local ACP (default)', description: 'configured · local-acp --stdio' },
           { value: 'builtin-dsh', label: 'Bundled DeepSeek Harness', description: 'builtin · /pkg/dsh-acp' },
           { ...addHarnessOption, value: 'add' },
         ],
@@ -99,10 +121,10 @@ test('/harness opens a native picker over configured and discovered entries', as
     assert.deepEqual(ctx.tuiOverlay.active(), {
       kind: 'select',
       id: 'harness',
-      title: 'Switch Harness · starts a new session',
+      title: 'Default Harness · for new sessions',
       value: 'local',
       options: [
-        { value: 'local', label: 'Local ACP', description: 'configured · local-acp --stdio', deletable: true },
+        { value: 'local', label: 'Local ACP (default)', description: 'configured · local-acp --stdio', deletable: true },
         { value: 'builtin-dsh', label: 'Bundled DeepSeek Harness', description: 'builtin · /pkg/dsh-acp' },
         addHarnessOption,
       ],
@@ -119,7 +141,7 @@ test('/harness add saves a custom command; only a later selection switches', asy
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
-      async switchAgent(agent) {
+      async setDefaultAgent(agent) {
         switched.push(agent)
       },
     })
@@ -138,8 +160,7 @@ test('/harness add saves a custom command; only a later selection switches', asy
     assert.deepEqual(switched, [{ command: 'local-acp', args: ['--stdio'] }])
     assert.deepEqual(ctx.tuiCommands.list()[0].input.options, [{
       value: 'local',
-      label: 'Local ACP (current)',
-      disabled: true,
+      label: 'Local ACP (default)',
       description: 'configured · local-acp --stdio',
     }, { ...addHarnessOption, value: 'add' }])
     assert.deepEqual(selectedHarness(settingsPath), {
@@ -149,7 +170,7 @@ test('/harness add saves a custom command; only a later selection switches', asy
       args: ['--stdio'],
     })
     assert.deepEqual(result, {
-      action: 'harness-switched',
+      action: 'harness-selected',
       harness: {
         id: 'local',
         label: 'Local ACP',
@@ -169,7 +190,7 @@ test('/harness add uses a registry npx fallback when the local command is missin
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
-      async switchAgent(agent) {
+      async setDefaultAgent(agent) {
         switched.push(agent)
       },
     })
@@ -205,15 +226,7 @@ test('/harness add uses a registry npx fallback when the local command is missin
       command: 'npx',
       args: ['demo-harness-acp'],
     })
-    assert.deepEqual(result, {
-      action: 'harness-switched',
-      harness: {
-        id: 'demo',
-        label: 'Demo Harness',
-        command: 'npx',
-        args: ['demo-harness-acp'],
-      },
-    })
+    assert.deepEqual(result, { action: 'new-session' })
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -253,7 +266,7 @@ test('/harness find opens discovered ACP candidates inside the TUI', async () =>
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
-      async switchAgent(agent) {
+      async setDefaultAgent(agent) {
         switched.push(agent)
       },
     })
@@ -349,7 +362,7 @@ test('/harness find explains a missing package runner without saving or switchin
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
-      async switchAgent(agent) { switched.push(agent) },
+      async setDefaultAgent(agent) { switched.push(agent) },
     })
     harnessView.apply(ctx, {
       settingsPath,
@@ -452,7 +465,7 @@ test('/harness find confirms managed binary installation before switching', asyn
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
-      async switchAgent(agent) { switched.push(agent) },
+      async setDefaultAgent(agent) { switched.push(agent) },
     })
     harnessView.apply(ctx, {
       settingsPath,
@@ -538,7 +551,7 @@ test('/harness find switches a configured candidate without reconfiguring an emp
     const switched = []
     const ctx = makeCtx({
       kind: 'spawn',
-      async switchAgent(agent) { switched.push(agent) },
+      async setDefaultAgent(agent) { switched.push(agent) },
     }, { bound: true, sessionId: 'empty-session', started: false })
     harnessView.apply(ctx, { settingsPath, pathValue: '', registry: [], defaults: [] })
 
@@ -558,243 +571,10 @@ test('/harness find switches a configured candidate without reconfiguring an emp
       searchable: true,
     })
     const result = await ctx.tuiOverlay.dispatch({ protocol: 0, id: 'harness-find', event: 'submit', value: 'local' })
-    assert.equal(result?.action, 'harness-switched')
+    assert.equal(result?.action, 'harness-selected')
     assert.deepEqual(switched, [{ command: 'local-acp', args: ['--stdio'] }])
     assert.equal(selectedHarness(settingsPath)?.id, 'local')
-    assert.equal(ctx.tuiOverlay.active(), null)
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('/harness marks the forced product Harness until this process switches', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-default-'))
-  const settingsPath = path.join(root, 'settings.json')
-  const productDefault = {
-    id: 'product-default',
-    label: 'Product Default',
-    command: 'product-acp',
-    args: [],
-    source: 'builtin',
-  }
-  try {
-    upsertHarness(settingsPath, {
-      id: 'last-used', label: 'Last Used', command: 'last-used-acp', args: [],
-    })
-    setDefaultHarness(settingsPath, 'last-used')
-    const switched = []
-    const ctx = makeCtx({
-      kind: 'spawn',
-      async switchAgent(agent) {
-        switched.push(agent)
-      },
-    })
-    harnessView.apply(ctx, {
-      settingsPath,
-      forcedHarness: productDefault,
-      defaults: [productDefault],
-      pathValue: '',
-    })
-
-    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
-    assert.equal(ctx.tuiOverlay.active()?.value, 'product-default')
-
-    await ctx.tuiOverlay.dispatch({
-      protocol: 0,
-      id: 'harness',
-      event: 'submit',
-      value: 'last-used',
-    })
-    assert.deepEqual(switched, [{ command: 'last-used-acp', args: [] }])
-
-    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
-    assert.equal(ctx.tuiOverlay.active()?.value, 'last-used')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('submitting the TUI harness picker without an active session immediately replaces the agent', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-submit-'))
-  const settingsPath = path.join(root, 'settings.json')
-  try {
-    upsertHarness(settingsPath, {
-      id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
-    })
-    setDefaultHarness(settingsPath, 'local')
-    const switched = []
-    const ctx = makeCtx({
-      kind: 'spawn',
-      async switchAgent(agent) {
-        switched.push(agent)
-      },
-    })
-    harnessView.apply(ctx, {
-      settingsPath,
-      pathValue: '',
-      defaults: [{
-        id: 'builtin-dsh',
-        label: 'Bundled DeepSeek Harness',
-        command: '/pkg/dsh-acp',
-        args: [],
-        source: 'builtin',
-      }],
-    })
-
-    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
-    const result = await ctx.tuiOverlay.dispatch({
-      protocol: 0,
-      id: 'harness',
-      event: 'submit',
-      value: 'builtin-dsh',
-    })
-
-    assert.deepEqual(switched, [{ command: '/pkg/dsh-acp', args: [] }])
-    assert.deepEqual(selectedHarness(settingsPath), {
-      id: 'builtin-dsh',
-      label: 'Bundled DeepSeek Harness',
-      command: '/pkg/dsh-acp',
-      args: [],
-    })
-    assert.equal(ctx.tuiOverlay.active(), null)
-    assert.deepEqual(result, {
-      action: 'harness-switched',
-      harness: {
-        id: 'builtin-dsh',
-        label: 'Bundled DeepSeek Harness',
-        command: '/pkg/dsh-acp',
-        args: [],
-      },
-    })
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('submitting the TUI harness picker from an unused bound session switches immediately', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-empty-bound-'))
-  const settingsPath = path.join(root, 'settings.json')
-  try {
-    upsertHarness(settingsPath, {
-      id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
-    })
-    setDefaultHarness(settingsPath, 'local')
-    const switched = []
-    const ctx = makeCtx({
-      kind: 'spawn',
-      async switchAgent(agent) {
-        switched.push(agent)
-      },
-    }, { sessionId: 'session-1', bound: true, started: false })
-    harnessView.apply(ctx, {
-      settingsPath,
-      pathValue: '',
-      defaults: [{
-        id: 'builtin-dsh',
-        label: 'Bundled DeepSeek Harness',
-        command: '/pkg/dsh-acp',
-        args: [],
-        source: 'builtin',
-      }],
-    })
-
-    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
-    const result = await ctx.tuiOverlay.dispatch({
-      protocol: 0,
-      id: 'harness',
-      event: 'submit',
-      value: 'builtin-dsh',
-    })
-
-    assert.deepEqual(switched, [{ command: '/pkg/dsh-acp', args: [] }])
-    assert.equal(ctx.tuiOverlay.active(), null)
-    assert.deepEqual(result, {
-      action: 'harness-switched',
-      harness: {
-        id: 'builtin-dsh',
-        label: 'Bundled DeepSeek Harness',
-        command: '/pkg/dsh-acp',
-        args: [],
-      },
-    })
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('submitting the TUI harness picker after the first prompt requires confirmation', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-confirm-'))
-  const settingsPath = path.join(root, 'settings.json')
-  try {
-    upsertHarness(settingsPath, {
-      id: 'local', label: 'Local ACP', command: 'local-acp', args: [],
-    })
-    setDefaultHarness(settingsPath, 'local')
-    const switched = []
-    const ctx = makeCtx({
-      kind: 'spawn',
-      async switchAgent(agent) {
-        switched.push(agent)
-      },
-    }, { sessionId: 'session-1', bound: true, started: true })
-    harnessView.apply(ctx, {
-      settingsPath,
-      pathValue: '',
-      defaults: [{
-        id: 'builtin-dsh',
-        label: 'Bundled DeepSeek Harness',
-        command: '/pkg/dsh-acp',
-        args: [],
-        source: 'builtin',
-      }],
-    })
-
-    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: '' })
-    const first = await ctx.tuiOverlay.dispatch({
-      protocol: 0,
-      id: 'harness',
-      event: 'submit',
-      value: 'builtin-dsh',
-    })
-
-    assert.equal(first, undefined)
-    assert.deepEqual(switched, [])
-    assert.deepEqual(ctx.tuiOverlay.active(), {
-      kind: 'select',
-      id: 'harness-confirm',
-      title: 'Switch Harness? · starts a new session',
-      value: 'switch',
-      options: [
-        {
-          value: 'switch',
-          label: 'Switch to Bundled DeepSeek Harness',
-          description: 'Current session stays available in /session',
-        },
-        {
-          value: 'cancel',
-          label: 'Stay in current session',
-          description: 'Keep using the current Harness',
-        },
-      ],
-    })
-
-    const result = await ctx.tuiOverlay.dispatch({
-      protocol: 0,
-      id: 'harness-confirm',
-      event: 'submit',
-      value: 'switch',
-    })
-
-    assert.deepEqual(switched, [{ command: '/pkg/dsh-acp', args: [] }])
-    assert.deepEqual(result, {
-      action: 'harness-switched',
-      harness: {
-        id: 'builtin-dsh',
-        label: 'Bundled DeepSeek Harness',
-        command: '/pkg/dsh-acp',
-        args: [],
-      },
-    })
+    assert.equal(ctx.tuiOverlay.active().id, 'harness-saved')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -826,7 +606,7 @@ test('/harness <id> saves directly while profile mode remains explicitly Host-ow
     assert.equal(selectedHarness(settingsPath)?.id, 'builtin-dsh')
     assert.equal(
       ctx.tuiOverlay.active().nodes[0].text,
-      'Bundled DeepSeek Harness is saved for a new standalone session. The current dsh profile and session remain Host-owned.',
+      'Bundled DeepSeek Harness is saved for the next standalone session. The current profile owns its Harness.',
     )
   } finally {
     rmSync(root, { recursive: true, force: true })

@@ -146,6 +146,13 @@ export function muxAcpAndCompositor(opts) {
   let initializeId
   /** @type {{ protocol: number } | null} */
   let agentCordis = null
+  const initializedConnections = new Set()
+  const capabilityFor = message => {
+    if (typeof agent.capabilityFor !== 'function') return agentCordis
+    try { return agent.capabilityFor(message) } catch { return null }
+  }
+  const withOrigin = (message, callback) => typeof agent.withOrigin === 'function'
+    ? agent.withOrigin(message, callback) : callback()
 
   onJsonLines(agent.stdout, (line) => {
     let message
@@ -167,14 +174,21 @@ export function muxAcpAndCompositor(opts) {
       return
     }
     if (isHostMessage(message)) {
-      if (agentCordis !== null) onHost?.(message)
+      if (capabilityFor(message) !== null) withOrigin(message, () => onHost?.(message))
       return
     }
     if (message?.id !== undefined && typeof message.method !== 'string') pendingClient.delete(message.id)
     onAcp?.('agent', message)
     tui.output.write(`${line}\n`)
+    const connection = message.result?._meta?.marttyConnection
+    if (connection && !initializedConnections.has(connection.id)) {
+      initializedConnections.add(connection.id)
+      const capability = readCordisCapability(connection)
+      if (capability !== null) withOrigin(message, () => onCordisReady?.(capability))
+    }
     if (initializeId !== undefined && message && typeof message === 'object' && message.id === initializeId) {
       initializeId = undefined
+      if (message._meta?.marttyConnectionId) initializedConnections.add(message._meta.marttyConnectionId)
       agentCordis = readCordisCapability(message.result)
       if (agentCordis !== null) onCordisReady?.(agentCordis)
     }
@@ -232,7 +246,7 @@ export function muxAcpAndCompositor(opts) {
     if (
       typeof message.method === 'string'
       && message.method.startsWith('_dsh/cordis/')
-      && agentCordis === null
+      && capabilityFor(message) === null
     ) {
       if (message.id !== undefined) {
         writeJsonLine(tui.output, {
@@ -268,6 +282,7 @@ export function muxAcpAndCompositor(opts) {
     failAgent,
     resetAgent() {
       initializeId = undefined
+      initializedConnections.clear()
       agentCordis = null
       failAgent(new Error('ACP Agent was replaced'))
     },
@@ -278,7 +293,7 @@ export function muxAcpAndCompositor(opts) {
       )
     },
     requestAgent(method, params) {
-      if (method.startsWith('_dsh/cordis/') && agentCordis === null) {
+      if (method.startsWith('_dsh/cordis/') && capabilityFor({ method, params }) === null) {
         return Promise.reject(new Error('agent has not advertised _dsh/cordis'))
       }
       const id = `tui-host-${++nextHostId}`

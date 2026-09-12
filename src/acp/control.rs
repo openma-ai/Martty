@@ -10,6 +10,7 @@ pub(super) enum ControlFinish {
     },
     Setup {
         result: SetupResult,
+        requester: Option<String>,
     },
     Authenticated {
         method: AuthMethodInfo,
@@ -66,7 +67,7 @@ impl ControlWorkers {
         // Preserve setup FIFO and per-session mutation order without blocking
         // prompts, cancellations, or other sessions' control requests.
         let lane = match &cmd {
-            Cmd::NewSession | Cmd::ResumeSession { .. } => "setup".to_string(),
+            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } => "setup".to_string(),
             Cmd::SelectModel { session_id, .. }
             | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. }
@@ -124,6 +125,32 @@ async fn run_control(
     list_session: bool,
     done: tokio::sync::mpsc::UnboundedSender<ControlFinish>,
 ) {
+    let connection = {
+        let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+        let target = match &cmd {
+            Cmd::SelectModel { session_id, .. } | Cmd::SetPermission { session_id, .. }
+            | Cmd::SetPreset { session_id, .. } | Cmd::SetConfigOption { session_id, .. }
+            | Cmd::ResumeSession { session_id } => Some(session_id),
+            Cmd::ListSessions { requester_session_id, .. } => Some(requester_session_id),
+            _ => None,
+        };
+        target.and_then(|id| surface.session(id).connection.as_ref())
+            .or_else(|| surface.active_connection()).cloned()
+    };
+    let snapshot = connection.as_ref().map(session_connection_snapshot);
+    let mut methods = snapshot.as_ref().map(|snapshot| snapshot.auth.methods.clone()).unwrap_or(methods);
+    if matches!(&cmd, Cmd::Authenticate { .. }) {
+        for method in surface.lock().unwrap_or_else(|e| e.into_inner()).auth_methods.values() {
+            if !methods.iter().any(|known| known.id == method.id) { methods.push(method.clone()); }
+        }
+    }
+    let load_session = snapshot.as_ref().map(|snapshot| snapshot.load_session).unwrap_or(load_session);
+    let resume_session = snapshot.as_ref().map(|snapshot| snapshot.resume_session).unwrap_or(resume_session);
+    let list_session = snapshot.as_ref().map(|snapshot| snapshot.list_session).unwrap_or(list_session);
+    let (requester, retry_auth) = match &cmd {
+        Cmd::NewSession { requester, retry_auth } => (requester.clone(), retry_auth.clone()),
+        _ => (None, None),
+    };
     match cmd {
         Cmd::SelectModel {
             session_id: cmd_session,
@@ -549,13 +576,17 @@ async fn run_control(
             }
             let mut signing_in = configured_snapshot(methods.clone(), Some(&method));
             signing_in.status = AuthStatus::SigningIn;
-            emit_auth(&bus, signing_in);
+            emit_method_auth(&bus, &surface, signing_in);
             let result = cx.send_request(req).block_task_setup_deadline().await.map(|_| ());
             let _ = done.send(ControlFinish::Authenticated { method, result });
         }
-        Cmd::NewSession => {
+        Cmd::NewSession { .. } => {
+            let mut request = NewSessionRequest::new(cwd.clone());
+            if let Some(method) = retry_auth {
+                request = request.meta(json!({"marttyAuthMethod": method}).as_object().unwrap().clone());
+            }
             let result = cx
-                .send_request(NewSessionRequest::new(cwd.clone()))
+                .send_request(request)
                 .block_task_setup_deadline()
                 .await
                 .map(|created| {
@@ -569,7 +600,7 @@ async fn run_control(
                         notice,
                     )
                 });
-            let _ = done.send(ControlFinish::Setup { result });
+            let _ = done.send(ControlFinish::Setup { result, requester });
         }
         Cmd::ListSessions {
             requester_session_id,
@@ -658,7 +689,7 @@ async fn run_control(
                 };
                 (sid, setup, Some(notice))
             });
-            let _ = done.send(ControlFinish::Setup { result });
+            let _ = done.send(ControlFinish::Setup { result, requester: None });
         }
         Cmd::QueueSnapshot { snapshot } => {
             let items = snapshot
@@ -724,6 +755,7 @@ async fn run_control(
             }
         }
         Cmd::ActiveSession { session_id } => {
+            surface.lock().unwrap_or_else(|e| e.into_inner()).active_session = session_id.clone();
             if client_projection_available(&surface) {
                 let _ = call_tui_extension(
                     &cx,

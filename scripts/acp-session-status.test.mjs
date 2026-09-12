@@ -6,6 +6,22 @@ import { installAcpSessionConfig } from '../npm/lib/acp-session-config.js'
 import { installAcpSessionStats } from '../npm/lib/acp-session-stats.js'
 import { installAcpSessionPlan } from '../npm/lib/acp-session-plan.js'
 
+test('each tab publishes its own Harness identity after a different Harness creates a session', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({id:'init',method:'initialize'})
+  status.observeAgent({id:'init',result:{agentInfo:{name:'alpha'},authMethods:[]}})
+  for (const [id, name] of [['a','alpha'],['b','beta']]) {
+    status.observeClient({id,method:'session/new'})
+    status.observeAgent({id,result:{sessionId:id,_meta:{marttyConnection:{id:name,agentInfo:{name},authMethods:[]}}}})
+    if (id === 'a') status.selectSession('a')
+  }
+  assert.equal(status.current().server, 'alpha')
+  status.selectSession('b')
+  assert.equal(status.current().server, 'beta')
+  status.selectSession('a')
+  assert.equal(status.current().server, 'alpha')
+})
+
 test('a new initialize clears every old Agent projection and ignores late request responses', () => {
   const config = installAcpSessionConfig(makeCtx())
   const status = installAcpSessionStatus(makeCtx(), { sessionConfig: config })
@@ -541,4 +557,29 @@ test('background Session status and mode facts do not contaminate the selected t
   service.selectSession('s-1')
   assert.equal(service.current().state, 'running')
   assert.equal(service.current().permission, 'danger-full-access')
+})
+
+test('authentication updates only the owning Harness across tabs', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({id:'init',method:'initialize'})
+  status.observeAgent({id:'init',result:{agentInfo:{name:'alpha'},authMethods:[]}})
+  for (const id of ['a','b']) {
+    status.observeClient({id,method:'session/new'})
+    status.observeAgent({id,result:{sessionId:id,_meta:{marttyConnection:{id,agentInfo:{name:id},authMethods:[{id:`${id}:login`,name:`Login ${id}`}]}}}})
+  }
+  status.selectSession('a')
+  status.observeClient({id:'auth',method:'authenticate',params:{methodId:'b:login'}})
+  assert.equal(status.current().auth.status,'configured')
+  status.selectSession('b')
+  assert.equal(status.current().auth.status,'signing in')
+  assert.equal(status.current().auth.method,'Login b')
+  status.observeAgent({id:'auth',error:{code:-32000,message:'Beta refused sign in'}})
+  assert.equal(status.current().auth.status,'sign-in failed')
+  status.selectSession('a')
+  assert.equal(status.current().auth.status,'configured')
+  status.observeClient({id:'prompt',method:'session/prompt',params:{sessionId:'a'}})
+  status.observeAgent({id:'prompt',error:{code:-32000,message:'Alpha expired'}})
+  assert.equal(status.current().auth.status,'needs sign-in')
+  status.selectSession('b')
+  assert.equal(status.current().auth.status,'sign-in failed')
 })
