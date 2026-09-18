@@ -27,6 +27,10 @@ fn cancel_open_work_stops_running_tools() {
 #[test]
 fn streaming_text_appends_and_finalizes() {
     let mut tr = t("s");
+    tr.apply(UiEvent::TurnStart {
+        session: "s".into(),
+        turn: 1,
+    });
     tr.apply(UiEvent::TextDelta {
         session: "s".into(),
         text: "Hello ".into(),
@@ -74,6 +78,10 @@ fn structured_session_warning_renders_as_notice_not_assistant_copy() {
 #[test]
 fn streaming_assistant_keeps_its_cursor_without_a_fallback_loading_icon() {
     let mut tr = t("s");
+    tr.apply(UiEvent::TurnStart {
+        session: "s".into(),
+        turn: 1,
+    });
     tr.apply(UiEvent::TextDelta {
         session: "s".into(),
         text: "starting subagents".into(),
@@ -639,4 +647,81 @@ fn clamp_str_never_splits_an_emoji_cluster() {
     assert!(out.ends_with('…'), "{out:?}");
     assert!(UnicodeWidthStr::width(out.as_str()) <= 6, "{out:?}");
     assert!(out.contains("👨‍👩‍👧"), "cluster split: {out:?}");
+}
+
+/// pi-acp streams its startup context as agent text before any prompt.
+/// The first reply used to append to that still-open cell — above the
+/// user prompt — and Markdown's lazy continuation glued it onto the last
+/// `- index.ts` list item (#119). A turn start seals whatever streamed
+/// before it, so the reply opens its own cell after the prompt.
+#[test]
+fn a_new_turn_seals_text_streamed_before_it() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "## Extensions\n- npm:pi-subagents\n  - index.ts\n".into(),
+    });
+    let render = |tr: &mut Transcript| -> String {
+        tr.lines(&Theme::dark(), crate::markdown::ToneMode::Single, 80, ' ')
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Nothing is running: the context is settled text, not a live stream.
+    assert!(!tr.streaming(), "out-of-turn text must not spin the UI");
+    assert!(!render(&mut tr).contains('▍'), "no caret on settled context");
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "- npm:pi-goal\n  - index.ts\n".into(),
+    });
+    assert_eq!(tr.cells.len(), 1, "later out-of-turn chunks coalesce");
+    tr.push_user("damn".into(), false);
+    tr.apply(UiEvent::TurnStart {
+        session: "s".into(),
+        turn: 0,
+    });
+    assert!(!tr.streaming(), "the turn start sealed the startup cell");
+    tr.apply(UiEvent::ReasoningDelta {
+        session: "s".into(),
+        text: "hm".into(),
+    });
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "Something break? Give me the error.".into(),
+    });
+
+    assert_eq!(tr.cells.len(), 4, "startup · user · thought · reply");
+    assert!(matches!(
+        &tr.cells[0].kind,
+        CellKind::Assistant { text, done: true, .. } if text.ends_with("- index.ts\n")
+    ));
+    assert!(matches!(&tr.cells[1].kind, CellKind::User { text, .. } if text == "damn"));
+    assert!(matches!(&tr.cells[2].kind, CellKind::Reasoning { .. }));
+    assert!(matches!(
+        &tr.cells[3].kind,
+        CellKind::Assistant { text, done: false, .. } if text == "Something break? Give me the error."
+    ));
+
+    let rendered = render(&mut tr);
+    let prompt = rendered.find("damn").expect("prompt rendered");
+    let reply = rendered.find("Something break?").expect("reply rendered");
+    assert!(prompt < reply, "reply follows the prompt:\n{rendered}");
+    assert!(
+        !rendered.contains("index.ts Something break?"),
+        "reply must not continue the startup list item:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("index.ts▍"),
+        "caret left on the sealed context:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("Give me the error.▍"),
+        "the in-turn reply keeps its caret:\n{rendered}"
+    );
 }

@@ -701,6 +701,12 @@ impl Transcript {
                 }
             }
             UiEvent::TurnStart { session, .. } => {
+                // A prompt turn never continues a cell streamed before it.
+                // pi-acp, for one, streams its startup context (Skills /
+                // Extensions) as agent text outside any turn; left open,
+                // the first reply landed inside that cell — above the user
+                // prompt, glued onto its last list item (#119).
+                self.close_open(&session);
                 if session == self.root_session {
                     self.stats.turns += 1;
                     self.turn_started = Some(Instant::now());
@@ -766,9 +772,18 @@ impl Transcript {
                         idx
                     }
                 };
+                // Root-session text outside a prompt turn (pi-acp's startup
+                // context, queue notices) is informational, not a stream:
+                // no caret, no spinner. Later chunks still coalesce into the
+                // cell until the next turn start seals it.
+                let live = session != self.root_session || self.turn_started.is_some();
                 if let Some(cell) = self.cells.get_mut(idx) {
-                    if let CellKind::Assistant { text: buf, .. } = &mut cell.kind {
+                    if let CellKind::Assistant {
+                        text: buf, done, ..
+                    } = &mut cell.kind
+                    {
                         buf.push_str(&text);
+                        *done = !live;
                     }
                     cell.bump();
                 }
@@ -1076,9 +1091,17 @@ impl Transcript {
         }
     }
 
-    /// Is any assistant/reasoning cell currently streaming?
+    /// Is any assistant/reasoning cell currently streaming? Out-of-turn
+    /// text stays open for coalescing but is already settled (`done`).
     pub fn streaming(&self) -> bool {
-        !self.open_assistant.is_empty() || !self.open_reasoning.is_empty()
+        let live = |idx: &usize| {
+            matches!(
+                self.cells.get(*idx).map(|cell| &cell.kind),
+                Some(CellKind::Assistant { done: false, .. })
+                    | Some(CellKind::Reasoning { done: false, .. })
+            )
+        };
+        self.open_assistant.values().any(live) || self.open_reasoning.values().any(live)
     }
 
     /// Reasoning already renders its own live `thinking…` row. Assistant
