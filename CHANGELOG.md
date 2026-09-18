@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Delete superseded Kitty image placements by image and placement id (`d=i`); moved Harness icons, attachment thumbnails and the composer pet no longer leave stacked copies behind.
 - Route structured ACP authentication failures to the owning session’s authentication panel and retry parked requests after authentication; omit connection metadata from prompt error text.
 - Show DeepSeek’s icon from the installed Lobe SVG library when the ACP Registry has no entry, with offline rendering, versioned image caching and name fallback.
 

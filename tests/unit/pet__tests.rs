@@ -73,7 +73,8 @@ fn sync_shows_switches_state_and_hides() {
     let s = String::from_utf8(out).unwrap();
     assert!(!s.contains("a=t"), "a move must not retransmit: {s}");
     assert!(s.contains("a=p,i=4207,p=2,"), "new placement: {s}");
-    assert!(s.contains("a=d,d=p,i=4207,p=1"), "old placement dropped: {s}");
+    assert!(s.contains("a=d,d=i,i=4207,p=1"), "old placement dropped: {s}");
+    assert!(!s.contains("d=p,"), "d=p addresses a cell, not a placement: {s}");
 
     // A turn starts: the working sprite is transmitted once and placed; the
     // idle image keeps its data — only its placement is dropped.
@@ -82,7 +83,7 @@ fn sync_shows_switches_state_and_hides() {
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("a=t,f=100,i=4208"), "working transmitted: {s:.60}");
     assert!(s.contains("a=p,i=4208,p=1,"), "working placed: {s:.80}");
-    assert!(s.contains("a=d,d=p,i=4207,p=2"), "idle placement dropped: {s}");
+    assert!(s.contains("a=d,d=i,i=4207,p=2"), "idle placement dropped: {s}");
     assert!(!s.contains("a=d,d=I"), "image data is kept: {s}");
 
     // Hide (`/liang` off): both sprites deleted, transmission state reset.
@@ -146,7 +147,8 @@ fn thumbnails_scroll_by_replacement_without_retransmit() {
     let s = String::from_utf8(out).unwrap();
     assert!(!s.contains("a=t"), "a move must not retransmit: {s}");
     assert!(s.contains("a=p,i=7,p=2,c=8,r=3,"), "new placement: {s}");
-    assert!(s.contains("a=d,d=p,i=7,p=1"), "old placement dropped: {s}");
+    assert!(s.contains("a=d,d=i,i=7,p=1"), "old placement dropped: {s}");
+    assert!(!s.contains("d=p,"), "d=p addresses a cell, not a placement: {s}");
 
     // Scrolled away entirely: the image and its placements are deleted.
     let mut out = Vec::new();
