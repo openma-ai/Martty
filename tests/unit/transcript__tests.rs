@@ -725,3 +725,58 @@ fn a_new_turn_seals_text_streamed_before_it() {
         "the in-turn reply keeps its caret:\n{rendered}"
     );
 }
+
+/// A steer sent as a concurrent `session/prompt` may run as the agent's
+/// *next* turn (pi-acp queues it): its reply streams after the primary
+/// prompt's `TurnEnd` but before the session goes idle. That text is live
+/// (caret, spinner) until `session.status idle` seals it.
+#[test]
+fn text_after_a_turn_end_stays_live_while_the_session_runs() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::TurnStart {
+        session: "s".into(),
+        turn: 1,
+    });
+    tr.apply(UiEvent::SessionStatus {
+        session: "s".into(),
+        running: true,
+    });
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "You're welcome!".into(),
+    });
+    tr.apply(UiEvent::TurnEnd {
+        session: "s".into(),
+        kind: "completed".into(),
+    });
+    assert!(!tr.streaming(), "the primary reply is sealed by its turn end");
+
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "That looks like a typo.".into(),
+    });
+    assert_eq!(tr.cells.len(), 2, "the steered reply opens its own cell");
+    assert!(
+        matches!(&tr.cells[1].kind, CellKind::Assistant { done: false, .. }),
+        "still busy: the reply streams live"
+    );
+    assert!(tr.streaming());
+
+    tr.apply(UiEvent::SessionStatus {
+        session: "s".into(),
+        running: false,
+    });
+    assert!(
+        matches!(&tr.cells[1].kind, CellKind::Assistant { done: true, .. }),
+        "idle seals the steered reply"
+    );
+    assert!(!tr.streaming());
+
+    // Idle again: later text (a notice, startup context) is settled on arrival.
+    tr.apply(UiEvent::TextDelta {
+        session: "s".into(),
+        text: "Starting queued message.".into(),
+    });
+    assert!(matches!(&tr.cells[2].kind, CellKind::Assistant { done: true, .. }));
+    assert!(!tr.streaming());
+}

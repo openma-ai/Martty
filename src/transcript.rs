@@ -433,6 +433,10 @@ pub struct Transcript {
     turn_started: Option<Instant>,
     tool_started: HashMap<String, Instant>,
     ttft_pending: bool,
+    /// The root session is busy (`session.status running` … `idle`). Text
+    /// that streams while busy is live even after a `TurnEnd`: a steer sent
+    /// as a concurrent prompt may run as the agent's next turn.
+    running: bool,
     pub last_finish: Option<String>,
     /// Provenance-reported model of the last assembled assistant message —
     /// the ground truth of what actually answered.
@@ -464,6 +468,7 @@ impl Transcript {
             turn_started: None,
             tool_started: HashMap::new(),
             ttft_pending: false,
+            running: false,
             last_finish: None,
             last_model: None,
             expand_all: false,
@@ -696,8 +701,11 @@ impl Transcript {
     pub fn apply(&mut self, ev: UiEvent) {
         match ev {
             UiEvent::SessionStatus { session, running } => {
-                if !running && session == self.root_session {
-                    self.close_all_open();
+                if session == self.root_session {
+                    self.running = running;
+                    if !running {
+                        self.close_all_open();
+                    }
                 }
             }
             UiEvent::TurnStart { session, .. } => {
@@ -772,11 +780,13 @@ impl Transcript {
                         idx
                     }
                 };
-                // Root-session text outside a prompt turn (pi-acp's startup
+                // Root-session text while nothing runs (pi-acp's startup
                 // context, queue notices) is informational, not a stream:
                 // no caret, no spinner. Later chunks still coalesce into the
                 // cell until the next turn start seals it.
-                let live = session != self.root_session || self.turn_started.is_some();
+                let live = session != self.root_session
+                    || self.running
+                    || self.turn_started.is_some();
                 if let Some(cell) = self.cells.get_mut(idx) {
                     if let CellKind::Assistant {
                         text: buf, done, ..

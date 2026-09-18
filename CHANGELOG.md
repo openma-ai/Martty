@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Keep a session busy while a Send Now steer sent as a concurrent `session/prompt` is still in flight: agents that queue it as their next turn (pi-acp) no longer stream that reply into an “idle” tab with no working indicator or caret.
 - Seal assistant text streamed before a prompt turn when that turn starts, and show such out-of-turn text as settled (no caret, no spinner): pi’s startup context no longer swallows the first reply above the user prompt or keeps the welcome page redrawing (#119).
 - Delete superseded Kitty image placements by image and placement id (`d=i`); moved Harness icons, attachment thumbnails and the composer pet no longer leave stacked copies behind.
 - Switch to the picked provider when several providers advertise the same model id, and let the agent-reported model replace a stale optimistic pick in the status bar.

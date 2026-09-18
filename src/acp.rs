@@ -332,6 +332,12 @@ struct SessionHandle {
     /// `session/cancel` was sent for the in-flight prompt; its finish is
     /// reported as an interruption, not a turn result.
     turn_aborted: bool,
+    /// Steers whose `session/prompt` has not returned yet. Agents that
+    /// cannot join a turn (pi-acp) queue the second prompt and run it as
+    /// the *next* turn, so its reply streams after the primary prompt
+    /// returned and before its own response does. The session stays busy
+    /// until every in-flight prompt has returned.
+    steers_inflight: usize,
 }
 
 /// Resolve the session a command addresses: the id the UI carried, or the
@@ -386,6 +392,7 @@ fn retarget_session(cmd: &mut Cmd, sid: &SessionId) {
 }
 
 struct SteerFinish {
+    session_id: String,
     message_id: u64,
     result: Result<agent_client_protocol::schema::v1::PromptResponse, AcpError>,
 }
@@ -447,12 +454,13 @@ fn spawn_steer_prompt(
     message_id: u64,
     done: tokio::sync::mpsc::UnboundedSender<SteerFinish>,
 ) {
+    let session_id = sid.to_string();
     tokio::spawn(async move {
         let result = cx
             .send_request(PromptRequest::new(sid, content))
             .block_task()
             .await;
-        let _ = done.send(SteerFinish { message_id, result });
+        let _ = done.send(SteerFinish { session_id, message_id, result });
     });
 }
 
@@ -2223,6 +2231,9 @@ where
                                         .get(&sid.to_string())
                                         .is_some_and(|handle| handle.inflight.is_some());
                                     if busy {
+                                        if let Some(handle) = sessions.get_mut(&sid.to_string()) {
+                                            handle.steers_inflight += 1;
+                                        }
                                         spawn_steer_prompt(
                                             cx.clone(),
                                             sid,
@@ -2325,13 +2336,18 @@ where
                                             .unwrap_or_else(|e| e.into_inner())
                                             .prompt_image_for(&sid.0);
                                         match prompt_content_blocks(blocks, prompt_image, &cfg.workspace) {
-                                            Ok(content) if !content.is_empty() => spawn_steer_prompt(
-                                                cx.clone(),
-                                                sid,
-                                                content,
-                                                message_id,
-                                                steer_done_tx.clone(),
-                                            ),
+                                            Ok(content) if !content.is_empty() => {
+                                                if let Some(handle) = sessions.get_mut(&sid.to_string()) {
+                                                    handle.steers_inflight += 1;
+                                                }
+                                                spawn_steer_prompt(
+                                                    cx.clone(),
+                                                    sid,
+                                                    content,
+                                                    message_id,
+                                                    steer_done_tx.clone(),
+                                                )
+                                            }
                                             Ok(_) => {
                                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
                                                     "empty image prompt".into(),
@@ -2733,12 +2749,30 @@ where
                                 selected.as_ref(), &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx); }
                         }
                         steer = steer_done_rx.recv() => {
-                            if let Some(SteerFinish { message_id, result }) = steer {
+                            if let Some(SteerFinish { session_id, message_id, result }) = steer {
                                 let deferred = result.is_err();
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::SteerSettled {
                                     message_id,
                                     deferred,
                                 }));
+                                // The last in-flight request of a session whose
+                                // primary prompt already returned: the turn the
+                                // agent ran for this steer is over now.
+                                let settled = sessions.get_mut(&session_id).map(|handle| {
+                                    handle.steers_inflight = handle.steers_inflight.saturating_sub(1);
+                                    handle.inflight.is_none()
+                                        && handle.steers_inflight == 0
+                                        && handle.queue.is_empty()
+                                });
+                                if settled == Some(true) && !auth_stalled_for(&session_id, &parked, &surface) {
+                                    let _ = bus.send(AppEvent::Rpc {
+                                        method: "session.status".into(),
+                                        params: json!({
+                                            "sessionId": session_id,
+                                            "status": "idle"
+                                        }),
+                                    });
+                                }
                             }
                             if active_plugin_operation.is_none() { drain_ready_sessions(
                                 &controls,
@@ -2818,7 +2852,13 @@ where
                                 && sessions
                                     .get(&key)
                                     .is_some_and(|handle| !handle.queue.is_empty());
-                            if queued {
+                            // A steer whose `session/prompt` has not returned
+                            // keeps the session busy (pi-acp runs it as the next
+                            // turn); its finish reports idle instead.
+                            let steering = sessions
+                                .get(&key)
+                                .is_some_and(|handle| handle.steers_inflight > 0);
+                            if queued || steering {
                                 if active_plugin_operation.is_none() { drain_ready_sessions(
                                     &controls,
                                     &mut sessions,
