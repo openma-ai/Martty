@@ -2294,6 +2294,9 @@ impl App {
             }
             E::SessionTitle { title, .. } => slot.title = Some(title.clone()),
             E::SessionModel { model, .. } => {
+                if optimistic_pick_is_stale(slot.selected_model.as_deref(), model) {
+                    slot.selected_model = None;
+                }
                 slot.session_model = Some(model.clone());
                 apply_to_transcript = false;
             }
@@ -4711,6 +4714,13 @@ impl App {
                 self.session_title = Some(title.clone());
             }
             E::SessionModel { session, model } if *session == self.session_id => {
+                // The agent's own report is the truth: an optimistic pick
+                // naming a different model (a switch that landed elsewhere,
+                // a change made outside the picker) must not keep the
+                // status bar lying about what the session runs on.
+                if optimistic_pick_is_stale(self.selected_model.as_deref(), model) {
+                    self.selected_model = None;
+                }
                 self.session_model = Some(model.clone());
                 apply_to_transcript = false;
             }
@@ -9670,6 +9680,18 @@ pub fn timestamp() -> String {
         .unwrap_or(0);
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{micros:x}-{seq:x}")
+}
+
+/// Does the agent-reported model (`provider/id`, or a bare id) name a
+/// different model than the UI's optimistic pick? A pick without a provider
+/// still matches a report of the same id under any provider.
+pub(crate) fn optimistic_pick_is_stale(selected: Option<&str>, reported: &str) -> bool {
+    let Some(selected) = selected else {
+        return false;
+    };
+    let reported_id = reported.split_once('/').map_or(reported, |(_, id)| id);
+    let selected_id = selected.split_once('/').map_or(selected, |(_, id)| id);
+    selected != reported && selected_id != reported_id
 }
 
 /// Model ids from the host catalog snapshot: either inline JSON in

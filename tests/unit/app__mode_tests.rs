@@ -5151,3 +5151,47 @@ fn finished_last_subagent_clears_an_open_inline_selection() {
         "last task ended → the open selection clears"
     );
 }
+
+#[test]
+fn agent_reported_model_overrides_a_stale_optimistic_pick() {
+    let (mut app, ctl, _rx) = test_app();
+    let session = app.session_id.clone();
+    app.selected_model = Some("gpt-5.6-sol".into());
+
+    // The same id under a provider confirms the pick.
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session: session.clone(),
+            model: "anthropic-proxy/gpt-5.6-sol".into(),
+        }),
+        &ctl,
+    );
+    assert_eq!(app.selected_model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(app.session_model.as_deref(), Some("anthropic-proxy/gpt-5.6-sol"));
+
+    // A different model is what the session actually runs on: the report
+    // wins over the optimistic status-bar value.
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session,
+            model: "anthropic-proxy/claude-fable-5-1".into(),
+        }),
+        &ctl,
+    );
+    assert_eq!(app.selected_model, None, "stale pick dropped");
+    assert_eq!(app.session_model.as_deref(), Some("anthropic-proxy/claude-fable-5-1"));
+}
+
+#[test]
+fn optimistic_pick_staleness_compares_model_ids_across_providers() {
+    assert!(!optimistic_pick_is_stale(None, "openai-codex/gpt-5.6-sol"));
+    assert!(!optimistic_pick_is_stale(Some("gpt-5.6-sol"), "openai-codex/gpt-5.6-sol"));
+    assert!(!optimistic_pick_is_stale(Some("gpt-5.6-sol"), "gpt-5.6-sol"));
+    assert!(!optimistic_pick_is_stale(
+        Some("anthropic-proxy/gpt-5.6-sol"),
+        "anthropic-proxy/gpt-5.6-sol"
+    ));
+    assert!(optimistic_pick_is_stale(Some("gpt-5.6-sol"), "anthropic-proxy/claude-fable-5-1"));
+    assert!(optimistic_pick_is_stale(Some("deepseek-v4"), "deepseek-v4-flash"));
+}
+

@@ -787,6 +787,18 @@ pub fn catalog_from_config_options(
                     Some((p, m)) => (p.to_string(), m.to_string()),
                     None => (String::new(), id.clone()),
                 };
+                // Agents such as pi-acp advertise `provider/Display Name` so
+                // single-column clients stay unambiguous; the picker already
+                // shows the provider in its own column, so drop the echo.
+                let name = if provider.is_empty() {
+                    name
+                } else {
+                    name.strip_prefix(provider.as_str())
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .filter(|rest| !rest.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or(name)
+                };
                 models.push(crate::bus::CatalogModel {
                     provider,
                     id: model_id,
