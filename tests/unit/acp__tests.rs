@@ -4180,13 +4180,13 @@ fn structured_auth_failure_opens_owning_connection_and_parks_original_prompt() {
 fn steer_route_reads_initialize_meta() {
     assert_eq!(
         steer_route(&json!({ "_meta": { "steering": { "supported": true } } })),
-        SteerRoute::DshSteering
+        SteerRoute::SessionSteering
     );
     assert_eq!(
         steer_route(&json!({
             "agentCapabilities": { "_meta": { "steering": { "supported": true } } }
         })),
-        SteerRoute::DshSteering
+        SteerRoute::SessionSteering
     );
     assert_eq!(
         steer_route(&json!({
@@ -4214,9 +4214,9 @@ fn steer_route_reads_initialize_meta() {
 }
 
 #[test]
-fn dsh_steering_request_injects_or_defers() {
+fn session_steering_request_injects_or_defers() {
     let sid = SessionId::new("s");
-    match steer_request(SteerRoute::DshSteering, &sid, vec!["go".into()], 7).unwrap() {
+    match steer_request(SteerRoute::SessionSteering, &sid, vec!["go".into()], 7).unwrap() {
         SteerRequest::Ext(message) => {
             assert_eq!(message.method, "_session/steering");
             assert_eq!(message.params["sessionId"], "s");
@@ -4226,8 +4226,10 @@ fn dsh_steering_request_injects_or_defers() {
         }
         _ => panic!("dsh steering is an extension request"),
     }
-    let route = SteerRoute::DshSteering;
+    let route = SteerRoute::SessionSteering;
     assert!(!steer_ext_deferred(route, &Ok(json!({ "outcome": "injected" }))));
+    // claude-agent-acp without `idleBehavior`: the agent took it as a new turn.
+    assert!(!steer_ext_deferred(route, &Ok(json!({ "outcome": "startedNewTurn" }))));
     assert!(steer_ext_deferred(
         route,
         &Ok(json!({ "outcome": "promptRequired", "reason": "noRunningTurn" }))

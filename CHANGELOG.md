@@ -62,7 +62,7 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
-- Route Ctrl+Enter steering by the agent’s `initialize` `_meta`: DeepSeek Harness `_session/steering` (`promptRequired` re-queues), MiniMax Code `mcode/session/steer` (text only; its `session/prompt` rejects concurrent turns), otherwise the concurrent `session/prompt` used by claude-agent-acp and codex-acp. `scripts/mcode-steer.e2e.mjs` drives the real TUI against `mcode acp` (opt-in, uses model tokens).
+- Route Ctrl+Enter steering by the agent’s `initialize` `_meta`: the shared `_session/steering` extension when `_meta.steering.supported` is advertised (claude-agent-acp, codex-acp, DeepSeek Harness; `promptRequired` re-queues), MiniMax Code `mcode/session/steer` (text only; its `session/prompt` rejects concurrent turns), otherwise the legacy concurrent `session/prompt`. `scripts/mcode-steer.e2e.mjs` drives the real TUI against `mcode acp` (opt-in, uses model tokens).
 - Show the current tab’s Harness icon before the model, using Registry assets cached locally; fall back to its name while unavailable or on terminals without image support.
 
 - A Chinese and English workflow article on trying Codex and Claude Code in one

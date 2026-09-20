@@ -410,21 +410,25 @@ struct SteerFinish {
 /// agent does not take the message: the client FIFO keeps it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SteerRoute {
-    /// claude-agent-acp / codex-acp: a second `session/prompt` while the
-    /// first is in flight joins that turn (`_meta.claudeCode.promptQueueing`).
+    /// Legacy agents with no steering advertisement: a second
+    /// `session/prompt` while the first is in flight joins that turn
+    /// (e.g. `@zed-industries/claude-agent-acp` <0.24 with
+    /// `_meta.claudeCode.promptQueueing`).
     #[default]
     ConcurrentPrompt,
-    /// deepseek-harness-acp: `_session/steering`, advertised by top-level
-    /// `_meta.steering.supported`. `{outcome:"injected"}` joins the turn;
+    /// The shared ACP steering extension: `_session/steering`, advertised by
+    /// top-level `_meta.steering.supported` (claude-agent-acp, codex-acp,
+    /// deepseek-harness-acp). `{outcome:"injected"}` joins the turn,
+    /// `startedNewTurn` means the agent consumed it as a fresh turn, and
     /// `{outcome:"promptRequired"}` means the turn already ended.
-    DshSteering,
+    SessionSteering,
     /// MiniMax Code: `mcode/session/steer`, listed in
     /// `_meta["minimax-code/extensions"].methods`. Its `session/prompt`
     /// rejects concurrency outright, and steering carries text only.
     McodeSteer,
 }
 
-const DSH_STEERING_METHOD: &str = "_session/steering";
+const SESSION_STEERING_METHOD: &str = "_session/steering";
 const MCODE_STEER_METHOD: &str = "mcode/session/steer";
 
 fn steer_route(init: &Value) -> SteerRoute {
@@ -436,7 +440,7 @@ fn steer_route(init: &Value) -> SteerRoute {
     if steering_supported(init.get("_meta"))
         || steering_supported(init.pointer("/agentCapabilities/_meta"))
     {
-        return SteerRoute::DshSteering;
+        return SteerRoute::SessionSteering;
     }
     // JSON pointer escapes the `/` inside the extension key as `~1`.
     let mcode_methods = init
@@ -467,13 +471,13 @@ fn steer_request(
 ) -> Result<SteerRequest, AcpError> {
     match route {
         SteerRoute::ConcurrentPrompt => Ok(SteerRequest::Prompt(content)),
-        SteerRoute::DshSteering => {
+        SteerRoute::SessionSteering => {
             let params = json!({
                 "sessionId": sid.to_string(),
                 "prompt": serde_json::to_value(&content)?,
                 "_meta": { "steering": { "idleBehavior": "promptRequired" } },
             });
-            Ok(SteerRequest::Ext(UntypedMessage::new(DSH_STEERING_METHOD, params)?))
+            Ok(SteerRequest::Ext(UntypedMessage::new(SESSION_STEERING_METHOD, params)?))
         }
         SteerRoute::McodeSteer => {
             let mut text = Vec::new();
@@ -501,9 +505,13 @@ fn steer_request(
 fn steer_ext_deferred(route: SteerRoute, result: &Result<Value, AcpError>) -> bool {
     match (route, result) {
         (_, Err(_)) => true,
-        (SteerRoute::DshSteering, Ok(value)) => {
-            value.get("outcome").and_then(Value::as_str) != Some("injected")
-        }
+        // `injected` joined the turn; `startedNewTurn` consumed the message as
+        // a new turn (only without `idleBehavior: promptRequired`). Either way
+        // the agent owns it now — re-queueing would send it twice.
+        (SteerRoute::SessionSteering, Ok(value)) => !matches!(
+            value.get("outcome").and_then(Value::as_str),
+            Some("injected" | "startedNewTurn")
+        ),
         (SteerRoute::McodeSteer | SteerRoute::ConcurrentPrompt, Ok(_)) => false,
     }
 }
