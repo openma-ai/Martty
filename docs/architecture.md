@@ -51,7 +51,11 @@ Queue 标题位于 composer 顶沿，全部等待条目始终在同一个 compos
 展开；`Alt+↑` 进入选择态后可用 `↑/↓` 任选一条编辑。等待内容不进入 timeline，出队时才
 创建普通 user timeline cell；编辑、删除和预览更新也都不进入 ACP。没有 Client tree 的
 独立 painter 保留原生 shelf 作为降级显示。
-`Send Now` 的并发 prompt 若被 agent 拒绝，ACP transport
+`Send Now` 的投递方式按 initialize 响应协商：顶层 `_meta.steering.supported` 走
+dsh 的 `_session/steering`（`outcome:"injected"` 即注入，`promptRequired` 视为 deferred）；
+`_meta["minimax-code/extensions"].methods` 含 `mcode/session/steer` 走该方法（仅文本，
+带图片的 Send Now 直接 deferred，因为 MiniMax Code 的 `session/prompt` 拒绝并发）；
+否则发并发 `session/prompt`（claude-agent-acp、codex-acp）。任一路线被 agent 拒绝时，ACP transport
 只向 Client 回报 deferred，由同一 Client FIFO 接管，不在 transport 内保留第二份重试队列。
 
 ACP 的 prompt 调度与慢控制请求分开执行：`src/acp.rs` 持有每个 session

@@ -4176,6 +4176,100 @@ fn structured_auth_failure_opens_owning_connection_and_parks_original_prompt() {
     assert!(rx.try_recv().is_err());
 }
 
+#[test]
+fn steer_route_reads_initialize_meta() {
+    assert_eq!(
+        steer_route(&json!({ "_meta": { "steering": { "supported": true } } })),
+        SteerRoute::DshSteering
+    );
+    assert_eq!(
+        steer_route(&json!({
+            "agentCapabilities": { "_meta": { "steering": { "supported": true } } }
+        })),
+        SteerRoute::DshSteering
+    );
+    assert_eq!(
+        steer_route(&json!({
+            "_meta": { "minimax-code/extensions": {
+                "version": 1,
+                "methods": ["session/activate", "mcode/session/steer"]
+            } }
+        })),
+        SteerRoute::McodeSteer
+    );
+    // No steer method listed: fall back to the concurrent prompt.
+    assert_eq!(
+        steer_route(&json!({
+            "_meta": { "minimax-code/extensions": { "methods": ["session/activate"] } }
+        })),
+        SteerRoute::ConcurrentPrompt
+    );
+    assert_eq!(
+        steer_route(&json!({
+            "agentCapabilities": { "_meta": { "claudeCode": { "promptQueueing": true } } }
+        })),
+        SteerRoute::ConcurrentPrompt
+    );
+    assert_eq!(steer_route(&json!({})), SteerRoute::ConcurrentPrompt);
+}
+
+#[test]
+fn dsh_steering_request_injects_or_defers() {
+    let sid = SessionId::new("s");
+    match steer_request(SteerRoute::DshSteering, &sid, vec!["go".into()], 7).unwrap() {
+        SteerRequest::Ext(message) => {
+            assert_eq!(message.method, "_session/steering");
+            assert_eq!(message.params["sessionId"], "s");
+            assert_eq!(message.params["prompt"][0]["type"], "text");
+            assert_eq!(message.params["prompt"][0]["text"], "go");
+            assert_eq!(message.params["_meta"]["steering"]["idleBehavior"], "promptRequired");
+        }
+        _ => panic!("dsh steering is an extension request"),
+    }
+    let route = SteerRoute::DshSteering;
+    assert!(!steer_ext_deferred(route, &Ok(json!({ "outcome": "injected" }))));
+    assert!(steer_ext_deferred(
+        route,
+        &Ok(json!({ "outcome": "promptRequired", "reason": "noRunningTurn" }))
+    ));
+    assert!(steer_ext_deferred(route, &Err(AcpError::new(-32602, "bad"))));
+}
+
+#[test]
+fn mcode_steer_request_is_text_only() {
+    let sid = SessionId::new("s");
+    match steer_request(SteerRoute::McodeSteer, &sid, vec!["a".into(), "b".into()], 9).unwrap() {
+        SteerRequest::Ext(message) => {
+            assert_eq!(message.method, "mcode/session/steer");
+            assert_eq!(message.params["sessionId"], "s");
+            assert_eq!(message.params["text"], "a\nb");
+            assert_eq!(message.params["clientRequestId"], "martty-steer-9");
+        }
+        _ => panic!("mcode steer is an extension request"),
+    }
+    let with_image = vec![
+        "look".into(),
+        ContentBlock::ResourceLink(ResourceLink::new("shot.png", "file:///tmp/shot.png")),
+    ];
+    assert!(matches!(
+        steer_request(SteerRoute::McodeSteer, &sid, with_image, 9).unwrap(),
+        SteerRequest::Unsupported
+    ));
+    assert!(matches!(
+        steer_request(SteerRoute::McodeSteer, &sid, vec![" ".into()], 9).unwrap(),
+        SteerRequest::Unsupported
+    ));
+    assert!(!steer_ext_deferred(
+        SteerRoute::McodeSteer,
+        &Ok(json!({ "turnId": "t1", "mode": "steered" }))
+    ));
+    assert!(steer_ext_deferred(SteerRoute::McodeSteer, &Err(AcpError::new(-32602, "no turn"))));
+    assert!(matches!(
+        steer_request(SteerRoute::ConcurrentPrompt, &sid, vec!["x".into()], 1).unwrap(),
+        SteerRequest::Prompt(content) if content.len() == 1
+    ));
+}
+
 /// Concurrent-prompt steer against an agent that cannot join a turn
 /// (pi-acp queues the second `session/prompt` and runs it as the next
 /// turn): the primary prompt returns first, then the queued turn streams,
