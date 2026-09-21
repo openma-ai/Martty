@@ -407,3 +407,144 @@ async fn accepted_model_switch_folds_config_response() {
     let _ = cmds.send(Cmd::Shutdown);
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
+
+/// Exercise response-only agents through the real ACP control path.
+async fn permission_response_events(
+    mode_error: Option<i32>,
+    config_error: Option<i32>,
+) -> Vec<AppEvent> {
+    use agent_client_protocol::schema::v1::{
+        SessionConfigOption, SessionConfigSelectOption, SetSessionModeResponse,
+    };
+    let agent = Agent
+        .builder()
+        .on_receive_request(
+            async move |req: SetSessionModeRequest, responder, _cx| {
+                assert_eq!(req.session_id.to_string(), "permission-session");
+                assert_eq!(req.mode_id.to_string(), "plan");
+                match mode_error {
+                    Some(code) => {
+                        responder.respond_with_error(AcpError::new(code, "mode rejected"))
+                    }
+                    None => responder.respond(SetSessionModeResponse::new()),
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionConfigOptionRequest, responder, _cx| {
+                assert!(
+                    mode_error.is_some(),
+                    "successful set_mode must not fall back"
+                );
+                assert_eq!(req.session_id.to_string(), "permission-session");
+                assert_eq!(serde_json::to_value(&req).unwrap()["configId"], "mode");
+                assert_eq!(serde_json::to_value(&req).unwrap()["value"], "plan");
+                match config_error {
+                    Some(code) => {
+                        responder.respond_with_error(AcpError::new(code, "config rejected"))
+                    }
+                    None => responder.respond(SetSessionConfigOptionResponse::new(vec![
+                        SessionConfigOption::select(
+                            "mode",
+                            "Mode",
+                            "plan",
+                            vec![
+                                SessionConfigSelectOption::new("build", "Build"),
+                                SessionConfigSelectOption::new("plan", "Plan"),
+                            ],
+                        ),
+                    ])),
+                }
+            },
+            on_receive_request!(),
+        );
+    let (bus, events) = std::sync::mpsc::channel();
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (done, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+            run_control(
+                Cmd::SetPermission {
+                    session_id: "permission-session".into(),
+                    preset: "plan".into(),
+                },
+                cx,
+                bus,
+                Arc::new(Mutex::new(Surface::default())),
+                vec![],
+                None,
+                std::path::PathBuf::from("/tmp"),
+                false,
+                false,
+                false,
+                done,
+            )
+            .await;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    events.try_iter().collect()
+}
+
+#[tokio::test]
+async fn permission_mode_acknowledgement_updates_the_owning_session() {
+    let events = permission_response_events(None, None).await;
+    assert!(
+        events.iter().any(|event| matches!(event,
+            AppEvent::Ctl(CtlEvent::SessionModes { session_id: Some(id), current: Some(mode), .. })
+                if id == "permission-session" && mode == "plan"
+        )),
+        "set_mode acknowledgement must update the mode without a notification"
+    );
+}
+
+#[tokio::test]
+async fn permission_config_fallback_applies_the_returned_catalog_and_mode() {
+    let events = permission_response_events(Some(-32601), None).await;
+    assert!(events.iter().any(|event| matches!(event,
+        AppEvent::Ctl(CtlEvent::SessionModes { session_id: Some(id), current: Some(mode), modes })
+            if id == "permission-session" && mode == "plan"
+                && modes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>() == ["build", "plan"]
+    )), "fallback response must refresh both the catalog and selected mode");
+}
+
+#[tokio::test]
+async fn permission_config_fallback_reports_rejection_without_success() {
+    let events = permission_response_events(Some(-32601), Some(-32602)).await;
+    assert!(
+        events.iter().any(|event| matches!(event,
+            AppEvent::Ctl(CtlEvent::TuiOpFailed(message)) if message.contains("config rejected")
+        )),
+        "the fallback error must reach the UI"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            AppEvent::Ctl(CtlEvent::TuiOpDone(_) | CtlEvent::SessionModes { .. })
+        )),
+        "a rejected request must not report success or change the mode"
+    );
+}
+
+#[tokio::test]
+async fn permission_auth_failure_opens_login_without_changing_mode() {
+    let auth_code = i32::from(AcpError::auth_required().code);
+    for (mode_error, config_error) in [(Some(auth_code), None), (Some(-32601), Some(auth_code))] {
+        let events = permission_response_events(mode_error, config_error).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::Ctl(CtlEvent::OpenAuth))),
+            "either request path must surface authentication failures"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                AppEvent::Ctl(CtlEvent::TuiOpDone(_) | CtlEvent::SessionModes { .. })
+            )),
+            "authentication failure must not report a changed mode"
+        );
+    }
+}

@@ -477,6 +477,23 @@ Agent-oriented, fully verifiable installation steps live in the
 | Mouse drag | Copy on release; double-click a word; `shift+drag` uses native selection |
 | `!cmd` | Run a command in the client's session-local shell, outside the agent; the shell starts in the workspace and keeps `cd`, environment variables, and other state for later `!` commands until the TUI exits |
 
+### Session modes and Shift+Tab
+
+Use `/permission` to see the current agent's session modes, or press
+`Shift+Tab` to cycle through them. Martty updates the selected mode after the
+agent accepts the request, including agents that return only a response and
+send no separate notification. If the agent rejects the change, Martty shows
+an error and keeps the previous selection.
+
+Mode names and their effects belong to the agent. For example, OpenCode may
+advertise `build` and `plan`; these are not equivalent to DSH's `read-only`,
+`workspace-write`, and `danger-full-access` permission presets. Switching modes
+does not grant permissions beyond those enforced by the agent.
+
+To select a mode directly, use `/permission <id>` with an ID from the picker.
+If a shortcut does not reach Martty, try the picker and check your terminal's
+key bindings.
+
 ### Composer text editing
 
 | Key | Behavior |
@@ -570,11 +587,16 @@ default; run `/liang on` to summon him.
 
 ## Build from source
 
-Requires Rust stable and Node.js 18+:
+Requires Rust stable and Node.js 18+. The JavaScript test suite also uses
+Python 3 and `pexpect` for its local PTY fixture. If needed, create and activate
+a Python virtual environment, then run `python -m pip install pexpect` before
+testing; the fixture does not call a model.
 
 ```sh
-make rust-test
-node --test scripts/package-native.test.mjs
+npm ci --prefix npm --ignore-scripts --no-audit --no-fund
+cargo test --locked
+cargo check --locked --tests
+npm test --prefix npm
 bash scripts/build-npm.sh
 ```
 
@@ -584,6 +606,23 @@ repository's `target` exceeds 20 GiB or free disk falls below 10 GiB.
 `make rust-cache-status` is read-only and `make rust-cache-prune` cleans
 explicitly; override the thresholds with `RUST_CACHE_MAX_GIB` /
 `RUST_DISK_MIN_GIB`.
+
+The profile installation matrix also needs a built ACP package. To use the
+package installed by `npm ci`, run from the repository root:
+
+```sh
+DSH_TUI_ACP_ROOT="$PWD/npm/node_modules/@openma/deepseek-harness-acp" \
+  DSH_TUI_LOCAL_DEPS=1 npm run test:profile-install-matrix --prefix npm
+```
+
+Run the build and test commands from the repository root. JavaScript dependencies and test
+scripts belong to `npm/`; there is no root `package.json`. For a focused test,
+run `node --test scripts/<name>.test.mjs`. To inspect a rendered demo without
+an interactive terminal or a model request, run:
+
+```sh
+cargo run --locked -- --dump-frame 100x34
+```
 
 Use `make tui-test` for the real development profile. It rebuilds
 `target/debug/martty` first, then launches `tui-test` with `MARTTY_BIN`, so

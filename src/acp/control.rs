@@ -438,12 +438,45 @@ async fn run_control(
             preset,
         } => {
             let sid = SessionId::new(cmd_session);
-            match cx
+            let result = match cx
                 .send_request(SetSessionModeRequest::new(sid.clone(), preset.clone()))
                 .block_task_deadline()
                 .await
             {
                 Ok(_) => {
+                    // Some agents acknowledge set_mode without sending a
+                    // current_mode_update. Advance the owning session only
+                    // after acceptance so the next shortcut uses this mode.
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionModes {
+                        session_id: Some(sid.to_string()),
+                        modes: Vec::new(),
+                        current: Some(preset.clone()),
+                    }));
+                    Ok(())
+                }
+                Err(err) if is_auth_required_error(&err) => Err(err),
+                Err(_) => {
+                    match cx
+                        .send_request(SetSessionConfigOptionRequest::new(
+                            sid.clone(),
+                            "mode",
+                            SessionConfigOptionValue::value_id(preset.clone()),
+                        ))
+                        .block_task_deadline()
+                        .await
+                    {
+                        Ok(response) => {
+                            if let Ok(value) = serde_json::to_value(&response) {
+                                let _ = apply_config_response(&value, &sid, &surface, &bus);
+                            }
+                            Ok(())
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+            };
+            match result {
+                Ok(()) => {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
                         "permission → {preset}"
                     ))));
@@ -457,16 +490,8 @@ async fn run_control(
                     );
                 }
                 Err(err) => {
-                    let _ = cx
-                        .send_request(SetSessionConfigOptionRequest::new(
-                            sid,
-                            "mode",
-                            SessionConfigOptionValue::value_id(preset.clone()),
-                        ))
-                        .block_task_deadline()
-                        .await;
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(format!(
-                        "permission → {preset} ({err})"
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                        "permission switch failed: {err}"
                     ))));
                 }
             }
