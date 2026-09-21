@@ -607,16 +607,17 @@ repository's `target` exceeds 20 GiB or free disk falls below 10 GiB.
 explicitly; override the thresholds with `RUST_CACHE_MAX_GIB` /
 `RUST_DISK_MIN_GIB`.
 
-The profile installation matrix also needs a built ACP package. To use the
-package installed by `npm ci`, run from the repository root:
+The profile installation matrix also needs pnpm on `PATH` (CI uses 10.2.0)
+and a built ACP package. To use the package installed by `npm ci`, run from
+the repository root:
 
 ```sh
 DSH_TUI_ACP_ROOT="$PWD/npm/node_modules/@openma/deepseek-harness-acp" \
   DSH_TUI_LOCAL_DEPS=1 npm run test:profile-install-matrix --prefix npm
 ```
 
-Run the build and test commands from the repository root. JavaScript dependencies and test
-scripts belong to `npm/`; there is no root `package.json`. For a focused test,
+Run the build and test commands from the repository root. JavaScript
+dependencies and test scripts belong to `npm/`; there is no root `package.json`. For a focused test,
 run `node --test scripts/<name>.test.mjs`. To inspect a rendered demo without
 an interactive terminal or a model request, run:
 
