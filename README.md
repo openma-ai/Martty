@@ -369,6 +369,12 @@ stdin/stdout；用户 TTY 使用 fd 3/4，两条通道互不混用。
 | [ACP 连接 Mermaid](docs/diagrams/acp-connectivity.mmd) | 默认 DSH 与其他 ACP server 的连接方式 |
 | [迁移计划](docs/migration.md) | 已完成能力与后续阶段 |
 
+## English documentation
+
+See the [English README](README.en.md) for installation, Harness setup,
+[session modes and Shift+Tab](README.en.md#session-modes-and-shifttab), and
+[building and testing from source](README.en.md#build-from-source).
+
 ## 从源码构建
 
 需要 Rust stable 和 Node.js 18+：

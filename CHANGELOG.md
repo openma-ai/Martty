@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Refresh the selected ACP session mode after a successful `session/set_mode`
+  response, so Shift+Tab continues cycling with agents such as OpenCode that
+  do not send a mode notification. Apply fallback configuration responses and
+  report rejected changes instead of displaying success.
+
 - Route structured ACP authentication failures to the owning session’s authentication panel and retry parked requests after authentication; omit connection metadata from prompt error text.
 - Show DeepSeek’s icon from the installed Lobe SVG library when the ACP Registry has no entry, with offline rendering, versioned image caching and name fallback.
 
