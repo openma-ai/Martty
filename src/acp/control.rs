@@ -154,22 +154,31 @@ async fn run_control(
     match cmd {
         Cmd::SelectModel {
             session_id: cmd_session,
+            provider,
             model,
             effort,
-            ..
         } => {
             let sid = SessionId::new(cmd_session);
             if let Some(model) = model {
+                // Agents advertise `provider/id` values, and the same id can
+                // live under several providers (an OAuth account and a
+                // proxy both serving `gpt-5.6-sol`): the picker's provider
+                // decides which one is meant, never the first id match.
                 let value = {
                     let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
-                    match surface
-                        .session(&sid.0)
-                        .models
-                        .iter()
-                        .find(|m| m.id == model)
-                    {
-                        Some(m) if !m.provider.is_empty() => {
+                    let models = &surface.session(&sid.0).models;
+                    let matched = match provider.as_deref() {
+                        Some(wanted) => models
+                            .iter()
+                            .find(|m| m.id == model && m.provider == wanted),
+                        None => models.iter().find(|m| m.id == model),
+                    };
+                    match (matched, provider.as_deref()) {
+                        (Some(m), _) if !m.provider.is_empty() => {
                             format!("{}/{}", m.provider, model)
+                        }
+                        (None, Some(wanted)) if !wanted.is_empty() => {
+                            format!("{wanted}/{model}")
                         }
                         _ => model.clone(),
                     }

@@ -1030,6 +1030,26 @@ fn catalog_prefers_agent_id_and_flattens_groups() {
 }
 
 #[test]
+fn catalog_drops_provider_echo_from_model_names() {
+    // pi-acp advertises `provider/id` values with `provider/Name` labels.
+    let options = json!([
+        {"type": "select", "id": "model", "category": "model", "options": [
+            {"value": "openai-codex/gpt-5.6-sol", "name": "openai-codex/GPT-5.6 Sol"},
+            {"value": "anthropic-proxy/claude-fable-5-1", "name": "anthropic-proxy/qw-pro-5 (-> claude-fable-5)"},
+            {"value": "anthropic-proxy/claude-sonnet-5", "name": "claude-sonnet-5"},
+            {"value": "deepseek/m1", "name": "deepseek/"}
+        ]}
+    ]);
+    let (models, _, _) = catalog_from_config_options(&options);
+    assert_eq!(models.len(), 4);
+    assert_eq!((models[0].provider.as_str(), models[0].id.as_str(), models[0].name.as_str()),
+        ("openai-codex", "gpt-5.6-sol", "GPT-5.6 Sol"));
+    assert_eq!(models[1].name, "qw-pro-5 (-> claude-fable-5)");
+    assert_eq!(models[2].name, "claude-sonnet-5", "names without the echo are untouched");
+    assert_eq!(models[3].name, "deepseek/", "an empty remainder keeps the original label");
+}
+
+#[test]
 fn session_modes_read_available_and_current() {
     let modes = json!({
         "currentModeId": "workspace-write",

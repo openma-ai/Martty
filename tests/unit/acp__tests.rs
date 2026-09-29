@@ -4175,3 +4175,185 @@ fn structured_auth_failure_opens_owning_connection_and_parks_original_prompt() {
     }
     assert!(rx.try_recv().is_err());
 }
+
+/// Concurrent-prompt steer against an agent that cannot join a turn
+/// (pi-acp queues the second `session/prompt` and runs it as the next
+/// turn): the primary prompt returns first, then the queued turn streams,
+/// then the steer's own response arrives. The session must stay busy
+/// through that queued turn — `session.status idle` only once the last
+/// in-flight request has returned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_steer_keeps_the_session_running_until_its_prompt_returns() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
+        NewSessionResponse, PromptResponse, StopReason,
+    };
+    use std::collections::VecDeque;
+    use std::time::{Duration, Instant};
+
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_steer_tx, release_steer_rx) = tokio::sync::oneshot::channel::<()>();
+    let releases = Arc::new(Mutex::new(VecDeque::from([release_first_rx, release_steer_rx])));
+
+    let agent = Agent
+        .builder()
+        .name("queueing-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("queueing-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let releases = Arc::clone(&releases);
+                async move |req: PromptRequest, responder, cx| {
+                    let text = req
+                        .prompt
+                        .iter()
+                        .find_map(|block| match block {
+                            ContentBlock::Text(text) => Some(text.text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let _ = prompt_tx.send(text);
+                    let release = releases.lock().unwrap().pop_front();
+                    cx.spawn(async move {
+                        if let Some(release) = release {
+                            let _ = release.await;
+                        }
+                        let _ = responder.respond(PromptResponse::new(StopReason::EndTurn));
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        );
+
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    // Drain the bus until `predicate` matches or `wait` elapses.
+    let bus_until = |predicate: &dyn Fn(&AppEvent) -> bool, wait: Duration| -> bool {
+        let deadline = Instant::now() + wait;
+        while Instant::now() < deadline {
+            match bus_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(event) if predicate(&event) => return true,
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(err) => panic!("{err}"),
+            }
+        }
+        false
+    };
+    let status_is = |wanted: &'static str| {
+        move |event: &AppEvent| {
+            matches!(
+                event,
+                AppEvent::Rpc { method, params }
+                    if method == "session.status"
+                        && params["sessionId"] == "s1"
+                        && params["status"] == wanted
+            )
+        }
+    };
+    assert!(
+        bus_until(
+            &|event| matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { .. })),
+            Duration::from_secs(2)
+        ),
+        "session binds"
+    );
+
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: "s1".into(),
+            text: "thanks".into(),
+        })
+        .expect("primary prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("primary prompt reaches the agent")
+            .as_deref(),
+        Some("thanks")
+    );
+    assert!(bus_until(&status_is("running"), Duration::from_secs(2)), "running");
+
+    cmd_tx
+        .send(Cmd::Steer {
+            session_id: "s1".into(),
+            message_id: 7,
+            text: "fadf".into(),
+        })
+        .expect("steer");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("steer reaches the agent as a concurrent prompt")
+            .as_deref(),
+        Some("fadf")
+    );
+
+    // The primary prompt returns; the agent is still running the queued turn.
+    let _ = release_first_tx.send(());
+    assert!(
+        bus_until(
+            &|event| matches!(
+                event,
+                AppEvent::Ui(crate::events::UiEvent::TurnEnd { session, kind })
+                    if session == "s1" && kind == "completed"
+            ),
+            Duration::from_secs(2)
+        ),
+        "the primary turn ends"
+    );
+    assert!(
+        !bus_until(&status_is("idle"), Duration::from_millis(400)),
+        "the session must not report idle while the steer's prompt is in flight"
+    );
+
+    // The queued turn settles: the steer's `session/prompt` returns.
+    let _ = release_steer_tx.send(());
+    assert!(
+        bus_until(
+            &|event| matches!(
+                event,
+                AppEvent::Ctl(CtlEvent::SteerSettled { message_id: 7, deferred: false })
+            ),
+            Duration::from_secs(2)
+        ),
+        "the steer settles as delivered"
+    );
+    assert!(
+        bus_until(&status_is("idle"), Duration::from_secs(2)),
+        "idle once every in-flight prompt has returned"
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
