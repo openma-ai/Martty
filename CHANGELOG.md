@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-30
+
 ### Changed
 
 - Publish each Martty native binary as a platform-specific npm package. The
