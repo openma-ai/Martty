@@ -647,10 +647,13 @@ Pushing a tag that matches both `npm/package.json` and `Cargo.toml` (for example
 `v0.1.0`) publishes to `latest` through npm Trusted Publishing (OIDC), then
 creates a GitHub Release with all six tarballs. A version mismatch fails before
 publishing.
-For the first split release, an npm organization owner must publish each new
-`@openma/martty-*` package once and configure its Trusted Publisher for
+For the first split release, an npm organization owner must add a temporary
+`NPM_BOOTSTRAP_TOKEN` secret to the GitHub `npm` environment, then manually run
+the `Package and publish npm` workflow from `main`. Its bootstrap job creates
+only the five `@openma/martty-*` packages, using the `bootstrap` dist-tag; it
+does not republish `martty`. Configure each new package's Trusted Publisher for
 `openma-ai/Martty` / `package-npm.yml` (environment `npm`, with `npm publish`
-allowed) before pushing the release tag.
+allowed), then delete the temporary secret before pushing the next release tag.
 
 ## Troubleshooting
 
