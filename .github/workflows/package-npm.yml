@@ -6,7 +6,6 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -192,38 +191,6 @@ jobs:
           path: dist/*.tgz
           if-no-files-found: error
           retention-days: 14
-
-  bootstrap:
-    name: Bootstrap native npm packages
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'openma-ai/Martty' && github.ref == 'refs/heads/main'
-    needs: package
-    runs-on: ubuntu-24.04
-    environment: npm
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - run: npm install --global npm@^11.15.0
-      - uses: actions/download-artifact@v8
-        with:
-          name: martty-npm-packages
-          path: dist
-      - name: Create the five new npm packages
-        shell: bash
-        env:
-          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-        run: |
-          test -n "$NPM_BOOTSTRAP_TOKEN" || { echo 'Set the npm environment secret NPM_BOOTSTRAP_TOKEN first' >&2; exit 1; }
-          export NODE_AUTH_TOKEN="$NPM_BOOTSTRAP_TOKEN"
-          npm whoami
-          for package in ./dist/openma-martty-*.tgz; do
-            test -f "$package"
-            npm publish "$package" --access public --tag bootstrap
-          done
 
   publish:
     name: Publish npm

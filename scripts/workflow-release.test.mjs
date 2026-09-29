@@ -12,7 +12,7 @@ test('release jobs are gated to the current canonical repository', () => {
   assert.doesNotMatch(workflow, /github\.repository == 'openma-ai\/deepseek-harness-tui'/)
   assert.equal(
     workflow.match(/github\.repository == 'openma-ai\/Martty'/g)?.length,
-    3,
+    2,
   )
 })
 
@@ -34,13 +34,6 @@ test('release workflow publishes platform packages before the thin martty packag
   assert.ok(workflow.indexOf('npm publish "$package"') < workflow.indexOf('npm publish ./dist/martty-'))
   assert.doesNotMatch(workflow, /npm pack \.\/npm --pack-destination dist/)
   assert.doesNotMatch(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui/)
-})
-
-test('manual CI bootstrap publishes only new platform packages with a one-time secret', () => {
-  assert.match(workflow, /workflow_dispatch:/)
-  assert.match(workflow, /bootstrap:\n[\s\S]*?if: github\.event_name == 'workflow_dispatch' && github\.repository == 'openma-ai\/Martty' && github\.ref == 'refs\/heads\/main'/)
-  assert.match(workflow, /NPM_BOOTSTRAP_TOKEN: \$\{\{ secrets\.NPM_BOOTSTRAP_TOKEN \}\}/)
-  assert.match(workflow, /npm publish "\$package" --access public --tag bootstrap/)
 })
 
 test('Windows CI boots an installed profile through the real Node loader', () => {
