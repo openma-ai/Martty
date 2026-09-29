@@ -395,6 +395,10 @@ make tui-test
 GitHub Actions 会构建 macOS arm64/x64、Linux arm64/x64 和 Windows x64 原生二进制，
 分别发布为 `@openma/martty-<platform>-<arch>` 包。安装 `martty` 时 npm 仅安装
 当前平台的可选依赖；若使用了 `--omit=optional`，需重新安装并启用可选依赖。
+首次创建这些平台包时，在 GitHub `npm` environment 中设置临时
+`NPM_BOOTSTRAP_TOKEN` secret，然后从 `main` 手动运行 `Package and publish npm`
+workflow。它只发布五个平台包；配置各包的 Trusted Publisher 后删除该 secret，
+后续版本继续由 tag 触发 CI 自动发布。
 
 ## 项目结构
 
