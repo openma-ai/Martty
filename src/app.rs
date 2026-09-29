@@ -1561,6 +1561,8 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::ToolCallPreparing { session }
         | UiEvent::AssistantFinal { session, .. }
         | UiEvent::ToolCall { session, .. }
+        | UiEvent::ToolOutputDelta { session, .. }
+        | UiEvent::ToolOutputSnapshot { session, .. }
         | UiEvent::ToolResult { session, .. }
         | UiEvent::Usage { session, .. }
         | UiEvent::UserInjected { session, .. }

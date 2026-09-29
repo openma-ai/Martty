@@ -885,6 +885,66 @@ impl Transcript {
                 }));
                 self.tools.insert(call_id, self.cells.len() - 1);
             }
+            UiEvent::ToolOutputDelta {
+                session,
+                call_id,
+                text,
+            } => {
+                if let Some(&idx) = self.tools.get(&call_id) {
+                    if let Some(cell) = self.cells.get_mut(idx) {
+                        if let CellKind::Tool { result, ok: None, .. } = &mut cell.kind {
+                            result.push_str(&text);
+                            cell.bump();
+                        }
+                    }
+                } else {
+                    self.close_open(&session);
+                    if session == self.root_session {
+                        self.tool_started.insert(call_id.clone(), Instant::now());
+                    }
+                    let agent = self.agent_label(&session);
+                    self.cells.push(Cell::new(CellKind::Tool {
+                        name: "tool".into(),
+                        title: call_id.clone(),
+                        request: String::new(),
+                        result: text,
+                        ok: None,
+                        error: None,
+                        agent,
+                    }));
+                    self.tools.insert(call_id, self.cells.len() - 1);
+                }
+            }
+            UiEvent::ToolOutputSnapshot {
+                session,
+                call_id,
+                text,
+            } => {
+                if let Some(&idx) = self.tools.get(&call_id) {
+                    if let Some(cell) = self.cells.get_mut(idx) {
+                        if let CellKind::Tool { result, ok: None, .. } = &mut cell.kind {
+                            *result = text;
+                            cell.bump();
+                        }
+                    }
+                } else {
+                    self.close_open(&session);
+                    if session == self.root_session {
+                        self.tool_started.insert(call_id.clone(), Instant::now());
+                    }
+                    let agent = self.agent_label(&session);
+                    self.cells.push(Cell::new(CellKind::Tool {
+                        name: "tool".into(),
+                        title: call_id.clone(),
+                        request: String::new(),
+                        result: text,
+                        ok: None,
+                        error: None,
+                        agent,
+                    }));
+                    self.tools.insert(call_id, self.cells.len() - 1);
+                }
+            }
             UiEvent::ToolResult {
                 session,
                 call_id,
@@ -908,7 +968,9 @@ impl Transcript {
                                 ..
                             } = &mut cell.kind
                             {
-                                *result = text;
+                                if !text.is_empty() || result.is_empty() {
+                                    *result = text;
+                                }
                                 *ok = Some(!is_error);
                                 *e = error;
                             }

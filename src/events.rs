@@ -41,6 +41,16 @@ pub enum UiEvent {
         name: String,
         arguments: String,
     },
+    ToolOutputDelta {
+        session: String,
+        call_id: String,
+        text: String,
+    },
+    ToolOutputSnapshot {
+        session: String,
+        call_id: String,
+        text: String,
+    },
     ToolResult {
         session: String,
         call_id: String,
@@ -486,15 +496,54 @@ fn parse_session_update(params: &Value) -> Vec<UiEvent> {
         "tool_call_update" => {
             let status = first_str(update, &["status"]);
             if status == "completed" || status == "failed" {
-                acp_tool_result(session, update).into_iter().collect()
-            } else if (status == "pending" || status == "in_progress")
-                && (update.get("rawInput").is_some()
-                    || update.get("raw_input").is_some()
-                    || update.get("title").is_some())
-            {
-                vec![acp_tool_call(session, update)]
+                let mut events = Vec::new();
+                if update.get("rawOutput").or_else(|| update.get("raw_output")).is_none()
+                    && update.get("content").is_none()
+                {
+                    let text = acp_terminal_delta_text(update);
+                    if !text.is_empty() {
+                        let call_id = first_str(update, &["toolCallId", "tool_call_id"]);
+                        events.push(UiEvent::ToolOutputDelta {
+                            session: session.clone(), call_id, text,
+                        });
+                    }
+                }
+                if let Some(mut result) = acp_tool_result(session, update) {
+                    if !events.is_empty() {
+                        if let UiEvent::ToolResult { text, .. } = &mut result {
+                            text.clear();
+                        }
+                    }
+                    events.push(result);
+                }
+                events
             } else {
-                Vec::new()
+                let mut events = Vec::new();
+                if (status.is_empty() || status == "pending" || status == "in_progress")
+                    && (update.get("rawInput").is_some()
+                        || update.get("raw_input").is_some()
+                        || update.get("title").is_some())
+                {
+                    events.push(acp_tool_call(session.clone(), update));
+                }
+                if status.is_empty() || status == "pending" || status == "in_progress" {
+                    let call_id = first_str(update, &["toolCallId", "tool_call_id"]);
+                    if !call_id.is_empty() {
+                        if let Some(content) = update.get("content") {
+                            events.push(UiEvent::ToolOutputSnapshot {
+                                session,
+                                call_id,
+                                text: concat_text_blocks(content),
+                            });
+                        } else {
+                            let text = acp_terminal_delta_text(update);
+                            if !text.is_empty() {
+                                events.push(UiEvent::ToolOutputDelta { session, call_id, text });
+                            }
+                        }
+                    }
+                }
+                events
             }
         }
         "current_mode_update" => {
@@ -564,16 +613,6 @@ fn acp_tool_result(session: String, update: &Value) -> Option<UiEvent> {
 }
 
 fn acp_tool_output_text(update: &Value) -> String {
-    if let Some(data) = update
-        .get("_meta")
-        .and_then(|m| m.get("terminal_output"))
-        .and_then(|t| t.get("data"))
-        .and_then(Value::as_str)
-    {
-        if !data.is_empty() {
-            return data.to_string();
-        }
-    }
     if let Some(raw) = update.get("rawOutput").or_else(|| update.get("raw_output")) {
         if let Some(s) = raw.as_str() {
             return s.to_string();
@@ -585,6 +624,30 @@ fn acp_tool_output_text(update: &Value) -> String {
     }
     if let Some(content) = update.get("content") {
         return concat_text_blocks(content);
+    }
+    if let Some(data) = update
+        .get("_meta")
+        .and_then(|m| m.get("terminal_output"))
+        .and_then(|t| t.get("data"))
+        .and_then(Value::as_str)
+    {
+        return data.to_string();
+    }
+    String::new()
+}
+
+fn acp_terminal_delta_text(update: &Value) -> String {
+    for key in ["terminal_output", "terminal_output_delta"] {
+        if let Some(data) = update
+            .get("_meta")
+            .and_then(|meta| meta.get(key))
+            .and_then(|terminal| terminal.get("data"))
+            .and_then(Value::as_str)
+        {
+            if !data.is_empty() {
+                return data.to_string();
+            }
+        }
     }
     String::new()
 }
@@ -1033,10 +1096,17 @@ fn concat_text_blocks(content: &Value) -> String {
     let mut out = String::new();
     if let Some(blocks) = content.as_array() {
         for block in blocks {
-            if block.get("type").and_then(Value::as_str) == Some("text") {
-                if let Some(t) = block.get("text").and_then(Value::as_str) {
-                    out.push_str(t);
-                }
+            let text_block = match block.get("type").and_then(Value::as_str) {
+                Some("text") => Some(block),
+                Some("content") => block.get("content"),
+                _ => None,
+            };
+            if let Some(t) = text_block
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                .and_then(|block| block.get("text"))
+                .and_then(Value::as_str)
+            {
+                out.push_str(t);
             }
         }
     }

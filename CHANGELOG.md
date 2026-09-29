@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Display running tool output from ACP content snapshots and terminal output
+  deltas, including updates without a repeated status; keep the full output
+  when a tool finishes. This restores live Bash and general tool text with
+  current DeepSeek Harness ACP and other compatible agents.
+- Refresh the bundled ACP Registry snapshot, including the current pi-acp
+  entry, and update the embedded ACP adapter and development DSH baseline.
+
 - Refresh the selected ACP session mode after a successful `session/set_mode`
   response, so Shift+Tab continues cycling with agents such as OpenCode that
   do not send a mode notification. Apply fallback configuration responses and

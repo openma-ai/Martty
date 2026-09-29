@@ -155,7 +155,7 @@ standalone 的 `acpClient` 用稳定的 stdio 入口管理多个 ACP 连接。�
 验证成功的官方目录；没有缓存时使用随 npm `lib` 发布的
 `acp-registry.snapshot.json`。快照来自官方
 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`，当前随包
-快照获取于 2026-09-05，不是手写 Harness 名单。发布时应更新该官方原始快照。
+快照获取于 2026-09-29，不是手写 Harness 名单。发布时应更新该官方原始快照。
 
 打开 Add Harness 立即返回可搜索的目录，不等待网络或 PATH 探测。目录刷新与
 本地探测在后台执行，同 id 的 select 原位更新且保留搜索/选择；离线时保留已显示
