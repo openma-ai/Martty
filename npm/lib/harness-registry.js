@@ -19,6 +19,19 @@ import { downloadFile } from './download.js'
 
 export const ACP_REGISTRY_URL = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json'
 
+const OPENMA_PI_ACP = '@openma/pi-acp@0.1.3'
+
+function preferMarttyPiAcp(records) {
+  return records.map((record) => record.id === 'pi-acp' ? {
+    ...record,
+    label: 'Pi (OpenMA)',
+    version: '0.1.3',
+    distributions: [{
+      type: 'npx', command: 'npx', args: [OPENMA_PI_ACP], env: {},
+    }],
+  } : record)
+}
+
 function registryCachePath(options) {
   return typeof options.settingsPath === 'string'
     ? path.join(path.dirname(options.settingsPath), 'cache', 'acp-registry.json') : undefined
@@ -32,11 +45,11 @@ export function readAcpRegistrySnapshot(options = {}) {
       if (statSync(cachePath).size > 16 * 1024 * 1024) throw new Error('oversized cache')
       const cached = JSON.parse(readFileSync(cachePath, 'utf8'))
       if (cached.source === (options.registryUrl ?? ACP_REGISTRY_URL) && Array.isArray(cached.catalog?.agents)) {
-        return normalizeAcpRegistry(cached.catalog, options)
+        return preferMarttyPiAcp(normalizeAcpRegistry(cached.catalog, options))
       }
     } catch { /* Missing/corrupt cache cannot block the bundled catalog. */ }
   }
-  return normalizeAcpRegistry(JSON.parse(readFileSync(new URL('./acp-registry.snapshot.json', import.meta.url), 'utf8')), options)
+  return preferMarttyPiAcp(normalizeAcpRegistry(JSON.parse(readFileSync(new URL('./acp-registry.snapshot.json', import.meta.url), 'utf8')), options))
 }
 
 function cacheRegistry(value, options) {
@@ -240,7 +253,7 @@ export async function fetchAcpRegistry(options = {}) {
       throw new Error('ACP Registry has no distributions for this platform')
     }
     cacheRegistry(value, options)
-    return records
+    return preferMarttyPiAcp(records)
   } catch (error) {
     if (timeout.signal.aborted) throw timeout.signal.reason
     if (error instanceof Error && error.message.startsWith('ACP Registry')) throw error

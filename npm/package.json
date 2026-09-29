@@ -86,7 +86,7 @@
     "@deepseek-ai/dsh": "0.1.7-rc.2"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "keywords": [
     "deepseek",

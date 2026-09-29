@@ -11,7 +11,7 @@
 ---
 
 Native binaries are packaged for macOS arm64, macOS x64, Linux x64, and Windows
-x64. Requires Node.js 18+.
+x64. Requires Node.js 22.19+.
 
 > **Rename note:** the project and recommended npm package have moved from
 > DeepSeek Harness TUI / `@openma/deepseek-harness-tui` to **Martty** / `martty`.
