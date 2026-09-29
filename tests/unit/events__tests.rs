@@ -502,6 +502,73 @@ fn tool_result_success_blocks() {
 }
 
 #[test]
+fn running_tool_output_reaches_the_transcript_before_completion() {
+    let content = parse_notification(
+        "session/update",
+        &json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
+            "toolCallId":"c1","status":"in_progress",
+            "content":[{"type":"content","content":{"type":"text","text":"first"}}]}}),
+    );
+    assert_eq!(content, vec![UiEvent::ToolOutputSnapshot {
+        session: "s".into(), call_id: "c1".into(), text: "first".into(),
+    }]);
+
+    let status_omitted = parse_notification(
+        "session/update",
+        &json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
+            "toolCallId":"c1",
+            "content":[{"type":"content","content":{"type":"text","text":"first second"}}]}}),
+    );
+    assert_eq!(status_omitted, vec![UiEvent::ToolOutputSnapshot {
+        session: "s".into(), call_id: "c1".into(), text: "first second".into(),
+    }]);
+
+    let terminal = parse_notification(
+        "session/update",
+        &json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
+            "toolCallId":"c1","status":"in_progress",
+            "_meta":{"terminal_output":{"terminal_id":"c1","data":"second"}}}}),
+    );
+    assert_eq!(terminal, vec![UiEvent::ToolOutputDelta {
+        session: "s".into(), call_id: "c1".into(), text: "second".into(),
+    }]);
+}
+
+#[test]
+fn completed_terminal_uses_full_raw_output_after_live_chunks() {
+    let result = parse_notification(
+        "session/update",
+        &json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
+            "toolCallId":"c1","status":"completed",
+            "rawOutput":{"output":"first second"},
+            "_meta":{"terminal_output":{"terminal_id":"c1","data":" second"}}}}),
+    );
+    assert_eq!(result, vec![UiEvent::ToolResult {
+        session: "s".into(), call_id: "c1".into(), is_error: false,
+        text: "first second".into(), error: None,
+    }]);
+}
+
+#[test]
+fn completed_terminal_without_raw_output_keeps_its_final_delta() {
+    let result = parse_notification(
+        "session/update",
+        &json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
+            "toolCallId":"c1","status":"completed",
+            "_meta":{"terminal_output":{"terminal_id":"c1","data":" second"}}}}),
+    );
+    assert_eq!(result, vec![
+        UiEvent::ToolOutputDelta {
+            session: "s".into(), call_id: "c1".into(), text: " second".into(),
+        },
+        UiEvent::ToolResult {
+            session: "s".into(), call_id: "c1".into(), is_error: false,
+            text: String::new(), error: None,
+        },
+    ]);
+}
+
+#[test]
 fn tool_result_is_error_block_flag() {
     let ev = parse_notification(
         "session.event",

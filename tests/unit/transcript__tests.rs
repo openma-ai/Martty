@@ -129,6 +129,67 @@ fn tool_call_pairs_with_result() {
 }
 
 #[test]
+fn running_tool_output_snapshots_replace_and_final_result_replaces_them() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::ToolCall {
+        session: "s".into(),
+        call_id: "c1".into(),
+        name: "bash".into(),
+        arguments: r#"{"command":"echo first"}"#.into(),
+    });
+    for text in ["first", "first second"] {
+        tr.apply(UiEvent::ToolOutputSnapshot {
+            session: "s".into(),
+            call_id: "c1".into(),
+            text: text.into(),
+        });
+    }
+    match &tr.cells[0].kind {
+        CellKind::Tool { result, ok, .. } => {
+            assert_eq!(result, "first second");
+            assert_eq!(*ok, None);
+        }
+        other => panic!("unexpected cell {other:?}"),
+    }
+    tr.apply(UiEvent::ToolResult {
+        session: "s".into(),
+        call_id: "c1".into(),
+        is_error: false,
+        text: "first second".into(),
+        error: None,
+    });
+    match &tr.cells[0].kind {
+        CellKind::Tool { result, ok, .. } => {
+            assert_eq!(result, "first second");
+            assert_eq!(*ok, Some(true));
+        }
+        other => panic!("unexpected cell {other:?}"),
+    }
+}
+
+#[test]
+fn terminal_deltas_survive_completion_without_a_full_result() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::ToolOutputDelta {
+        session: "s".into(), call_id: "c1".into(), text: "first".into(),
+    });
+    tr.apply(UiEvent::ToolOutputDelta {
+        session: "s".into(), call_id: "c1".into(), text: " second".into(),
+    });
+    tr.apply(UiEvent::ToolResult {
+        session: "s".into(), call_id: "c1".into(), is_error: false,
+        text: String::new(), error: None,
+    });
+    match &tr.cells[0].kind {
+        CellKind::Tool { result, ok, .. } => {
+            assert_eq!(result, "first second");
+            assert_eq!(*ok, Some(true));
+        }
+        other => panic!("unexpected cell {other:?}"),
+    }
+}
+
+#[test]
 fn streamed_tool_request_updates_one_existing_cell() {
     let mut tr = t("s");
     tr.apply(UiEvent::ToolCall {

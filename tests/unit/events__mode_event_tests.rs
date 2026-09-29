@@ -202,12 +202,19 @@ fn session_update_maps_user_title_plan_and_terminal_output() {
     );
     assert_eq!(
         ev,
-        vec![UiEvent::ToolResult {
-            session: "s".into(),
-            call_id: "c1".into(),
-            is_error: false,
-            text: "ls output".into(),
-            error: None,
-        }]
+        vec![
+            UiEvent::ToolOutputDelta {
+                session: "s".into(),
+                call_id: "c1".into(),
+                text: "ls output".into(),
+            },
+            UiEvent::ToolResult {
+                session: "s".into(),
+                call_id: "c1".into(),
+                is_error: false,
+                text: String::new(),
+                error: None,
+            },
+        ]
     );
 }
