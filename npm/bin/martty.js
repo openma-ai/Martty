@@ -8,26 +8,10 @@ import { createInterface } from 'node:readline/promises'
 import { resolveDependencyStack } from '../lib/agent.js'
 import { bootClient, parseClientArgv, painterArgs, uiSettingsPath } from '../lib/boot.js'
 import { runHarnessCommandAsync } from '../lib/harnesses.js'
+import { nativeBinary } from '../lib/spawn-tui.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const platformKey = process.platform + '-' + process.arch
-const vendorDir = path.join(__dirname, '..', 'vendor')
-const binaryName = process.platform === 'win32' ? 'martty.exe' : 'martty'
-const packaged = path.join(vendorDir, platformKey, binaryName)
 const configuredBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
-let binaryPath = packaged
-if (typeof configuredBin === 'string' && configuredBin.length > 0) {
-  if (fs.existsSync(configuredBin)) {
-    binaryPath = configuredBin
-  } else {
-    // Never silently fall back: the user believes they are running their
-    // own build (devlocalinstall.sh has caught this confusion before).
-    console.error(
-      `martty: ${configuredBin} (from ${process.env.MARTTY_BIN ? 'MARTTY_BIN' : 'DSH_TUI_BIN'})`
-        + ' does not exist — falling back to the bundled binary',
-    )
-  }
-}
 
 const argv = process.argv.slice(2)
 const wantDemoSkin = argv.includes('--demo-skin')
@@ -109,23 +93,19 @@ if (!wantHelp && !wantVersion && !wantDemo && !wantDemoSkin) {
   }
 }
 
-if (!fs.existsSync(binaryPath)) {
-  let available = []
-  try {
-    available = fs
-      .readdirSync(vendorDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-  } catch {
-    // vendor dir missing entirely
-  }
-  console.error('martty: no bundled binary for this platform (' + platformKey + ').')
-  if (available.length > 0) {
-    console.error('Bundled platforms: ' + available.join(', '))
-  } else {
-    console.error('No platform binaries are bundled in this install.')
-  }
-  console.error('Hint: run scripts/build-npm.sh on this machine to build and package a native binary.')
+if (configuredBin && !fs.existsSync(configuredBin)) {
+  // Never silently fall back: the user believes they are running their
+  // own build (devlocalinstall.sh has caught this confusion before).
+  console.error(
+    `martty: ${configuredBin} (from ${process.env.MARTTY_BIN ? 'MARTTY_BIN' : 'DSH_TUI_BIN'})`
+      + ' does not exist — falling back to the installed native binary',
+  )
+}
+let binaryPath
+try {
+  binaryPath = nativeBinary({ envBin: configuredBin && fs.existsSync(configuredBin) ? configuredBin : null })
+} catch (error) {
+  console.error(`martty: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)
 }
 

@@ -7,6 +7,7 @@
 
 import { spawn } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
@@ -15,8 +16,8 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /** Select the first existing native painter in development-to-release order. */
-export function selectNativeBinary({ envBin, devBin, packagedBin }) {
-  for (const candidate of [envBin, devBin, packagedBin]) {
+export function selectNativeBinary({ envBin, devBin, optionalBin, packagedBin }) {
+  for (const candidate of [envBin, devBin, optionalBin, packagedBin]) {
     if (typeof candidate === 'string' && candidate.length > 0 && fs.existsSync(candidate)) {
       return candidate
     }
@@ -25,28 +26,34 @@ export function selectNativeBinary({ envBin, devBin, packagedBin }) {
 }
 
 /**
- * Packaged native binary for this platform, or throw if it was not staged.
+ * Installed optional platform binary, or the local development binary.
  * Honors `MARTTY_BIN`, with `DSH_TUI_BIN` as a compatibility fallback.
+ * @param {{ packageRoot?: string, platform?: string, arch?: string, envBin?: string | null, devBin?: string | null }} [options]
  * @returns {string}
  */
-export function nativeBinary() {
-  const envBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
-  const key = `${process.platform}-${process.arch}`
-  const exe = process.platform === 'win32' ? 'martty.exe' : 'martty'
-  const bin = path.join(__dirname, '..', 'vendor', key, exe)
-  const devBin = path.join(__dirname, '..', '..', 'target', 'debug', exe)
-  const selected = selectNativeBinary({ envBin, devBin, packagedBin: bin })
+export function nativeBinary(options = {}) {
+  const packageRoot = options.packageRoot ?? path.join(__dirname, '..')
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  const key = `${platform}-${arch}`
+  const exe = platform === 'win32' ? 'martty.exe' : 'martty'
+  const packageName = `@openma/martty-${key}`
+  const req = createRequire(path.join(packageRoot, 'package.json'))
+  let optionalBin
+  try { optionalBin = req.resolve(`${packageName}/bin/${exe}`) }
+  catch (error) {
+    if (error?.code !== 'MODULE_NOT_FOUND' && error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error
+  }
+  const envBin = options.envBin === undefined
+    ? process.env.MARTTY_BIN || process.env.DSH_TUI_BIN : options.envBin
+  const devBin = options.devBin === undefined
+    ? path.join(packageRoot, '..', 'target', 'debug', exe) : options.devBin
+  const packagedBin = path.join(packageRoot, 'vendor', key, exe)
+  const selected = selectNativeBinary({ envBin, devBin, optionalBin, packagedBin })
   if (selected === undefined) {
-    let have = []
-    try {
-      have = fs.readdirSync(path.join(__dirname, '..', 'vendor'))
-    } catch {
-      // vendor dir missing entirely
-    }
     throw new Error(
-      `@openma/deepseek-harness-tui: no native binary for ${key}` +
-        ` (packaged: ${have.join(', ') || 'none'});` +
-      ' rebuild the package on this machine with scripts/build-npm.sh',
+      `Martty native package ${packageName} is missing for ${key}; reinstall Martty with optional dependencies`
+      + ' (npm install --include=optional). From source, build with scripts/build-npm.sh.',
     )
   }
   return selected

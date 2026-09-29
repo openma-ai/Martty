@@ -272,16 +272,16 @@ credential, session, theme, and demo options.
 
 ## Supported platforms
 
-| Node platform key | Binary |
+| Node platform key | npm package |
 |---|---|
-| `darwin-arm64` | `vendor/darwin-arm64/martty` |
-| `darwin-x64` | `vendor/darwin-x64/martty` |
-| `linux-x64` | `vendor/linux-x64/martty` |
-| `linux-arm64` | `vendor/linux-arm64/martty` |
-| `win32-x64` | `vendor/win32-x64/martty.exe` |
+| `darwin-arm64` | `@openma/martty-darwin-arm64` |
+| `darwin-x64` | `@openma/martty-darwin-x64` |
+| `linux-x64` | `@openma/martty-linux-x64` |
+| `linux-arm64` | `@openma/martty-linux-arm64` |
+| `win32-x64` | `@openma/martty-win32-x64` |
 
-If installation succeeds but launch reports `no native binary for ...`, confirm
-that you installed the latest version and that your platform appears above.
+If launch reports a missing native package, reinstall with optional dependencies
+enabled (`npm install --include=optional martty`) and check the table above.
 
 ## Uninstall
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -99,4 +99,54 @@ test('verifies that a release contains every supported platform', () => {
 
   const verified = run(['verify', '--vendor-root', vendorRoot])
   assert.equal(verified.status, 0, verified.stderr)
+})
+
+test('packages each staged binary for only its matching npm platform', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-platform-packages-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const source = path.join(root, 'compiled-binary')
+  const vendorRoot = path.join(root, 'vendor')
+  const packageRoot = path.join(root, 'packages')
+  for (const [platform, arch] of [
+    ['darwin', 'arm64'], ['darwin', 'x64'], ['linux', 'arm64'],
+    ['linux', 'x64'], ['win32', 'x64'],
+  ]) {
+    writeFileSync(source, `${platform}-${arch}`)
+    assert.equal(run(['stage', '--source', source, '--platform', platform,
+      '--arch', arch, '--vendor-root', vendorRoot]).status, 0)
+  }
+
+  const packaged = run(['package', '--vendor-root', vendorRoot,
+    '--package-root', packageRoot, '--version', '1.2.3'])
+  assert.equal(packaged.status, 0, packaged.stderr)
+  assert.deepEqual(readdirSync(packageRoot).sort(), [
+    'darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64',
+  ])
+  for (const [platform, arch] of [
+    ['darwin', 'arm64'], ['darwin', 'x64'], ['linux', 'arm64'],
+    ['linux', 'x64'], ['win32', 'x64'],
+  ]) {
+    const key = `${platform}-${arch}`
+    const directory = path.join(packageRoot, key)
+    const binaryName = platform === 'win32' ? 'martty.exe' : 'martty'
+    const manifest = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'))
+    assert.equal(manifest.name, `@openma/martty-${key}`)
+    assert.equal(manifest.version, '1.2.3')
+    assert.deepEqual(manifest.os, [platform])
+    assert.deepEqual(manifest.cpu, [arch])
+    assert.deepEqual(readdirSync(path.join(directory, 'bin')), [binaryName])
+    assert.equal(readFileSync(path.join(directory, 'bin', binaryName), 'utf8'), key)
+    assert.match(readFileSync(path.join(directory, 'LICENSE'), 'utf8'), /MIT License/)
+  }
+})
+
+test('does not create partial platform packages when a binary is missing', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-platform-missing-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const packageRoot = path.join(root, 'packages')
+  const result = run(['package', '--vendor-root', path.join(root, 'vendor'),
+    '--package-root', packageRoot, '--version', '1.2.3'])
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /missing native binaries/)
+  assert.equal(existsSync(packageRoot), false)
 })

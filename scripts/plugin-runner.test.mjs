@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { registerHooks } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -68,7 +68,7 @@ const { installAcpSessionPlan } = await import(
 const { createTuiPluginStore } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'tui-plugin-store.js')).href
 )
-const { selectNativeBinary } = await import(
+const { nativeBinary, selectNativeBinary } = await import(
   pathToFileURL(path.join(repoRoot, 'npm', 'lib', 'spawn-tui.js')).href
 )
 
@@ -90,6 +90,28 @@ test('a source checkout prefers its current debug painter over a stale packaged 
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('installed Martty resolves only its matching optional native package', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-native-optional-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const binary = path.join(root, 'node_modules', '@openma', 'martty-linux-x64', 'bin', 'martty')
+  mkdirSync(path.dirname(binary), { recursive: true })
+  writeFileSync(binary, 'linux native')
+  let selected
+  assert.doesNotThrow(() => {
+    selected = nativeBinary({ packageRoot: root, platform: 'linux', arch: 'x64', envBin: null, devBin: null })
+  })
+  assert.equal(selected, realpathSync(binary))
+})
+
+test('missing optional native package gives an actionable install error', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-native-missing-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  assert.throws(
+    () => nativeBinary({ packageRoot: root, platform: 'linux', arch: 'x64', envBin: null, devBin: null }),
+    /@openma\/martty-linux-x64.*optional dependencies/,
+  )
 })
 
 test('Martty settings live under the branded home with explicit environment precedence', () => {
