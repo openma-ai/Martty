@@ -136,6 +136,7 @@ test('packages each staged binary for only its matching npm platform', (t) => {
     assert.deepEqual(manifest.cpu, [arch])
     assert.deepEqual(readdirSync(path.join(directory, 'bin')), [binaryName])
     assert.equal(readFileSync(path.join(directory, 'bin', binaryName), 'utf8'), key)
+    assert.match(readFileSync(path.join(directory, 'LICENSE'), 'utf8'), /MIT License/)
   }
 })
 

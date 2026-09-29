@@ -13,6 +13,8 @@ import {
 import path from 'node:path'
 import { nativeTargets } from './native-targets.mjs'
 
+const licenseFile = path.resolve(import.meta.dirname, '..', 'LICENSE')
+
 function options(args) {
   const out = new Map()
   for (let i = 0; i < args.length; i += 2) {
@@ -88,6 +90,7 @@ function packagePlatforms(values) {
     const bin = path.join(directory, 'bin', spec.file)
     mkdirSync(path.dirname(bin), { recursive: true })
     copyFileSync(path.join(vendorRoot, key, spec.file), bin)
+    copyFileSync(licenseFile, path.join(directory, 'LICENSE'))
     if (spec.platform !== 'win32') chmodSync(bin, 0o755)
     writeFileSync(path.join(directory, 'package.json'), `${JSON.stringify({
       name: `@openma/martty-${key}`,
@@ -98,7 +101,7 @@ function packagePlatforms(values) {
       os: [spec.platform],
       cpu: [spec.arch],
       engines: { node: '>=22.19.0' },
-      files: ['bin'],
+      files: ['bin', 'LICENSE'],
       publishConfig: { access: 'public' },
     }, null, 2)}\n`)
   }
