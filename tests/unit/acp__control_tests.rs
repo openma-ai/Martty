@@ -548,3 +548,121 @@ async fn permission_auth_failure_opens_login_without_changing_mode() {
         );
     }
 }
+
+/// The same model id can be advertised under several providers (an OAuth
+/// account and a proxy both serving `gpt-5.6-sol`). The picker's provider
+/// must decide which `provider/id` value reaches the agent — the first id
+/// match used to win, silently switching to the wrong provider.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_switch_honours_the_picked_provider_for_duplicate_ids() {
+    use agent_client_protocol::schema::v1::{SessionConfigOption, SessionConfigSelectOption};
+    // Real agents (pi-acp) echo the full option list on every switch; an
+    // empty response would fold an empty catalog back into the session.
+    fn model_option(current: String) -> Vec<SessionConfigOption> {
+        vec![SessionConfigOption::select(
+            "model",
+            "Model",
+            current,
+            vec![
+                SessionConfigSelectOption::new("openai-codex/gpt-5.6-sol", "openai-codex/GPT-5.6 Sol"),
+                SessionConfigSelectOption::new("anthropic-proxy/gpt-5.6-sol", "anthropic-proxy/gpt-5.6-sol"),
+            ],
+        )]
+    }
+    let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&sent);
+    let agent = Agent
+        .builder()
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new()),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1"))
+                        .config_options(model_option("openai-codex/gpt-5.6-sol".into())),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionConfigOptionRequest, responder, _cx| {
+                let value = serde_json::to_value(&req).unwrap()["value"].clone();
+                let value = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+                seen.lock().unwrap().push(value.clone());
+                responder.respond(SetSessionConfigOptionResponse::new(model_option(value)))
+            },
+            on_receive_request!(),
+        );
+    let (bus, events) = std::sync::mpsc::channel();
+    let (cmds, commands) = std::sync::mpsc::channel();
+    let task = tokio::spawn(connect(agent, model_switch_cfg(), bus, commands));
+    wait_event(&events, |event| {
+        matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")
+    })
+    .await;
+    // Catalog folded from session/new: both providers are known.
+    wait_event(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Ctl(CtlEvent::Catalog { models, .. }) if models.len() == 2
+        )
+    })
+    .await;
+    for provider in ["anthropic-proxy", "openai-codex"] {
+        cmds.send(Cmd::SelectModel {
+            session_id: "s1".into(),
+            provider: Some(provider.into()),
+            model: Some("gpt-5.6-sol".into()),
+            effort: None,
+        })
+        .unwrap();
+        wait_event(&events, |event| {
+            matches!(
+                event,
+                AppEvent::Ctl(CtlEvent::Catalog { session_id: Some(sid), .. }) if sid == "s1"
+            )
+        })
+        .await;
+    }
+    // A provider the catalog does not list still travels as `provider/id`;
+    // no provider keeps the legacy first-id-match behaviour.
+    cmds.send(Cmd::SelectModel {
+        session_id: "s1".into(),
+        provider: Some("other-proxy".into()),
+        model: Some("gpt-5.6-sol".into()),
+        effort: None,
+    })
+    .unwrap();
+    cmds.send(Cmd::SelectModel {
+        session_id: "s1".into(),
+        provider: None,
+        model: Some("gpt-5.6-sol".into()),
+        effort: None,
+    })
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while sent.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("four model switches reach the agent");
+    assert_eq!(
+        *sent.lock().unwrap(),
+        vec![
+            "anthropic-proxy/gpt-5.6-sol".to_string(),
+            "openai-codex/gpt-5.6-sol".to_string(),
+            "other-proxy/gpt-5.6-sol".to_string(),
+            "openai-codex/gpt-5.6-sol".to_string(),
+        ]
+    );
+    let _ = cmds.send(Cmd::Shutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+}

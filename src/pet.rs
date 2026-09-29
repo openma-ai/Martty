@@ -249,8 +249,13 @@ fn place_kitty(
 }
 
 /// Drop one placement (the image data stays transmitted and re-placeable).
+///
+/// `d=i` with both `i` and `p` addresses exactly that placement. `d=p` is
+/// a different delete mode — placements intersecting the cell named by
+/// `x`/`y` — so with it the old placement survived every move and each
+/// relayout stacked another copy of the sprite on screen.
 fn delete_placement_kitty(out: &mut impl Write, id: u32, placement: u32) -> io::Result<()> {
-    write!(out, "\x1b_Ga=d,d=p,i={id},p={placement},q=2\x1b\\")
+    write!(out, "\x1b_Ga=d,d=i,i={id},p={placement},q=2\x1b\\")
 }
 
 const BACKDROP_ID: u32 = 4210;

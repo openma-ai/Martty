@@ -20,7 +20,7 @@
   <a href="https://www.npmjs.com/package/martty"><img src="https://img.shields.io/npm/v/martty?logo=npm&color=cb3837" alt="npm version" /></a>
   <a href="https://www.npmjs.com/package/martty"><img src="https://img.shields.io/npm/dm/martty" alt="npm downloads" /></a>
   <a href="https://github.com/openma-ai/Martty/actions/workflows/package-npm.yml"><img src="https://github.com/openma-ai/Martty/actions/workflows/package-npm.yml/badge.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/node/v/martty" alt="Node.js 18+" />
+  <img src="https://img.shields.io/node/v/martty" alt="Node.js 22.19+" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT" /></a>
 </p>
 
@@ -55,7 +55,7 @@ and iterate on its own terminal capabilities.
 
 ### Recommended: dsh TUI surface plugin
 
-Requires Node.js 18+. Install the official
+Requires Node.js 22.19+. Install the official
 [DeepSeek Harness](https://github.com/deepseek-ai/dsh), then add the TUI
 directly to the `martty` profile:
 
@@ -160,7 +160,8 @@ All three entry points share the official ACP Registry: edit `settings.json`, us
 `martty harness` CLI above, or enter `/harness` in the running TUI for the
 native single-select form. `harness find` reads a cached/bundled snapshot of
 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` and supplements it with
-local PATH discovery; it is not an npm package search or an immediate switch. `npx` and `uvx`
+local PATH discovery; it is not an npm package search or an immediate switch. Pi uses
+`@openma/pi-acp@0.1.3` while the bundled raw catalog remains unchanged. `npx` and `uvx`
 distributions are launch recipes without implicit `--yes` or `--prefer-offline` flags. Selecting
 a `binary` distribution confirms and installs it under
 `$MARTTY_HOME/bin/<id>/<version>/<platform>`, verifies its SHA-256 when provided, and never
@@ -587,7 +588,7 @@ default; run `/liang on` to summon him.
 
 ## Build from source
 
-Requires Rust stable and Node.js 18+. The JavaScript test suite also uses
+Requires Rust stable and Node.js 22.19+. The JavaScript test suite also uses
 Python 3 and `pexpect` for its local PTY fixture. If needed, create and activate
 a Python virtual environment, then run `python -m pip install pexpect` before
 testing; the fixture does not call a model.

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fetchAcpRegistry, installRegistryBinary, managedBinaryPath } from '../npm/lib/harness-registry.js'
 import { readAcpRegistrySnapshot } from '../npm/lib/harness-registry.js'
+import { addHarness } from '../npm/lib/harnesses.js'
 
 const catalog = JSON.stringify({ agents: [{
   id: 'example', name: 'Example', version: '1.0.0',
@@ -38,6 +39,31 @@ test('corrupt disk Registry cache falls back to the bundled official catalog', (
   mkdirSync(path.join(root, 'cache'))
   writeFileSync(path.join(root, 'cache', 'acp-registry.json'), '{broken')
   assert.ok(readAcpRegistrySnapshot(options).some(({ id }) => id === 'antigravity-acp'))
+})
+
+test('Martty offers its pi-acp package without changing the official catalog', async (t) => {
+  const engine = JSON.parse(readFileSync(new URL('../npm/package.json', import.meta.url), 'utf8')).engines.node
+  assert.equal(engine, '>=22.19.0')
+  const supported = readAcpRegistrySnapshot().find(({ id }) => id === 'pi-acp')
+  assert.equal(supported?.version, '0.1.3')
+  assert.deepEqual(supported?.distributions.find(({ type }) => type === 'npx')?.args, ['@openma/pi-acp@0.1.3'])
+
+  const raw = { agents: [{ id: 'pi-acp', name: 'Pi', version: '0.0.34',
+    distribution: { npx: { package: 'pi-acp@0.0.34' } },
+  }] }
+  const refreshed = await fetchAcpRegistry({ fetchImpl: async () => new Response(JSON.stringify(raw)) })
+  assert.deepEqual(refreshed[0].distributions[0].args, ['@openma/pi-acp@0.1.3'])
+  assert.deepEqual(raw.agents[0].distribution.npx, { package: 'pi-acp@0.0.34' })
+
+  const { root, options } = fixture(t)
+  const runner = path.join(root, process.platform === 'win32' ? 'npx.cmd' : 'npx')
+  writeFileSync(runner, '#!/bin/sh\n')
+  chmodSync(runner, 0o755)
+  const added = addHarness(options.settingsPath, 'pi-acp', [], {
+    registry: readAcpRegistrySnapshot(), pathValue: root,
+  })
+  assert.equal(added.command, runner)
+  assert.deepEqual(added.args, ['@openma/pi-acp@0.1.3'])
 })
 
 function delayedResponse(text, delay = 100) {

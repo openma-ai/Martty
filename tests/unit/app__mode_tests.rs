@@ -5151,3 +5151,117 @@ fn finished_last_subagent_clears_an_open_inline_selection() {
         "last task ended → the open selection clears"
     );
 }
+
+#[test]
+fn agent_reported_model_overrides_a_stale_optimistic_pick() {
+    let (mut app, ctl, _rx) = test_app();
+    let session = app.session_id.clone();
+    app.selected_model = Some("gpt-5.6-sol".into());
+
+    // The same id under a provider confirms the pick.
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session: session.clone(),
+            model: "anthropic-proxy/gpt-5.6-sol".into(),
+        }),
+        &ctl,
+    );
+    assert_eq!(app.selected_model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(app.session_model.as_deref(), Some("anthropic-proxy/gpt-5.6-sol"));
+
+    // A different model is what the session actually runs on: the report
+    // wins over the optimistic status-bar value.
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionModel {
+            session,
+            model: "anthropic-proxy/claude-fable-5-1".into(),
+        }),
+        &ctl,
+    );
+    assert_eq!(app.selected_model, None, "stale pick dropped");
+    assert_eq!(app.session_model.as_deref(), Some("anthropic-proxy/claude-fable-5-1"));
+}
+
+/// The whole #119 flow through the App: pi-acp's startup context arrives
+/// right after the bind, before any prompt. It must stay off the welcome
+/// page, never spin the UI, and the first reply must render below the first
+/// prompt in its own block instead of inside the context's last list item.
+#[test]
+fn first_reply_renders_below_the_prompt_after_out_of_turn_startup_context() {
+    use crate::events::UiEvent as E;
+    let (mut app, ctl, _rx) = test_app();
+    app.session_bound = true;
+    let session = app.session_id.clone();
+    let startup = "pi v0.80.7\n---\n\n## Skills\n- /Users/me/.pi/agent/skills/agent-browser/SKILL.md\n\n## Extensions\n- npm:pi-subagents\n  - index.ts\n";
+    app.handle(
+        AppEvent::Ui(E::TextDelta {
+            session: session.clone(),
+            text: startup.into(),
+        }),
+        &ctl,
+    );
+    let welcome = crate::ui::dump_frame(&mut app, 100, 36);
+    println!("--- before the first prompt ---\n{welcome}");
+    assert!(app.show_banner, "context alone must not dismiss the welcome page");
+    assert!(
+        !app.transcript.streaming(),
+        "out-of-turn context must not spin the UI"
+    );
+
+    app.send_agent_text("damn".into(), &ctl);
+    for ev in [
+        E::TurnStart {
+            session: session.clone(),
+            turn: 0,
+        },
+        E::SessionStatus {
+            session: session.clone(),
+            running: true,
+        },
+        E::ReasoningDelta {
+            session: session.clone(),
+            text: "user is frustrated".into(),
+        },
+        E::TextDelta {
+            session: session.clone(),
+            text: "Something break? Give me the error or the file and I'll dig in.".into(),
+        },
+    ] {
+        app.handle(AppEvent::Ui(ev), &ctl);
+    }
+    let streaming = crate::ui::dump_frame(&mut app, 100, 36);
+    println!("--- first reply streaming ---\n{streaming}");
+    for ev in [
+        E::TurnEnd {
+            session: session.clone(),
+            kind: "completed".into(),
+        },
+        E::SessionStatus {
+            session: session.clone(),
+            running: false,
+        },
+    ] {
+        app.handle(AppEvent::Ui(ev), &ctl);
+    }
+    let settled = crate::ui::dump_frame(&mut app, 100, 36);
+    println!("--- turn settled ---\n{settled}");
+
+    for frame in [&streaming, &settled] {
+        let row = |needle: &str| {
+            frame
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing:\n{frame}"))
+        };
+        assert!(row("index.ts") < row("damn"), "context above the prompt:\n{frame}");
+        assert!(
+            row("damn") < row("Something break?"),
+            "reply below the prompt:\n{frame}"
+        );
+        assert!(
+            !frame.contains("index.ts Something"),
+            "reply glued to the context list:\n{frame}"
+        );
+        assert!(!frame.contains("index.ts▍"), "caret left on the context:\n{frame}");
+    }
+}

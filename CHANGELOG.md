@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Prefer `@openma/pi-acp@0.1.3` for the Pi entry in both the bundled and refreshed ACP catalog; require Node.js 22.19 or newer for the npm package.
+- Keep the session busy while a queued concurrent steer is still running.
+- Seal startup text before the first prompt turn so pi-acp's first reply renders
+  below the user prompt (#119).
+- Delete moved Kitty image placements by image and placement id, preventing
+  stacked icons, thumbnails, and pets.
+- Honor the selected provider when model ids overlap, reconcile the status bar
+  with the agent-reported model, and avoid duplicate provider names in the picker.
 - Display running tool output from ACP content snapshots and terminal output
   deltas, including updates without a repeated status; keep the full output
   when a tool finishes. This restores live Bash and general tool text with
