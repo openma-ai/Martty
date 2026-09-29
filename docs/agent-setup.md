@@ -87,7 +87,7 @@ npm uninstall -g @deepseek-ai/dsh
 |---|---|
 | `dsh: command not found` | 第 1 步失败，或 npm 全局 bin 不在 PATH；先 `node -v` / `npm -v` 验证 |
 | built-in ACP 无法启动 | 重新安装最新 `martty`；连接其它 ACP server 时配置 `DSH_TUI_AGENT`、`config.agent` 或 `config.stream` |
-| `no native binary for ...` | 安装包不含当前平台；确认装的是最新版本并查看 README 的支持矩阵 |
+| 缺少 Martty 原生平台包 | 使用 `npm install --include=optional martty` 重新安装，并查看 README 的支持矩阵 |
 
 ## 7. 更多资料
 

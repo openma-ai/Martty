@@ -97,7 +97,7 @@ martty --demo --dump-frame 100x30 | grep -q '❯' && echo OK
 
 ## 6. 已知约束
 
-- 发布物含各平台原生二进制（Linux ELF / macOS / Windows），**不要跨平台拷贝
-  target 产物**；源码构建只产出当前平台。
+- 各平台原生二进制分别发布为 npm 可选依赖，安装时只下载当前平台包；**不要跨平台拷贝
+  target 产物**。源码构建只产出当前平台。
 - `Cargo.lock` 必须提交（`--locked` 构建）。
 - Windows 使用 token 认证的 loopback TCP 替代 fd 3/4，无需额外配置。

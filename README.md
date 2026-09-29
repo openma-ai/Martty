@@ -393,7 +393,8 @@ make tui-test
 ```
 
 GitHub Actions 会构建 macOS arm64/x64、Linux arm64/x64 和 Windows x64 原生二进制，
-再将它们打包进 npm 发布物。
+分别发布为 `@openma/martty-<platform>-<arch>` 包。安装 `martty` 时 npm 仅安装
+当前平台的可选依赖；若使用了 `--omit=optional`，需重新安装并启用可选依赖。
 
 ## 项目结构
 

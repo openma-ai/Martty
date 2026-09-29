@@ -16,7 +16,7 @@ test('release jobs are gated to the current canonical repository', () => {
   )
 })
 
-test('release workflow packages and publishes only martty', () => {
+test('release workflow publishes platform packages before the thin martty package', () => {
   assert.match(
     workflow,
     /cache: npm\n\s+cache-dependency-path: npm\/package-lock\.json/,
@@ -26,8 +26,12 @@ test('release workflow packages and publishes only martty', () => {
     /npm ci --prefix npm --ignore-scripts --no-audit --no-fund/,
   )
   assert.match(workflow, /package-alias\.mjs npm npm-martty martty/)
+  assert.match(workflow, /package-native\.mjs package/)
+  assert.match(workflow, /npm pack "\$package" --pack-destination dist/)
   assert.match(workflow, /npm pack \.\/npm-martty --pack-destination dist/)
+  assert.match(workflow, /npm publish "\$package" --access public --tag "\$DIST_TAG" --provenance/)
   assert.match(workflow, /npm publish \.\/dist\/martty-\[0-9\]\*\.tgz/)
+  assert.ok(workflow.indexOf('npm publish "$package"') < workflow.indexOf('npm publish ./dist/martty-'))
   assert.doesNotMatch(workflow, /npm pack \.\/npm --pack-destination dist/)
   assert.doesNotMatch(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui/)
 })

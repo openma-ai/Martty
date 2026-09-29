@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
+import { nativeTargets } from './native-targets.mjs'
 
 const legacyName = '@openma/deepseek-harness-tui'
 const textExtensions = new Set(['.js', '.json', '.md', '.mjs', '.yaml', '.yml'])
@@ -57,7 +58,15 @@ try {
     throw new Error(`expected source package ${legacyName}, found ${packageJson.name}`)
   }
 
-  cpSync(source, destination, { recursive: true, errorOnExist: true, force: false })
+  cpSync(source, destination, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    filter(file) {
+      const topLevel = path.relative(source, file).split(path.sep)[0]
+      return !['vendor', 'node_modules', 'package-lock.json'].includes(topLevel)
+    },
+  })
   rewriteTextFiles(destination, aliasName)
   // The alias is generated fresh for every release: if it were ever
   // published stale (an old checkout lingering on disk), the version and
@@ -68,6 +77,11 @@ try {
       `alias version ${aliasJson.version} does not match source ${packageJson.version}`,
     )
   }
+  aliasJson.optionalDependencies = Object.fromEntries(nativeTargets.map(({ platform, arch }) => [
+    `@openma/martty-${platform}-${arch}`, aliasJson.version,
+  ]))
+  if (Array.isArray(aliasJson.files)) aliasJson.files = aliasJson.files.filter((entry) => entry !== 'vendor')
+  writeFileSync(path.join(destination, 'package.json'), `${JSON.stringify(aliasJson, null, 2)}\n`)
   process.stdout.write(`${destination}\n`)
 } catch (error) {
   process.stderr.write(`${error.message}\n`)

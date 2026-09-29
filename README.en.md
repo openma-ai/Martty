@@ -631,26 +631,31 @@ Use `make tui-test` for the real development profile. It rebuilds
 Node HMR cannot leave the Rust painter on an older process image.
 
 The local script builds only the current platform and writes a tarball to
-`dist/`. The `Package and publish npm` GitHub Actions workflow builds and then
-assembles these paths into one npm package:
+`dist/`. The `Package and publish npm` GitHub Actions workflow builds and
+publishes one npm package per native platform. The thin `martty` package lists
+them as optional dependencies, so npm installs only the matching platform:
 
 ```text
-npm/vendor/darwin-arm64/martty
-npm/vendor/darwin-x64/martty
-npm/vendor/linux-x64/martty
-npm/vendor/win32-x64/martty.exe
+@openma/martty-darwin-arm64
+@openma/martty-darwin-x64
+@openma/martty-linux-arm64
+@openma/martty-linux-x64
+@openma/martty-win32-x64
 ```
 
 Pushing a tag that matches both `npm/package.json` and `Cargo.toml` (for example,
 `v0.1.0`) publishes to `latest` through npm Trusted Publishing (OIDC), then
-creates a GitHub Release with the tarball. A version mismatch fails before
+creates a GitHub Release with all six tarballs. A version mismatch fails before
 publishing.
+For the first split release, an npm organization owner must publish each new
+`@openma/martty-*` package once and configure its Trusted Publisher for
+`openma-ai/Martty` / `package-npm.yml` (environment `npm`, with `npm publish`
+allowed) before pushing the release tag.
 
 ## Troubleshooting
 
-- **`no native binary for ...`**: the installed package does not contain your
-  platform. Confirm that you installed the latest version and check the support
-  matrix.
+- **Missing native package:** reinstall `martty` with optional dependencies
+  enabled (`npm install --include=optional martty`) and check the support matrix.
 - **Built-in ACP cannot start:** reinstall the latest `martty`; a source
   checkout must have its `npm/` dependencies installed. Configure
   `DSH_TUI_AGENT`, `config.agent`, or `config.stream` for another ACP server.
