@@ -58,6 +58,9 @@ pub struct RuntimeConfig {
     pub max_tokens: Option<u64>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
+    /// Extra workspace roots from repeatable `--add-dir`. Empty means the
+    /// client must omit `additionalDirectories` on session lifecycle requests.
+    pub additional_directories: Vec<String>,
 }
 
 impl RuntimeConfig {

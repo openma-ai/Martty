@@ -15,6 +15,7 @@ fn test_app() -> (App, Receiver<AppEvent>) {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let app = App::new(Some(Theme::dark()), cfg, "s1".into(), true, false, tx);

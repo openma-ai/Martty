@@ -41,6 +41,12 @@ Martty 可以在同一 ACP 连接中打开多个会话标签。标签切换保�
 
 ACP 没有对应的 `session/close` 请求，所以关闭标签不代表取消远端任务或删除历史；正在运行的远端回合仍可能完成。若要先中断任务，应先使用 Esc，而不是把 `/close` 当作取消。可用的持久会话之后仍可通过 `/resume` 恢复，但不要依靠恢复找回关闭时丢弃的未发送草稿和队列。
 
+## 额外工作区目录
+
+启动时可以重复传入 `--add-dir <绝对路径>`，把 workspace 以外的目录交给当前会话。路径必须是已存在的目录，不能是文件系统根或 `$HOME`，和 workspace 相同的项会被去掉。
+
+这些目录只在 Agent 的 `initialize` 声明了 `sessionCapabilities.additionalDirectories` 时，才会放进 `session/new`、`session/load` 和 `session/resume`。没有这个能力时字段不会发送，界面会说明原因。没有 `--add-dir` 时字段同样省略。会话标签、`/status` 和 `/session` 会显示已发送的额外目录；`/resume` 列表在 Agent 回了 `additionalDirectories` 时也会标出来。
+
 ## 查看当前状态
 
 用 `/status` 检查当前连接、会话和回合状态；用 `/keys` 查看完整快捷键。模型选项和认证方式由当前 Agent 声明，不能据某个旧标签的模型或另一 Harness 的登录方式推断当前状态。

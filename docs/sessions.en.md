@@ -41,6 +41,12 @@ Press **Alt+↑** to select a queue entry, use ↑ / ↓ to navigate, Enter to e
 
 ACP has no corresponding `session/close` request. Closing a tab therefore does not cancel a remote task or delete durable history, and a running remote turn may still finish. Use Esc first if you intend to interrupt the task. Available durable sessions can be reopened with `/resume`, but this does not recover unsent drafts or queues discarded when the tab closed.
 
+## Additional workspace directories
+
+Repeat `--add-dir <absolute-path>` at launch to give the session roots besides the workspace. Each path must be an existing directory. Filesystem roots and `$HOME` are rejected, and an entry equal to the workspace is dropped.
+
+Martty includes those directories on `session/new`, `session/load`, and `session/resume` only when the agent advertises `sessionCapabilities.additionalDirectories` during `initialize`. Without that capability the field is omitted and the UI says so. With no `--add-dir`, the field is omitted as well. The session tab, `/status`, and `/session` show the directories that were sent. The `/resume` list marks `additionalDirectories` when the agent reports them.
+
 ## Check the active state
 
 Use `/status` for connection, session, and turn state, and `/keys` for the full shortcut reference. Models and authentication methods come from the active agent. Do not infer the current state from a previous tab's model or another harness's sign-in method.

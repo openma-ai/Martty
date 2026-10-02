@@ -1406,6 +1406,10 @@ pub struct App {
     list_session: bool,
     /// Agent advertised `sessionCapabilities.resume`.
     resume_session_cap: bool,
+    /// Agent advertised `sessionCapabilities.additionalDirectories`.
+    additional_directories_cap: bool,
+    /// `additional_directories_cap` has been learned from initialize.
+    additional_directories_known: bool,
     /// Last ACP `session_info_update` title.
     session_title: Option<String>,
     pub slash_sel: usize,
@@ -1669,11 +1673,23 @@ fn short_id(id: &str) -> String {
 /// harness title, else the first real prompt; the meta line carries the id
 /// prefix plus age · turns (local logs) or the updated date (ACP rows with
 /// no local log).
+fn extra_directory_hint(dirs: &[String]) -> String {
+    match dirs {
+        [one] => one
+            .rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())
+            .unwrap_or(one)
+            .to_string(),
+        many => format!("+{} dirs", many.len()),
+    }
+}
+
 fn session_picker_row(
     id: &str,
     title: Option<&str>,
     local: Option<&crate::sessions::SessionSummary>,
     updated_at: Option<&str>,
+    extra_directories: &[String],
 ) -> PickerItem {
     let short = short_id(id);
     let label = title
@@ -1684,7 +1700,7 @@ fn session_picker_row(
         .filter(|s| !s.is_empty())
         .map(|s| clamp_str(&s, PICKER_LABEL_COL))
         .unwrap_or_else(|| short.clone());
-    let meta = match local {
+    let mut meta = match local {
         Some(s) => format!(
             "{short:<8} · {} · {} turn{}",
             crate::sessions::age_label(s.modified),
@@ -1699,6 +1715,10 @@ fn session_picker_row(
                 .unwrap_or("?"),
         ),
     };
+    if !extra_directories.is_empty() {
+        meta.push_str(" · ");
+        meta.push_str(&extra_directory_hint(extra_directories));
+    }
     PickerItem {
         id: id.to_string(),
         label,
@@ -1891,6 +1911,8 @@ impl App {
             load_session: false,
             list_session: false,
             resume_session_cap: false,
+            additional_directories_cap: false,
+            additional_directories_known: false,
             session_title: None,
             slash_sel: 0,
             file_menu: None,
@@ -1998,6 +2020,7 @@ impl App {
                 server: self.server_info.clone(), auth: self.auth.clone(),
                 load_session: self.load_session, list_session: self.list_session,
                 resume_session: self.resume_session_cap,
+                additional_directories: self.additional_directories_cap,
             }),
             title: self.session_title.take(),
             transcript: std::mem::replace(&mut self.transcript, placeholder),
@@ -2055,6 +2078,7 @@ impl App {
             load_session: false,
             list_session: false,
             resume_session: false,
+            additional_directories: false,
         }));
         self.session_title = slot.title;
         self.transcript = slot.transcript;
@@ -2202,16 +2226,46 @@ impl App {
     /// Tab strip model: every session in tab order with the live tab
     /// spliced in at `current`. Native status chrome fed by session status
     /// facts (same source as `state_line`, never the palette/slot systems).
+    fn tab_label(&self, title: &Option<String>, id: &str) -> String {
+        let base = title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| short_id(id));
+        let count = self.cfg.additional_directories.len();
+        if self.additional_directories_cap && count > 0 {
+            format!("+{count} {base}")
+        } else {
+            base
+        }
+    }
+
+    fn additional_directories_line(&self) -> Option<String> {
+        if self.cfg.additional_directories.is_empty() || !self.additional_directories_known {
+            return None;
+        }
+        let label = self.locale.tr("additional directories", "额外目录");
+        if self.additional_directories_cap {
+            Some(format!(
+                "- {label} · {}",
+                self.cfg.additional_directories.join(" · ")
+            ))
+        } else {
+            Some(format!(
+                "- {label} · {}",
+                self.locale.tr(
+                    "not sent (agent did not advertise sessionCapabilities.additionalDirectories)",
+                    "未发送（Agent 未声明 sessionCapabilities.additionalDirectories）",
+                )
+            ))
+        }
+    }
+
     pub fn session_tabs(&self) -> Vec<SessionTab> {
         let mut tabs: Vec<SessionTab> = self
             .parked
             .iter()
             .map(|slot| SessionTab {
-                label: slot
-                    .title
-                    .clone()
-                    .filter(|title| !title.trim().is_empty())
-                    .unwrap_or_else(|| short_id(&slot.id)),
+                label: self.tab_label(&slot.title, &slot.id),
                 running: slot.running || slot.prompt_pending,
                 completed_unseen: slot.completed_unseen,
                 ask_pending: slot.permission_ask.is_some() || slot.elicitation_ask.is_some(),
@@ -2221,11 +2275,7 @@ impl App {
         tabs.insert(
             self.current,
             SessionTab {
-                label: self
-                    .session_title
-                    .clone()
-                    .filter(|title| !title.trim().is_empty())
-                    .unwrap_or_else(|| short_id(&self.session_id)),
+                label: self.tab_label(&self.session_title, &self.session_id),
                 running: self.state != RunState::Idle || self.prompt_pending,
                 completed_unseen: false,
                 ask_pending: self.permission_ask.is_some() || self.elicitation_ask.is_some(),
@@ -4299,10 +4349,12 @@ impl App {
                         load_session,
                         list_session,
                         resume_session,
+                        additional_directories,
                     } => {
                         self.load_session = load_session;
                         self.list_session = list_session;
                         self.resume_session_cap = resume_session;
+                        self.note_additional_directories(additional_directories);
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
                         self.connection_error = None;
@@ -7161,7 +7213,7 @@ impl App {
         }
         let items: Vec<PickerItem> = sessions
             .iter()
-            .map(|s| session_picker_row(&s.id, s.title.as_deref(), Some(s), None))
+            .map(|s| session_picker_row(&s.id, s.title.as_deref(), Some(s), None, &[]))
             .collect();
         self.resume_candidates = sessions;
         self.picker = Some(Picker {
@@ -7475,6 +7527,26 @@ impl App {
         self.load_session = connection.load_session;
         self.list_session = connection.list_session;
         self.resume_session_cap = connection.resume_session;
+        self.additional_directories_cap = connection.additional_directories;
+        self.additional_directories_known = true;
+    }
+
+    /// Record whether this connection accepts `additionalDirectories`.
+    /// `--add-dir` without that capability is omitted from session requests;
+    /// say so once for this initialize.
+    fn note_additional_directories(&mut self, supported: bool) {
+        self.additional_directories_cap = supported;
+        self.additional_directories_known = true;
+        if supported || self.cfg.additional_directories.is_empty() {
+            return;
+        }
+        self.transcript.push_notice(
+            NoticeLevel::Warn,
+            self.locale.tr(
+                "agent did not advertise sessionCapabilities.additionalDirectories — --add-dir was not sent",
+                "Agent 未声明 sessionCapabilities.additionalDirectories —— 未发送 --add-dir",
+            ).to_string(),
+        );
     }
 
     fn reset_session_ui(&mut self) {
@@ -7623,7 +7695,13 @@ impl App {
                     .clone()
                     .filter(|t| !t.is_empty())
                     .or_else(|| local.and_then(|l| l.title.clone()));
-                session_picker_row(&s.id, title.as_deref(), local, s.updated_at.as_deref())
+                session_picker_row(
+                    &s.id,
+                    title.as_deref(),
+                    local,
+                    s.updated_at.as_deref(),
+                    &s.additional_directories,
+                )
             })
             .collect();
         self.resume_via_acp = true;
@@ -8597,6 +8675,7 @@ impl App {
 - /auth · ACP 登录；多种方式时打开选择器
 - /effort · 推理强度 · /permission 权限预设 · /plan 计划模式
 - /resume · 恢复持久会话并继续写入原日志
+- --add-dir <绝对路径> · 启动时的额外工作区根（可重复）；仅当 Agent 声明 additionalDirectories 时才会随 session/new、load、resume 发送
 - /image · 暂存本地图片：/image ./pic.png [说明]
 - /clip · 暂存剪贴板图片；ctrl+v 同样可用
 - !cmd · 在会话级本地 shell 中运行命令，不经过 Agent；初始目录为 workspace，cd/环境变量跨命令保留
@@ -8626,6 +8705,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
 - /resume · pick up a durable session — transcript replays, log continues
+- --add-dir <absolute> · extra workspace root at launch (repeatable); sent on session/new, load, and resume only when the agent advertises additionalDirectories
 - /image · stage a local image — /image ./pic.png [caption]
 - /clip · stage the clipboard image — /clip [caption] · ctrl+v also works
 - !cmd · run in the session's local shell (not the agent); starts in the workspace, keeps cd/env across commands
@@ -8710,7 +8790,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             "- session · {}{}\n\
              - provider · {} / {}{}\n\
              - agent · {}{}\n\
-             - workspace · {}\n\
+             - workspace · {}{}\n\
              - session root · {}\n\
              - runtime · {}\n\
              - server · {}\n\
@@ -8733,6 +8813,9 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 ""
             },
             self.cfg.workspace,
+            self.additional_directories_line()
+                .map(|line| format!("\n{line}"))
+                .unwrap_or_default(),
             self.cfg.session_root,
             self.cfg.bin,
             self.server_info.as_deref().unwrap_or("not started"),
@@ -8867,6 +8950,10 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         } else {
             "- session · unbound\n".to_string()
         });
+        if let Some(line) = self.additional_directories_line() {
+            text.push_str(&line);
+            text.push('\n');
+        }
         if let Some(server) = &self.server_info {
             text.push_str(&format!("- server · {server}\n"));
         }
@@ -9805,3 +9892,7 @@ mod scroll_tests;
 #[cfg(test)]
 #[path = "../tests/unit/app__at_menu_tests.rs"]
 mod at_menu_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__additional_directories_tests.rs"]
+mod additional_directories_tests;

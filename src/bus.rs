@@ -81,6 +81,8 @@ pub struct SessionConnection {
     pub load_session: bool,
     pub list_session: bool,
     pub resume_session: bool,
+    /// Agent advertised `sessionCapabilities.additionalDirectories`.
+    pub additional_directories: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +187,8 @@ pub enum CtlEvent {
         load_session: bool,
         list_session: bool,
         resume_session: bool,
+        /// `sessionCapabilities.additionalDirectories` was an object (`{}`).
+        additional_directories: bool,
     },
     /// `session/new`, `session/resume`, or `session/load` resolved; the UI must use this id.
     SessionBound {
@@ -224,6 +228,8 @@ pub struct SessionListItem {
     pub id: String,
     pub title: Option<String>,
     pub updated_at: Option<String>,
+    /// `session/list` `additionalDirectories`, when the agent reported any.
+    pub additional_directories: Vec<String>,
 }
 
 /// One configured Loader entry exposed by the Host.

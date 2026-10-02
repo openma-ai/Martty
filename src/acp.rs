@@ -1001,9 +1001,15 @@ async fn create_prompt_session(
     bus: &Sender<AppEvent>,
     methods: &[AuthMethodInfo],
     selected: Option<&AuthMethodInfo>,
+    additional_directories: bool,
+    directories: &[String],
 ) -> std::result::Result<Option<SessionId>, AcpError> {
     match cx
-        .send_request(NewSessionRequest::new(cwd.to_path_buf()))
+        .send_request(new_session_request(
+            cwd,
+            additional_directories,
+            directories,
+        ))
         .block_task_setup_deadline()
         .await
     {
@@ -1041,6 +1047,7 @@ fn session_connection_snapshot(value: &Value) -> crate::bus::SessionConnection {
         server: value.pointer("/agentInfo/name").and_then(Value::as_str).map(str::to_string),
         auth, load_session, list_session: list_session_supported(value) || load_session,
         resume_session: resume_session_supported(value),
+        additional_directories: additional_directories_supported(value),
     }
 }
 
@@ -1159,6 +1166,74 @@ fn list_session_supported(init: &Value) -> bool {
         })
         .and_then(|caps| caps.get("list"));
     matches!(list, Some(Value::Object(_)) | Some(Value::Bool(true)))
+}
+
+/// `{}` advertises the standard capability. Omitted, null, and non-objects do not.
+fn additional_directories_supported(init: &Value) -> bool {
+    let advertised = init
+        .get("agentCapabilities")
+        .or_else(|| init.get("agent_capabilities"))
+        .and_then(|caps| {
+            caps.get("sessionCapabilities")
+                .or_else(|| caps.get("session_capabilities"))
+        })
+        .and_then(|caps| {
+            caps.get("additionalDirectories")
+                .or_else(|| caps.get("additional_directories"))
+        });
+    matches!(advertised, Some(Value::Object(_)))
+}
+
+/// Paths to send, or empty when the field must be omitted.
+///
+/// An empty list is not serialized: omission means no additional roots.
+/// `[]` is not sent to "clear" a previous list.
+fn directory_paths(enabled: bool, directories: &[String]) -> Vec<std::path::PathBuf> {
+    if !enabled {
+        return Vec::new();
+    }
+    directories.iter().map(std::path::PathBuf::from).collect()
+}
+
+fn new_session_request(
+    cwd: &std::path::Path,
+    additional_directories: bool,
+    directories: &[String],
+) -> NewSessionRequest {
+    let mut request = NewSessionRequest::new(cwd.to_path_buf());
+    let extra = directory_paths(additional_directories, directories);
+    if !extra.is_empty() {
+        request = request.additional_directories(extra);
+    }
+    request
+}
+
+fn load_session_request(
+    session_id: SessionId,
+    cwd: &std::path::Path,
+    additional_directories: bool,
+    directories: &[String],
+) -> LoadSessionRequest {
+    let mut request = LoadSessionRequest::new(session_id, cwd.to_path_buf());
+    let extra = directory_paths(additional_directories, directories);
+    if !extra.is_empty() {
+        request = request.additional_directories(extra);
+    }
+    request
+}
+
+fn resume_session_request(
+    session_id: SessionId,
+    cwd: &std::path::Path,
+    additional_directories: bool,
+    directories: &[String],
+) -> ResumeSessionRequest {
+    let mut request = ResumeSessionRequest::new(session_id, cwd.to_path_buf());
+    let extra = directory_paths(additional_directories, directories);
+    if !extra.is_empty() {
+        request = request.additional_directories(extra);
+    }
+    request
 }
 
 fn no_session() -> AcpError {
@@ -2143,10 +2218,12 @@ where
                 // Before sessionCapabilities.list existed, Martty-compatible agents paired
                 // session/list with the top-level loadSession flag. Keep that legacy route.
                 let list_session = list_session_supported(&init_value) || load_session;
+                let additional_directories = additional_directories_supported(&init_value);
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
                     load_session,
                     list_session,
                     resume_session,
+                    additional_directories,
                 }));
                 let auth_raw = init_value
                     .get("authMethods")
@@ -2195,6 +2272,8 @@ where
                     &bus,
                     &methods,
                     selected.as_ref(),
+                    additional_directories,
+                    &cfg.additional_directories,
                 )
                 .await
                 {
@@ -2294,6 +2373,8 @@ where
                                         &bus,
                                         &methods,
                                         selected.as_ref(),
+                                        additional_directories,
+                                        &cfg.additional_directories,
                                     )
                                     .await
                                     {
@@ -2750,7 +2831,8 @@ where
                                 }
                             }
                             controls.enqueue(control, &cx, &bus, &surface, &methods, &selected,
-                                &cwd, load_session, resume_session, list_session, &control_done_tx);
+                                &cwd, load_session, resume_session, list_session,
+                                additional_directories, &cfg.additional_directories, &control_done_tx);
                         }
                     }
                             if active_plugin_operation.is_none() { drain_ready_sessions(
@@ -2855,10 +2937,11 @@ where
                                         for session_id in retries {
                                             controls.enqueue(Cmd::NewSession { requester: Some(session_id), retry_auth: Some(method.id.clone()) },
                                                 &cx, &bus, &surface, &methods, &selected, &cwd,
-                                                load_session, resume_session, list_session, &control_done_tx);
+                                                load_session, resume_session, list_session,
+                                                additional_directories, &cfg.additional_directories, &control_done_tx);
                                         }
                                         if current.is_none() {
-                                            match create_prompt_session(&cx, &cwd, &surface, &bus, &methods, Some(&method)).await {
+                                            match create_prompt_session(&cx, &cwd, &surface, &bus, &methods, Some(&method), additional_directories, &cfg.additional_directories).await {
                                                 Ok(Some(sid)) => {
                                                     bind_session(&mut sessions, &mut current, &mut pending, sid);
                                                     session_auth_pending = false;
@@ -3044,3 +3127,7 @@ where
 #[cfg(test)]
 #[path = "../tests/unit/acp__tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/acp__additional_directories_tests.rs"]
+mod additional_directories_tests;

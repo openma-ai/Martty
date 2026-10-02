@@ -161,7 +161,7 @@ All three entry points share the official ACP Registry: edit `settings.json`, us
 native single-select form. `harness find` reads a cached/bundled snapshot of
 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` and supplements it with
 local PATH discovery; it is not an npm package search or an immediate switch. Pi uses
-`@openma/pi-acp@0.1.3` while the bundled raw catalog remains unchanged. `npx` and `uvx`
+`@openma/pi-acp@0.1.4` while the bundled raw catalog remains unchanged. `npx` and `uvx`
 distributions are launch recipes without implicit `--yes` or `--prefer-offline` flags. Selecting
 a `binary` distribution confirms and installs it under
 `$MARTTY_HOME/bin/<id>/<version>/<platform>`, verifies its SHA-256 when provided, and never

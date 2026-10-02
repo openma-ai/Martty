@@ -2,6 +2,7 @@
 
 mod acp;
 mod acp_auth;
+mod additional_dirs;
 mod acp_fs;
 mod acp_term;
 mod app;
@@ -61,6 +62,7 @@ USAGE:
 
 OPTIONS:
   -w, --workspace <dir>     agent workspace (default: cwd)
+      --add-dir <dir>       extra workspace root (repeatable, absolute path)
       --session-root <dir>  session JSONL root (default: $MARTTY_HOME/sessions)
       --session-id <id>     resume/continue a durable session id
       --provider <id>       provider route (default: deepseek-official)
@@ -90,6 +92,7 @@ copies a word · shift+drag uses the terminal's native selection
 
 struct Args {
     workspace: Option<String>,
+    add_dirs: Vec<String>,
     session_root: Option<String>,
     session_id: Option<String>,
     provider: Option<String>,
@@ -115,6 +118,7 @@ fn parse_args() -> Result<Args> {
 fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
     let mut args_out = Args {
         workspace: None,
+        add_dirs: Vec::new(),
         session_root: None,
         session_id: None,
         provider: None,
@@ -139,6 +143,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
         };
         match arg.as_str() {
             "-w" | "--workspace" => args_out.workspace = Some(take("--workspace")?),
+            "--add-dir" => args_out.add_dirs.push(take("--add-dir")?),
             "--session-root" => args_out.session_root = Some(take("--session-root")?),
             "--session-id" => args_out.session_id = Some(take("--session-id")?),
             "--provider" => args_out.provider = Some(take("--provider")?),
@@ -250,13 +255,26 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
     Ok(RuntimeConfig {
         bin,
         cordis,
-        workspace,
+        workspace: workspace.clone(),
         session_root,
         provider,
         model,
         max_tokens: args.max_tokens,
         base_url: args.base_url.clone(),
         api_key: args.api_key.clone(),
+        additional_directories: {
+            let requested: Vec<&str> = args.add_dirs.iter().map(String::as_str).collect();
+            let home = std::env::var("HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    std::env::var("USERPROFILE")
+                        .ok()
+                        .filter(|value| !value.is_empty())
+                });
+            additional_dirs::validate(&requested, &workspace, home.as_deref())
+                .map_err(anyhow::Error::msg)?
+        },
     })
 }
 

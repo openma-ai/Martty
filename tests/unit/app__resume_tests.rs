@@ -12,6 +12,7 @@ fn test_app_with_root(root: &str, workspace: &str) -> (App, Controller) {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
@@ -533,12 +534,14 @@ fn acp_session_list_limit_skips_the_current_session_before_truncating() {
         id: app.session_id.clone(),
         title: None,
         updated_at: None,
+        additional_directories: Vec::new(),
     }];
     for i in 1..=10 {
         sessions.push(SessionListItem {
             id: format!("dsh-sess-{i:02}"),
             title: Some(format!("session {i}")),
             updated_at: None,
+            additional_directories: Vec::new(),
         });
     }
     app.on_acp_session_list(app.session_id.clone(), sessions, None, 10, &ctl);

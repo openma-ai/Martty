@@ -28,7 +28,7 @@ async fn browser_auth_outlives_the_short_control_deadline() {
         let mut workers = ControlWorkers::default();
         workers.enqueue(Cmd::Authenticate { method_id: "login".into(), values: Default::default() },
             &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
-            std::path::Path::new("/tmp"), false, false, false, &done);
+            std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
         started_rx.recv().await.unwrap();
         tokio::time::advance(Duration::from_secs(19 * 60)).await;
         for _ in 0..5 { tokio::task::yield_now().await; }
@@ -147,6 +147,7 @@ async fn check_slow_control(config: bool) {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus, events) = std::sync::mpsc::channel();
     let (cmds, commands) = std::sync::mpsc::channel();
@@ -344,6 +345,7 @@ fn model_switch_cfg() -> RuntimeConfig {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     }
 }
 
@@ -479,6 +481,8 @@ async fn permission_response_events(
                 false,
                 false,
                 false,
+                false,
+                Vec::new(),
                 done,
             )
             .await;
