@@ -265,8 +265,9 @@ async fn prompts_and_steers_outlive_the_control_request_deadline() {
                 1,
                 done,
             );
-            spawn_steer_prompt(
+            spawn_steer(
                 cx,
+                SteerRoute::ConcurrentPrompt,
                 SessionId::new("s"),
                 vec!["follow up".into()],
                 2,
@@ -294,7 +295,7 @@ async fn prompts_and_steers_outlive_the_control_request_deadline() {
             );
             release.send(true).unwrap();
             assert!(done_rx.recv().await.unwrap().result.is_ok());
-            assert!(steer_rx.recv().await.unwrap().result.is_ok());
+            assert!(!steer_rx.recv().await.unwrap().deferred);
             task.await.unwrap();
             Ok(())
         })

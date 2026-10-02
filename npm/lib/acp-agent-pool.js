@@ -30,10 +30,15 @@ export function createAgentPool(initial, { spawnAgent, resolveAgent, diagnosticE
   const writeAgent = (owner, value) => owner.handle.stdin.write(JSON.stringify(value) + '\n')
 
   function metadata(owner) {
+    // Send Now reads this snapshot per session (`steer_route`). Steering and
+    // MiniMax extensions are advertised on initialize `_meta`, which
+    // `agentCapabilities` does not carry.
+    const negotiated = owner.init?._meta
     return {
       id: owner.id,
       agentInfo: owner.init?.agentInfo,
       agentCapabilities: owner.init?.agentCapabilities ?? {},
+      ...(negotiated && typeof negotiated === 'object' ? { _meta: negotiated } : {}),
       authMethods: (owner.init?.authMethods ?? []).map(method => {
         const id = owner.id === 'h1' ? method.id : `${owner.id}:${method.id}`
         authMethods.set(id, { owner, id: method.id })

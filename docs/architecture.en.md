@@ -36,6 +36,14 @@ compositor. Builtin `tuiQueue`/`queue-view` render Queue state in
 `conversation.input.dock`, with every queued item visible above the input;
 empty Enter steers the FIFO head immediately, and a deferred steer restores it
 to the front. Otherwise the head advances as the next prompt when the turn idles.
+The steer route is negotiated from the `initialize` response: top-level
+`_meta.steering.supported` selects the shared `_session/steering` extension
+(claude-agent-acp, codex-acp, deepseek-harness-acp; `outcome:"injected"` or
+`startedNewTurn` means the agent took it, `promptRequired` is deferred);
+`_meta["minimax-code/extensions"].methods` listing `mcode/session/steer` selects
+that method (text only — image steers are deferred because MiniMax Code rejects
+concurrent `session/prompt`); with neither advertised, a concurrent
+`session/prompt` joins the active turn (the legacy convention).
 Builtin `tuiAgents`/`agents-view` render session
 navigation in `conversation.navigation.dock`. The navigation row sits inside
 the composer between its input and metadata row. It defaults to a collapsed

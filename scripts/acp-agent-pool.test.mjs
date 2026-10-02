@@ -86,6 +86,20 @@ test('new session failure does not kill or redirect existing sessions', {timeout
   assert.ok((await c.request('session/new')).result.sessionId)
 })
 
+test('session setup forwards initialize _meta so each session can negotiate its steer route', {timeout:5000}, async t => {
+  const c = client(t, fixture('steered', `
+    if (request.method === 'initialize') {
+      reply({protocolVersion:1,agentInfo:{name:'steered'},agentCapabilities:{},authMethods:[],_meta:{steering:{supported:true},'minimax-code/extensions':{methods:['mcode/session/steer']}}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const created = await c.request('session/new')
+  assert.equal(created.result._meta.marttyConnection._meta.steering.supported, true)
+  assert.deepEqual(created.result._meta.marttyConnection._meta['minimax-code/extensions'].methods, ['mcode/session/steer'])
+  assert.equal(created.result._meta.marttyConnection.agentInfo.name, 'steered')
+})
+
 test('unknown session ids are rejected instead of reaching the default Harness', {timeout:5000}, async t => {
   const c = client(t)
   await c.request('initialize', {protocolVersion:1})
