@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Send repeatable `--add-dir` as standard ACP `additionalDirectories` on
+  `session/new`, `session/load`, and `session/resume` only when initialize
+  advertises `sessionCapabilities.additionalDirectories`. Agents that do not
+  advertise it do not receive the field, and the TUI says the directories were
+  not sent. The Pi catalog entry now launches `@openma/pi-acp@0.1.4`.
 - Route Ctrl+Enter steering by the agent’s `initialize` `_meta`: the shared `_session/steering` extension when `_meta.steering.supported` is advertised (claude-agent-acp, codex-acp, DeepSeek Harness; `promptRequired` re-queues), MiniMax Code `mcode/session/steer` (text only; its `session/prompt` rejects concurrent turns), otherwise the legacy concurrent `session/prompt`. Stream sessions carry that `_meta` on `marttyConnection` so each connection keeps its own route. `scripts/mcode-steer.e2e.mjs` drives the real TUI against `mcode acp` (opt-in, uses model tokens).
 - Add the org contribution guide (`CONTRIBUTING.md`), with Martty's toolchain,
   CI, and release steps, plus a pull request evidence template and a bug report

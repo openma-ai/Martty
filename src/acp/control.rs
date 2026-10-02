@@ -62,6 +62,8 @@ impl ControlWorkers {
         load_session: bool,
         resume_session: bool,
         list_session: bool,
+        additional_directories: bool,
+        directories: &[String],
         done: &tokio::sync::mpsc::UnboundedSender<ControlFinish>,
     ) {
         // Preserve setup FIFO and per-session mutation order without blocking
@@ -99,6 +101,8 @@ impl ControlWorkers {
             load_session,
             resume_session,
             list_session,
+            additional_directories,
+            directories.to_vec(),
             done.clone(),
         );
         let done = done.clone();
@@ -123,6 +127,8 @@ async fn run_control(
     load_session: bool,
     resume_session: bool,
     list_session: bool,
+    additional_directories: bool,
+    directories: Vec<String>,
     done: tokio::sync::mpsc::UnboundedSender<ControlFinish>,
 ) {
     let connection = {
@@ -147,6 +153,10 @@ async fn run_control(
     let load_session = snapshot.as_ref().map(|snapshot| snapshot.load_session).unwrap_or(load_session);
     let resume_session = snapshot.as_ref().map(|snapshot| snapshot.resume_session).unwrap_or(resume_session);
     let list_session = snapshot.as_ref().map(|snapshot| snapshot.list_session).unwrap_or(list_session);
+    let additional_directories = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.additional_directories)
+        .unwrap_or(additional_directories);
     let (requester, retry_auth) = match &cmd {
         Cmd::NewSession { requester, retry_auth } => (requester.clone(), retry_auth.clone()),
         _ => (None, None),
@@ -647,7 +657,7 @@ async fn run_control(
             let _ = done.send(ControlFinish::Authenticated { method, result });
         }
         Cmd::NewSession { .. } => {
-            let mut request = NewSessionRequest::new(cwd.clone());
+            let mut request = new_session_request(&cwd, additional_directories, &directories);
             if let Some(method) = retry_auth {
                 request = request.meta(json!({"marttyAuthMethod": method}).as_object().unwrap().clone());
             }
@@ -695,6 +705,11 @@ async fn run_control(
                             id: s.session_id.to_string(),
                             title: s.title,
                             updated_at: s.updated_at,
+                            additional_directories: s
+                                .additional_directories
+                                .iter()
+                                .map(|path| path.to_string_lossy().into_owned())
+                                .collect(),
                         })
                         .collect();
                     // `/resume n`: the limit is applied on the
@@ -729,20 +744,35 @@ async fn run_control(
             let sid = SessionId::new(id.clone());
             let restored = if resume_session {
                 match cx
-                    .send_request(ResumeSessionRequest::new(sid.clone(), cwd.clone()))
+                    .send_request(resume_session_request(
+                        sid.clone(),
+                        &cwd,
+                        additional_directories,
+                        &directories,
+                    ))
                     .block_task_setup_deadline()
                     .await
                 {
                     Ok(resumed) => Ok((serde_json::to_value(resumed).unwrap_or(Value::Null), true)),
                     Err(err) if load_session && !is_auth_required_error(&err) => cx
-                        .send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
+                        .send_request(load_session_request(
+                            sid.clone(),
+                            &cwd,
+                            additional_directories,
+                            &directories,
+                        ))
                         .block_task_setup_deadline()
                         .await
                         .map(|loaded| (serde_json::to_value(loaded).unwrap_or(Value::Null), false)),
                     Err(err) => Err(err),
                 }
             } else {
-                cx.send_request(LoadSessionRequest::new(sid.clone(), cwd.clone()))
+                cx.send_request(load_session_request(
+                    sid.clone(),
+                    &cwd,
+                    additional_directories,
+                    &directories,
+                ))
                     .block_task_setup_deadline()
                     .await
                     .map(|loaded| (serde_json::to_value(loaded).unwrap_or(Value::Null), false))

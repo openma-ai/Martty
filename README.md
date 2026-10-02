@@ -262,7 +262,7 @@ martty harness remove <id> --cleanup           # 同时清理独占私有安装�
 `harness find` 默认读取缓存或随包的官方目录快照，`harness find --refresh` 才联网刷新
 （`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`），并把本地
 PATH 扫描结果作为补充；它不是 npm 包搜索，也不会在后台切换。Pi 条目由 Martty 使用
-`@openma/pi-acp@0.1.3` 配置；官方目录原始快照仍保持不变。Registry 的 `npx` / `uvx`
+`@openma/pi-acp@0.1.4` 配置；官方目录原始快照仍保持不变。Registry 的 `npx` / `uvx`
 分发会显示可直接配置的命令，不会添加 `--yes` 或 `--prefer-offline`。Registry 的
 `binary` 分发在选择后明确确认，并下载到 `$MARTTY_HOME/bin/<id>/<version>/<platform>`，
 校验 SHA-256 后再配置；不会写系统 PATH。TUI 中的 `/harness find` 提供同样的发现、配置、

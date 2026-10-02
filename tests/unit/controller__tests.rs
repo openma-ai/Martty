@@ -121,6 +121,7 @@ fn loop_cfg() -> RuntimeConfig {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     }
 }
 

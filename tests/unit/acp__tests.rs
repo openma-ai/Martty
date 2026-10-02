@@ -340,6 +340,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -554,6 +555,7 @@ async fn cordis_requests_stay_local_when_the_agent_did_not_advertise_cordis() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -632,6 +634,7 @@ async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -712,6 +715,7 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -820,6 +824,7 @@ async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing(
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -938,6 +943,7 @@ async fn overlay_cancel_reaches_the_compositor_while_submit_is_pending() {
         bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
         session_root: "/tmp".into(), provider: "deepseek-official".into(),
         model: "deepseek-flash".into(), max_tokens: None, base_url: None, api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1051,6 +1057,7 @@ async fn plugin_operation_defers_agent_requests_and_queued_prompts_until_complet
         bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
         session_root: "/tmp".into(), provider: "deepseek-official".into(),
         model: "deepseek-flash".into(), max_tokens: None, base_url: None, api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1291,6 +1298,7 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1411,6 +1419,7 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1515,6 +1524,7 @@ async fn new_session_binds_before_applying_initial_config() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1597,6 +1607,7 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1707,6 +1718,7 @@ async fn effort_selection_uses_the_advertised_thought_level_config_id() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1829,6 +1841,7 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -1943,6 +1956,7 @@ async fn resume_session_prefers_resume_and_binds_before_applying_initial_config(
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2056,6 +2070,7 @@ async fn resume_session_falls_back_to_load_when_resume_is_rejected() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2178,6 +2193,7 @@ async fn prompts_while_running_wait_in_fifo_without_session_cancel() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2321,6 +2337,7 @@ async fn composition_catalog_is_ready_before_the_first_prompt() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2440,6 +2457,7 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2604,6 +2622,7 @@ async fn authenticate_rejection_reports_failure_instead_of_another_sign_in_hint(
         bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
         session_root: "/tmp".into(), provider: "deepseek-official".into(),
         model: "deepseek-flash".into(), max_tokens: None, base_url: None, api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2697,6 +2716,7 @@ async fn assert_authentication_before_session_setup(setup_error: Option<i32>) {
         bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
         session_root: "/tmp".into(), provider: "deepseek-official".into(),
         model: "deepseek-flash".into(), max_tokens: None, base_url: None, api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -2835,6 +2855,7 @@ async fn session_new_auth_failure_parks_the_first_intent_without_retry_storms() 
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -3003,6 +3024,7 @@ async fn late_steer_rejection_is_not_retried_by_the_transport_after_auth() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -3176,6 +3198,7 @@ async fn steer_sends_a_concurrent_prompt_without_interrupting_the_turn() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -3337,6 +3360,7 @@ async fn rejected_steer_reports_deferred_without_transport_retry() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -3496,6 +3520,7 @@ async fn interrupt_sends_session_cancel_while_prompt_is_in_flight() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -3723,6 +3748,7 @@ async fn sessions_run_concurrent_prompts_on_one_connection() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -3876,6 +3902,7 @@ async fn stale_text_prompt_finish_cannot_release_a_rebound_sessions_new_turn() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -4012,6 +4039,7 @@ async fn prompt_for_an_unbound_session_is_rejected_not_rerouted() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -4127,6 +4155,7 @@ fn stream_owned_new_session_keeps_the_negotiated_connection_facts() {
     surface.lock().unwrap().initial_connection = Some(crate::bus::SessionConnection {
         server: Some("profile-host".into()), auth: AuthSnapshot::none(),
         load_session: true, list_session: true, resume_session: false,
+        additional_directories: false,
     });
     let (bus, events) = std::sync::mpsc::channel();
     apply_setup(&json!({"sessionId":"stream-second"}), None, &surface, &bus);
@@ -4348,6 +4377,7 @@ async fn concurrent_steer_keeps_the_session_running_until_its_prompt_returns() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();

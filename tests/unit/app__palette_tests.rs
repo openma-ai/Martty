@@ -27,6 +27,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());
@@ -676,6 +677,7 @@ fn theme_mode_persists_across_restarts_unless_cli_overrides() {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let (ctl, _commands) = crate::controller::tests::test_controller();

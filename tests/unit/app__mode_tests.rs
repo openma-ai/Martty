@@ -29,6 +29,7 @@ fn test_cfg() -> RuntimeConfig {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     }
 }
 
@@ -1572,11 +1573,13 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
                     id: "s-old".into(),
                     title: Some("hello".into()),
                     updated_at: Some("yesterday".into()),
+                    additional_directories: Vec::new(),
                 },
                 SessionListItem {
                     id: "s-other".into(),
                     title: None,
                     updated_at: None,
+                    additional_directories: Vec::new(),
                 },
             ],
             prefix: None,
@@ -1597,6 +1600,7 @@ fn acp_session_list_opens_picker_and_prefix_resumes() {
                 id: "s-old".into(),
                 title: None,
                 updated_at: None,
+                additional_directories: Vec::new(),
             }],
             prefix: Some("s-old".into()),
             limit: usize::MAX,
@@ -1621,6 +1625,7 @@ fn acp_session_list_response_is_dropped_after_switching_tabs() {
                 id: "s-old".into(),
                 title: None,
                 updated_at: None,
+                additional_directories: Vec::new(),
             }],
             prefix: Some("s-old".into()),
             limit: usize::MAX,
@@ -1663,6 +1668,7 @@ fn acp_session_list_enriches_rows_with_local_summaries() {
                 id: "s-local".into(),
                 title: None,
                 updated_at: None,
+                additional_directories: Vec::new(),
             }],
             prefix: None,
             limit: usize::MAX,
@@ -1695,6 +1701,7 @@ fn agent_caps_gate_resume_to_session_list() {
             load_session: true,
             list_session: true,
             resume_session: true,
+            additional_directories: false,
         }),
         &ctl,
     );
@@ -1719,6 +1726,7 @@ fn resume_capability_can_restore_an_exact_id_without_load_or_list() {
             load_session: false,
             list_session: false,
             resume_session: true,
+            additional_directories: false,
         }),
         &ctl,
     );

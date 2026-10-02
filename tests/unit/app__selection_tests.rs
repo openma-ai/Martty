@@ -50,6 +50,7 @@ fn test_app() -> App {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, _rx) = std::sync::mpsc::channel();
     App::new(
@@ -73,6 +74,7 @@ fn test_app_and_ctl() -> (App, Controller) {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
     let ctl = Controller::start(cfg.clone(), true, None, tx.clone());

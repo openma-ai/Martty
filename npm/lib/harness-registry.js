@@ -19,13 +19,13 @@ import { downloadFile } from './download.js'
 
 export const ACP_REGISTRY_URL = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json'
 
-const OPENMA_PI_ACP = '@openma/pi-acp@0.1.3'
+const OPENMA_PI_ACP = '@openma/pi-acp@0.1.4'
 
 function preferMarttyPiAcp(records) {
   return records.map((record) => record.id === 'pi-acp' ? {
     ...record,
     label: 'Pi (OpenMA)',
-    version: '0.1.3',
+    version: '0.1.4',
     distributions: [{
       type: 'npx', command: 'npx', args: [OPENMA_PI_ACP], env: {},
     }],

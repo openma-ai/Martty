@@ -19,6 +19,44 @@ fn agent_flag_and_args() {
 fn help_mentions_agent() {
     assert!(HELP.contains("--agent"));
     assert!(HELP.contains("--agent-arg"));
+    assert!(HELP.contains("--add-dir"));
+}
+
+#[test]
+fn add_dir_is_repeatable_and_rejects_a_relative_path() {
+    let root = std::env::temp_dir().join(format!("martty-cli-add-dir-{}", std::process::id()));
+    let workspace = root.join("app");
+    let extra = root.join("lib");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&extra).unwrap();
+    let args = parse_args_from([
+        "--workspace".into(),
+        workspace.to_string_lossy().into_owned(),
+        "--add-dir".into(),
+        extra.to_string_lossy().into_owned(),
+        "--add-dir".into(),
+        extra.to_string_lossy().into_owned(),
+    ])
+    .unwrap();
+    assert_eq!(args.add_dirs.len(), 2);
+    let cfg = build_config(&args).unwrap();
+    assert_eq!(cfg.additional_directories.len(), 1);
+    assert!(cfg.additional_directories[0].ends_with("lib"), "{cfg:?}");
+
+    let bad = parse_args_from([
+        "--workspace".into(),
+        workspace.to_string_lossy().into_owned(),
+        "--add-dir".into(),
+        "relative".into(),
+    ])
+    .unwrap();
+    let err = build_config(&bad).unwrap_err();
+    assert!(
+        err.to_string().contains("absolute path"),
+        "{err:#}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

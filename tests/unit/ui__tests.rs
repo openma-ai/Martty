@@ -27,6 +27,7 @@ fn test_app() -> App {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, _rx) = mpsc::channel();
     App::new(Some(Theme::dark()), cfg, "dsh-test".into(), true, false, tx)
@@ -43,6 +44,7 @@ fn live_test_app() -> App {
         max_tokens: None,
         base_url: None,
         api_key: None,
+        additional_directories: Vec::new(),
     };
     let (tx, _rx) = mpsc::channel();
     App::new(Some(Theme::dark()), cfg, "pending".into(), false, true, tx)
