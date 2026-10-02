@@ -1153,7 +1153,7 @@ fn the_final_chunks_meta_survives_a_merge() {
                 "sessionUpdate": "agent_message_chunk",
                 "content": { "type": "text", "text": "" },
                 "messageId": "1:1",
-                "_meta": { "dsh": { "event": "assistant_message", "model": "deepseek-v4-flash" } },
+                "_meta": { "dsh": { "event": "assistant_message", "model": "deepseek-flash" } },
             }),
         ),
     ];
@@ -1163,7 +1163,7 @@ fn the_final_chunks_meta_survives_a_merge() {
         panic!("rpc")
     };
     assert_eq!(params["update"]["content"]["text"], "body");
-    assert_eq!(params["update"]["_meta"]["dsh"]["model"], "deepseek-v4-flash");
+    assert_eq!(params["update"]["_meta"]["dsh"]["model"], "deepseek-flash");
 }
 
 fn bare_tool_update(session: &str, call: &str, status: &str) -> crate::bus::AppEvent {

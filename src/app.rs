@@ -258,7 +258,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
 ];
 
 pub const MODEL_PRESETS: &[&str] = &[
-    "deepseek-v4-flash",
+    crate::runtime::DEFAULT_MODEL,
     "deepseek-v4",
     "deepseek-v3.2",
     "deepseek-chat",

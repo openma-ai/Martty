@@ -77,13 +77,13 @@
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@lobehub/icons-static-svg": "1.95.0",
-    "@openma/deepseek-harness-acp": "0.4.35",
+    "@openma/deepseek-harness-acp": "0.4.36",
     "@resvg/resvg-js": "2.6.2",
     "cross-spawn": "^7.0.6",
     "node-downloader-helper": "2.1.11"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh": "0.1.7-rc.2"
+    "@deepseek-ai/dsh": "0.2.0-rc.2"
   },
   "engines": {
     "node": ">=22.19.0"

@@ -338,9 +338,9 @@ fn controller_loop(
                         models: vec![
                             CatalogModel {
                                 provider: "deepseek-official".into(),
-                                id: "deepseek-v4-flash".into(),
-                                name: "DeepSeek V4 Flash".into(),
-                                vision: false,
+                                id: crate::runtime::DEFAULT_MODEL.into(),
+                                name: "DeepSeek V4.1 Flash".into(),
+                                vision: true,
                             },
                             CatalogModel {
                                 provider: "deepseek-official".into(),

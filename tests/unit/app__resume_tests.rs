@@ -8,7 +8,7 @@ fn test_app_with_root(root: &str, workspace: &str) -> (App, Controller) {
         workspace: workspace.into(),
         session_root: root.into(),
         provider: "deepseek-official".into(),
-        model: "deepseek-v4-flash".into(),
+        model: "deepseek-flash".into(),
         max_tokens: None,
         base_url: None,
         api_key: None,
@@ -29,7 +29,7 @@ fn write_fixture_session(root: &PathBuf, id: &str) {
             r#"{"type":"user/message","seq":2,"data":{"content":[{"text":"修复失败的测试","type":"text"}],"source":{"kind":"user"},"role":"user","id":"m1"}}"#.into(),
             r#"{"type":"session/title","seq":3,"data":{"title":"fix failing tests","source":{"kind":"provider","provider":"session-title-first-prompt-llm"}}}"#.into(),
             r#"{"type":"assistant/chunk","seq":4,"data":{"chunk":{"type":"usage","usage":{"inputTokens":10,"outputTokens":5}}}}"#.into(),
-            r#"{"type":"assistant/message","seq":5,"data":{"message":{"content":[{"type":"text","text":"tests are green now"}],"source":{"model":"deepseek-v4-flash"}}}}"#.into(),
+            r#"{"type":"assistant/message","seq":5,"data":{"message":{"content":[{"type":"text","text":"tests are green now"}],"source":{"model":"deepseek-flash"}}}}"#.into(),
             r#"{"type":"turn/end","seq":6,"data":{"reason":"completed"}}"#.into(),
         ];
     std::fs::write(dir.join("session.jsonl"), lines.join("\n")).unwrap();

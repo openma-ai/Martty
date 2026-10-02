@@ -28,6 +28,12 @@ fn help_mentions_demo_skin() {
 }
 
 #[test]
+fn help_defaults_to_the_current_flash_model() {
+    assert!(HELP.contains("deepseek-flash"));
+    assert!(!HELP.contains("deepseek-v4-flash"));
+}
+
+#[test]
 fn martty_home_precedence_owns_the_default_session_root() {
     assert_eq!(
         crate::runtime::martty_home_from(Some("/opt/martty"), Some("/opt/dsh"), "/Users/test",),

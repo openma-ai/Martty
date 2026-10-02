@@ -103,7 +103,7 @@ impl Driver {
                     "id": "m-demo-0",
                     "role": "assistant",
                     "content": [{"type": "text", "text": intro}],
-                    "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-v4-flash"}
+                    "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-flash"}
                 }
             }
         }));
@@ -226,7 +226,7 @@ impl Driver {
                         "id": "m-demo-child",
                         "role": "assistant",
                         "content": [{"type": "text", "text": "Child scanning the module tree now."}],
-                        "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-v4-flash"}
+                        "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-flash"}
                     }
                 }
             }));
@@ -256,7 +256,7 @@ impl Driver {
                     "id": "m-demo",
                     "role": "assistant",
                     "content": [{"type": "text", "text": conclusion}],
-                    "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-v4-flash"}
+                    "source": {"kind": "model", "provider": "deepseek-official", "model": "deepseek-flash"}
                 }
             }
         }));

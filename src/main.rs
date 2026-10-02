@@ -64,7 +64,7 @@ OPTIONS:
       --session-root <dir>  session JSONL root (default: $MARTTY_HOME/sessions)
       --session-id <id>     resume/continue a durable session id
       --provider <id>       provider route (default: deepseek-official)
-      --model <id>          model id (default: $DSH_MODEL or deepseek-v4-flash)
+      --model <id>          model id (default: $DSH_MODEL or deepseek-flash)
       --max-tokens <n>      per-request output token cap
       --base-url <url>      sets DEEPSEEK_BASE_URL for a spawned agent
       --api-key <key>       sets DEEPSEEK_API_KEY for a spawned agent
@@ -232,24 +232,28 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
         "acp".into()
     };
 
+    // Route defaults borrow the local dsh install's configured default
+    // (settings.yaml agent-default-model) before falling back to stock.
+    let provider = args
+        .provider
+        .clone()
+        .or(local.provider)
+        .unwrap_or_else(|| "deepseek-official".into());
+    let env_model = std::env::var("DSH_MODEL").ok();
+    let model = runtime::resolve_launch_model(
+        args.model.as_deref(),
+        env_model.as_deref(),
+        local.model.as_deref(),
+        &provider,
+    );
+
     Ok(RuntimeConfig {
         bin,
         cordis,
         workspace,
         session_root,
-        // Route defaults borrow the local dsh install's configured default
-        // (settings.yaml agent-default-model) before falling back to stock.
-        provider: args
-            .provider
-            .clone()
-            .or(local.provider)
-            .unwrap_or_else(|| "deepseek-official".into()),
-        model: args
-            .model
-            .clone()
-            .or_else(|| std::env::var("DSH_MODEL").ok())
-            .or(local.model)
-            .unwrap_or_else(|| "deepseek-v4-flash".into()),
+        provider,
+        model,
         max_tokens: args.max_tokens,
         base_url: args.base_url.clone(),
         api_key: args.api_key.clone(),

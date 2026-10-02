@@ -12,7 +12,7 @@ fn test_app() -> (App, Controller, Receiver<AppEvent>) {
             .to_string_lossy()
             .into_owned(),
         provider: "deepseek-official".into(),
-        model: "deepseek-v4-flash".into(),
+        model: "deepseek-flash".into(),
         max_tokens: None,
         base_url: None,
         api_key: None,
@@ -467,7 +467,7 @@ fn status_slash_fallback_shows_run_state_without_transcript_stats() {
     // ACP facts: demo run shows the demo marker and its session.
     assert!(text.contains("- acp · demo"), "{text}");
     assert!(text.contains("- session · dsh-test"), "{text}");
-    assert!(text.contains("- model · deepseek-v4-flash"), "{text}");
+    assert!(text.contains("- model · deepseek-flash"), "{text}");
     assert!(text.contains("- effort · high"), "{text}");
     assert!(text.contains("- permission · "), "{text}");
     assert!(text.contains("- plan · "), "{text}");

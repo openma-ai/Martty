@@ -21,7 +21,7 @@ fn test_cfg() -> RuntimeConfig {
         workspace: "/tmp".into(),
         session_root: fresh_root(),
         provider: "deepseek-official".into(),
-        model: "deepseek-v4-flash".into(),
+        model: "deepseek-flash".into(),
         max_tokens: None,
         base_url: None,
         api_key: None,
