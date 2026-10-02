@@ -63,8 +63,9 @@ ACP 的 prompt 调度与慢控制请求分开执行：`src/acp.rs` 持有每个 
 的轮次和发送队列，`src/acp/control.rs` 执行控制请求。创建/恢复共用一个串行队列，
 使绑定结果保持与 Rust tab 的等待 FIFO 同序；配置操作按 session 分别串行，
 该 session 的下一轮 prompt 等待先前配置完成，其他 session 的 prompt、完成事件、
-取消和关闭继续处理。短控制请求保留 120 秒 deadline，整轮 prompt 与 steer 不使用
-这个总时长限制。Queue 的选择和编辑状态随 session 保存，后台会话同样遵守暂停规则。
+取消和关闭继续处理。短控制请求保留 120 秒 deadline。扩展路线的 steer
+（`_session/steering`、`mcode/session/steer`）同样使用这个 deadline；并发
+`session/prompt` 路线上的整轮 prompt 与 steer 不使用这个总时长限制。Queue 的选择和编辑状态随 session 保存，后台会话同样遵守暂停规则。
 
 原生 tab 是当前可见会话的唯一选择源。每次 bind 或 tab 切换，Rust 通过
 `_dsh/cordis/tui/session/active` request 把 session id（未绑定时为 `null`）投影到 Client tree；
@@ -148,7 +149,8 @@ standalone 的 `acpClient` 用稳定的 stdio 入口管理多个 ACP 连接。�
 不同 Agent 的 session id、认证 method id 和双向 RPC id 冲突由本地连接层隔离。
 单个连接的失败或等待认证不会销毁、重定向或阻塞其他连接的会话。
 退出 Client 时统一关闭所有子进程。profile 的 `config.stream` 仍由 Host 拥有。
-本地连接层附加的 `marttyConnection` 仅携带协商结果与连接身份供 Client 路由；
+本地连接层附加的 `marttyConnection` 仅携带协商结果与连接身份供 Client 路由，
+其中包括该连接 `initialize` 的 `_meta`（Send Now 据此为每个会话选择 steer 路线）；
 它不是 Agent 协议扩展，也不携带 TUI chrome。
 
 已配置的 npx/uvx recipe 直接启动，由 runner 复用缓存。选择器把持久化
