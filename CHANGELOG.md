@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Add the org contribution guide (`CONTRIBUTING.md`), with Martty's toolchain,
+  CI, and release steps, plus a pull request evidence template and a bug report
+  template.
+
 ### Changed
 
 - Depend on `@openma/deepseek-harness-acp` 0.4.36, which bundles DeepSeek
