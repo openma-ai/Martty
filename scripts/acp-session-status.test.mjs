@@ -126,7 +126,7 @@ function makeSessionConfig() {
         type: 'select',
         id: 'model',
         name: 'Model',
-        currentValue: 'deepseek-v4-flash',
+        currentValue: 'deepseek-flash',
         options: [],
       },
       {
@@ -166,7 +166,7 @@ test('the status service folds connection, server, auth, and session facts', () 
     started: false,
   })
   // Seed folded from the already-advertised config options.
-  assert.equal(current.model, 'deepseek-v4-flash')
+  assert.equal(current.model, 'deepseek-flash')
   assert.equal(current.effort, 'high')
 
   service.observeClient({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })

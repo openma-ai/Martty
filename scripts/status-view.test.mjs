@@ -32,7 +32,7 @@ test('the status Client Plugin registers /status and opens the markdown overlay'
         server: 'dsh-acp',
         auth: { status: 'configured', method: 'agent' },
         session: { sessionId: 's-1', bound: true },
-        model: 'deepseek-v4-flash',
+        model: 'deepseek-flash',
         effort: 'high',
         permission: 'workspace-write',
         plan: true,
@@ -83,7 +83,7 @@ test('the status Client Plugin registers /status and opens the markdown overlay'
   assert.ok(text.includes('- auth · configured · agent'), text)
   assert.ok(text.includes('- session · s-1'), text)
   assert.ok(text.includes('- server · dsh-acp'), text)
-  assert.ok(text.includes('- model · deepseek-v4-flash'), text)
+  assert.ok(text.includes('- model · deepseek-flash'), text)
   assert.ok(text.includes('- effort · high'), text)
   assert.ok(text.includes('- permission · workspace-write'), text)
   assert.ok(text.includes('- plan · on'), text)

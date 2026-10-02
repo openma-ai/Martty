@@ -8,7 +8,7 @@ fn test_app(workspace: &std::path::Path) -> (App, Receiver<AppEvent>) {
         workspace: workspace.to_string_lossy().into_owned(),
         session_root: workspace.join("sessions").to_string_lossy().into_owned(),
         provider: "deepseek-official".into(),
-        model: "deepseek-v4-flash".into(),
+        model: "deepseek-flash".into(),
         max_tokens: None,
         base_url: None,
         api_key: None,

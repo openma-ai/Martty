@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- Depend on `@openma/deepseek-harness-acp` 0.4.36, which bundles DeepSeek
+  Harness 0.2.0-rc.2 and `@earendil-works/pi-ai` 0.87.1. The development
+  harness baseline moves to `@deepseek-ai/dsh` 0.2.0-rc.2 so profile installs
+  exercise that same generation.
+- Use `deepseek-flash` as the built-in model default, demo catalog entry, and
+  fallback picker id. Saved `deepseek-v4-flash` and
+  `deepseek-v4-flash-vision-exp` selections on the official DeepSeek route,
+  and dropped Moonshot `kimi-k2*` ids (`kimi-k2.5` and the older K2 previews),
+  are rewritten to `deepseek-flash` or `kimi-k2.6` when startup configuration
+  is resolved. The same ids stay unchanged on routes whose catalogs still
+  list them.
+
 ## [0.3.1] - 2026-09-30
 
 ### Changed

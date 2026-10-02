@@ -25,7 +25,7 @@ fn test_cfg() -> RuntimeConfig {
         workspace: "/tmp".into(),
         session_root: fresh_root(),
         provider: "deepseek-official".into(),
-        model: "deepseek-v4-flash".into(),
+        model: "deepseek-flash".into(),
         max_tokens: None,
         base_url: None,
         api_key: None,
@@ -1235,7 +1235,7 @@ fn model_picker_highlights_the_streamed_model_not_the_config_default() {
     let (mut app, ctl, _rx) = test_app();
     // The config default is only a fallback: once a turn streamed on a
     // different model, the picker must mark the running one (issue #102).
-    app.cfg.model = "deepseek-v4-flash".into();
+    app.cfg.model = "deepseek-flash".into();
     app.transcript.last_model = Some("deepseek-v4-pro".into());
 
     app.open_model_picker(&ctl);
@@ -1281,7 +1281,7 @@ fn slash_model_menu_preselects_the_running_model() {
     let (mut app, ctl, _rx) = test_app();
     // The inline option menu (typed `/model `) follows the same effective
     // model as the picker: streamed model, not the config default (#102).
-    app.cfg.model = "deepseek-v4-flash".into();
+    app.cfg.model = "deepseek-flash".into();
     app.transcript.last_model = Some("deepseek-v4-pro".into());
     app.input.set("/model".into());
     app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), &ctl);

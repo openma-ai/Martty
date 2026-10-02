@@ -178,6 +178,73 @@ fn yaml_top_level_env(yaml: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Built-in model when `--model`, `DSH_MODEL`, and the local dsh settings
+/// file all omit one. Matches the id dsh-acp 0.4.36 advertises by default.
+pub const DEFAULT_MODEL: &str = "deepseek-flash";
+
+/// Rewrite a saved model id that pi-ai 0.87.1 dropped from a specific route.
+///
+/// `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` remain listed on
+/// some third-party routes, so only the official DeepSeek routes (and an
+/// empty route, which launch resolves to `deepseek-official`) move to
+/// `deepseek-flash`. Moonshot dropped `kimi-k2.5` and the older `kimi-k2*`
+/// previews; those map to `kimi-k2.6` only on `moonshotai` /
+/// `moonshotai-cn`. A `provider/id` value uses the embedded provider.
+/// Other ids, including a still-listed id on another route, pass through.
+pub fn canonical_model_id(provider: &str, model: &str) -> String {
+    let (embedded, id) = match model.split_once('/') {
+        Some((route, id)) if !route.is_empty() && !id.is_empty() && !id.contains('/') => {
+            (Some(route), id)
+        }
+        _ => (None, model),
+    };
+    let route = embedded.unwrap_or(provider);
+    let Some(mapped) = retired_model_successor(route, id) else {
+        return model.to_string();
+    };
+    match embedded {
+        Some(route) => format!("{route}/{mapped}"),
+        None => mapped.to_string(),
+    }
+}
+
+fn retired_model_successor(provider: &str, id: &str) -> Option<&'static str> {
+    match id {
+        "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp"
+            if matches!(provider, "" | "deepseek" | "deepseek-official") =>
+        {
+            Some("deepseek-flash")
+        }
+        "kimi-k2.5"
+        | "kimi-k2-0711-preview"
+        | "kimi-k2-0905-preview"
+        | "kimi-k2-thinking"
+        | "kimi-k2-thinking-turbo"
+        | "kimi-k2-turbo-preview"
+            if matches!(provider, "moonshotai" | "moonshotai-cn") =>
+        {
+            Some("kimi-k2.6")
+        }
+        _ => None,
+    }
+}
+
+/// Startup model: explicit flag, then `DSH_MODEL`, then the local dsh
+/// settings file, then [`DEFAULT_MODEL`]. Retired ids are rewritten for the
+/// resolved provider so an existing settings file keeps launching.
+pub fn resolve_launch_model(
+    explicit: Option<&str>,
+    env_model: Option<&str>,
+    local_model: Option<&str>,
+    provider: &str,
+) -> String {
+    let raw = explicit
+        .or(env_model)
+        .or(local_model)
+        .unwrap_or(DEFAULT_MODEL);
+    canonical_model_id(provider, raw)
+}
+
 /// provider/model under the `agent-default-model:` block.
 fn yaml_agent_default_model(yaml: &str) -> (Option<String>, Option<String>) {
     let mut in_block = false;
@@ -206,3 +273,7 @@ fn yaml_agent_default_model(yaml: &str) -> (Option<String>, Option<String>) {
     }
     (provider, model)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/runtime__tests.rs"]
+mod tests;
