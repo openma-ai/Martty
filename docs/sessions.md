@@ -29,6 +29,14 @@ Martty 可以在同一 ACP 连接中打开多个会话标签。标签切换保�
 
 当 Agent 声明支持 `session/resume` 时，可以继续长会话而不重新回放完整历史；旧 Agent 的 `session/load` 路径仍受支持。没有这些能力时，本地历史回放不应被当作远端 Agent 已恢复同一上下文。不同 Agent 的模型、权限与历史恢复能力可能不同，以其返回结果为准。
 
+## 分叉当前会话
+
+`/fork` 对当前会话发送标准 ACP `session/fork`。参数与 `session/load` 对齐：带上当前 `cwd` 和 `mcpServers`（Martty 没有客户端 MCP 列表时为 `[]`），并在 Agent 声明了 `additionalDirectories` 时附上同一组额外目录。请求分叉的是整段会话，不带消息 id，也不带 `_meta`。
+
+门槛只有 `initialize` 返回的 `agentCapabilities.sessionCapabilities.fork`。标准写法是 `{}`；缺省、`null` 或其他非对象都不算声明。Martty 不按 Harness 名称或版本判断。声明了，`/` 菜单里的 `/fork` 可以执行；没声明时这一行仍在，但是禁用，说明里写着原因。
+
+成功后 Martty 用现有的多标签方式打开新会话并切过去，原会话留在原来的标签里。Agent 返回错误时，错误原文出现在新标签上，原会话不动。`/fork` 不接受会话名：`/new` 的可选参数是本地占位 id，`/resume` 的参数是列表条数或会话 id，都不是标题。
+
 ## 排队消息与立即 steer
 
 回合运行时按 Enter 提交 follow-up，消息进入当前会话的队列。要立即 steer 当前 Agent，使用 **Ctrl+Enter**；macOS 也可使用 **⌘⏎**。**Ctrl+X** 是剪切选区，不是 steer。
@@ -45,8 +53,12 @@ ACP 没有对应的 `session/close` 请求，所以关闭标签不代表取消�
 
 启动时可以重复传入 `--add-dir <绝对路径>`，把 workspace 以外的目录交给当前会话。路径必须是已存在的目录，不能是文件系统根或 `$HOME`，和 workspace 相同的项会被去掉。
 
-这些目录只在 Agent 的 `initialize` 声明了 `sessionCapabilities.additionalDirectories` 时，才会放进 `session/new`、`session/load` 和 `session/resume`。没有这个能力时字段不会发送，界面会说明原因。没有 `--add-dir` 时字段同样省略。会话标签、`/status` 和 `/session` 会显示已发送的额外目录；`/resume` 列表在 Agent 回了 `additionalDirectories` 时也会标出来。
+这些目录只在 Agent 的 `initialize` 声明了 `sessionCapabilities.additionalDirectories` 时，才会放进 `session/new`、`session/load`、`session/resume` 和 `session/fork`。没有这个能力时字段不会发送，界面会说明原因。没有 `--add-dir` 时字段同样省略。会话标签、`/status` 和 `/session` 会显示已发送的额外目录；`/resume` 列表在 Agent 回了 `additionalDirectories` 时也会标出来。
 
 ## 查看当前状态
 
 用 `/status` 检查当前连接、会话和回合状态；用 `/keys` 查看完整快捷键。模型选项和认证方式由当前 Agent 声明，不能据某个旧标签的模型或另一 Harness 的登录方式推断当前状态。
+
+## 同名斜杠命令
+
+Martty 自带命令占用原来的名字。Agent 通过 `available_commands_update` 发来的同名命令不再被丢掉：菜单里用 Agent 名称当前缀（例如 `pi-acp /model`），选中后仍把原来的 `/model …` 当作 prompt 发给 Agent。直接回车在自带那一行上，执行的仍是 Martty 自己的命令。这条规则覆盖全部自带命令，包括已经和 pi-acp 撞名的 `/model`、`/session`，以及 `/fork`。客户端插件命令不会变成 prompt，所以同名时仍让自带命令独占原名。

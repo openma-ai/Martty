@@ -1701,6 +1701,7 @@ fn agent_caps_gate_resume_to_session_list() {
             load_session: true,
             list_session: true,
             resume_session: true,
+            fork_session: false,
             additional_directories: false,
         }),
         &ctl,
@@ -1726,6 +1727,7 @@ fn resume_capability_can_restore_an_exact_id_without_load_or_list() {
             load_session: false,
             list_session: false,
             resume_session: true,
+            fork_session: false,
             additional_directories: false,
         }),
         &ctl,
@@ -3295,6 +3297,7 @@ fn skills_merge_into_slash_menu_and_builtins_shadow() {
             client_command: false,
         },
     ];
+    app.server_info = Some("pi-acp".into());
     app.input.set("/".into());
     let menu = app.slash_matches();
     let skills: Vec<&str> = menu
@@ -3304,8 +3307,18 @@ fn skills_merge_into_slash_menu_and_builtins_shadow() {
         .collect();
     assert_eq!(
         skills,
-        ["commit-helper"],
-        "builtin /help shadows the skill name"
+        ["commit-helper", "help"],
+        "a harness /help stays in the menu beside the builtin"
+    );
+    let help = menu
+        .iter()
+        .find(|entry| entry.skill && entry.name == "help")
+        .expect("prefixed /help");
+    assert_eq!(help.usage, "pi-acp /help");
+    assert!(
+        menu.iter()
+            .any(|entry| !entry.skill && entry.name == "help" && entry.usage == "/help"),
+        "the builtin keeps the bare name"
     );
     app.input.set("/commit".into());
     let menu = app.slash_matches();

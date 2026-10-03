@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Add a native `/fork` command. It appears enabled only when `initialize`
+  reports `agentCapabilities.sessionCapabilities.fork` as an object, and it
+  sends standard `session/fork` for the whole current session (`cwd` and
+  `mcpServers`, aligned with `session/load`, no message id and no `_meta`).
+  The new session opens as another tab. A harness command that reuses a
+  builtin name, including `/model` and `/session`, stays in the `/` menu
+  with the agent name as a prefix and is sent through as a prompt.
 - Send repeatable `--add-dir` as standard ACP `additionalDirectories` on
   `session/new`, `session/load`, and `session/resume` only when initialize
   advertises `sessionCapabilities.additionalDirectories`. Agents that do not

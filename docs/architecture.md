@@ -220,7 +220,7 @@ acp-session-status 标准 ACP 运行状态投影：连接/服务端/认证/会�
               acpSessionStats 的职责）
 Client runner Client inspect + code.client 挂载/停止
 TUI 壳        消费 Theme、slot 与通用 overlay 快照树；把本地 Queue/Agent 快照路由给对应 service
-acp-client    session/new · authenticate · prompt · cancel · config · commands
+acp-client    session/new · session/fork · authenticate · prompt · cancel · config · commands
               standalone 使用稳定代理流，可替换 ACP 子进程而不断开 TUI compositor；
               启动/替换时清空旧 Agent capability，initialize 后立即 session/new
               提供 acpSessionConfig（观察标准快照；set 仍由 Rust 发标准 ACP）
@@ -253,6 +253,12 @@ Bright、light=Tomorrow）、`everforest` / `iceberg` /
 `solarized`（均为 dark+light 双变体），色值取自
 [terminalcolors.com](https://terminalcolors.com/themes/)，随 Client boot
 以 sibling insert 行注册，`/theme` 直接可切。
+
+## 斜杠命令
+
+`/` 菜单里的自带命令由客户端解析。`/fork` 只在 `initialize` 的 `agentCapabilities.sessionCapabilities.fork` 为对象（标准写法 `{}`）时执行；否则该行禁用并写明原因。执行时对当前会话发 `session/fork`，参数与 `session/load` 相同（`cwd`、`mcpServers`，以及已声明时的 `additionalDirectories`），不带消息 id，不带 `_meta`。新 `sessionId` 按现有多标签打开并切过去，原会话保留。判断不看 Harness 名称或版本。
+
+自带命令占用原名。`available_commands_update` 里的同名命令保留在菜单中，显示为「Agent 名 + 原命令」（例如 `pi-acp /model`）。选中后把原来的 `/name …` 作为 prompt 发出。`/model` 与 `/session` 跟这条规则一样。
 
 ## 控制面与绘制面
 

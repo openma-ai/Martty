@@ -4155,6 +4155,7 @@ fn stream_owned_new_session_keeps_the_negotiated_connection_facts() {
     surface.lock().unwrap().initial_connection = Some(crate::bus::SessionConnection {
         server: Some("profile-host".into()), auth: AuthSnapshot::none(),
         load_session: true, list_session: true, resume_session: false,
+        fork_session: false,
         additional_directories: false,
     });
     let (bus, events) = std::sync::mpsc::channel();

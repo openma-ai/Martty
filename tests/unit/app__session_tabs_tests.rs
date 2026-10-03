@@ -135,6 +135,7 @@ fn harness_identity_and_capabilities_follow_the_owning_tab() {
         connection: crate::bus::SessionConnection {
             server: Some("beta".into()), auth: crate::acp_auth::AuthSnapshot::none(),
             load_session: false, list_session: true, resume_session: true,
+            fork_session: false,
             additional_directories: false,
         },
     }), &ctl);

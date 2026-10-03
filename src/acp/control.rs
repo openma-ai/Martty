@@ -69,7 +69,9 @@ impl ControlWorkers {
         // Preserve setup FIFO and per-session mutation order without blocking
         // prompts, cancellations, or other sessions' control requests.
         let lane = match &cmd {
-            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } => "setup".to_string(),
+            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } | Cmd::ForkSession { .. } => {
+                "setup".to_string()
+            }
             Cmd::SelectModel { session_id, .. }
             | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. }
@@ -159,6 +161,7 @@ async fn run_control(
         .unwrap_or(additional_directories);
     let (requester, retry_auth) = match &cmd {
         Cmd::NewSession { requester, retry_auth } => (requester.clone(), retry_auth.clone()),
+        Cmd::ForkSession { requester, .. } => (Some(requester.clone()), None),
         _ => (None, None),
     };
     match cmd {
@@ -676,6 +679,41 @@ async fn run_control(
                         notice,
                     )
                 });
+            let _ = done.send(ControlFinish::Setup { result, requester });
+        }
+        Cmd::ForkSession {
+            source_session_id, ..
+        } => {
+            let params = fork_session_params(
+                SessionId::new(source_session_id.clone()),
+                &cwd,
+                additional_directories,
+                &directories,
+            );
+            let result = match UntypedMessage::new("session/fork", params) {
+                Ok(request) => match cx.send_request(request).block_task_setup_deadline().await {
+                    Ok(value) => match value
+                        .get("sessionId")
+                        .or_else(|| value.get("session_id"))
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    {
+                        Some(id) => {
+                            let sid = SessionId::new(id.to_string());
+                            let notice = Some(format!("forked from {source_session_id} · {id}"));
+                            Ok((sid, value, notice))
+                        }
+                        None => Err(AcpError::new(-32603, "session/fork returned no sessionId")),
+                    },
+                    Err(err) if is_auth_required_error(&err) => Err(err),
+                    Err(err) => Err(AcpError::new(
+                        i32::from(err.code),
+                        format!("session/fork: {}", acp_error_message(&err)),
+                    )
+                    .data(err.data.clone())),
+                },
+                Err(err) => Err(AcpError::new(-32603, format!("session/fork: {err}"))),
+            };
             let _ = done.send(ControlFinish::Setup { result, requester });
         }
         Cmd::ListSessions {
