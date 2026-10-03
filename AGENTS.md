@@ -13,7 +13,7 @@ Read [docs/architecture.md](docs/architecture.md) and [docs/plugins.md](docs/plu
 
 ## Release & versioning
 
-- The version lives in three files that must match the `v*` tag: `Cargo.toml`, `npm/package.json`, and `npm-martty/package.json` (`scripts/check-release-tag.mjs` enforces tag == npm version == Cargo version).
+- The version lives in three files that must match the `v*` tag: `Cargo.toml`, `npm/package.json`, and `npm-martty/package.json` (`scripts/check-release-tag.mjs` enforces tag == npm version == Cargo version). `scripts/release-check.mjs` also runs in `package-npm.yml`: pull requests notice unreleased PRs, and a `v*` tag must match the npm lockfile and Cargo lock as well, plus any README version pin, before publish. The generated release notes must name every PR merged since the previous tag. Minor/major bumps need the `release:minor` / `release:major` labels. Beta tags stay `vX.Y.Z-beta.N`.
 - Add user-visible changes to `CHANGELOG.md` under `[Unreleased]` (Keep-a-Changelog style).
 - CI (`package-npm.yml`, PRs + tags): Rust tests/check, `npm test --prefix npm`, `test:profile-install-matrix`; release builds additionally run static-ELF and old-glibc smoke checks.
 

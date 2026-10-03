@@ -36,6 +36,18 @@ test('release workflow publishes platform packages before the thin martty packag
   assert.doesNotMatch(workflow, /npm publish \.\/dist\/openma-deepseek-harness-tui/)
 })
 
+test('release-check notices unreleased pull requests and gates publish on the tag', () => {
+  assert.match(workflow, /release-check:\n\s+name: Release check/)
+  assert.match(workflow, /if: github\.event_name == 'pull_request'/)
+  assert.match(workflow, /PR_LABELS: \$\{\{ join\(github\.event\.pull_request\.labels\.\*\.name, ','\) \}\}/)
+  assert.match(workflow, /run: node scripts\/release-check\.mjs\n/)
+  assert.match(workflow, /release-tag:\n\s+name: Release tag/)
+  assert.match(workflow, /run: node scripts\/release-check\.mjs --tag/)
+  assert.match(workflow, /needs: \[package, release-tag\]/)
+  const releaseTag = workflow.indexOf('release-tag:')
+  assert.equal(workflow.slice(0, releaseTag).includes('release-check.mjs --tag'), false)
+})
+
 test('Windows CI boots an installed profile through the real Node loader', () => {
   assert.match(
     workflow,
