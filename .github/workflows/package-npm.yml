@@ -192,13 +192,70 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Version bumps must keep npm, Cargo, and any README pin in sync, and
+  # stay on patch unless labeled release:minor / release:major. Other pull
+  # requests only get a notice listing unreleased PRs on the base branch.
+  # Beta tags (vX.Y.Z-beta.N) follow the existing prerelease rules.
+  release-check:
+    name: Release check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Fetch the base branch and tags
+        run: |
+          git fetch --no-recurse-submodules origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          git fetch --tags --force origin
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: List unreleased pull requests
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-check.mjs
+
+  # Tag push, before npm publish. Previews the same notes
+  # `gh release create --generate-notes` will publish and requires every
+  # pull request merged since the previous reachable v* tag.
+  release-tag:
+    name: Release tag
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Fetch tags
+        run: git fetch --tags --force origin
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Check the tag, versions, and release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-check.mjs --tag
+
   publish:
     name: Publish npm
     # Only the canonical repo may publish: the fork shares the same npm
     # package name, and a v* tag pushed there would otherwise ship the
-    # fork's build as @latest on npm.
+    # fork's build as @latest on npm. release-tag must pass first so a tag
+    # with missing notes or drifted versions never reaches npm.
     if: startsWith(github.ref, 'refs/tags/') && github.repository == 'openma-ai/Martty'
-    needs: package
+    needs: [package, release-tag]
     runs-on: ubuntu-24.04
     environment: npm
     permissions:

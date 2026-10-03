@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Check releases in CI before npm publish. A pull request lists pull requests
+  merged since the previous tag without failing, and a version bump must keep
+  the npm package, lockfile, and Cargo versions together. A `v*` tag must
+  match those versions (and a README version pin, when one is written) and
+  the generated GitHub release notes must name every pull request merged
+  since the previous tag. Minor and major bumps need the `release:minor` or
+  `release:major` label. `vX.Y.Z-beta.N` stays a prerelease of that core bump.
 - Add a native `/fork` command. It appears enabled only when `initialize`
   reports `agentCapabilities.sessionCapabilities.fork` as an object, and it
   sends standard `session/fork` for the whole current session (`cwd` and
