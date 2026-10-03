@@ -18,7 +18,7 @@ All notable changes to this project are documented here. The project follows
   `session/new`, `session/load`, and `session/resume` only when initialize
   advertises `sessionCapabilities.additionalDirectories`. Agents that do not
   advertise it do not receive the field, and the TUI says the directories were
-  not sent. The Pi catalog entry now launches `@openma/pi-acp@0.1.4`.
+  not sent. The Pi catalog entry now launches `@openma/pi-acp@0.1.6`.
 - Route Ctrl+Enter steering by the agent’s `initialize` `_meta`: the shared `_session/steering` extension when `_meta.steering.supported` is advertised (claude-agent-acp, codex-acp, DeepSeek Harness; `promptRequired` re-queues), MiniMax Code `mcode/session/steer` (text only; its `session/prompt` rejects concurrent turns), otherwise the legacy concurrent `session/prompt`. Stream sessions carry that `_meta` on `marttyConnection` so each connection keeps its own route. `scripts/mcode-steer.e2e.mjs` drives the real TUI against `mcode acp` (opt-in, uses model tokens).
 - Add the org contribution guide (`CONTRIBUTING.md`), with Martty's toolchain,
   CI, and release steps, plus a pull request evidence template and a bug report
@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Changed
 
+- Launch the Pi catalog entry with `@openma/pi-acp@0.1.6` (was 0.1.4) for both
+  the bundled snapshot and a refreshed ACP catalog. Official registry records
+  stay untouched. 0.1.6 again writes model and thinking changes to pi's global
+  defaults (`defaultProvider`, `defaultModel`, `defaultThinkingLevel`); Martty
+  does not wrap or block that file.
 - Depend on `@openma/deepseek-harness-acp` 0.4.36, which bundles DeepSeek
   Harness 0.2.0-rc.2 and `@earendil-works/pi-ai` 0.87.1. The development
   harness baseline moves to `@deepseek-ai/dsh` 0.2.0-rc.2 so profile installs
