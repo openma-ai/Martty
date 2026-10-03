@@ -77,7 +77,7 @@
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@lobehub/icons-static-svg": "1.95.0",
-    "@openma/deepseek-harness-acp": "0.4.36",
+    "@openma/deepseek-harness-acp": "0.4.37",
     "@resvg/resvg-js": "2.6.2",
     "cross-spawn": "^7.0.6",
     "node-downloader-helper": "2.1.11"
