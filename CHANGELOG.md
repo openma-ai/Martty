@@ -40,7 +40,7 @@ All notable changes to this project are documented here. The project follows
   does not wrap or block that file.
 - Depend on `@openma/deepseek-harness-acp` 0.4.37, which bundles DeepSeek
   Harness 0.2.0-rc.2 and `@earendil-works/pi-ai` 0.87.1. The development
-  harness baseline stays on `@deepseek-ai/dsh` 0.2.0-rc.2 so profile installs
+  harness baseline moves to `@deepseek-ai/dsh` 0.2.0-rc.2 so profile installs
   exercise that same generation. Upstream adds fork sessions from an inclusive
   assistant message (deepseek-harness-acp #37).
 - Use `deepseek-flash` as the built-in model default, demo catalog entry, and
