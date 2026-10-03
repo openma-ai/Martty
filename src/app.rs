@@ -176,6 +176,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "reasoning effort for this session",
     },
     SlashCommand {
+        name: "fork",
+        usage: "/fork",
+        desc: "fork this session into a new tab when the agent advertises sessionCapabilities.fork",
+    },
+    SlashCommand {
         name: "help",
         usage: "/help",
         desc: "show help and tips",
@@ -256,6 +261,22 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "toggle vim modal editing (default off)",
     },
 ];
+
+fn builtin_slash_name(name: &str) -> bool {
+    SLASH_COMMANDS.iter().any(|command| command.name == name)
+}
+
+/// The prompt a prefixed harness row sends: the original `/name` plus any
+/// arguments already typed, never the display prefix.
+fn harness_command_prompt(buf: &str, name: &str) -> String {
+    let trimmed = buf.trim();
+    let full = format!("/{name}");
+    if trimmed == full || trimmed.starts_with(&format!("{full} ")) {
+        trimmed.to_string()
+    } else {
+        full
+    }
+}
 
 pub const MODEL_PRESETS: &[&str] = &[
     crate::runtime::DEFAULT_MODEL,
@@ -573,9 +594,11 @@ pub struct PickerItem {
 pub(crate) const PICKER_LABEL_COL: usize = 30;
 
 /// One `/` menu entry: a builtin [`SlashCommand`] or a host skill (plugin
-/// mode). Builtins win a name collision — the command namespace is closed
-/// and resolved client-side before a line ever becomes a prompt; skill
-/// lines ship as prompts the host expands.
+/// mode). Builtins keep the bare name. A harness command from
+/// `available_commands_update` that reuses a builtin name stays in the menu
+/// under the agent-name prefix; choosing that row sends the original
+/// `/name …` line as a prompt. Client plugin commands still yield the bare
+/// name, because they never become prompts.
 #[derive(Clone)]
 pub struct SlashEntry {
     pub disabled: bool,
@@ -1406,6 +1429,8 @@ pub struct App {
     list_session: bool,
     /// Agent advertised `sessionCapabilities.resume`.
     resume_session_cap: bool,
+    /// Agent advertised `sessionCapabilities.fork` (`{}`).
+    fork_session_cap: bool,
     /// Agent advertised `sessionCapabilities.additionalDirectories`.
     additional_directories_cap: bool,
     /// `additional_directories_cap` has been learned from initialize.
@@ -1911,6 +1936,7 @@ impl App {
             load_session: false,
             list_session: false,
             resume_session_cap: false,
+            fork_session_cap: false,
             additional_directories_cap: false,
             additional_directories_known: false,
             session_title: None,
@@ -2020,6 +2046,7 @@ impl App {
                 server: self.server_info.clone(), auth: self.auth.clone(),
                 load_session: self.load_session, list_session: self.list_session,
                 resume_session: self.resume_session_cap,
+                fork_session: self.fork_session_cap,
                 additional_directories: self.additional_directories_cap,
             }),
             title: self.session_title.take(),
@@ -2078,6 +2105,7 @@ impl App {
             load_session: false,
             list_session: false,
             resume_session: false,
+            fork_session: false,
             additional_directories: false,
         }));
         self.session_title = slot.title;
@@ -3047,15 +3075,22 @@ impl App {
         let mut out: Vec<SlashEntry> = SLASH_COMMANDS
             .iter()
             .filter(|c| c.name.starts_with(prefix))
-            .map(|c| SlashEntry {
-                disabled: false,
-                name: c.name.to_string(),
-                usage: c.usage.to_string(),
-                desc: self.locale.command_desc(c.name, c.desc).to_string(),
-                skill: false,
-                plugin: false,
-                section: None,
-                completion: None,
+            .map(|c| {
+                let (disabled, reason) = self.builtin_slash_gate(c.name);
+                SlashEntry {
+                    disabled,
+                    name: c.name.to_string(),
+                    usage: c.usage.to_string(),
+                    desc: if disabled {
+                        reason
+                    } else {
+                        self.locale.command_desc(c.name, c.desc).to_string()
+                    },
+                    skill: false,
+                    plugin: false,
+                    section: None,
+                    completion: None,
+                }
             })
             .collect();
         let mut plugins: Vec<_> = self
@@ -3086,35 +3121,23 @@ impl App {
                 completion: None,
             });
         }
-        // Host skills share the '/' namespace. Builtins win first, then an
-        // active client command, because the latter never enters a prompt.
-        // Each group stays alphabetical so the menu reads in name order.
+        // Host skills share the '/' namespace. Builtins keep the bare name.
+        // A harness command that reuses one is listed with the agent prefix
+        // and still ships as a prompt. Client commands yield, because they
+        // never enter a prompt. Each group stays alphabetical.
         let mut skills: Vec<_> = self
             .skills
             .iter()
             .filter(|s| {
                 !s.name.eq_ignore_ascii_case("logout")
                     && s.name.starts_with(prefix)
-                    && !SLASH_COMMANDS.iter().any(|c| c.name == s.name)
                     && !self.plugin_command_active(&s.name)
+                    && !(s.client_command && builtin_slash_name(&s.name))
             })
             .collect();
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         for s in skills {
-            out.push(SlashEntry {
-                disabled: false,
-                name: s.name.clone(),
-                usage: s
-                    .input_hint
-                    .as_ref()
-                    .map(|hint| format!("/{} {}", s.name, hint))
-                    .unwrap_or_else(|| format!("/{}", s.name)),
-                desc: s.description.clone(),
-                skill: !s.client_command,
-                plugin: s.client_command,
-                section: None,
-                completion: None,
-            });
+            out.push(self.skill_slash_entry(s));
         }
         // An exact command must win over a longer name sharing its prefix.
         out.sort_by_key(|entry| entry.name != prefix);
@@ -3153,7 +3176,8 @@ impl App {
             }
         }
 
-        self.builtin_argument_options(name)
+        let mut rows: Vec<SlashEntry> = self
+            .builtin_argument_options(name)
             .into_iter()
             .filter(|(value, _, _)| value.starts_with(prefix))
             .map(|(value, label, desc)| SlashEntry {
@@ -3172,7 +3196,119 @@ impl App {
                 plugin: false,
                 completion: Some(format!("/{name} {value}")),
             })
-            .collect()
+            .collect();
+        if let Some(skill) = self.shadowed_harness_skill(name) {
+            // No builtin candidate matched the typed argument: keep a row
+            // that still runs the builtin, ahead of the harness prompt, so
+            // Enter does not silently retarget the line.
+            if rows.is_empty() && builtin_slash_name(name) {
+                let (disabled, reason) = self.builtin_slash_gate(name);
+                let desc = if disabled {
+                    reason
+                } else {
+                    self.locale
+                        .command_desc(
+                            name,
+                            SLASH_COMMANDS
+                                .iter()
+                                .find(|command| command.name == name)
+                                .map(|command| command.desc)
+                                .unwrap_or(""),
+                        )
+                        .to_string()
+                };
+                rows.push(SlashEntry {
+                    disabled,
+                    name: name.to_string(),
+                    usage: format!("/{name}"),
+                    desc,
+                    skill: false,
+                    plugin: false,
+                    section: None,
+                    completion: None,
+                });
+            }
+            rows.push(self.skill_slash_entry(skill));
+        }
+        rows
+    }
+
+    /// `sessionCapabilities.fork` is the only gate for `/fork`. Missing it
+    /// leaves the row visible and disabled, with the reason in the desc.
+    fn builtin_slash_gate(&self, name: &str) -> (bool, String) {
+        if name != "fork" {
+            return (false, String::new());
+        }
+        if !self.fork_session_cap {
+            return (
+                true,
+                self.locale
+                    .tr(
+                        "agent did not advertise sessionCapabilities.fork",
+                        "Agent 未声明 sessionCapabilities.fork",
+                    )
+                    .to_string(),
+            );
+        }
+        if !self.session_bound {
+            return (
+                true,
+                self.locale
+                    .tr("current session is not bound yet", "当前会话尚未绑定")
+                    .to_string(),
+            );
+        }
+        (false, String::new())
+    }
+
+    fn agent_slash_prefix(&self) -> String {
+        let raw = self.server_info.as_deref().unwrap_or("").trim();
+        let token = raw.split_whitespace().next().unwrap_or("agent");
+        let cleaned: String = token
+            .chars()
+            .filter(|ch| !ch.is_control() && *ch != '/')
+            .collect();
+        if cleaned.is_empty() {
+            "agent".to_string()
+        } else {
+            cleaned
+        }
+    }
+
+    fn skill_menu_usage(&self, skill: &crate::bus::SkillInfo) -> String {
+        let body = skill
+            .input_hint
+            .as_ref()
+            .filter(|hint| !hint.is_empty())
+            .map(|hint| format!("/{} {hint}", skill.name))
+            .unwrap_or_else(|| format!("/{}", skill.name));
+        if !skill.client_command && builtin_slash_name(&skill.name) {
+            format!("{} {body}", self.agent_slash_prefix())
+        } else {
+            body
+        }
+    }
+
+    fn skill_slash_entry(&self, skill: &crate::bus::SkillInfo) -> SlashEntry {
+        SlashEntry {
+            disabled: false,
+            name: skill.name.clone(),
+            usage: self.skill_menu_usage(skill),
+            desc: skill.description.clone(),
+            skill: !skill.client_command,
+            plugin: skill.client_command,
+            section: None,
+            completion: None,
+        }
+    }
+
+    fn shadowed_harness_skill(&self, name: &str) -> Option<&crate::bus::SkillInfo> {
+        if !builtin_slash_name(name) {
+            return None;
+        }
+        self.skills.iter().find(|skill| {
+            skill.name == name && !skill.client_command && !self.plugin_command_active(&skill.name)
+        })
     }
 
     /// The value currently in effect for an open builtin option menu
@@ -3840,7 +3976,14 @@ impl App {
                         // A failed empty tab must show its error, not the welcome page.
                         if self.session_id == previous_id {
                             self.show_banner = false;
-                            self.show_tip(self.locale.tr("session creation failed · /new to retry", "会话创建失败 · /new 重试"));
+                            if message.starts_with("session/fork:") {
+                                self.show_tip(self.locale.tr(
+                                    "session/fork failed — the original session is unchanged",
+                                    "session/fork 失败 —— 原会话未改动",
+                                ));
+                            } else {
+                                self.show_tip(self.locale.tr("session creation failed · /new to retry", "会话创建失败 · /new 重试"));
+                            }
                         }
                         else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == previous_id) {
                             slot.show_banner = false;
@@ -4349,11 +4492,13 @@ impl App {
                         load_session,
                         list_session,
                         resume_session,
+                        fork_session,
                         additional_directories,
                     } => {
                         self.load_session = load_session;
                         self.list_session = list_session;
                         self.resume_session_cap = resume_session;
+                        self.fork_session_cap = fork_session;
                         self.note_additional_directories(additional_directories);
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
@@ -7408,6 +7553,57 @@ impl App {
         }
     }
 
+    /// `/fork` opens a new tab and asks the agent for `session/fork` of the
+    /// session that was current. The source tab stays put. `/new`'s optional
+    /// id is a local placeholder, not a title, so `/fork` takes no argument.
+    fn fork_session_flow(&mut self, ctl: &Controller) {
+        if !self.fork_session_cap {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale
+                    .tr(
+                        "agent did not advertise sessionCapabilities.fork",
+                        "Agent 未声明 sessionCapabilities.fork",
+                    )
+                    .into(),
+            );
+            return;
+        }
+        if self.demo {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale
+                    .tr("demo has no ACP session/fork", "演示模式没有 ACP session/fork")
+                    .into(),
+            );
+            return;
+        }
+        if !self.session_bound {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale
+                    .tr(
+                        "current session is not bound yet — /fork needs a live ACP session",
+                        "当前会话尚未绑定 —— /fork 需要一个已建立的 ACP 会话",
+                    )
+                    .into(),
+            );
+            return;
+        }
+        let source = self.session_id.clone();
+        let placeholder = format!("fork-{}", timestamp());
+        self.open_new_session(placeholder.clone(), false);
+        self.awaiting_binds.push_back(AwaitingBind {
+            id: placeholder.clone(),
+            open: true,
+        });
+        ctl.send(Cmd::ForkSession {
+            source_session_id: source,
+            requester: placeholder,
+        });
+        self.show_tip(self.locale.tr("session/fork …", "正在分叉会话（session/fork）…"));
+    }
+
     fn prepare_new_session(&mut self, id: String, bound: bool, ctl: &Controller) {
         let empty = !self.prompt_pending && self.state != RunState::Running
             && self.prompt_queue.is_empty()
@@ -7527,6 +7723,7 @@ impl App {
         self.load_session = connection.load_session;
         self.list_session = connection.list_session;
         self.resume_session_cap = connection.resume_session;
+        self.fork_session_cap = connection.fork_session;
         self.additional_directories_cap = connection.additional_directories;
         self.additional_directories_known = true;
     }
@@ -8212,7 +8409,12 @@ impl App {
     }
 
     fn accept_slash(&mut self, entry: &SlashEntry, ctl: &Controller) {
-        if entry.disabled { return; }
+        if entry.disabled {
+            if !entry.desc.is_empty() {
+                self.show_tip(entry.desc.clone());
+            }
+            return;
+        }
         if let Some(completion) = &entry.completion {
             self.input.set(completion.clone());
         }
@@ -8234,6 +8436,16 @@ impl App {
             return;
         }
         if entry.skill {
+            if builtin_slash_name(&entry.name) {
+                // The bare name stays the builtin. This row is the harness
+                // command, so the original line goes out as a prompt.
+                let prompt = harness_command_prompt(&self.input.buf(), &entry.name);
+                self.input.history.push(prompt.clone());
+                self.input.clear();
+                self.slash_sel = 0;
+                self.send_agent_text(prompt, ctl);
+                return;
+            }
             // Web-UI semantics: picking a skill lands the literal "/name "
             // in the composer; enter on the completed line ships it as an
             // ordinary prompt and the host injects the skill body.
@@ -8346,6 +8558,7 @@ impl App {
                 }
             }
             "new" => self.new_session_flow(arg, ctl),
+            "fork" => self.fork_session_flow(ctl),
             "close" => self.close_session_flow(ctl),
             "session" => match arg {
                 "view" | "" => self.push_session_info(),
@@ -8675,11 +8888,12 @@ impl App {
 - /auth · ACP 登录；多种方式时打开选择器
 - /effort · 推理强度 · /permission 权限预设 · /plan 计划模式
 - /resume · 恢复持久会话并继续写入原日志
-- --add-dir <绝对路径> · 启动时的额外工作区根（可重复）；仅当 Agent 声明 additionalDirectories 时才会随 session/new、load、resume 发送
+- /fork · Agent 声明 sessionCapabilities.fork 时，用 session/fork 分叉当前会话并打开新标签；原会话保留。不接受参数，也不按 Harness 名称判断
+- --add-dir <绝对路径> · 启动时的额外工作区根（可重复）；仅当 Agent 声明 additionalDirectories 时才会随 session/new、load、resume、fork 发送
 - /image · 暂存本地图片：/image ./pic.png [说明]
 - /clip · 暂存剪贴板图片；ctrl+v 同样可用
 - !cmd · 在会话级本地 shell 中运行命令，不经过 Agent；初始目录为 workspace，cd/环境变量跨命令保留
-- /<skill> · Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文
+- /<skill> · Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文。与内置命令同名时，菜单用 Agent 名前缀区分，选中后仍把原来的 /name 发给 Agent
 - ctrl+o · 展开思考和工具输出 · ctrl+l · 清屏
 - 输入框编辑：readline 组合键 + ⌘/⌥ 方向键 + 键盘选区 · 完整映射见 /keys
 - 点击工具 · 展开/折叠 · 滚轮滚动对话
@@ -8705,11 +8919,12 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
 - /resume · pick up a durable session — transcript replays, log continues
-- --add-dir <absolute> · extra workspace root at launch (repeatable); sent on session/new, load, and resume only when the agent advertises additionalDirectories
+- /fork · when the agent advertises sessionCapabilities.fork, session/fork branches the current session into a new tab and leaves the original in place. No arguments, and not gated on the harness name
+- --add-dir <absolute> · extra workspace root at launch (repeatable); sent on session/new, load, resume, and fork only when the agent advertises additionalDirectories
 - /image · stage a local image — /image ./pic.png [caption]
 - /clip · stage the clipboard image — /clip [caption] · ctrl+v also works
 - !cmd · run in the session's local shell (not the agent); starts in the workspace, keeps cd/env across commands
-- /<skill> · agent commands join the / menu — enter ships it and the host injects the skill body
+- /<skill> · agent commands join the / menu — enter ships it and the host injects the skill body. A name that matches a builtin keeps a prefixed row; choosing it still sends the original /name line
 - ctrl+o · expand thoughts + tool output · ctrl+l · clear
 - editing · readline chords + ⌘/⌥ arrows (ctrl+arrows elsewhere) · full map in /keys
 - click tool · expand/collapse that tool · wheel scrolls the conversation
@@ -9026,9 +9241,11 @@ impl App {
             let mut parts = cmdline.splitn(2, ' ');
             let name = parts.next().unwrap_or("").to_string();
             let arg = parts.next().unwrap_or("").trim().to_string();
-            // Host skills share the '/' namespace (builtins win a name): a
-            // skill line ships as an ordinary prompt — the host's pre-step
-            // boundary recognizes the leading /name and injects the body.
+            // Host skills share the '/' namespace (builtins keep the bare
+            // name): a skill line ships as an ordinary prompt — the host's
+            // pre-step boundary recognizes the leading /name and injects
+            // the body. A colliding harness command is reached from its
+            // prefixed menu row, which sends the same text itself.
             let builtin = SLASH_COMMANDS.iter().any(|c| c.name == name);
             let acp_client_command = self
                 .skills
@@ -9896,3 +10113,7 @@ mod at_menu_tests;
 #[cfg(test)]
 #[path = "../tests/unit/app__additional_directories_tests.rs"]
 mod additional_directories_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__fork_tests.rs"]
+mod fork_tests;

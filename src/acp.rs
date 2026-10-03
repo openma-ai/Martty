@@ -1,6 +1,6 @@
 //! Official ACP client (`agent-client-protocol` 2.0).
 //!
-//! Speaks initialize / authenticate / session/new / session/resume / session/load /
+//! Speaks initialize / authenticate / session/new / session/fork / session/resume / session/load /
 //! session/list / prompt / cancel / set_config_option / set_mode.
 //! Transcript paint comes from `session/update`. Negotiated Cordis TUI
 //! compositor state arrives as `_dsh/cordis/tui/*` extension notifications.
@@ -1047,6 +1047,7 @@ fn session_connection_snapshot(value: &Value) -> crate::bus::SessionConnection {
         server: value.pointer("/agentInfo/name").and_then(Value::as_str).map(str::to_string),
         auth, load_session, list_session: list_session_supported(value) || load_session,
         resume_session: resume_session_supported(value),
+        fork_session: fork_session_supported(value),
         additional_directories: additional_directories_supported(value),
     }
 }
@@ -1166,6 +1167,50 @@ fn list_session_supported(init: &Value) -> bool {
         })
         .and_then(|caps| caps.get("list"));
     matches!(list, Some(Value::Object(_)) | Some(Value::Bool(true)))
+}
+
+/// `{}` advertises `session/fork`. Omitted, null, booleans, and other
+/// non-objects do not. Harness name and version are not consulted.
+fn fork_session_supported(init: &Value) -> bool {
+    let fork = init
+        .get("agentCapabilities")
+        .or_else(|| init.get("agent_capabilities"))
+        .and_then(|caps| {
+            caps.get("sessionCapabilities")
+                .or_else(|| caps.get("session_capabilities"))
+        })
+        .and_then(|caps| caps.get("fork"));
+    matches!(fork, Some(Value::Object(_)))
+}
+
+/// Params aligned with [`load_session_request`]: `sessionId`, `cwd`, and
+/// `mcpServers`. The SDK omits an empty `mcpServers` on `session/fork`;
+/// `session/load` always sends the array, so the empty list is put back.
+/// No message id and no `_meta`.
+fn fork_session_params(
+    session_id: SessionId,
+    cwd: &std::path::Path,
+    additional_directories: bool,
+    directories: &[String],
+) -> Value {
+    let mut request = agent_client_protocol::schema::v1::ForkSessionRequest::new(
+        session_id,
+        cwd.to_path_buf(),
+    );
+    let extra = directory_paths(additional_directories, directories);
+    if !extra.is_empty() {
+        request = request.additional_directories(extra);
+    }
+    let mut params = serde_json::to_value(&request).unwrap_or(Value::Null);
+    if let Some(object) = params.as_object_mut() {
+        object.remove("_meta");
+        object.remove("messageId");
+        object.remove("message_id");
+        if !object.contains_key("mcpServers") {
+            object.insert("mcpServers".to_string(), Value::Array(Vec::new()));
+        }
+    }
+    params
 }
 
 /// `{}` advertises the standard capability. Omitted, null, and non-objects do not.
@@ -2219,10 +2264,12 @@ where
                 // session/list with the top-level loadSession flag. Keep that legacy route.
                 let list_session = list_session_supported(&init_value) || load_session;
                 let additional_directories = additional_directories_supported(&init_value);
+                let fork_session = fork_session_supported(&init_value);
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
                     load_session,
                     list_session,
                     resume_session,
+                    fork_session,
                     additional_directories,
                 }));
                 let auth_raw = init_value
@@ -3131,3 +3178,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/unit/acp__additional_directories_tests.rs"]
 mod additional_directories_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/acp__fork_tests.rs"]
+mod fork_tests;

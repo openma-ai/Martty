@@ -152,7 +152,7 @@ acp-session-status    standard ACP run-state projection: connection/server/auth/
                       timing accumulation (acpSessionStats owns that)
 Client runner         Client inspect + code.client mount/stop
 TUI shell             consumes Theme, slot, and generic overlay snapshot trees
-acp-client            session/new · authenticate · prompt · cancel · config · commands
+acp-client            session/new · session/fork · authenticate · prompt · cancel · config · commands
                       provides acpSessionConfig / acpSessionPlan / acpSessionStats
                       plus a generic effect-scoped ACP observer registry
                       `_dsh/cordis/*` is negotiated at initialize
@@ -174,6 +174,12 @@ declares its palette with `tuiTheme.register`; `/theme` is a special single-sele
 Plugin switch that starts the target and stops the current Theme Plugin. Its
 palette, commands, overlays, slots, and RPC therefore share one Fiber lifetime.
 `martty --demo` stays on `default`; `--demo-skin` remains the static gallery path.
+
+## Slash commands
+
+Builtin `/` commands are resolved on the client. `/fork` runs only when `initialize` returns `agentCapabilities.sessionCapabilities.fork` as an object (the standard form is `{}`); otherwise the row stays disabled and states why. It sends `session/fork` for the current session with the same parameters as `session/load` (`cwd`, `mcpServers`, and `additionalDirectories` when that capability was advertised), with no message id and no `_meta`. The new `sessionId` opens through the existing tab strip and becomes current. The original session stays. The gate is not the harness name or version.
+
+Builtins keep the bare name. A same-named command from `available_commands_update` remains in the menu as `agent-name /command` (for example `pi-acp /model`). Choosing it sends the original `/name …` line as a prompt. `/model` and `/session` follow the same rule.
 
 ## Control plane vs paint
 

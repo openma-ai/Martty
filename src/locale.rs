@@ -75,6 +75,7 @@ impl Locale {
             "model" => "通过 ACP 实时切换模型",
             "agent" => "切换 Agent 预设 · ctrl+shift+a",
             "effort" => "设置当前会话的推理强度",
+            "fork" => "声明了 sessionCapabilities.fork 时，分叉当前会话并打开新标签",
             "permission" => "选择权限预设 · shift+tab 轮换",
             "plan" => "切换 Host 计划模式",
             "image" => "发送本地图片（png/jpeg/webp/gif）",
