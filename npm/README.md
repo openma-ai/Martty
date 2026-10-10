@@ -54,17 +54,22 @@ with identical versions and artifacts. The scoped name is deprecated; switch
 package names with:
 
 ```sh
-npm rm -g @openma/deepseek-harness-tui
 npm install --global martty
 ```
 
-Removing the legacy package first is required: published versions of
-`@openma/deepseek-harness-tui` register `dsh-tui` (every version) and
-`martty` (0.2.14/0.2.20) global commands, and npm refuses to link a bin that
-another package already owns (`EEXIST`). When no `martty` bin is in the way,
-the install also succeeds without the removal — a postinstall step then
-retires the stale `dsh-tui` link and `martty` warns at launch while the
-legacy package remains — but removing it is the clean migration.
+No removal is needed first, whatever state the legacy package is in —
+published versions of `@openma/deepseek-harness-tui` register `dsh-tui`
+(every version) and `martty` (0.2.14/0.2.20) global commands, and `npm link`ed
+checkouts own the same names. The `martty` package declares only `martty-cli`
+so npm never refuses the install over a bin another package owns (`EEXIST`);
+a postinstall step then retires the stale `martty`/`dsh-tui`/`dsb` links that
+verifiably belonged to the legacy package (a third-party `dsh-tui` stays
+untouched), creates the `martty` command itself, and detaches the legacy
+package's bin declarations so a later `npm rm -g` can't take `martty` down
+with it. Removing `@openma/deepseek-harness-tui` afterwards is optional
+cleanup; `martty` warns at launch while it remains. With `--ignore-scripts`
+the postinstall never runs — invoke `martty-cli` once (or `npx martty`) and
+the command is recreated at launch.
 
 Inside a `dsh` profile the same switch is:
 

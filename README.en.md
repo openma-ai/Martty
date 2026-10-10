@@ -80,20 +80,33 @@ name. Starting with `0.2.13`, `martty`
 and `@openma/deepseek-harness-tui` are published by the same CI run with the
 same version and artifacts; the scoped name is deprecated.
 
-With a **global npm install** of the legacy package, remove it first —
-published versions register `dsh-tui` (every version) and `martty`
-(0.2.14/0.2.20) global commands, and npm refuses to link a bin another
-package already owns (`EEXIST`):
+With a **global npm install**, just install `martty` — no removal needed
+first, whatever state the legacy package is in (0.2.18-era `dsh-tui`/`dsb`
+bins, a `martty`-owning 0.2.14/0.2.20 release, or an `npm link`ed checkout):
 
 ```sh
-npm rm -g @openma/deepseek-harness-tui
 npm install --global martty
 ```
 
-When no `martty` bin is in the way the install also succeeds without the
-removal — a postinstall step retires the stale `dsh-tui` link and `martty`
-warns at launch while the legacy package remains — but removing it is the
-clean migration.
+The published `martty` package declares only `martty-cli` — a name nothing
+else owns — so npm can never refuse the install over a bin collision. A
+postinstall step then retires the stale `martty`/`dsh-tui`/`dsb` links that
+verifiably belonged to the legacy package (a third-party `dsh-tui` is left
+untouched), creates the `martty` command itself, and detaches the legacy
+package's bin declarations so `npm rm -g @openma/deepseek-harness-tui`
+afterwards leaves `martty` working. Removing the old package afterwards is
+optional cleanup; `martty` warns at launch while it remains.
+
+Caveats:
+
+- `npm install --global --ignore-scripts martty` skips the postinstall —
+  run `martty-cli` once (or `npx martty`) and it recreates `martty` at
+  launch. `martty-cli` is also the command to use when an unrelated tool
+  owns a `martty` bin.
+- `npm rm -g martty` removes only the declared `martty-cli` link; the
+  postinstall-created `martty` link is left dangling until the next install
+  recreates it — delete `<prefix>/bin/martty` by hand if uninstalling for
+  good.
 
 Inside a `dsh` profile, migrate the package name and profile together:
 

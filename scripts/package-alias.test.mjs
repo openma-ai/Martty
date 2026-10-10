@@ -62,7 +62,7 @@ test('creates a thin Martty package with platform optional dependencies', (t) =>
       version: '1.2.3',
       files: ['lib', 'bin'],
       bin: {
-        martty: 'bin/martty.js',
+        'martty-cli': 'bin/martty.js',
       },
       scripts: {
         postinstall: 'node lib/install-migration.js',
@@ -104,7 +104,7 @@ test('falls back to the canonical bin entry when the source has none', (t) => {
 
   assert.equal(result.status, 0, result.stderr)
   assert.equal(
-    JSON.parse(readFileSync(path.join(destination, 'package.json'), 'utf8')).bin.martty,
+    JSON.parse(readFileSync(path.join(destination, 'package.json'), 'utf8')).bin['martty-cli'],
     'bin/martty.js',
   )
 })
