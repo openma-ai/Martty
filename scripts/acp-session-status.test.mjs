@@ -47,6 +47,35 @@ test('captures the advertised dsh runtime from initialize for /status', () => {
   assert.equal(status.current().dshRuntime, undefined)
 })
 
+test('ignores malformed dsh runtime metadata in initialize', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  const send = (id, runtime) => {
+    status.observeClient({ id, method: 'initialize' })
+    status.observeAgent({
+      id,
+      result: {
+        agentInfo: { name: 'dsh-acp' },
+        agentCapabilities: { _meta: { dsh: { runtime } } },
+        authMethods: [],
+      },
+    })
+  }
+
+  // An object carrying neither version nor source is not a usable identity.
+  send('init-no-fields', { base: '/x' })
+  assert.equal(status.current().dshRuntime, undefined)
+
+  send('init-non-object', 'not-an-object')
+  assert.equal(status.current().dshRuntime, undefined)
+
+  // Either field alone is enough to surface.
+  send('init-version-only', { version: '0.2.0-rc.2' })
+  assert.deepEqual(status.current().dshRuntime, { version: '0.2.0-rc.2', source: undefined, base: undefined })
+
+  send('init-source-only', { source: '--dsh-path (/x)' })
+  assert.deepEqual(status.current().dshRuntime, { version: undefined, source: '--dsh-path (/x)', base: undefined })
+})
+
 test('a new initialize clears every old Agent projection and ignores late request responses', () => {
   const config = installAcpSessionConfig(makeCtx())
   const status = installAcpSessionStatus(makeCtx(), { sessionConfig: config })
