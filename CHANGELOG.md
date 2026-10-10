@@ -156,6 +156,13 @@ All notable changes to this project are documented here. The project follows
   `@openma/deepseek-harness-tui/<subpath>`, so a profile installing the
   `martty`-named package could not import them (`4 entries did not activate`
   in the Windows profile smoke). They now resolve `martty/<subpath>`.
+- Show the pi harness as `pi-acp` everywhere its name appears (issue #158),
+  dropping the old `Pi (OpenMA)` branding. The catalog entry keeps Martty's
+  `@openma/pi-acp` recipe and now exposes its repository
+  (`https://github.com/openma-ai/pi-acp`) on the picker's description line so
+  it stays distinguishable from the official registry's unrelated unprefixed
+  `pi-acp`. Saved configurations keep working; the stale `Pi (OpenMA)` label
+  on a saved `pi-acp` entry reads as `pi-acp` while custom labels are kept.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,

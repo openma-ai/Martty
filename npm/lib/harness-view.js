@@ -41,6 +41,15 @@ function findDescription(entry) {
   return `found locally · configure · ${commandText(entry)}`
 }
 
+// Registry entries carry their repository like the catalog's name /
+// description / repository triple; the URL distinguishes same-named
+// harnesses (e.g. @openma/pi-acp from the unrelated registry pi-acp).
+function describeCandidate(entry) {
+  const detail = findDescription(entry)
+  const repository = entry.registryRecord?.repository
+  return repository === undefined ? detail : `${detail} · ${repository}`
+}
+
 export function apply(ctx, options = {}) {
   const settingsPath = options.settingsPath
   let registryPromise
@@ -477,7 +486,7 @@ export function apply(ctx, options = {}) {
       openSelect({ id: 'harness-find', title: failure ? 'Add Harness · Registry offline' : pending ? 'Add Harness · checking Registry…' : 'Add Harness', searchable: true,
         value: entries[0]?.id ?? REFRESH,
         options: [
-          ...entries.map((entry) => ({ value: entry.id, label: entry.label, description: findDescription(entry),
+          ...entries.map((entry) => ({ value: entry.id, label: entry.label, description: describeCandidate(entry),
             ...currentOption(entry),
             group: locallyAvailable(entry) ? 'Installed / configured' : entry.status === 'Checking locally' ? 'Catalog' : 'Not downloaded' })),
           { value: REFRESH, label: failure ? 'Retry Registry' : 'Refresh Registry', description: failure ? errorText(failure) : 'Recheck the catalog and local programs' },
