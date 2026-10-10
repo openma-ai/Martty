@@ -61,6 +61,15 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Sync the terminal's default background to the canvas color (`OSC 11`,
+  restored with `OSC 111` on exit) so emulator-painted regions — the
+  unusable sub-cell strip below the last row of a non-integer-height
+  window, lines scrolled in by the emulator, areas restored by non-BCE
+  erases — match the theme instead of reading as a gray band under the
+  status bar on macOS terminals (#145). With `NO_COLOR` set the sync is
+  suppressed entirely: the terminal's own default foreground/background
+  pair stays in charge, so e.g. `--theme light` can no longer paint
+  default-white text on a synced-white background.
 - Prefer `@openma/pi-acp@0.1.3` for the Pi entry in both the bundled and refreshed ACP catalog; require Node.js 22.19 or newer for the npm package.
 - Keep the session busy while a queued concurrent steer is still running.
 - Seal startup text before the first prompt turn so pi-acp's first reply renders
