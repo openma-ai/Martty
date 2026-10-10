@@ -534,7 +534,7 @@ fn welcome_info_uses_the_active_acp_runtime_and_reported_session_model() {
 }
 
 #[test]
-fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
+fn status_chips_show_values_without_inline_key_hints() {
     let flat = |line: &Line| -> String {
         line.spans
             .iter()
@@ -544,35 +544,31 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     let mut app = test_app();
 
     app.locale = crate::locale::Locale::Zh;
-    let zh_line = status_title(&app);
-    let zh = flat(&zh_line);
-    assert!(
-        zh.contains("Standard mode ctrl+shift+a · 工作区可写 shift+tab"),
-        "{zh}"
-    );
+    let zh = flat(&status_title(&app));
+    // Issue #148: values only — the bindings live in /keys, not the dock.
+    assert!(zh.contains("Standard mode · 工作区可写"), "{zh}");
+    assert!(!zh.contains("ctrl+shift+a"), "{zh}");
+    assert!(!zh.contains("shift+tab"), "{zh}");
     assert!(!zh.contains("permission"), "{zh}");
     assert!(!zh.contains("权限"), "{zh}");
 
     app.locale = crate::locale::Locale::En;
     let en_line = status_title(&app);
     let en = flat(&en_line);
-    assert!(
-        en.contains("Standard mode ctrl+shift+a · Workspace Write shift+tab"),
-        "{en}"
-    );
+    assert!(en.contains("Standard mode · Workspace Write"), "{en}");
+    assert!(!en.contains("ctrl+shift+a"), "{en}");
+    assert!(!en.contains("shift+tab"), "{en}");
     assert!(!en.contains("permission"), "{en}");
     assert!(!en.contains("access"), "{en}");
 
-    let key_spans = en_line
-        .spans
-        .iter()
-        .filter(|span| span.content.contains('+'))
-        .collect::<Vec<_>>();
-    assert_eq!(key_spans.len(), 2, "{en}");
-    assert!(key_spans.iter().all(|span| {
-        span.style.fg == Some(app.theme.fg_tertiary)
-            && !span.style.add_modifier.contains(Modifier::BOLD)
-    }));
+    // No chord-looking spans remain anywhere in the chip row.
+    assert!(
+        en_line
+            .spans
+            .iter()
+            .all(|span| !span.content.contains('+')),
+        "{en}"
+    );
     let value_spans = en_line
         .spans
         .iter()
@@ -584,9 +580,6 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     assert!(value_spans
         .iter()
         .all(|span| span.style.fg == Some(app.theme.fg_tertiary)));
-    // Issue #77: the shortcut hints share the light tertiary tone of the
-    // mode labels and the composer stats dock readout (no brand accent).
-    assert_eq!(key_spans[0].style.fg, value_spans[0].style.fg);
 }
 
 #[test]

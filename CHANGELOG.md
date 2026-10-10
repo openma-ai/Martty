@@ -50,6 +50,10 @@ All notable changes to this project are documented here. The project follows
   are rewritten to `deepseek-flash` or `kimi-k2.6` when startup configuration
   is resolved. The same ids stay unchanged on routes whose catalogs still
   list them.
+- Remove the inline keyboard-shortcut hints glued to the composer footer
+  chips; the footer now shows only the current values (agent preset,
+  permission, approval, plan, model, effort). The bindings themselves are
+  unchanged and remain listed in `/keys` (#148).
 
 ## [0.3.1] - 2026-09-30
 

@@ -1884,16 +1884,16 @@ fn status_title(app: &App) -> Line<'static> {
     }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    let key_style = Style::default().fg(theme.fg_tertiary);
     // Mode chips: folded from the durable event stream (same facts as the
     // Web UI chips). Stock defaults render until the host reports its own
     // facts, so the landing screen still advertises preset + permission.
+    // Values only — the bindings live in /keys, not glued to the chips
+    // (issue #148).
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
         format!("· {}", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
-    spans.push(Span::styled(" ctrl+shift+a", key_style));
     let perm = app
         .modes
         .permission
@@ -1918,7 +1918,6 @@ fn status_title(app: &App) -> Line<'static> {
             theme.fg_tertiary
         }),
     ));
-    spans.push(Span::styled(" shift+tab", key_style));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
             format!(" · {approval}"),
