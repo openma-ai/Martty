@@ -3827,3 +3827,50 @@ fn every_frame_cell_has_a_painted_background() {
         }
     }
 }
+
+/// #149 regression: with colour output disabled, `CanvasBgSync` must not
+/// write any OSC sequence — the terminal's default fg draws on its default
+/// bg, and forcing a canvas bg (e.g. light-theme white) blanks the window.
+#[test]
+fn canvas_bg_sync_disabled_writes_nothing() {
+    let mut sync = CanvasBgSync::new(false);
+    let mut out = Vec::new();
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0xff, 0xff, 0xff))
+        .expect("sync");
+    sync.sync(&mut out, ratatui::style::Color::Reset).expect("sync");
+    assert!(out.is_empty(), "disabled sync must emit nothing");
+}
+
+#[test]
+fn canvas_bg_sync_emits_once_and_recovers_on_change() {
+    let mut sync = CanvasBgSync::new(true);
+    let mut out = Vec::new();
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0x0f, 0x11, 0x15))
+        .expect("sync");
+    assert_eq!(out, b"\x1b]11;#0f1115\x1b\\");
+    out.clear();
+    // Unchanged canvas colour: no re-emit.
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0x0f, 0x11, 0x15))
+        .expect("sync");
+    assert!(out.is_empty(), "unchanged colour must not re-emit");
+    // Change to Reset (kitty backdrop): emits the profile restore.
+    sync.sync(&mut out, ratatui::style::Color::Reset).expect("sync");
+    assert_eq!(out, b"\x1b]111\x1b\\");
+}
+
+/// Mirrors crossterm `Colored::ansi_color_disabled`: only a *non-empty*
+/// NO_COLOR suppresses colour output.
+#[test]
+fn ansi_color_disabled_matches_crossterm_semantics() {
+    let prev = std::env::var_os("NO_COLOR");
+    std::env::set_var("NO_COLOR", "1");
+    assert!(ansi_color_disabled());
+    std::env::set_var("NO_COLOR", "anything");
+    assert!(ansi_color_disabled());
+    std::env::set_var("NO_COLOR", "");
+    assert!(!ansi_color_disabled());
+    match prev {
+        Some(v) => std::env::set_var("NO_COLOR", v),
+        None => std::env::remove_var("NO_COLOR"),
+    }
+}

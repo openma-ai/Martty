@@ -4188,6 +4188,54 @@ fn shorten_home(path: &str) -> String {
 /// color via `OSC 11` makes those emulator-painted regions match.
 pub const OSC_BG_RESET: &str = "\x1b]111\x1b\\";
 
+/// Mirrors crossterm's `Colored::ansi_color_disabled`
+/// (<https://no-color.org/>): a non-empty `NO_COLOR` suppresses all ANSI
+/// colour output. The OSC background sync counts as colour output and
+/// must be suppressed too — with SGR colours off, the terminal's default
+/// fg draws on its default bg, so forcing the bg to the canvas colour
+/// (e.g. light theme's white) makes every glyph invisible on the
+/// same-coloured background (#149 regression: `NO_COLOR` + `--theme
+/// light` rendered a blank white window).
+pub fn ansi_color_disabled() -> bool {
+    !std::env::var("NO_COLOR").unwrap_or_default().is_empty()
+}
+
+/// Emits `OSC 11`/`OSC 111` when the canvas background changes, unless
+/// `NO_COLOR` disables colour output entirely. One instance lives in the
+/// run loop; `restore_terminal` always writes [`OSC_BG_RESET`] directly
+/// because it runs from exit paths (and the panic hook) that cannot reach
+/// this state — an idempotent restore is safe even when nothing was set.
+pub struct CanvasBgSync {
+    enabled: bool,
+    last: Option<ratatui::style::Color>,
+}
+
+impl CanvasBgSync {
+    /// `enabled=false` suppresses emission completely (used under
+    /// `NO_COLOR`; see [`ansi_color_disabled`]).
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last: None,
+        }
+    }
+
+    /// Write the background-sync sequence into `out` when `color` changed
+    /// since the previous call. Writes nothing when disabled or when the
+    /// canvas colour is unchanged.
+    pub fn sync<W: std::io::Write>(
+        &mut self,
+        out: &mut W,
+        color: ratatui::style::Color,
+    ) -> std::io::Result<()> {
+        if !self.enabled || self.last == Some(color) {
+            return Ok(());
+        }
+        self.last = Some(color);
+        out.write_all(canvas_bg_sequence(color).as_bytes())
+    }
+}
+
 /// The sequence setting the terminal default background to `color`
 /// (`OSC 11 ; #rrggbb`), or [`OSC_BG_RESET`] for `Color::Reset` — kitty
 /// backdrop sessions leave cells Reset so the emulator's own background
