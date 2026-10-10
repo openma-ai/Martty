@@ -173,15 +173,8 @@ pub fn unsupported_auth_method_types(auth_methods: &Value) -> Vec<String> {
     out
 }
 
-pub fn select_auth_method<'a>(
-    methods: &'a [AuthMethodInfo],
-    method_id: Option<&str>,
-) -> Option<&'a AuthMethodInfo> {
-    match method_id {
-        Some(id) if !id.is_empty() => methods.iter().find(|m| m.id == id),
-        _ => methods.first(),
-    }
-}
+// Deliberately no `select first method` fallback: issue #160 requires the
+// user to pick a method explicitly, so a request always names its method.
 
 pub fn snapshot_from_methods(
     methods: Vec<AuthMethodInfo>,
@@ -223,6 +216,16 @@ pub fn snapshot_from_methods(
     }
     if method.form {
         return needs_auth_snapshot(methods, Some(&method), None);
+    }
+    if method.terminal_launch.is_some() {
+        // A terminal-first agent (pi-acp advertises 20 methods, the first a
+        // terminal login) must still surface a visible sign-in-needed state —
+        // Unknown with no message looked like a ready client (issue #160).
+        return needs_auth_snapshot(
+            methods,
+            Some(&method),
+            Some("terminal sign-in needed — pick a method to continue".into()),
+        );
     }
     AuthSnapshot {
         status: AuthStatus::Unknown,
@@ -303,26 +306,6 @@ pub fn authenticate_meta_from_method(
     let mut meta = Map::new();
     meta.insert("api-key".into(), json!({ "apiKey": secret }));
     Some(meta)
-}
-
-pub fn values_from_auth_arg(method: &AuthMethodInfo, arg: &str) -> BTreeMap<String, String> {
-    let mut values = BTreeMap::new();
-    let arg = arg.trim();
-    if arg.is_empty() {
-        return values;
-    }
-    if method.vars.iter().any(|v| v.name == "baseUrl") {
-        let mut parts = arg.splitn(2, char::is_whitespace);
-        if let Some(url) = parts.next() {
-            values.insert("baseUrl".into(), url.to_string());
-        }
-        if let Some(key) = parts.next().map(str::trim).filter(|s| !s.is_empty()) {
-            values.insert("api-key".into(), key.to_string());
-        }
-        return values;
-    }
-    values.insert("api-key".into(), arg.to_string());
-    values
 }
 
 pub fn is_auth_required_error(err: &AcpError) -> bool {
@@ -425,18 +408,18 @@ fn needs_auth_notice(snapshot: &AuthSnapshot, locale: crate::locale::Locale) -> 
         }
         if method.form {
             lines.push(locale.tr(
-                "  /auth <api-key>  submits through ACP authenticate (martty does not keep it)",
-                "  /auth <api-key>  通过 ACP authenticate 提交（martty 不保存密钥）",
+                "  pick it in the auth picker — a masked field submits through ACP authenticate (martty does not keep it)",
+                "  在登录选择器中选择该项 —— 掩码输入通过 ACP authenticate 提交（martty 不保存密钥）",
             ).into());
         } else if method.terminal_launch.is_some() {
             lines.push(locale.tr(
-                "  /auth  runs the agent's terminal login, then ACP authenticate",
-                "  /auth  运行 Agent 的终端登录，然后 ACP authenticate",
+                "  pick it in the auth picker to run terminal sign-in, then Martty reconnects",
+                "  在登录选择器中选择该项进行终端登录，完成后 Martty 自动重连",
             ).into());
         } else {
             lines.push(locale.tr(
-                "  /auth  retries ACP authenticate after out-of-band login",
-                "  /auth  在外部登录后重试 ACP authenticate",
+                "  pick it in the auth picker to retry ACP authenticate",
+                "  在登录选择器中选择该项重试 ACP authenticate",
             ).into());
         }
         if let Some(link) = &method.link {
@@ -618,24 +601,12 @@ fn terminal_auth_from_method(
         .cloned()
         .unwrap_or_else(|| "dsh-acp".into());
     if let Some(block) = terminal_auth_block(method) {
-        let command = block
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| agent_command.clone());
-        let mut args = string_array(block.get("args"));
-        if block
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .is_none()
-            && agent_argv.len() > 1
-        {
-            let mut prefixed = agent_argv[1..].to_vec();
-            prefixed.extend(args);
-            args = prefixed;
-        }
+        // The spec pins the launch to the client's own configured agent
+        // command: only the method's args/env may come from the agent. An
+        // agent-supplied `_meta["terminal-auth"].command` is ignored so an
+        // agent can never make the client run an arbitrary binary (#160).
+        let mut args = agent_argv[1..].to_vec();
+        args.extend(string_array(block.get("args")));
         let mut merged = env.clone();
         merged.extend(string_record(block.get("env")));
         return Some(TerminalAuthLaunch {
@@ -645,7 +616,7 @@ fn terminal_auth_from_method(
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&label)
                 .to_string(),
-            command,
+            command: agent_command.to_string(),
             args,
             env: merged,
             cwd: Some(cwd.to_string()),
@@ -656,18 +627,15 @@ fn terminal_auth_from_method(
         return None;
     }
     let meta = auth_method_meta(method);
-    let command = meta
-        .and_then(|m| m.get("command"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or(agent_command);
+    let command = agent_command;
     let meta_args = string_array(meta.and_then(|m| m.get("args")));
-    let args = if !meta_args.is_empty() {
+    let method_args = if !meta_args.is_empty() {
         meta_args
     } else {
         string_array(method.get("args"))
     };
+    let mut args = agent_argv[1..].to_vec();
+    args.extend(method_args);
     let mut merged = env.clone();
     merged.extend(string_record(method.get("env")));
     merged.extend(string_record(meta.and_then(|m| m.get("env"))));

@@ -20,9 +20,9 @@ use agent_client_protocol::schema::v1::{
     ClientSessionCapabilities, ContentBlock, CreateElicitationRequest, CreateElicitationResponse,
     CreateTerminalRequest, CreateTerminalResponse, ElicitationAcceptAction, ElicitationAction,
     ElicitationCapabilities, ElicitationContentValue, ElicitationFormCapabilities,
-    ElicitationScope,
+    ElicitationScope, ElicitationUrlCapabilities,
     FileSystemCapabilities, ImageContent, Implementation, InitializeRequest, KillTerminalRequest,
-    KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, NewSessionRequest,
+    KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, LogoutRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResourceLink, ResumeSessionRequest,
@@ -41,7 +41,7 @@ use agent_client_protocol::{
 use crate::acp_auth::{
     acp_error_message, authenticate_meta_from_method, configured_snapshot, declared_auth_methods,
     is_auth_required_error, needs_auth_snapshot, parse_auth_methods, process_env,
-    select_auth_method, snapshot_from_methods, AuthMethodInfo, AuthSnapshot, AuthStatus,
+    snapshot_from_methods, AuthMethodInfo, AuthSnapshot, AuthStatus,
 };
 use crate::bus::{
     permission_ask_empty_outcome, AppEvent, CatalogPreset, Cmd, CordisPluginItem, CtlEvent,
@@ -286,7 +286,11 @@ pub(crate) fn initialize_request() -> InitializeRequest {
                         .meta(crate::acp_auth::auth_capability_meta()),
                 )
                 .elicitation(
-                    ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()),
+                    ElicitationCapabilities::new()
+                        .form(ElicitationFormCapabilities::new())
+                        // URL mode is handled: the overlay shows the link so
+                        // the user opens it manually (works headless/SSH).
+                        .url(ElicitationUrlCapabilities::new()),
                 )
                 .meta(crate::acp_auth::client_capability_meta()),
         )
@@ -608,9 +612,9 @@ fn begin_prompt(
     cx: &ConnectionTo<Agent>,
     bus: &Sender<AppEvent>,
     session_id: &Option<SessionId>,
-    parked: &mut VecDeque<ParkedPrompt>,
-    methods: &[AuthMethodInfo],
-    selected: Option<&AuthMethodInfo>,
+    _parked: &mut VecDeque<ParkedPrompt>,
+    _methods: &[AuthMethodInfo],
+    _selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
     gen: u64,
@@ -618,19 +622,7 @@ fn begin_prompt(
 ) -> Option<tokio::task::JoinHandle<()>> {
     match cmd {
         Cmd::Prompt { text, .. } => {
-            let Some(sid) = session_id.clone() else {
-                parked.push_back(ParkedPrompt {
-                    session: None,
-                    kind: ParkedPromptKind::Text(text),
-                });
-                emit_needs_auth_open(
-                    bus,
-                    methods.to_vec(),
-                    selected,
-                    Some(no_session().to_string()),
-                );
-                return None;
-            };
+            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
             Some(spawn_session_prompt(
                 cx.clone(),
                 bus.clone(),
@@ -642,19 +634,7 @@ fn begin_prompt(
             ))
         }
         Cmd::Steer { text, .. } => {
-            let Some(sid) = session_id.clone() else {
-                parked.push_back(ParkedPrompt {
-                    session: None,
-                    kind: ParkedPromptKind::Text(text),
-                });
-                emit_needs_auth_open(
-                    bus,
-                    methods.to_vec(),
-                    selected,
-                    Some(no_session().to_string()),
-                );
-                return None;
-            };
+            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
             Some(spawn_session_prompt(
                 cx.clone(),
                 bus.clone(),
@@ -666,19 +646,7 @@ fn begin_prompt(
             ))
         }
         Cmd::PromptImages { blocks, .. } => {
-            let Some(sid) = session_id.clone() else {
-                parked.push_back(ParkedPrompt {
-                    session: None,
-                    kind: ParkedPromptKind::Images(blocks),
-                });
-                emit_needs_auth_open(
-                    bus,
-                    methods.to_vec(),
-                    selected,
-                    Some(no_session().to_string()),
-                );
-                return None;
-            };
+            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
             let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
@@ -713,19 +681,7 @@ fn begin_prompt(
             }
         }
         Cmd::SteerImages { blocks, .. } => {
-            let Some(sid) = session_id.clone() else {
-                parked.push_back(ParkedPrompt {
-                    session: None,
-                    kind: ParkedPromptKind::Images(blocks),
-                });
-                emit_needs_auth_open(
-                    bus,
-                    methods.to_vec(),
-                    selected,
-                    Some(no_session().to_string()),
-                );
-                return None;
-            };
+            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
             let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
@@ -980,6 +936,24 @@ fn emit_open_auth_if_needed(bus: &Sender<AppEvent>, status: AuthStatus) {
     if status == AuthStatus::NeedsAuth {
         let _ = bus.send(AppEvent::Ctl(CtlEvent::OpenAuth));
     }
+}
+
+/// Queue a prompt-like command for the first session that binds. When the
+/// queue is growing *because* sign-in is still pending, the hold must be
+/// visible — a typed `/login` or prompt is never silently swallowed: the
+/// auth UI comes back up so the user sees what is holding the input (#160).
+fn queue_connection_prompt(
+    pending: &mut VecDeque<Cmd>,
+    cmd: Cmd,
+    session_auth_pending: bool,
+    bus: &Sender<AppEvent>,
+    methods: &[AuthMethodInfo],
+    selected: Option<&AuthMethodInfo>,
+) {
+    if session_auth_pending {
+        emit_needs_auth_open(bus, methods.to_vec(), selected, None);
+    }
+    pending.push_back(cmd);
 }
 
 fn parked_prompt(cmd: &Cmd) -> Option<ParkedPromptKind> {
@@ -1297,10 +1271,6 @@ fn resume_session_request(
     request
 }
 
-fn no_session() -> AcpError {
-    AcpError::new(-32000, "sign in first — /auth")
-}
-
 fn prompt_image_supported(init: &Value) -> bool {
     let caps = init
         .get("agentCapabilities")
@@ -1452,24 +1422,111 @@ fn unix_stream_from_file(file: std::fs::File) -> Result<tokio::net::UnixStream> 
     tokio::net::UnixStream::from_std(std).context("attach fd as unix stream")
 }
 
+/// Prompt-like work that must survive a respawn of the agent transport:
+/// prompts queued before the first session bound (`pending`) and prompts
+/// parked on an auth stall (`parked`) carry across the reconnect so a
+/// terminal sign-in does not silently drop user input (#160).
+struct ConnectCarry {
+    fwd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    pending: VecDeque<Cmd>,
+    parked: VecDeque<ParkedPrompt>,
+    session_auth_pending: bool,
+}
+
+impl ConnectCarry {
+    fn new(fwd_rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>) -> Self {
+        Self {
+            fwd_rx,
+            pending: VecDeque::new(),
+            parked: VecDeque::new(),
+            session_auth_pending: false,
+        }
+    }
+}
+
+enum ConnectOutcome {
+    /// The command channel closed or `Cmd::Shutdown` arrived — the run ends.
+    Closed,
+    /// Terminal sign-in succeeded on the TTY: the transport was dropped and
+    /// the agent must be respawned and re-`initialize`d.
+    Reconnect(ConnectCarry),
+}
+
+/// Bridge the blocking std-mpsc command channel onto an unbounded tokio
+/// receiver so `connect` can `select!` it. The forwarder thread ends when
+/// the channel closes or the receiver goes away.
+fn spawn_cmd_bridge(cmd_rx: Receiver<Cmd>) -> tokio::sync::mpsc::UnboundedReceiver<Cmd> {
+    let (fwd_tx, fwd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+    std::thread::Builder::new()
+        .name("dsh-acp-cmds".into())
+        .spawn(move || {
+            // The closure owns the sender: the channel lives as long as the
+            // bridge does, and ends when `cmd_rx` closes or the last
+            // receiver goes away.
+            while let Ok(cmd) = cmd_rx.recv() {
+                if fwd_tx.send(cmd).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn dsh-acp-cmds");
+    fwd_rx
+}
+
+/// A single `connect` pass for callers that own no respawn path — unit
+/// tests and the attach transports: the command channel is bridged in
+/// here, `can_reconnect` is off (a host-owned stream cannot be respawned),
+/// and the outcome collapses to `()`. A `Cmd::AgentReconnect` there retries
+/// `session/new` in place (issue #160).
+#[cfg(test)]
+async fn connect_once<T>(
+    transport: T,
+    cfg: RuntimeConfig,
+    bus: Sender<AppEvent>,
+    cmd_rx: Receiver<Cmd>,
+) -> std::result::Result<(), AcpError>
+where
+    T: ConnectTo<Client> + 'static,
+{
+    let fwd_rx = spawn_cmd_bridge(cmd_rx);
+    connect(transport, cfg, bus, ConnectCarry::new(fwd_rx), false)
+        .await
+        .map(|_| ())
+}
+
 async fn run(
     cfg: RuntimeConfig,
     endpoint: AcpEndpoint,
     bus: Sender<AppEvent>,
     cmd_rx: Receiver<Cmd>,
 ) -> Result<()> {
+    // UI → ACP forwarding lives one level above `connect` so the channel
+    // survives agent respawns (terminal sign-in drops the transport).
+    let fwd_rx = spawn_cmd_bridge(cmd_rx);
     match endpoint {
         AcpEndpoint::Spawn(args) => {
-            let agent = AcpAgent::from_args(args).map_err(acp_err)?;
-            connect(agent, cfg, bus, cmd_rx).await.map_err(acp_err)
+            spawn_agent_loop(
+                move || AcpAgent::from_args(args.clone()),
+                cfg,
+                bus,
+                ConnectCarry::new(fwd_rx),
+            )
+            .await
         }
         #[cfg(unix)]
         AcpEndpoint::AttachStdio { incoming, outgoing } => {
             let incoming = unix_stream_from_file(incoming)?.compat();
             let outgoing = unix_stream_from_file(outgoing)?.compat_write();
-            connect(ByteStreams::new(outgoing, incoming), cfg, bus, cmd_rx)
-                .await
-                .map_err(acp_err)
+            connect(
+                ByteStreams::new(outgoing, incoming),
+                cfg,
+                bus,
+                ConnectCarry::new(fwd_rx),
+                false,
+            )
+            .await
+            .map_err(acp_err)
+            .map(|_| ())
         }
         #[cfg(not(unix))]
         AcpEndpoint::AttachStdio { .. } => {
@@ -1485,10 +1542,38 @@ async fn run(
                 ByteStreams::new(write.compat_write(), read.compat()),
                 cfg,
                 bus,
-                cmd_rx,
+                ConnectCarry::new(fwd_rx),
+                false,
             )
             .await
             .map_err(acp_err)
+            .map(|_| ())
+        }
+    }
+}
+
+/// The spawn endpoint's connect → reconnect loop: each iteration drops
+/// the previous transport (killing the spawned agent) and runs a fresh
+/// `initialize`. Queued and parked prompts survive inside `carry` across
+/// respawns (issue #160 — terminal sign-in is exactly one `Reconnect`).
+async fn spawn_agent_loop<T, F>(
+    mut make_agent: F,
+    cfg: RuntimeConfig,
+    bus: Sender<AppEvent>,
+    mut carry: ConnectCarry,
+) -> Result<()>
+where
+    T: ConnectTo<Client> + 'static,
+    F: FnMut() -> std::result::Result<T, AcpError>,
+{
+    loop {
+        let agent = make_agent().map_err(acp_err)?;
+        match connect(agent, cfg.clone(), bus.clone(), carry, true)
+            .await
+            .map_err(acp_err)?
+        {
+            ConnectOutcome::Closed => return Ok(()),
+            ConnectOutcome::Reconnect(next) => carry = next,
         }
     }
 }
@@ -1720,8 +1805,9 @@ async fn connect<T>(
     transport: T,
     cfg: RuntimeConfig,
     bus: Sender<AppEvent>,
-    cmd_rx: Receiver<Cmd>,
-) -> std::result::Result<(), AcpError>
+    carry: ConnectCarry,
+    can_reconnect: bool,
+) -> std::result::Result<ConnectOutcome, AcpError>
 where
     T: ConnectTo<Client> + 'static,
 {
@@ -2250,6 +2336,12 @@ where
             let cfg = cfg;
             let _terms = terms;
             async move {
+                let ConnectCarry {
+                    mut fwd_rx,
+                    mut pending,
+                    mut parked,
+                    mut session_auth_pending,
+                } = carry;
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
                 }));
@@ -2282,6 +2374,10 @@ where
                 let additional_directories = additional_directories_supported(&init_value);
                 let fork_session = fork_session_supported(&init_value);
                 let close_session = close_session_supported(&init_value);
+                let auth_logout = init.agent_capabilities.auth.logout.is_some()
+                    || init_value
+                        .pointer("/agentCapabilities/auth/logout")
+                        .is_some_and(Value::is_object);
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
                     load_session,
                     list_session,
@@ -2289,6 +2385,7 @@ where
                     fork_session,
                     close_session,
                     additional_directories,
+                    auth_logout,
                 }));
                 let auth_raw = init_value
                     .get("authMethods")
@@ -2319,16 +2416,13 @@ where
                 let needs_open = auth.status == AuthStatus::NeedsAuth;
                 emit_auth(&bus, auth);
                 emit_open_auth_if_needed(&bus, if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None });
-                let mut session_auth_pending = false;
                 // One stdio connection drives many sessions: each bound id
                 // gets its own turn state, and `current` is only the fallback
                 // target for commands that arrive without a usable id.
                 let mut sessions = HashMap::<String, SessionHandle>::new();
                 let mut current: Option<SessionId> = None;
-                // Prompt-like commands that arrived before the first session
-                // existed (sign-in still pending). They adopt the first bound
-                // session, in arrival order behind the parked intent.
-                let mut pending = VecDeque::<Cmd>::new();
+                // `pending` / `parked` / `session_auth_pending` came in via
+                // `ConnectCarry` and survive a transport respawn.
                 let mut setup_failed = false;
                 match create_prompt_session(
                     &cx,
@@ -2356,20 +2450,6 @@ where
                 if !setup_failed {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
                 }
-                let mut parked: VecDeque<ParkedPrompt> = VecDeque::new();
-
-                let (fwd_tx, mut fwd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
-                std::thread::Builder::new()
-                    .name("dsh-acp-cmds".into())
-                    .spawn(move || {
-                        while let Ok(cmd) = cmd_rx.recv() {
-                            if fwd_tx.send(cmd).is_err() {
-                                break;
-                            }
-                        }
-                    })
-                    .map_err(|err| AcpError::new(-32603, err.to_string()))?;
-
                 let (prompt_done_tx, mut prompt_done_rx) =
                     tokio::sync::mpsc::unbounded_channel::<PromptFinish>();
                 let (steer_done_tx, mut steer_done_rx) =
@@ -2499,7 +2579,10 @@ where
                                         .map(|task| (prompt_gen, task));
                                     }
                                 }
-                                Ok(None) => pending.push_back(next),
+                                Ok(None) => {
+                                    queue_connection_prompt(&mut pending, next, session_auth_pending,
+                                        &bus, &methods, selected.as_ref());
+                                }
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
                                     session_id: cmd_session.clone(),
@@ -2604,7 +2687,10 @@ where
                                         .map(|task| (prompt_gen, task));
                                     }
                                 }
-                                Ok(None) => pending.push_back(next),
+                                Ok(None) => {
+                                    queue_connection_prompt(&mut pending, next, session_auth_pending,
+                                        &bus, &methods, selected.as_ref());
+                                }
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
                                     session_id: cmd_session.clone(),
@@ -2931,6 +3017,48 @@ where
                                     .map(|id| SessionId::new(id.clone()));
                             }
                         }
+                        Cmd::AgentReconnect => {
+                            if can_reconnect {
+                                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
+                                    "terminal sign-in finished — restarting the agent…".into(),
+                                )));
+                                return Ok(ConnectOutcome::Reconnect(ConnectCarry {
+                                    fwd_rx,
+                                    pending,
+                                    parked,
+                                    session_auth_pending: false,
+                                }));
+                            }
+                            // A host-owned stream cannot be respawned: retry
+                            // session/new in place — the agent may already
+                            // accept the freshly written credentials. Whatever
+                            // it answers stays visible (#160).
+                            match create_prompt_session(
+                                &cx,
+                                &cwd,
+                                &surface,
+                                &bus,
+                                &methods,
+                                selected.as_ref(),
+                                additional_directories,
+                                &cfg.additional_directories,
+                            )
+                            .await
+                            {
+                                Ok(Some(sid)) => {
+                                    bind_session(&mut sessions, &mut current, &mut pending, sid);
+                                    session_auth_pending = false;
+                                }
+                                Ok(None) => {
+                                    session_auth_pending = true;
+                                }
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                        format!("session/new after terminal sign-in: {err}"),
+                                    )));
+                                }
+                            }
+                        }
                         Cmd::Shutdown => break,
                         control => {
                             let mut control = control;
@@ -3095,6 +3223,25 @@ where
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!("authenticate: {}", acp_error_message(&err)))));
                                     }
                                 },
+                                Some(ControlFinish::LoggedOut { result }) => match result {
+                                    Ok(()) => {
+                                        selected = None;
+                                        emit_method_auth(&bus, &surface, needs_auth_snapshot(
+                                            methods.clone(),
+                                            None,
+                                            Some("signed out — pick a method to sign in again".into()),
+                                        ));
+                                        // The picker reopens so the user can
+                                        // switch to another method/account.
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::OpenAuth));
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone("signed out".into())));
+                                    }
+                                    Err(err) => {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                                            "logout: {}", acp_error_message(&err)
+                                        ))));
+                                    }
+                                },
                                 None => {}
                             }
                             if active_plugin_operation.is_none() { drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked, &methods,
@@ -3240,11 +3387,10 @@ where
                             &mut prompt_gen, &prompt_done_tx);
                     }
                 }
-                Ok(())
+                Ok(ConnectOutcome::Closed)
             }
         })
         .await
-        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -3258,3 +3404,7 @@ mod additional_directories_tests;
 #[cfg(test)]
 #[path = "../tests/unit/acp__fork_tests.rs"]
 mod fork_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/acp__reconnect_tests.rs"]
+mod reconnect_tests;

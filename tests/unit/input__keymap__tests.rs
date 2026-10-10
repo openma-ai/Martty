@@ -323,6 +323,7 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::CopySelection,
         Action::CutSelection,
         Action::CloseSession,
+        Action::OpenAuth,
     ];
     let documented: Vec<Action> = KEY_ROWS.iter().map(|row| row.action).collect();
     assert_eq!(
@@ -470,4 +471,13 @@ fn keys_markdown_lists_ctrl_j_and_the_composer_section() {
     let zh = crate::input::keymap::keys_markdown(true, false);
     assert!(zh.contains("ctrl+j"), "zh keys must list ctrl+j");
     assert!(zh.contains("输入框 · textarea"), "zh section title");
+}
+
+#[test]
+fn ctrl_shift_l_classifies_as_open_auth() {
+    let key = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(
+        classify(&key, crate::input::keymap::KeyCtx::default()),
+        Some(crate::input::keymap::Action::OpenAuth)
+    );
 }

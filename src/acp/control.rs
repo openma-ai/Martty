@@ -16,6 +16,10 @@ pub(super) enum ControlFinish {
         method: AuthMethodInfo,
         result: Result<(), AcpError>,
     },
+    /// ACP `logout` / `auth/logout` completed (ok or agent error).
+    LoggedOut {
+        result: Result<(), AcpError>,
+    },
 }
 
 type ControlJob = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -75,7 +79,7 @@ impl ControlWorkers {
             | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. }
             | Cmd::SetConfigOption { session_id, .. } => format!("config:{session_id}"),
-            Cmd::Authenticate { .. } => "auth".to_string(),
+            Cmd::Authenticate { .. } | Cmd::Logout => "auth".to_string(),
             _ => "client".to_string(),
         };
         let session = lane.strip_prefix("config:").map(str::to_string);
@@ -608,8 +612,12 @@ async fn run_control(
             }
         }
         Cmd::Authenticate { method_id, values } => {
-            let method = select_auth_method(&methods, Some(&method_id))
-                .or_else(|| select_auth_method(&methods, None))
+            // The picker always names the method the user selected — never
+            // fall back to the first advertised method, or a submitted key
+            // would silently land on a method it was not meant for (#160).
+            let method = methods
+                .iter()
+                .find(|method| method.id == method_id)
                 .cloned();
             let Some(method) = method else {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
@@ -621,6 +629,15 @@ async fn run_control(
                 )));
                 return;
             };
+            if method.terminal_launch.is_some() {
+                // Terminal methods are never sent to `authenticate`: the TTY
+                // launch plus reconnect+re-initialize is the whole flow.
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                    "ACP auth method {} is a terminal sign-in — it cannot be completed through authenticate",
+                    method.id
+                ))));
+                return;
+            }
             if method.is_env_prompt() {
                 let vars = method
                     .vars
@@ -645,8 +662,7 @@ async fn run_control(
             }
             if method.form && authenticate_meta_from_method(&method, &values).is_none() {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                    "sign-in needs values — /auth <api-key> (gateway: /auth <base-url> <api-key>)"
-                        .into(),
+                    "sign-in needs values — enter them in the auth form".into(),
                 )));
                 return;
             }
@@ -659,6 +675,14 @@ async fn run_control(
             emit_method_auth(&bus, &surface, signing_in);
             let result = cx.send_request(req).block_task_setup_deadline().await.map(|_| ());
             let _ = done.send(ControlFinish::Authenticated { method, result });
+        }
+        Cmd::Logout => {
+            let result = cx
+                .send_request(LogoutRequest::new())
+                .block_task_setup_deadline()
+                .await
+                .map(|_| ());
+            let _ = done.send(ControlFinish::LoggedOut { result });
         }
         Cmd::NewSession { .. } => {
             let mut request = new_session_request(&cwd, additional_directories, &directories);

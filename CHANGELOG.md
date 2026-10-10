@@ -76,6 +76,27 @@ All notable changes to this project are documented here. The project follows
   `edit queue`, and the slash/shell/modal hints are no longer advertised
   there. The bindings themselves are unchanged and remain listed in
   `/keys` (#148).
+- Rework ACP auth around the agent's `initialize.authMethods` and the ACP
+  `logout` method (issue #160). **Behaviour change:** the client-side
+  `/auth` command is removed — Martty has no client auth slash commands;
+  every slash command is the agent's and passes through exactly as
+  advertised in `availableCommands`. Authentication happens in the auth
+  picker, opened on a `-32000` auth-required reply or with `ctrl+shift+l`.
+  Each api-key method gets its own masked secret field (never sent to a
+  different method), gateway methods collect base URL + key + optional
+  provider name, env-var methods are reported rather than started, and
+  terminal methods run a spec-compliant Terminal Auth: the TUI leaves the
+  screen, runs the client's own configured agent argv with the method's
+  args/env, and on exit 0 respawns the agent and re-runs `initialize` —
+  terminal methods are never sent to `authenticate`. When the agent
+  declares `agentCapabilities.auth.logout`, the picker gains a
+  "Log out / switch method" row that calls the ACP `logout` method and
+  re-opens the picker; agents that do not declare it get no logout row.
+  URL-mode elicitations are now declared and rendered inline (the link is
+  shown, not opened, so it is safe on headless/SSH sessions). Auth and
+  reconnect failures are visible notices — nothing typed while signed
+  out is silently queued or sent as a substitute credential.
+
 
 ### Fixed
 

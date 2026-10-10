@@ -149,11 +149,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "switch agent preset · ctrl+shift+a",
     },
     SlashCommand {
-        name: "auth",
-        usage: "/auth [method|api-key]",
-        desc: "ACP sign-in (Backchat authenticate)",
-    },
-    SlashCommand {
         name: "clear",
         usage: "/clear",
         desc: "clear the scrollback",
@@ -1014,6 +1009,34 @@ impl Drop for ElicitationAskOverlay {
     }
 }
 
+/// The in-app credential form behind the auth picker (api-key and gateway
+/// methods). It reuses the elicitation form editor — secret vars echo as
+/// bullets. `method_id` pins the reply to the row the user picked, so a
+/// key can never be sent to a different method (issue #160).
+pub struct AuthFormOverlay {
+    pub method_id: String,
+    pub form: crate::elicitation::ElicitationFormState,
+}
+
+/// Sentinel picker row id for the ACP `logout` action — impossible to
+/// collide with an agent-advertised method id (issue #160).
+const AUTH_LOGOUT_ID: &str = "martty:logout";
+
+/// Values collected from the credential form for one `authenticate` call.
+/// Auth vars are always Text fields → `ElicitationValue::String`; any
+/// other variant is dropped rather than coerced into a secret (#160).
+fn auth_values_from_reply(
+    values: std::collections::BTreeMap<String, crate::elicitation::ElicitationValue>,
+) -> std::collections::BTreeMap<String, String> {
+    values
+        .into_iter()
+        .filter_map(|(name, value)| match value {
+            crate::elicitation::ElicitationValue::String(text) => Some((name, text)),
+            _ => None,
+        })
+        .collect()
+}
+
 impl Drop for PermissionAskOverlay {
     fn drop(&mut self) {
         if let Some(reply) = self.reply.take() {
@@ -1577,6 +1600,12 @@ pub struct App {
     pub auth: crate::acp_auth::AuthSnapshot,
     /// Leave the TUI and run this agent login, then `authenticate`.
     pending_terminal_auth: Option<crate::acp_auth::TerminalAuthLaunch>,
+    /// The agent declared `agentCapabilities.auth.logout` in initialize —
+    /// the auth picker may then offer logout / switch (issue #160).
+    agent_auth_logout: bool,
+    /// Masked credential form opened by the auth picker for api-key and
+    /// gateway methods (issue #160).
+    pub auth_form: Option<AuthFormOverlay>,
     pub quit: bool,
     /// Escape suppresses slash recommendations for the current draft without
     /// deleting it. Text edits or an explicit Tab completion reopen them.
@@ -2021,6 +2050,8 @@ impl App {
             startup_bound: demo,
             auth: crate::acp_auth::AuthSnapshot::none(),
             pending_terminal_auth: None,
+            agent_auth_logout: false,
+            auth_form: None,
             quit: false,
             slash_completion_dismissed: false,
             queued: 0,
@@ -3176,8 +3207,7 @@ impl App {
             .skills
             .iter()
             .filter(|s| {
-                !s.name.eq_ignore_ascii_case("logout")
-                    && s.name.starts_with(prefix)
+                s.name.starts_with(prefix)
                     && !self.plugin_command_active(&s.name)
                     && !(s.client_command && builtin_slash_name(&s.name))
             })
@@ -3511,18 +3541,6 @@ impl App {
                         plugin.id.clone(),
                         plugin.label.clone(),
                         format!("{} · {}", plugin.source, plugin.status),
-                    )
-                })
-                .collect(),
-            "auth" => self
-                .auth
-                .methods
-                .iter()
-                .map(|method| {
-                    (
-                        method.id.clone(),
-                        method.name.clone().unwrap_or_else(|| method.id.clone()),
-                        method.description.clone().unwrap_or_default(),
                     )
                 })
                 .collect(),
@@ -4527,8 +4545,8 @@ impl App {
                             self.open_text_overlay("builtin.auth.failure",
                                 self.locale.tr("Sign-in failed", "登录失败").into(),
                                 format!("{}\n\n{}", snap.message.as_deref().unwrap_or("ACP authenticate failed"),
-                                    self.locale.tr("Close this panel, then use /auth to retry or choose another method. Browser authorization alone does not mean the Agent accepted sign-in.",
-                                        "关闭面板后可用 /auth 重试或选择其他方式。浏览器授权完成不代表 Agent 已接受登录。")));
+                                    self.locale.tr("Close this panel, then pick a method again (ctrl+shift+l). Browser authorization alone does not mean the Agent accepted sign-in.",
+                                        "关闭面板后用 ctrl+shift+l 重新选择登录方式。浏览器授权完成不代表 Agent 已接受登录。")));
                         }
                         self.auth = snap;
                     }
@@ -4542,7 +4560,9 @@ impl App {
                         fork_session,
                         close_session,
                         additional_directories,
+                        auth_logout,
                     } => {
+                        self.agent_auth_logout = auth_logout;
                         self.load_session = load_session;
                         self.list_session = list_session;
                         self.resume_session_cap = resume_session;
@@ -6203,6 +6223,13 @@ impl App {
             return;
         }
 
+        // The auth credential form shares the elicitation editor and its
+        // modal level — a typed key is always in a masked field context.
+        if self.auth_form.is_some() {
+            self.handle_auth_form_key(key, ctl);
+            return;
+        }
+
         // ACP tool permission sits above session pickers (Backchat ask panel).
         if self.permission_ask.is_some() {
             self.handle_permission_ask_key(key);
@@ -6283,6 +6310,7 @@ impl App {
         // modal above (see the note at the top of this function).
         if self.vim.is_active()
             && self.elicitation_ask.is_none()
+            && self.auth_form.is_none()
             && self.queue_edit.is_none()
             && !self.slash_completion_open()
         {
@@ -6678,6 +6706,7 @@ impl App {
             Action::AttachClipboard => self.clip_image("", ctl),
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
+            Action::OpenAuth => self.open_auth_surface(ctl),
             Action::CyclePermission => self.cycle_permission(ctl),
             Action::ComposerGrow => self.resize_composer_step(1),
             Action::ComposerShrink => self.resize_composer_step(-1),
@@ -8812,7 +8841,6 @@ impl App {
                 )),
             },
             "status" => self.push_status_info(),
-            "auth" => self.start_auth(arg, ctl),
             "resume" => {
                 // `/resume [n|id]` — a bare number is how many of the most
                 // recent durable sessions to list (default 50); anything
@@ -8916,11 +8944,31 @@ impl App {
     }
 
     /// Take a pending Terminal Auth launch so the main loop can leave the TUI.
+    /// The picker that started it is already answered — close it so the
+    /// resumed frame reflects the reconnect outcome, not a stale row.
     pub fn take_terminal_auth(&mut self) -> Option<crate::acp_auth::TerminalAuthLaunch> {
+        if self.pending_terminal_auth.is_some() {
+            self.picker = None;
+        }
         self.pending_terminal_auth.take()
     }
 
-    fn open_auth_surface(&mut self, ctl: &Controller) {
+    /// A TTY sign-in launch just returned (issue #160): exit 0 means the
+    /// agent may hold fresh credentials — respawn it and re-run
+    /// `initialize` (never `authenticate` for a terminal method). A
+    /// non-zero exit is a visible error and the picker reopens so the
+    /// user can retry or pick a different method.
+    pub fn finish_terminal_auth(&mut self, result: Result<(), String>, ctl: &Controller) {
+        match result {
+            Ok(()) => ctl.send(Cmd::AgentReconnect),
+            Err(err) => {
+                self.transcript.push_notice(NoticeLevel::Error, err);
+                self.open_auth_surface(ctl);
+            }
+        }
+    }
+
+    pub(crate) fn open_auth_surface(&mut self, _ctl: &Controller) {
         if self.demo {
             return;
         }
@@ -8933,8 +8981,11 @@ impl App {
         self.state = RunState::Idle;
         self.run_started = None;
         self.state_note.clear();
-        self.show_tip(self.locale.tr("sign-in needed — /auth to retry", "需要登录 —— /auth 重试"));
-        self.start_auth("", ctl);
+        self.show_tip(self.locale.tr(
+            "pick an auth method (ctrl+shift+l reopens this)",
+            "请选择登录方式（ctrl+shift+l 重新打开）",
+        ));
+        self.open_auth_picker();
     }
 
     fn open_auth_picker(&mut self) {
@@ -8949,6 +9000,18 @@ impl App {
                 provider: None,
             })
             .collect();
+        let mut items = items;
+        if self.agent_auth_logout {
+            items.push(PickerItem {
+                id: AUTH_LOGOUT_ID.into(),
+                label: self
+                    .locale
+                    .tr("Log out / switch method", "登出 / 切换登录方式")
+                    .into(),
+                meta: "logout".into(),
+                provider: None,
+            });
+        }
         if items.is_empty() {
             return;
         }
@@ -8972,10 +9035,13 @@ impl App {
         });
     }
 
-    fn start_auth(&mut self, arg: &str, ctl: &Controller) {
-        use crate::acp_auth::{
-            authenticate_meta_from_method, select_auth_method, values_from_auth_arg,
-        };
+    /// A picker row was chosen: run that method — and only that method —
+    /// through its kind's flow. The terminal row leaves the TUI for the
+    /// client-owned login launch; api-key/gateway rows open the masked
+    /// credential form; anything else goes straight to `authenticate`
+    /// (issue #160 — never a fallback to methods[0], never values typed
+    /// into the composer).
+    fn start_auth(&mut self, method_id: &str, ctl: &Controller) {
         if self.demo {
             self.transcript
                 .push_notice(
@@ -8990,7 +9056,7 @@ impl App {
             self.show_tip(self.locale.tr("sign-in is still pending — waiting for the Agent", "登录仍在进行中，等待 Agent 返回结果"));
             return;
         }
-        if self.auth.methods.is_empty() {
+        if self.auth.methods.is_empty() && method_id != AUTH_LOGOUT_ID {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
                 self.auth.message.clone().unwrap_or_else(|| {
@@ -9004,34 +9070,44 @@ impl App {
             );
             return;
         }
-        let arg = arg.trim();
-        if arg.is_empty() && self.auth.methods.len() > 1 {
-            self.open_auth_picker();
+        // The logout row is only appended when the agent declared
+        // `auth.logout`; the guard stays so a stale row can never send a
+        // request the agent said it does not implement (issue #160).
+        if method_id == AUTH_LOGOUT_ID {
+            if !self.agent_auth_logout {
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    self.locale
+                        .tr(
+                            "this agent did not declare auth.logout — sign-out is not offered",
+                            "此 Agent 未声明 auth.logout —— 不提供登出",
+                        )
+                        .into(),
+                );
+            } else {
+                self.auth.status = crate::acp_auth::AuthStatus::SigningIn;
+                self.auth.message = Some(
+                    self.locale
+                        .tr("signing out…", "正在登出…")
+                        .into(),
+                );
+                ctl.send(Cmd::Logout);
+            }
             return;
         }
-        let (method_id, rest) = {
-            let mut parts = arg.splitn(2, char::is_whitespace);
-            let first = parts.next().unwrap_or("");
-            let rest = parts.next().unwrap_or("").trim();
-            if self.auth.methods.iter().any(|m| m.id == first) {
-                (first.to_string(), rest.to_string())
-            } else {
-                (
-                    self.auth
-                        .method_id
-                        .clone()
-                        .unwrap_or_else(|| self.auth.methods[0].id.clone()),
-                    arg.to_string(),
-                )
-            }
-        };
-        let Some(method) = select_auth_method(&self.auth.methods, Some(&method_id)).cloned() else {
+        let Some(method) = self
+            .auth
+            .methods
+            .iter()
+            .find(|method| method.id == method_id)
+            .cloned()
+        else {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
                 self.locale.trf(
-                    "ACP auth method is unavailable or not supported: {}",
-                    "ACP 认证方式不可用或不支持：{}",
-                    &[method_id.clone()],
+                    "ACP auth method is not advertised by this agent: {}",
+                    "此 Agent 未声明 ACP 认证方式：{}",
+                    &[method_id.to_string()],
                 ),
             );
             return;
@@ -9061,43 +9137,129 @@ impl App {
             );
             return;
         }
-        let values = values_from_auth_arg(&method, &rest);
-        if method.form && authenticate_meta_from_method(&method, &values).is_none() {
-            self.show_tip(self.locale.tr(
-                "usage: /auth <api-key> · gateway: /auth <base-url> <api-key>",
-                "用法：/auth <api-key> · 网关：/auth <base-url> <api-key>",
-            ));
+        // Terminal sign-in is a TTY flow, never `authenticate` (issue #160).
+        if let Some(launch) = method.terminal_launch.clone() {
+            self.pending_terminal_auth = Some(launch);
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                self.locale.trf(
+                    "leaving the TUI for {} — return here when it finishes",
+                    "离开 TUI 前往 {} —— 完成后回到这里",
+                    &[method
+                        .name
+                        .as_deref()
+                        .unwrap_or(&method.id)
+                        .to_string()],
+                ),
+            );
             return;
         }
-        if values.is_empty() {
-            if let Some(launch) = method.terminal_launch.clone() {
-                self.pending_terminal_auth = Some(launch);
-                self.transcript.push_notice(
-                    NoticeLevel::Info,
-                    self.locale.trf(
-                        "leaving the TUI for {} — return here when it finishes",
-                        "离开 TUI 前往 {} —— 完成后回到这里",
-                        &[method
-                            .name
-                            .as_deref()
-                            .unwrap_or(&method.id)
-                            .to_string()],
-                    ),
-                );
-                return;
-            }
+        // api-key / gateway methods collect their secret in a masked form —
+        // a bare composer string is never accepted as a credential.
+        if method.form {
+            self.open_auth_form(&method);
+            return;
         }
+        self.submit_auth_values(&method.id, std::collections::BTreeMap::new(), ctl);
+    }
+
+    /// Send `authenticate` for exactly `method_id` with the values the
+    /// credential form collected (empty for a plain agent method).
+    fn submit_auth_values(
+        &mut self,
+        method_id: &str,
+        values: std::collections::BTreeMap<String, String>,
+        ctl: &Controller,
+    ) {
+        let Some(method) = self
+            .auth
+            .methods
+            .iter()
+            .find(|method| method.id == method_id)
+            .cloned()
+        else {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale.trf(
+                    "ACP auth method is not advertised by this agent: {}",
+                    "此 Agent 未声明 ACP 认证方式：{}",
+                    &[method_id.to_string()],
+                ),
+            );
+            return;
+        };
         self.auth.status = crate::acp_auth::AuthStatus::SigningIn;
         self.auth.method_id = Some(method.id.clone());
         self.auth.method_name = method.name.clone();
         self.auth.message = None;
-        if self.view_overlay.as_ref().is_some_and(|view| view.id == "builtin.auth.failure") {
+        if self
+            .view_overlay
+            .as_ref()
+            .is_some_and(|view| view.id == "builtin.auth.failure")
+        {
             self.view_overlay = None;
         }
         ctl.send(Cmd::Authenticate {
             method_id: method.id,
             values,
         });
+    }
+
+    /// One masked field per declared auth var — the api-key / gateway secret
+    /// only ever leaves through `Cmd::Authenticate` for this method (issue
+    /// #160). Esc backs out to the picker.
+    fn open_auth_form(&mut self, method: &crate::acp_auth::AuthMethodInfo) {
+        use crate::elicitation::{ElicitationField, ElicitationFieldKind, ElicitationForm};
+        let fields = method
+            .vars
+            .iter()
+            .map(|var| ElicitationField {
+                name: var.name.clone(),
+                custom_name: None,
+                title: var.label.clone().unwrap_or_else(|| var.name.clone()),
+                description: None,
+                required: !var.optional.unwrap_or(false),
+                secret: var.secret.unwrap_or(false),
+                kind: ElicitationFieldKind::Text { default: None },
+            })
+            .collect();
+        let mut form = crate::elicitation::ElicitationFormState::new(ElicitationForm {
+            message: self.locale.trf(
+                "sign in — {}",
+                "登录 —— {}",
+                &[method
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| method.id.clone())
+                    .into()],
+            ),
+            url: None,
+            fields,
+        });
+        form.locale = self.locale;
+        self.auth_form = Some(AuthFormOverlay {
+            method_id: method.id.clone(),
+            form,
+        });
+    }
+
+    fn handle_auth_form_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        let Some(reply) = self
+            .auth_form
+            .as_mut()
+            .and_then(|ask| ask.form.handle_key(key))
+        else {
+            return;
+        };
+        // A reply is only produced by a live form, so the overlay is open.
+        let ask = self.auth_form.take().expect("reply implies open form");
+        match reply {
+            crate::elicitation::ElicitationReply::Accepted(values) => {
+                self.submit_auth_values(&ask.method_id, auth_values_from_reply(values), ctl);
+            }
+            // Back to the picker — a wrong row must not trap the user.
+            crate::elicitation::ElicitationReply::Cancelled => self.open_auth_picker(),
+        }
     }
 
     fn push_help(&mut self) {
@@ -9114,7 +9276,7 @@ impl App {
 - ↓ · 空输入时展开 Agent 会话导航；←/→ 选择，enter 打开，esc 折叠
 - /agent · 切换 ACP 广告的 Agent 预设
 - /lang · 切换界面语言：/lang zh 或 /lang en
-- /auth · ACP 登录；多种方式时打开选择器
+- ctrl+shift+l · 登录选择器（Agent 声明的方式；声明 auth.logout 时可登出）
 - /effort · 推理强度 · /permission 权限预设 · /plan 计划模式
 - /resume · 恢复持久会话并继续写入原日志
 - /fork · Agent 声明 sessionCapabilities.fork 时，用 session/fork 分叉当前会话并打开新标签；原会话保留。不接受参数，也不按 Harness 名称判断
@@ -9146,7 +9308,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - ctrl+shift+a · cycle agent preset directly
 - ↓ · expand Agent transcript navigation from an empty prompt · ←/→ choose, enter opens, esc collapses
 - /agent · switch the agent preset advertised over ACP
-- /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
+- ctrl+shift+l · auth picker (agent-advertised methods; logout when auth.logout is declared)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
 - /resume · pick up a durable session — transcript replays, log continues
 - /fork · when the agent advertises sessionCapabilities.fork, session/fork branches the current session into a new tab and leaves the original in place. No arguments, and not gated on the harness name
@@ -9201,7 +9363,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         } else if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             "signing in — waiting for Agent response".into()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Failed {
-            format!("sign-in failed · {} · /auth", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
+            format!("sign-in failed · {} · ctrl+shift+l", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
         } else if self.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
             match self
                 .auth
@@ -9209,8 +9371,8 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 .as_deref()
                 .or(self.auth.method_id.as_deref())
             {
-                Some(name) => format!("sign-in needed · {name} · /auth"),
-                None => "sign-in needed · /auth".into(),
+                Some(name) => format!("sign-in needed · {name} · ctrl+shift+l"),
+                None => "sign-in needed · ctrl+shift+l".into(),
             }
         } else if self.cfg.has_credentials() {
             match self.cfg.credential_source() {

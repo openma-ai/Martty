@@ -129,7 +129,7 @@ async fn session_new_omits_additional_directories_without_the_capability() {
     let cfg = cfg_with(vec!["/tmp/martty-lib".into()]);
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     assert!(!wait_caps(&bus_rx).await);
     let created = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
@@ -190,7 +190,7 @@ async fn session_lifecycle_sends_additional_directories_when_advertised() {
     let cfg = cfg_with(vec!["/tmp/martty-lib".into(), "/tmp/martty-docs".into()]);
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     assert!(wait_caps(&bus_rx).await);
     let (kind, created) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await

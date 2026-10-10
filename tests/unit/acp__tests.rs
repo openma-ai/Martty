@@ -344,7 +344,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut compositor_methods = std::collections::HashSet::new();
@@ -559,7 +559,7 @@ async fn cordis_requests_stay_local_when_the_agent_did_not_advertise_cordis() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
@@ -638,7 +638,7 @@ async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut catalog = None;
@@ -719,7 +719,7 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
@@ -828,7 +828,7 @@ async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut command_ready = false;
@@ -947,7 +947,7 @@ async fn overlay_cancel_reaches_the_compositor_while_submit_is_pending() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         if matches!(bus_rx.recv_timeout(Duration::from_millis(20)),
@@ -1061,7 +1061,7 @@ async fn plugin_operation_defers_agent_requests_and_queued_prompts_until_complet
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         if matches!(bus_rx.recv_timeout(Duration::from_millis(20)),
@@ -1331,7 +1331,7 @@ async fn close_session_reaches_the_wire_when_the_agent_advertises_it() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -1412,7 +1412,7 @@ async fn close_session_stays_local_when_the_agent_did_not_advertise_it() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -1519,7 +1519,7 @@ async fn close_session_honors_the_per_session_connection_capability() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -1602,7 +1602,7 @@ async fn close_session_wire_failure_reports_a_session_op_failure() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -1707,7 +1707,7 @@ async fn close_session_drops_unknown_and_non_current_ids_consistently() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -1838,7 +1838,7 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut auth_status = None;
@@ -1959,7 +1959,7 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2064,7 +2064,7 @@ async fn new_session_binds_before_applying_initial_config() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2147,7 +2147,7 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2258,7 +2258,7 @@ async fn effort_selection_uses_the_advertised_thought_level_config_id() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2381,7 +2381,7 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
 
@@ -2496,7 +2496,7 @@ async fn resume_session_prefers_resume_and_binds_before_applying_initial_config(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -2610,7 +2610,7 @@ async fn resume_session_falls_back_to_load_when_resume_is_rejected() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let startup_deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < startup_deadline {
@@ -2733,7 +2733,7 @@ async fn prompts_while_running_wait_in_fifo_without_session_cancel() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -2877,7 +2877,7 @@ async fn composition_catalog_is_ready_before_the_first_prompt() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -2997,7 +2997,7 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     for text in ["first", "second"] {
         cmd_tx
@@ -3162,7 +3162,7 @@ async fn authenticate_rejection_reports_failure_instead_of_another_sign_in_hint(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
     while Instant::now() < deadline {
@@ -3256,7 +3256,7 @@ async fn assert_authentication_before_session_setup(setup_error: Option<i32>) {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
     while Instant::now() < deadline {
@@ -3395,7 +3395,7 @@ async fn session_new_auth_failure_parks_the_first_intent_without_retry_storms() 
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx
         .send(Cmd::Prompt {
@@ -3564,7 +3564,7 @@ async fn late_steer_rejection_is_not_retried_by_the_transport_after_auth() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx
         .send(Cmd::Prompt {
@@ -3738,7 +3738,7 @@ async fn steer_sends_a_concurrent_prompt_without_interrupting_the_turn() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -3900,7 +3900,7 @@ async fn rejected_steer_reports_deferred_without_transport_retry() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -4060,7 +4060,7 @@ async fn interrupt_sends_session_cancel_while_prompt_is_in_flight() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx
         .send(Cmd::Prompt {
@@ -4288,7 +4288,7 @@ async fn sessions_run_concurrent_prompts_on_one_connection() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Startup binds s1; /new binds s2 and becomes the fallback session.
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("new session");
@@ -4442,7 +4442,7 @@ async fn stale_text_prompt_finish_cannot_release_a_rebound_sessions_new_turn() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -4579,7 +4579,7 @@ async fn prompt_for_an_unbound_session_is_rejected_not_rerouted() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -4919,7 +4919,7 @@ async fn concurrent_steer_keeps_the_session_running_until_its_prompt_returns() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Drain the bus until `predicate` matches or `wait` elapses.
     let bus_until = |predicate: &dyn Fn(&AppEvent) -> bool, wait: Duration| -> bool {

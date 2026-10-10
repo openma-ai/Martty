@@ -184,7 +184,7 @@ pub enum CtlEvent {
     /// ACP initialize / authenticate status (Backchat probe equivalent).
     Auth(crate::acp_auth::AuthSnapshot),
     SessionAuth { session_id: String, snapshot: crate::acp_auth::AuthSnapshot, open: bool },
-    /// Open the client `/auth` surface (method picker or the one method).
+    /// Open the auth surface — the agent method picker (issue #160).
     OpenAuth,
     /// Agent-advertised session lifecycle capabilities.
     AgentCaps {
@@ -197,6 +197,9 @@ pub enum CtlEvent {
         close_session: bool,
         /// `sessionCapabilities.additionalDirectories` was an object (`{}`).
         additional_directories: bool,
+        /// `agentCapabilities.auth.logout` was an object (`{}`): the auth
+        /// picker may offer logout/switch (issue #160).
+        auth_logout: bool,
     },
     /// `session/new`, `session/resume`, or `session/load` resolved; the UI must use this id.
     SessionBound {
@@ -490,12 +493,20 @@ pub enum Cmd {
         config_id: String,
         value: String,
     },
-    /// Backchat-style `authenticate`: optional in-app `_meta` values after
-    /// `/auth`, or a retry after Terminal Auth / out-of-band login.
+    /// Backchat-style `authenticate`: in-app `_meta` values from the auth
+    /// picker's secret/gateway form, or a retry after out-of-band login.
     Authenticate {
         method_id: String,
         values: std::collections::BTreeMap<String, String>,
     },
+    /// ACP `logout` (v2 `auth/logout`): offered only when the agent declared
+    /// `agentCapabilities.auth.logout`; the picker reopens on success.
+    Logout,
+    /// Terminal sign-in finished on the TTY (exit 0): drop the current
+    /// transport, respawn the configured agent, and re-run `initialize`.
+    /// Never implies `authenticate` — terminal methods must not be sent to
+    /// `authenticate` (issue #160).
+    AgentReconnect,
     /// Live ACP `/new` → `session/new` (cwd = workspace).
     NewSession { requester: Option<String>, retry_auth: Option<String> },
     /// Live ACP `/fork` → `session/fork` of `source_session_id`.

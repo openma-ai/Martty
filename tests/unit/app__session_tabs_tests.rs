@@ -830,7 +830,7 @@ fn elicitation_form_round_trips_through_parking_unchanged() {
         AppEvent::ElicitationAsk {
             session_id: Some("s-two".into()),
             form: crate::elicitation::ElicitationForm {
-                message: "The agent needs your input.".into(),
+            url: None,                message: "The agent needs your input.".into(),
                 fields: Vec::new(),
             },
             reply: tx,
@@ -2298,13 +2298,14 @@ fn composer_resize_hover_short_circuits_under_overlays() {
         AppEvent::ElicitationAsk {
             session_id: Some("dsh-test".into()),
             form: ElicitationForm {
-                message: "pick".into(),
+            url: None,                message: "pick".into(),
                 fields: vec![ElicitationField {
                     name: "q0".into(),
                     custom_name: None,
                     title: "Q".into(),
                     description: None,
                     required: true,
+                    secret: false,
                     kind: ElicitationFieldKind::Single {
                         options: vec![ElicitationOption {
                             value: "a".into(),

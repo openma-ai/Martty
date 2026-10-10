@@ -626,6 +626,11 @@ fn controller_loop(
                     "session/set_config_option needs a live ACP connection".into(),
                 )));
             }
+            Cmd::Logout | Cmd::AgentReconnect => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "ACP logout/reconnect is only available on a live ACP connection".into(),
+                )));
+            }
             Cmd::NewSession { .. }
             | Cmd::ForkSession { .. }
             | Cmd::ListSessions { .. }

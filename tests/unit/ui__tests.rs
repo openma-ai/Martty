@@ -505,7 +505,7 @@ fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     app.auth.status = crate::acp_auth::AuthStatus::Failed;
     let failed = flat(welcome_info_lines(&app));
     assert!(failed.contains("sign-in failed"), "{failed}");
-    assert!(failed.contains("/auth"), "{failed}");
+    assert!(failed.contains("ctrl+shift+l"), "{failed}");
     assert!(!failed.contains("host dsh"), "{failed}");
 }
 
@@ -1343,7 +1343,7 @@ fn elicitation_wait_uses_the_state_line_without_claiming_the_agent_is_working() 
     app.state = RunState::Running;
     app.elicitation_ask = Some(ElicitationAskOverlay {
         form: ElicitationFormState::new(ElicitationForm {
-            message: "The agent needs your input.".into(),
+            url: None,            message: "The agent needs your input.".into(),
             fields: Vec::new(),
         }),
         scroll: 0,
@@ -1467,13 +1467,14 @@ fn caret_cell_follows_wrapped_rows_and_hides_with_the_caret() {
     app.input.set("draft".into());
     app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
         form: crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
-            message: "m".into(),
+            url: None,            message: "m".into(),
             fields: vec![crate::elicitation::ElicitationField {
                 name: "f".into(),
                 custom_name: None,
                 title: "t".into(),
                 description: None,
                 required: true,
+                secret: false,
                 kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
             }],
         }),
@@ -2728,13 +2729,14 @@ fn elicitation_overlay_renders_a_real_question_form() {
     app.show_banner = false;
     app.elicitation_ask = Some(ElicitationAskOverlay {
         form: ElicitationFormState::new(ElicitationForm {
-            message: "The agent needs your input.".into(),
+            url: None,            message: "The agent needs your input.".into(),
             fields: vec![ElicitationField {
                 name: "question_0".into(),
                 custom_name: Some("question_0_custom".into()),
                 title: "Target".into(),
                 description: Some("Where should this run?".into()),
                 required: true,
+                secret: false,
                 kind: ElicitationFieldKind::Single {
                     options: vec![
                         ElicitationOption {
@@ -2783,13 +2785,14 @@ fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
     app.show_banner = false;
     app.input.insert_str("composer draft");
     let mut form = ElicitationFormState::new(ElicitationForm {
-        message: "The agent needs your input.".into(),
+            url: None,        message: "The agent needs your input.".into(),
         fields: vec![ElicitationField {
             name: "answer".into(),
             custom_name: None,
             title: "Answer".into(),
             description: None,
             required: true,
+            secret: false,
             kind: ElicitationFieldKind::Text { default: None },
         }],
     });
@@ -4011,4 +4014,162 @@ fn ansi_color_disabled_matches_crossterm_semantics() {
         Some(v) => std::env::set_var("NO_COLOR", v),
         None => std::env::remove_var("NO_COLOR"),
     }
+}
+
+fn url_or_secret_form(url: Option<String>, secret_value: Option<&str>) -> crate::elicitation::ElicitationFormState {
+    let fields = match secret_value {
+        Some(_) => vec![crate::elicitation::ElicitationField {
+            name: "api-key".into(),
+            custom_name: None,
+            title: "API key".into(),
+            description: None,
+            required: true,
+            secret: true,
+            kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
+        }],
+        None => Vec::new(),
+    };
+    let mut form = crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
+        message: "sign in".into(),
+        url,
+        fields,
+    });
+    if let (Some(value), Some(field)) = (secret_value, form.fields.first_mut()) {
+        field.input.buf = value.to_string();
+    }
+    form
+}
+
+#[test]
+fn auth_form_masks_secret_values_as_bullets() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.auth_form = Some(crate::app::AuthFormOverlay {
+        method_id: "api-key:deepseek".into(),
+        form: url_or_secret_form(None, Some("sk-live-secret")),
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(!text.contains("sk-live-secret"), "secret leaked: {text}");
+    assert!(text.contains('•'), "masked bullets rendered: {text}");
+}
+
+#[test]
+fn url_elicitation_renders_the_link_fieldlessly() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form: url_or_secret_form(Some("https://auth.example/login".into()), None),
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(
+        text.contains("https://auth.example/login"),
+        "url rendered: {text}"
+    );
+}
+
+#[test]
+fn fieldless_form_without_url_renders_confirm_hint() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    let form = url_or_secret_form(None, None);
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(text.contains("enter confirm"), "{text}");
+}
+
+#[test]
+fn welcome_needs_auth_line_in_english_and_chinese() {
+    let flat = |lines: Vec<Line>| -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = live_test_app();
+    app.auth = crate::acp_auth::needs_auth_snapshot(
+        Vec::new(),
+        None,
+        Some("token missing".into()),
+    );
+    let en = flat(welcome_info_lines(&app));
+    assert!(en.contains("sign-in needed"), "{en}");
+    assert!(en.contains("ctrl+shift+l"), "{en}");
+    app.locale = crate::locale::Locale::Zh;
+    let zh = flat(welcome_info_lines(&app));
+    assert!(zh.contains("需要登录"), "{zh}");
+}
+
+#[test]
+fn fielded_form_renders_the_error_line() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    let mut form = url_or_secret_form(None, Some("api-key"));
+    form.error = Some("too short".into());
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(text.contains("too short"), "{text}");
 }

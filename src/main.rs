@@ -673,15 +673,7 @@ fn main() -> Result<()> {
                         app.handle(ev, &controller);
                     }
                 }
-                match result {
-                    Ok(()) => controller.send(Cmd::Authenticate {
-                        method_id: launch.method_id,
-                        values: Default::default(),
-                    }),
-                    Err(err) => app
-                        .transcript
-                        .push_notice(crate::transcript::NoticeLevel::Error, err),
-                }
+                app.finish_terminal_auth(result, &controller);
             }
             if app.quit {
                 break;

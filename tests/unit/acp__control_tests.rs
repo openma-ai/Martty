@@ -151,7 +151,7 @@ async fn check_slow_control(config: bool) {
     };
     let (bus, events) = std::sync::mpsc::channel();
     let (cmds, commands) = std::sync::mpsc::channel();
-    let task = tokio::spawn(connect(agent, cfg, bus, commands));
+    let task = tokio::spawn(connect_once(agent, cfg, bus, commands));
     wait_event(&events, |event| matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")).await;
     cmds.send(Cmd::NewSession { requester: None, retry_auth: None }).unwrap();
     wait_event(&events, |event| matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s2")).await;
@@ -355,7 +355,7 @@ fn model_switch_cfg() -> RuntimeConfig {
 async fn rejected_model_switch_reports_failure() {
     let (bus, events) = std::sync::mpsc::channel();
     let (cmds, commands) = std::sync::mpsc::channel();
-    let task = tokio::spawn(connect(model_switch_agent(true), model_switch_cfg(), bus, commands));
+    let task = tokio::spawn(connect_once(model_switch_agent(true), model_switch_cfg(), bus, commands));
     wait_event(&events, |event| {
         matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")
     })
@@ -388,7 +388,7 @@ async fn rejected_model_switch_reports_failure() {
 async fn accepted_model_switch_folds_config_response() {
     let (bus, events) = std::sync::mpsc::channel();
     let (cmds, commands) = std::sync::mpsc::channel();
-    let task = tokio::spawn(connect(model_switch_agent(false), model_switch_cfg(), bus, commands));
+    let task = tokio::spawn(connect_once(model_switch_agent(false), model_switch_cfg(), bus, commands));
     wait_event(&events, |event| {
         matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")
     })
@@ -607,7 +607,7 @@ async fn model_switch_honours_the_picked_provider_for_duplicate_ids() {
         );
     let (bus, events) = std::sync::mpsc::channel();
     let (cmds, commands) = std::sync::mpsc::channel();
-    let task = tokio::spawn(connect(agent, model_switch_cfg(), bus, commands));
+    let task = tokio::spawn(connect_once(agent, model_switch_cfg(), bus, commands));
     wait_event(&events, |event| {
         matches!(event, AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }) if session_id == "s1")
     })
@@ -670,4 +670,193 @@ async fn model_switch_honours_the_picked_provider_for_duplicate_ids() {
     );
     let _ = cmds.send(Cmd::Shutdown);
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+}
+
+/// A terminal method sent to `authenticate` is rejected locally — the wire
+/// request is never made (issue #160: terminal sign-in is TTY-only).
+#[tokio::test]
+async fn authenticate_terminal_method_is_rejected_without_a_wire_request() {
+    let agent = Agent.builder();
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (bus, events) = std::sync::mpsc::channel();
+            let (done, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+            let methods = parse_auth_methods(
+                &json!([{
+                    "id": "tui-login",
+                    "name": "Terminal login",
+                    "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+                }]),
+                &["fake-agent".into()],
+                "/tmp",
+                &Default::default(),
+            );
+            let mut workers = ControlWorkers::default();
+            workers.enqueue(
+                Cmd::Authenticate { method_id: "tui-login".into(), values: Default::default() },
+                &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+                std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
+            let mut seen = None;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            while seen.is_none() {
+                match events.try_recv() {
+                    Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message))) => seen = Some(message),
+                    Ok(_) => {}
+                    Err(_) => {
+                        assert!(tokio::time::Instant::now() < deadline);
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            assert!(seen.unwrap().contains("terminal sign-in"));
+            assert!(done_rx.try_recv().is_err(), "rejection must not post a finish");
+            Ok(())
+        })
+        .await
+        .expect("client task");
+}
+
+/// `authenticate` never falls back to an arbitrary method: an id the agent
+/// did not advertise is a visible failure (issue #160).
+#[tokio::test]
+async fn authenticate_unknown_method_reports_a_visible_failure() {
+    let agent = Agent.builder();
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (bus, events) = std::sync::mpsc::channel();
+            let (done, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+            let methods = parse_auth_methods(
+                &json!([{ "id": "oauth", "name": "Browser" }]),
+                &["fake-agent".into()],
+                "/tmp",
+                &Default::default(),
+            );
+            let mut workers = ControlWorkers::default();
+            for method_id in ["ghost", ""] {
+                workers.enqueue(
+                    Cmd::Authenticate { method_id: method_id.into(), values: Default::default() },
+                    &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+                    std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
+            }
+            let mut failures = Vec::new();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            while failures.len() < 2 {
+                match events.try_recv() {
+                    Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message))) => failures.push(message),
+                    Ok(_) => {}
+                    Err(_) => {
+                        assert!(tokio::time::Instant::now() < deadline);
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            assert!(failures.iter().any(|m| m.contains("ghost")));
+            assert!(failures.iter().any(|m| m.contains("no supported")));
+            Ok(())
+        })
+        .await
+        .expect("client task");
+}
+
+/// env_var methods cannot start a sign-in — both the named-vars and
+/// no-vars variants are visible failures (issue #160).
+#[tokio::test]
+async fn authenticate_env_var_method_reports_a_visible_failure() {
+    let agent = Agent.builder();
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (bus, events) = std::sync::mpsc::channel();
+            let (done, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+            let methods = parse_auth_methods(
+                &json!([
+                    { "id": "env-key", "name": "Env key", "type": "env_var",
+                      "vars": [{ "name": "AGENT_API_KEY" }] },
+                    { "id": "env-none", "name": "Env none", "type": "env_var" }
+                ]),
+                &["fake-agent".into()],
+                "/tmp",
+                &Default::default(),
+            );
+            let mut workers = ControlWorkers::default();
+            for method_id in ["env-key", "env-none"] {
+                workers.enqueue(
+                    Cmd::Authenticate { method_id: method_id.into(), values: Default::default() },
+                    &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+                    std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
+            }
+            let mut failures = Vec::new();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            while failures.len() < 2 {
+                match events.try_recv() {
+                    Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message))) => failures.push(message),
+                    Ok(_) => {}
+                    Err(_) => {
+                        assert!(tokio::time::Instant::now() < deadline);
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            assert!(
+                failures.iter().any(|m| m.contains("AGENT_API_KEY")),
+                "named vars: {failures:?}"
+            );
+            assert!(
+                failures
+                    .iter()
+                    .any(|m| m.contains("env-none") && m.contains("credential")),
+                "unnamed vars: {failures:?}"
+            );
+            Ok(())
+        })
+        .await
+        .expect("client task");
+}
+
+/// A form method with no collected values is rejected before the wire —
+/// the api-key form is the only source of secrets (issue #160).
+#[tokio::test]
+async fn authenticate_form_method_without_values_reports_a_visible_failure() {
+    let agent = Agent.builder();
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (bus, events) = std::sync::mpsc::channel();
+            let (done, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+            let methods = parse_auth_methods(
+                &json!([{
+                    "id": "api-key:deepseek",
+                    "name": "DeepSeek API key",
+                    "_meta": { "api-key": { "variables": [
+                        { "name": "api-key", "secret": true }
+                    ] } }
+                }]),
+                &["fake-agent".into()],
+                "/tmp",
+                &Default::default(),
+            );
+            let mut workers = ControlWorkers::default();
+            workers.enqueue(
+                Cmd::Authenticate { method_id: "api-key:deepseek".into(), values: Default::default() },
+                &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+                std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
+            let mut seen = None;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            while seen.is_none() {
+                match events.try_recv() {
+                    Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message))) => seen = Some(message),
+                    Ok(_) => {}
+                    Err(_) => {
+                        assert!(tokio::time::Instant::now() < deadline);
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            assert!(seen.unwrap().contains("auth form"));
+            Ok(())
+        })
+        .await
+        .expect("client task");
 }

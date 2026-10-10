@@ -74,7 +74,11 @@ fn gateway_form_encodes_authenticate_meta() {
         "/tmp",
         &BTreeMap::new(),
     );
-    let values = values_from_auth_arg(&methods[0], "https://gw.example sk-test");
+    // The credential form collects values keyed by declared var name.
+    let values = BTreeMap::from([
+        ("baseUrl".to_string(), "https://gw.example".to_string()),
+        ("api-key".to_string(), "sk-test".to_string()),
+    ]);
     assert_eq!(
         Value::Object(authenticate_meta_from_method(&methods[0], &values).unwrap()),
         json!({
@@ -142,7 +146,7 @@ fn needs_auth_notice_points_at_auth() {
     let (_, text) = snap
         .notice(crate::locale::Locale::En)
         .expect("notice");
-    assert!(text.contains("/auth"));
+    assert!(text.contains("auth picker"));
     assert!(
         !text.contains("/login"),
         "/login is the agent's slash, not a TUI command: {text}"
@@ -168,4 +172,174 @@ fn structured_auth_failure_keeps_the_provider_reason() {
         "data": {"errorKind": "billing_error"}
     })).unwrap();
     assert!(!is_auth_required_error(&unrelated));
+}
+
+#[test]
+fn terminal_first_method_surfaces_a_sign_in_notice() {
+    let methods = parse_auth_methods(
+        &json!([
+            {
+                "id": "pi-tui",
+                "name": "Terminal login",
+                "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+            },
+            { "id": "oauth", "name": "Browser" }
+        ]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    let snapshot = snapshot_from_methods(methods, &[], &Default::default());
+    assert_eq!(format!("{:?}", snapshot.status), "NeedsAuth");
+    assert_eq!(snapshot.method_id.as_deref(), Some("pi-tui"));
+    assert!(
+        snapshot
+            .message
+            .as_deref()
+            .is_some_and(|text| text.contains("terminal sign-in needed")),
+        "{:?}",
+        snapshot.message
+    );
+}
+
+#[test]
+fn terminal_launch_runs_the_client_argv_not_the_agent_meta_command() {
+    // The `command` field in _meta["terminal-auth"] is deliberately ignored:
+    // the launch always runs the client's own configured agent argv so a
+    // third-party agent can never name an arbitrary binary (issue #160).
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "pi-tui",
+            "name": "Terminal login",
+            "_meta": {
+                "terminal-auth": {
+                    "command": "evil-agent",
+                    "args": ["login", "--fast"],
+                    "env": { "EXTRA": "1" }
+                }
+            }
+        }]),
+        &["fake-agent".into(), "--verbose".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    let launch = methods[0]
+        .terminal_launch
+        .as_ref()
+        .expect("terminal launch");
+    assert_eq!(launch.command, "fake-agent");
+    assert_eq!(launch.args, vec!["--verbose", "login", "--fast"]);
+    assert_eq!(launch.env.get("EXTRA").map(String::as_str), Some("1"));
+}
+
+#[test]
+fn api_key_meta_reads_values_by_declared_variable_names() {
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "api-key:deepseek",
+            "name": "DeepSeek API key",
+            "_meta": { "api-key": { "variables": [
+                { "name": "api-key", "secret": true }
+            ] } }
+        }]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    let method = methods.first().expect("method");
+    // Missing values → no meta (the control lane rejects it visibly).
+    assert!(authenticate_meta_from_method(method, &Default::default()).is_none());
+    let values: BTreeMap<String, String> =
+        [("api-key".to_string(), "sk-live".to_string())].into_iter().collect();
+    let meta = authenticate_meta_from_method(method, &values).expect("meta");
+    assert_eq!(meta["api-key"]["apiKey"].as_str(), Some("sk-live"));
+}
+
+#[test]
+fn needs_auth_notice_gives_a_hint_per_method_kind() {
+    // api-key (form) method → masked-field hint.
+    let methods = parse_auth_methods(
+        &json!([
+            {
+                "id": "api-key:x",
+                "name": "Key",
+                "_meta": { "api-key": { "variables": [{ "name": "api-key", "secret": true }] } }
+            },
+            {
+                "id": "tui",
+                "name": "Terminal",
+                "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+            },
+            { "id": "oauth", "name": "Browser" }
+        ]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    for (id, needle) in [
+        ("api-key:x", "masked field"),
+        ("tui", "terminal sign-in"),
+        ("oauth", "retry ACP authenticate"),
+    ] {
+        let method = methods.iter().find(|m| m.id == id).cloned();
+        let snapshot = needs_auth_snapshot(methods.clone(), method.as_ref(), None);
+        let (level, text) = snapshot
+            .notice(crate::locale::Locale::En)
+            .expect("needs-auth notice");
+        assert_eq!(format!("{:?}", level), "Warn");
+        assert!(text.contains("auth picker"), "{id}: {text}");
+        assert!(text.contains(needle), "{id}: {text}");
+    }
+}
+
+#[test]
+fn terminal_method_type_uses_client_argv_with_method_args() {
+    // `type: "terminal"` without a _meta block: still client argv[0] and
+    // argv[1..] + method-level args/env merged with meta args/env (#160).
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "t-login",
+            "name": "Terminal",
+            "type": "terminal",
+            "args": ["auth"],
+            "env": { "BASE": "1" },
+            "_meta": { "args": ["login"], "env": { "EXTRA": "2" } }
+        }]),
+        &["fake-agent".into(), "--profile".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    let launch = methods[0].terminal_launch.as_ref().expect("terminal launch");
+    assert_eq!(launch.command, "fake-agent");
+    assert_eq!(launch.args, vec!["--profile", "login"]);
+    assert_eq!(launch.env.get("EXTRA").map(String::as_str), Some("2"));
+
+    // A non-terminal method never gets a launch.
+    let other = parse_auth_methods(
+        &json!([{ "id": "oauth", "name": "Browser" }]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    assert!(other[0].terminal_launch.is_none());
+}
+
+#[test]
+fn terminal_method_args_fall_back_when_meta_has_only_env() {
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "t2",
+            "name": "Terminal",
+            "type": "terminal",
+            "args": ["login"],
+            "env": { "A": "1" },
+            "_meta": { "env": { "B": "2" } }
+        }]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    let launch = methods[0].terminal_launch.as_ref().expect("launch");
+    assert_eq!(launch.args, vec!["login"]);
+    assert_eq!(launch.env.get("B").map(String::as_str), Some("2"));
 }

@@ -157,7 +157,7 @@ fn spawn_agent(
         );
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect(agent, cfg(), bus_tx, cmd_rx).await });
+    let client = tokio::spawn(async move { connect_once(agent, cfg(), bus_tx, cmd_rx).await });
     (client, bus_rx, cmd_tx, rx)
 }
 

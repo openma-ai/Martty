@@ -3705,20 +3705,74 @@ fn draw_permission_ask(f: &mut Frame, app: &App, screen: Rect) {
 
 fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
     let theme = app.theme;
-    let Some(ask) = app.elicitation_ask.as_mut() else {
-        return;
-    };
-    let Some(state) = ask.form.fields.get(ask.form.index) else {
-        return;
-    };
+    // The auth credential form reuses this renderer — same modal chrome,
+    // with `secret` vars masked. The ACP elicitation ask wins when both
+    // are somehow up (issue #160).
+    let mut scroll_local = 0usize;
+    let (form, ask_scroll): (&mut crate::elicitation::ElicitationFormState, &mut usize) =
+        if let Some(ask) = app.elicitation_ask.as_mut() {
+            (&mut ask.form, &mut ask.scroll)
+        } else if let Some(ask) = app.auth_form.as_mut() {
+            (&mut ask.form, &mut scroll_local)
+        } else {
+            return;
+        };
     let content_width = screen.width.saturating_sub(10).clamp(28, 74) as usize;
+    let Some(state) = form.fields.get(form.index) else {
+        // A fieldless request is a URL elicitation: show the message and
+        // the link so it can be opened manually (headless/SSH safe), then
+        // Enter confirms / Esc cancels (issue #160).
+        let mut top = vec![
+            Line::from(Span::styled(
+                form.message.clone(),
+                Style::default().fg(theme.caption),
+            )),
+            Line::default(),
+        ];
+        if let Some(url) = &form.url {
+            top.push(Line::from(Span::styled(
+                url.clone(),
+                Style::default().fg(theme.brand).add_modifier(Modifier::BOLD),
+            )));
+            top.push(Line::default());
+            top.push(Line::from(Span::styled(
+                app.locale.tr(
+                    "open the link to continue · enter done · esc cancel",
+                    "请打开链接继续 · enter 完成 · esc 取消",
+                ),
+                Style::default().fg(theme.fg_secondary),
+            )));
+        } else {
+            top.push(Line::from(Span::styled(
+                app.locale.tr("enter confirm · esc cancel", "enter 确认 · esc 取消"),
+                Style::default().fg(theme.fg_secondary),
+            )));
+        }
+        let cap_w = screen.width.saturating_sub(4).max(24);
+        let w = (content_width as u16 + 4).min(cap_w);
+        let h = (top.len() + 2).min(screen.height.saturating_sub(2) as usize) as u16;
+        let x = screen.x + (screen.width.saturating_sub(w)) / 2;
+        let y = screen.y + (screen.height.saturating_sub(h)) / 3;
+        let area = Rect::new(x, y, w, h);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.brand))
+            .title(Span::styled(" sign in ", Style::default().fg(theme.caption)))
+            .style(Style::default().bg(theme.panel));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(top), inner);
+        return;
+    };
     // Fixed chrome: message + field title on top, answers pinned to the
     // bottom. The question detail — for a plan review that is the complete
     // plan markdown — owns a scrollable pane between them and renders
     // through the full markdown pipeline.
     let top = vec![
         Line::from(Span::styled(
-            ask.form.message.clone(),
+            form.message.clone(),
             Style::default().fg(theme.caption),
         )),
         Line::default(),
@@ -3822,23 +3876,34 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
             }
         }
         _ => {
+            // Auth secret vars echo as bullets — the typed key never shows
+            // on screen (issue #160).
+            let display = if state.field.secret {
+                "\u{2022}".repeat(state.input.buf.chars().count())
+            } else {
+                state.input.buf.clone()
+            };
             let cursor_row = bottom.len();
             let cursor_col = "❯ ".width()
-                + state
-                    .input
-                    .buf
-                    .chars()
-                    .take(state.input.cursor)
-                    .collect::<String>()
-                    .width();
+                + if state.field.secret {
+                    state.input.cursor
+                } else {
+                    state
+                        .input
+                        .buf
+                        .chars()
+                        .take(state.input.cursor)
+                        .collect::<String>()
+                        .width()
+                };
             bottom.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(theme.brand)),
-                Span::styled(state.input.buf.clone(), Style::default().fg(theme.fg)),
+                Span::styled(display, Style::default().fg(theme.fg)),
             ]));
             field_cursor = Some((cursor_row, cursor_col));
         }
     }
-    if let Some(error) = &ask.form.error {
+    if let Some(error) = &form.error {
         bottom.push(Line::default());
         bottom.push(Line::from(Span::styled(
             error.clone(),
@@ -3859,26 +3924,26 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
     } else {
         desc_len.saturating_sub(middle_h)
     };
-    let scroll = ask.scroll.min(max_scroll) as u16;
+    let scroll = (*ask_scroll).min(max_scroll) as u16;
     // Normalize the stored offset so scrolling back up starts from the
     // visible bottom (End parks at `usize::MAX` until the next draw).
-    ask.scroll = ask.scroll.min(max_scroll);
+    *ask_scroll = (*ask_scroll).min(max_scroll);
     let h = (base + middle_h).min(budget) as u16;
     let x = screen.x + (screen.width.saturating_sub(w)) / 2;
     let y = screen.y + (screen.height.saturating_sub(h)) / 3;
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
-    let count = ask.form.fields.len();
+    let count = form.fields.len();
     let title = if max_scroll > 0 {
         format!(
             " ask · {}/{} · pgup/pgdn/end scroll · enter next/submit · tab skip · esc cancel ",
-            ask.form.index + 1,
+            form.index + 1,
             count,
         )
     } else {
         format!(
             " ask · {}/{} · enter next/submit · tab skip · esc cancel ",
-            ask.form.index + 1,
+            form.index + 1,
             count,
         )
     };
@@ -4035,7 +4100,7 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
         let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             format!("{} · {detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
         } else {
-            format!("{} · {detail} · /auth", app.locale.tr("sign-in failed", "登录失败"))
+            format!("{} · {detail} · ctrl+shift+l", app.locale.tr("sign-in failed", "登录失败"))
         };
         out.push(kv(app.locale.tr("credentials", "凭据"), message));
     } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
@@ -4049,9 +4114,9 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
                 if app.locale == crate::locale::Locale::Zh {
-                    format!("需要登录 · {detail} — 使用 /auth（Agent 的 /login 仍作为消息发送）")
+                    format!("需要登录 · {detail} — ctrl+shift+l 选择登录方式")
                 } else {
-                    format!("sign-in needed · {detail} — /auth (agent /login stays a prompt)")
+                    format!("sign-in needed · {detail} — ctrl+shift+l opens the auth picker")
                 },
                 Style::default().fg(theme.warn_soft()),
             ),

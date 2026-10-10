@@ -70,6 +70,7 @@ fn enable_fork(app: &mut App, ctl: &Controller) {
             fork_session: true,
             close_session: false,
             additional_directories: false,
+            auth_logout: false,
         }),
         ctl,
     );
