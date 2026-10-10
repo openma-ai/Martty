@@ -5236,13 +5236,12 @@ impl App {
                     self.selecting = true;
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.composer_resize.is_some() => {
+            MouseEventKind::Drag(MouseButton::Left)
+                if let Some((grab_row, start_h)) = self.composer_resize =>
+            {
                 // Absolute-delta resize: grab row ↔ height came from the
                 // same frame, so events arriving between redraws still
                 // land on the right total instead of accumulating error.
-                let Some((grab_row, start_h)) = self.composer_resize else {
-                    return;
-                };
                 let (min_h, max_h) = self.composer_bounds;
                 let next = (start_h as i64 + grab_row as i64 - mouse.row as i64)
                     .clamp(min_h as i64, max_h as i64) as u16;

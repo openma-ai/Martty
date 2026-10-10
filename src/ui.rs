@@ -3053,37 +3053,29 @@ fn layout_jump_btn(app: &mut App, cap: Rect) {
 /// always wins the pixels.
 fn paint_composer_chrome(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
-    // The rects are derived from the (already clipped) composer layout,
-    // but cell writes index the buffer directly: skip any cell that a
-    // pathological frame put outside it.
     let frame = f.area();
     let b = f.buffer_mut();
     if app.hover_composer_border || app.composer_resize.is_some() {
         if let Some(cap) = app.composer_box {
+            // The recorded box is already clipped to the frame, so its cap
+            // cells index the buffer directly.
             for x in cap.x..cap.right() {
-                let pos = ratatui::layout::Position::new(x, cap.y);
-                if !frame.contains(pos) {
-                    continue;
-                }
-                if let Some(cell) = b.cell_mut((x, cap.y)) {
-                    if matches!(cell.symbol(), "─" | "╭" | "╮") {
-                        cell.set_fg(theme.fg);
-                    }
+                let cell = &mut b[(x, cap.y)];
+                if matches!(cell.symbol(), "─" | "╭" | "╮") {
+                    cell.set_fg(theme.fg);
                 }
             }
         }
     }
     if let Some(rect) = app.prompt_jump_btn {
-        if rect.width >= JUMP_BTN_W && rect.height >= CAP_BTN_H {
-            let tone = if app.hover_prompt_jump_btn {
-                theme.fg
-            } else {
-                theme.caption
-            };
-            let x = rect.x.saturating_add(rect.width).saturating_sub(1);
-            if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
-                b.set_string(x, rect.y, "↥", Style::default().fg(tone));
-            }
+        let tone = if app.hover_prompt_jump_btn {
+            theme.fg
+        } else {
+            theme.caption
+        };
+        let x = rect.x.saturating_add(rect.width).saturating_sub(1);
+        if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
+            b.set_string(x, rect.y, "↥", Style::default().fg(tone));
         }
     }
 }

@@ -1747,3 +1747,95 @@ fn composer_height_memory_rides_with_its_session_tab() {
     app.switch_to_session(1); // live s-two again
     assert_eq!(app.composer_rows, Some(15));
 }
+
+/// Issue #147: `composer_border_hit` accepts only cells on the recorded
+/// cap row — off its row or outside its columns both miss, and a missing
+/// box (borderless fallback) never hits.
+#[test]
+fn composer_border_hit_checks_only_the_cap_row() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.composer_box = Some(ratatui::layout::Rect::new(2, 5, 10, 3));
+    assert!(app.composer_border_hit(2, 5));
+    assert!(app.composer_border_hit(11, 5), "last cell of the cap");
+    assert!(!app.composer_border_hit(1, 5), "left of the box misses");
+    assert!(!app.composer_border_hit(12, 5), "right of the box misses");
+    assert!(!app.composer_border_hit(2, 6), "well rows are not the handle");
+    app.composer_box = None;
+    assert!(!app.composer_border_hit(2, 5), "borderless fallback has no handle");
+}
+
+/// Issue #147: ctrl+↑/ctrl+↓ reach the height stepper through the real
+/// dispatch path — the keymap Action is wired, not just classified.
+#[test]
+fn composer_height_keys_dispatch_through_the_action_map() {
+    let (mut app, ctl, _rx) = test_app();
+    app.composer_bounds = (3, 8);
+    app.composer_h = 3;
+    app.dispatch(Action::ComposerGrow, &ctl);
+    assert_eq!(app.composer_rows, Some(4));
+    app.dispatch(Action::ComposerGrow, &ctl);
+    assert_eq!(app.composer_rows, Some(5));
+    app.dispatch(Action::ComposerShrink, &ctl);
+    assert_eq!(app.composer_rows, Some(4));
+    app.dispatch(Action::ComposerShrink, &ctl);
+    assert_eq!(app.composer_rows, Some(3), "shrink clamps at the floor");
+    app.dispatch(Action::ComposerShrink, &ctl);
+    assert_eq!(app.composer_rows, None, "floor release returns to auto");
+}
+
+/// Issue #147: while an elicitation form or a subagent view owns the
+/// screen the composer is hidden — a release or move during a resize must
+/// not leave the border stuck bright.
+#[test]
+fn composer_resize_hover_short_circuits_under_overlays() {
+    use crate::elicitation::{
+        ElicitationField, ElicitationFieldKind, ElicitationForm, ElicitationOption,
+    };
+    let (mut app, ctl, _rx) = test_app();
+
+    // Subagent view active: the Up and Moved guards read false.
+    app.composer_resize = Some((10, 5));
+    app.active_subagent = Some("sub-1".into());
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 10), &ctl);
+    assert!(app.composer_resize.is_none());
+    assert!(!app.hover_composer_border);
+    app.handle_mouse(mouse(MouseEventKind::Moved, 50, 10), &ctl);
+    assert!(!app.hover_composer_border);
+    app.active_subagent = None;
+
+    // Elicitation open: same short-circuit on release and on moves.
+    let (tx, _reply_rx) = tokio::sync::oneshot::channel();
+    app.handle(
+        AppEvent::ElicitationAsk {
+            session_id: Some("dsh-test".into()),
+            form: ElicitationForm {
+                message: "pick".into(),
+                fields: vec![ElicitationField {
+                    name: "q0".into(),
+                    custom_name: None,
+                    title: "Q".into(),
+                    description: None,
+                    required: true,
+                    kind: ElicitationFieldKind::Single {
+                        options: vec![ElicitationOption {
+                            value: "a".into(),
+                            label: "A".into(),
+                            description: None,
+                            custom: false,
+                        }],
+                        default: None,
+                    },
+                }],
+            },
+            reply: tx,
+        },
+        &ctl,
+    );
+    assert!(app.elicitation_ask.is_some());
+    app.composer_resize = Some((10, 5));
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 10), &ctl);
+    assert!(!app.hover_composer_border);
+    app.composer_resize = Some((10, 5));
+    app.handle_mouse(mouse(MouseEventKind::Moved, 50, 10), &ctl);
+    assert!(!app.hover_composer_border);
+}
