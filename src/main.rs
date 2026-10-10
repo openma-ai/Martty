@@ -535,6 +535,7 @@ fn main() -> Result<()> {
     let run = (|| -> Result<()> {
         let mut last_tick = std::time::Instant::now();
         let mut frames = FramePacer::new(Instant::now());
+        let mut last_canvas_bg: Option<ratatui::style::Color> = None;
         loop {
             if app.harness_switch_in_progress() {
                 let _ = repair_tui_raw_mode();
@@ -553,6 +554,17 @@ fn main() -> Result<()> {
                 // the cursor, and the frame diff would otherwise leave it
                 // wherever the last cell write happened.
                 std::io::stdout().sync_update(|out| -> Result<()> {
+                    // Sync the terminal's default background to the canvas
+                    // color: strips the emulator fills itself (the sub-cell
+                    // remainder of a non-integer-height window, scrolled-in
+                    // lines, non-BCE erase areas) otherwise show the profile
+                    // bg — a gray band under the status bar (#145).
+                    let canvas_bg = app.canvas_background_color();
+                    if Some(canvas_bg) != last_canvas_bg {
+                        let _ =
+                            out.write_all(ui::canvas_bg_sequence(canvas_bg).as_bytes());
+                        last_canvas_bg = Some(canvas_bg);
+                    }
                     terminal.draw(|f| ui::draw(f, &mut app))?;
                     app.needs_redraw = false;
                     // Reconcile the kitty pixel layers against the freshly
@@ -773,6 +785,8 @@ fn restore_terminal() {
         // Drop any kitty placement (panic-safe: also runs from the hook).
         let _ = stdout.write_all(pet::KITTY_DELETE_ALL.as_bytes());
     }
+    // Hand the profile background back before leaving (#145).
+    let _ = stdout.write_all(ui::OSC_BG_RESET.as_bytes());
     let _ = execute!(stdout, PopKeyboardEnhancementFlags);
     let _ = execute!(
         stdout,

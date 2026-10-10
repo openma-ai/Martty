@@ -4176,6 +4176,32 @@ fn shorten_home(path: &str) -> String {
     }
 }
 
+/// `OSC 111` — restore the terminal's own default background.
+///
+/// The painter fills every cell of the grid (see `draw`), but terminals
+/// also color regions no cell writer can reach — the unusable sub-cell
+/// strip below the last row of a non-integer-height window, lines the
+/// emulator scrolls in, areas restored by non-BCE erases — with the
+/// terminal default background, not with cell colors. Because the app
+/// never set it, that strip read as a gray band under the status bar on
+/// macOS terminals (#145). Syncing the default background to the canvas
+/// color via `OSC 11` makes those emulator-painted regions match.
+pub const OSC_BG_RESET: &str = "\x1b]111\x1b\\";
+
+/// The sequence setting the terminal default background to `color`
+/// (`OSC 11 ; #rrggbb`), or [`OSC_BG_RESET`] for `Color::Reset` — kitty
+/// backdrop sessions leave cells Reset so the emulator's own background
+/// shows through, and strips should match those cells. Non-Rgb named
+/// canvas colors also take the reset (themes ship Rgb).
+pub fn canvas_bg_sequence(color: ratatui::style::Color) -> String {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => {
+            format!("\x1b]11;#{r:02x}{g:02x}{b:02x}\x1b\\")
+        }
+        _ => OSC_BG_RESET.to_string(),
+    }
+}
+
 /// Render one frame into a plain string (used by `--dump-frame` and tests).
 pub fn dump_frame(app: &mut App, width: u16, height: u16) -> String {
     use ratatui::backend::TestBackend;

@@ -3748,3 +3748,82 @@ fn harness_icon_is_session_scoped_and_falls_back_on_non_pixel_terminals() {
     terminal.draw(|frame| draw(frame, &mut app)).unwrap();
     assert!(app.harness_thumb.is_none());
 }
+
+/// #145: the OSC sequence that ties the terminal's *default* background to
+/// the canvas color. Rgb canvases emit `OSC 11 ; #rrggbb`; `Reset` (kitty
+/// backdrop, cells intentionally left Reset) and named colors restore the
+/// profile default via `OSC 111`.
+#[test]
+fn canvas_bg_sequence_bytes() {
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Rgb(0x0f, 0x11, 0x15)),
+        "\x1b]11;#0f1115\x1b\\"
+    );
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Reset),
+        "\x1b]111\x1b\\"
+    );
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Black),
+        "\x1b]111\x1b\\"
+    );
+    assert_eq!(OSC_BG_RESET, "\x1b]111\x1b\\");
+}
+
+/// #145: every cell of every frame must carry a painted background. A row
+/// left at `Color::Reset` is exactly the "gray band" the terminal fills
+/// with its own default bg — sweep heights, widths, themes, banner and the
+/// composer-dock status row on/off so no layout path can skip a row again.
+#[test]
+fn every_frame_cell_has_a_painted_background() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let dock_slot: crate::slots::SlotSnapshot = serde_json::from_value(serde_json::json!({
+        "protocol": 0,
+        "slot": "conversation.composer.dock",
+        "rev": 1,
+        "nodes": [
+            { "id": "stats:counts", "kind": "generic", "title": "1 turn · 3 steps", "body": "" }
+        ]
+    }))
+    .expect("dock slot snapshot");
+
+    for theme in [Theme::dark(), Theme::light()] {
+        for &(w, h) in &[
+            (20u16, 4u16),   // below the drawable minimum: pre-fill still paints
+            (24, 6),
+            (40, 10),
+            (80, 24),
+            (100, 33),
+            (120, 50),
+        ] {
+            for banner in [true, false] {
+                for dock in [false, true] {
+                    let mut app = test_app();
+                    app.theme = theme;
+                    app.show_banner = banner;
+                    if dock {
+                        app.slot_snapshots
+                            .insert("conversation.composer.dock".into(), dock_slot.clone());
+                    }
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+                    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+                    let buf = terminal.backend().buffer();
+                    for y in 0..h {
+                        for x in 0..w {
+                            assert_ne!(
+                                buf[(x, y)].bg,
+                                Color::Reset,
+                                "unpainted cell ({x},{y}) at {w}x{h} theme={:?} banner={banner} dock={dock}",
+                                theme.mode
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
