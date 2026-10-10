@@ -4070,6 +4070,10 @@ impl App {
                         if !target.is_empty() { self.server_info = Some(target); }
                         if self.server_info.is_none() { self.server_info = Some("ACP".into()); }
                         self.connection_error = Some(error.clone());
+                        // A failed attach must show its error, not the welcome
+                        // page — the banner skips transcript lines entirely
+                        // (same convention as BindFailedTo above).
+                        self.show_banner = false;
                         self.session_id = "unavailable".into();
                         self.session_bound = false;
                         self.session_model = None;

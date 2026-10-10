@@ -2130,6 +2130,14 @@ fn connection_failure_clears_pending_surface_and_recovers_on_ready() {
     assert_eq!(app.session_id, "unavailable");
     assert_eq!(app.server_info.as_deref(), Some("Cline"));
     assert_eq!(app.connection_error.as_deref(), Some("process exited (1)"));
+    // The banner skips transcript lines — a failed attach leaves it so the
+    // full error (including the agent stderr tail) stays readable wrapped
+    // in the transcript.
+    assert!(!app.show_banner);
+    assert!(matches!(
+        app.transcript.cells.last().map(|cell| &cell.kind),
+        Some(crate::transcript::CellKind::Notice { .. })
+    ));
     app.handle(AppEvent::Ctl(CtlEvent::Ready { server: "recovered-acp".into() }), &ctl);
     assert!(app.connection_error.is_none());
 }

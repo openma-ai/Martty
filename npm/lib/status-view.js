@@ -41,7 +41,16 @@ function statusMarkdown(status, stats) {
   const lines = []
   lines.push(`- state · ${status.state ?? 'idle'}`)
   lines.push(`- acp · ${status.connection ?? 'not attached'}`)
-  if (status.error) lines.push(`- connection error · ${status.error}`)
+  if (status.error) {
+    // A failure carries its diagnostics tail as extra lines (e.g.
+    // "Agent stderr: …"); keep the bullet on the headline and give the rest
+    // a fenced block so long refusal text stays readable verbatim.
+    const [headline, ...rest] = status.error.split('\n')
+    lines.push(`- connection error · ${headline}`)
+    if (rest.length > 0) {
+      lines.push('', '```text', rest.join('\n'), '```')
+    }
+  }
   if (status.auth?.status !== undefined) {
     lines.push(`- auth · ${status.auth.status}${status.auth.method ? ` · ${status.auth.method}` : ''}`)
     if (status.auth.message) lines.push(`- auth error · ${status.auth.message}`)

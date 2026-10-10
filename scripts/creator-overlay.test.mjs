@@ -391,3 +391,110 @@ test('Creator refuses to persist unvalidated or Host-backed dynamic Packages as 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('retries acquireScope while preset declarations are still registering', async () => {
+  const fixture = harness()
+  const attempts = []
+  fixture.ctx.agentPresets.acquireScope = async (id) => {
+    attempts.push(id)
+    if (attempts.length < 3) {
+      throw Object.assign(new Error(`Unknown agent preset: ${id}`), {
+        code: 'agent-preset/not-found',
+      })
+    }
+    return { key: { preset: id }, async [Symbol.asyncDispose]() {} }
+  }
+  await creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 })
+  assert.equal(attempts.length, 3)
+  assert.equal(fixture.state().scopeKey.preset, 'cordis')
+})
+
+test('not-found failures without a remote code are retried on their message', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async (id) => {
+    calls += 1
+    if (calls === 1) throw new Error(`Unknown agent preset: ${id}`)
+    return { key: { preset: id }, async [Symbol.asyncDispose]() {} }
+  }
+  await creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 })
+  assert.equal(calls, 2)
+})
+
+test('a not-found preset is retried only until the wait window ends', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    calls += 1
+    throw Object.assign(new Error('Unknown agent preset: ghost'), {
+      code: 'agent-preset/not-found',
+    })
+  }
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { preset: 'ghost', scopeWaitMs: 30, scopePollMs: 5 }),
+    /Unknown agent preset: ghost/,
+  )
+  assert.ok(calls >= 2, `expected retries before the deadline, got ${calls}`)
+})
+
+test('a scopeWaitMs of 0 rejects the first not-found immediately', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    calls += 1
+    throw Object.assign(new Error('Unknown agent preset: cordis'), {
+      code: 'agent-preset/not-found',
+    })
+  }
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopeWaitMs: 0, scopePollMs: 1 }),
+    /Unknown agent preset/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('non-not-found acquireScope failures are never retried', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    calls += 1
+    throw Object.assign(new Error('preset cordis is broken'), { code: 'agent-preset/invalid' })
+  }
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }),
+    /preset cordis is broken/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('non-Error acquireScope failures are never retried', async () => {
+  const fixture = harness()
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    throw 'registry exploded'
+  }
+  await assert.rejects(creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }), /registry exploded/)
+})
+
+test('a registry without acquireScope reports the scope as unavailable', async () => {
+  const fixture = harness()
+  delete fixture.ctx.agentPresets.acquireScope
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }),
+    /preset scope is unavailable for "cordis"/,
+  )
+})
+
+test('a missing preset registry reports the scope as unavailable', async () => {
+  const fixture = harness()
+  fixture.ctx.agentPresets = undefined
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }),
+    /preset scope is unavailable for "cordis"/,
+  )
+})
+
+test('non-finite scope timing options fall back to the defaults', async () => {
+  const fixture = harness()
+  await creatorOverlay.apply(fixture.ctx, { scopeWaitMs: Number.NaN, scopePollMs: Number.NaN })
+  assert.equal(fixture.state().scopeKey.preset, 'cordis')
+})

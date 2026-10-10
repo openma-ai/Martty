@@ -451,6 +451,25 @@ fn failed_connection_landing_has_target_and_error_not_waiting_or_credentials() {
 }
 
 #[test]
+fn failed_connection_landing_keeps_only_the_first_error_line() {
+    let mut app = live_test_app();
+    app.server_info = Some("dsh-acp".into());
+    // The full error (including the agent stderr tail) renders wrapped in
+    // the transcript notice; the one-line status row can only carry the
+    // headline, so an embedded newline must not reach the span.
+    app.connection_error = Some("exited (1)\nAgent stderr:\nlong detail".into());
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("exited (1)"), "{text}");
+    assert!(!text.contains("Agent stderr"), "{text}");
+
+    app.connection_error = Some(String::new());
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("connection failed"), "{text}");
+}
+
+#[test]
 fn attached_landing_does_not_guess_runtime_before_initialize_or_after_failure() {
     let mut app = live_test_app();
     app.cfg.bin = "dsh-acp".into();

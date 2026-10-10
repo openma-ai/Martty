@@ -25,6 +25,38 @@ const jsonOutput = {
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
 }
 
+/**
+ * Whether an acquireScope rejection says the preset is not registered yet.
+ * Preset declarations register asynchronously while the Host activates, so
+ * the overlay can run while the registry is still empty — this is the one
+ * failure worth retrying. Everything else (broken compositions, transport
+ * failures) fails fast.
+ */
+function presetNotFound(error) {
+  return error?.code === 'agent-preset/not-found'
+    || /^Unknown agent preset: /.test(error?.message ?? '')
+}
+
+/**
+ * Acquire one preset scope lease, retrying `agent-preset/not-found` until
+ * `waitMs` elapses — the registry may still be collecting declarations when
+ * this plugin mounts. A registry without `acquireScope` resolves undefined
+ * so the caller can reject it with the usual lease check.
+ */
+async function acquirePresetScope(agentPresets, preset, waitMs, pollMs) {
+  const acquire = agentPresets?.acquireScope
+  if (typeof acquire !== 'function') return undefined
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    try {
+      return await acquire.call(agentPresets, preset)
+    } catch (error) {
+      if (!presetNotFound(error) || Date.now() >= deadline) throw error
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+  }
+}
+
 function requireAgent(exec) {
   if (exec?.agent === undefined) {
     throw new Error('TUI artifact tools require an Agent-backed Creator session')
@@ -190,7 +222,7 @@ const skillContent = skillDocument.slice(skillFrontmatter[0].length)
 
 /**
  * @param {object} ctx
- * @param {{ preset?: string }} [config]
+ * @param {{ preset?: string, scopeWaitMs?: number, scopePollMs?: number }} [config]
  */
 export async function apply(ctx, config = {}) {
   // Standalone launches mount this overlay directly into the ACP Host tree,
@@ -205,8 +237,11 @@ export async function apply(ctx, config = {}) {
   // The preset registry hands out scope keys through acquireScope (a lease
   // carrying generation.key); standingKeyFor never existed on the shipped
   // registry. Holding the lease for the overlay's lifetime keeps the scope
-  // generation alive until the overlay is disposed.
-  const lease = await ctx.agentPresets.acquireScope?.(preset)
+  // generation alive until the overlay is disposed. Declarations land after
+  // dependent rows activate, so a `not-found` result is retried briefly.
+  const scopeWaitMs = Number.isFinite(config.scopeWaitMs) ? Math.max(0, config.scopeWaitMs) : 10_000
+  const scopePollMs = Number.isFinite(config.scopePollMs) ? Math.max(1, config.scopePollMs) : 50
+  const lease = await acquirePresetScope(ctx.agentPresets, preset, scopeWaitMs, scopePollMs)
   if (lease === null || typeof lease !== 'object' || !('key' in lease)) {
     throw new Error(`tui-creator-overlay: preset scope is unavailable for ${JSON.stringify(preset)}`)
   }

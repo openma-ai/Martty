@@ -127,3 +127,29 @@ test('the status overlay omits unset facts', () => {
   )
   assert.ok(partial.includes('- dsh · 0.1.7-rc.2'), partial)
 })
+
+test('a single-line connection error stays on its bullet', () => {
+  const text = statusView.statusMarkdown({
+    state: 'idle',
+    connection: 'not attached',
+    error: 'ACP process exited (1) before completing the request',
+    session: {},
+  }, {})
+  assert.ok(text.includes('- connection error · ACP process exited (1) before completing the request'), text)
+  assert.ok(!text.includes('```'), text)
+})
+
+test('a multi-line connection error keeps its diagnostics in a fenced block', () => {
+  const text = statusView.statusMarkdown({
+    state: 'idle',
+    connection: 'not attached',
+    error: 'ACP process exited (1) before completing the request\n'
+      + 'Agent stderr:\n'
+      + '[dsh-acp] error: incompatible DeepSeek Harness: @deepseek-ai/dsh 0.1.1-rc.2 found\n'
+      + 'supported versions: 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2',
+    session: {},
+  }, {})
+  assert.ok(text.includes('- connection error · ACP process exited (1) before completing the request'), text)
+  assert.ok(text.includes('```text\nAgent stderr:\n[dsh-acp] error: incompatible DeepSeek Harness'), text)
+  assert.ok(text.includes('supported versions: 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2\n```'), text)
+})

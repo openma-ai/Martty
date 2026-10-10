@@ -12,6 +12,17 @@ All notable changes to this project are documented here. The project follows
   now takes a scoped preset lease via `acquireScope`, which exists on every
   published `@deepseek-ai/dsh-agent-preset-registry`, and releases it when the
   overlay is disposed.
+- The Creator overlay now activates on the bundled runtime: the preset roster
+  fills in shortly after the overlay mounts, so `acquireScope` retries briefly
+  on `agent-preset/not-found` (bounded by `scopeWaitMs`) instead of failing the
+  entry on the first attempt.
+- Agent stderr warnings are now visible in the TUI: warning/error lines from
+  the spawned agent (e.g. "1 entry did not activate" and its RemoteError) show
+  as a notice in the input dock, so a failed bundle entry is no longer silent.
+- A failed ACP attach now shows the whole error: the status row keeps only the
+  first line (an embedded newline could never render there), the agent stderr
+  tail renders wrapped in the transcript instead of being hidden under the
+  welcome banner, and `/status` shows the full message in a fenced block.
 - `/status` shows the dsh runtime the ACP agent actually booted
   (`- dsh · <version> via <source>`), reported by dsh-acp through
   `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the
