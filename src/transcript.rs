@@ -428,6 +428,9 @@ pub struct Transcript {
     agent_seq: usize,
     image_seq: u32,
     plan_cell: Option<usize>,
+    /// Live auto-retry status line, updated in place while attempts advance
+    /// and finalized by `RetryFinished` (`None` between retry cycles).
+    retry_cell: Option<usize>,
     pub usage: UsageTotals,
     pub stats: SessionStats,
     turn_started: Option<Instant>,
@@ -463,6 +466,7 @@ impl Transcript {
             agent_seq: 0,
             image_seq: 0,
             plan_cell: None,
+            retry_cell: None,
             usage: UsageTotals::default(),
             stats: SessionStats::default(),
             turn_started: None,
@@ -490,6 +494,7 @@ impl Transcript {
         self.tools.clear();
         self.agents.clear();
         self.plan_cell = None;
+        self.retry_cell = None;
         self.usage = UsageTotals::default();
         self.stats = SessionStats::default();
         self.turn_started = None;
@@ -503,6 +508,7 @@ impl Transcript {
         self.open_reasoning.clear();
         self.tools.clear();
         self.plan_cell = None;
+        self.retry_cell = None;
         self.last_finish = None;
         self.gen = self.gen.wrapping_add(1);
     }
@@ -545,6 +551,26 @@ impl Transcript {
 
     pub fn push_notice(&mut self, level: NoticeLevel, text: String) {
         self.cells.push(Cell::new(CellKind::Notice { level, text }));
+    }
+
+    /// The live auto-retry status line: the first attempt pushes a notice,
+    /// later events rewrite it in place until `RetryFinished` settles it.
+    /// A tracked index that no longer names a notice cell is forgotten and
+    /// the update starts a fresh line.
+    fn update_retry_cell(&mut self, level: NoticeLevel, text: String) {
+        if let Some(idx) = self.retry_cell {
+            match self.cells.get_mut(idx).map(|cell| &mut cell.kind) {
+                Some(CellKind::Notice { level: current, text: body }) => {
+                    *current = level;
+                    *body = text;
+                    self.cells[idx].bump();
+                    return;
+                }
+                _ => self.retry_cell = None,
+            }
+        }
+        self.push_notice(level, text);
+        self.retry_cell = Some(self.cells.len() - 1);
     }
 
     pub fn push_shell(&mut self, command: String) -> usize {
@@ -1159,6 +1185,69 @@ impl Transcript {
                         .trf("⚖ approval · {}", "⚖ 审批 · {}", &[outcome.clone()]),
                 );
             }
+            UiEvent::RetryStatus {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error,
+                ..
+            } => {
+                let seconds = retry_delay_seconds(delay_ms);
+                let max = if max_attempts > 0 {
+                    max_attempts.to_string()
+                } else {
+                    "?".into()
+                };
+                let why = error
+                    .as_ref()
+                    .map(|error| format!(" — {error}"))
+                    .unwrap_or_default();
+                self.update_retry_cell(
+                    NoticeLevel::Warn,
+                    self.locale.trf(
+                        "Retrying (attempt {}/{} · waiting {}s){}",
+                        "重试中（第 {}/{} 次 · 等待 {} 秒）{}",
+                        &[
+                            attempt.to_string(),
+                            max,
+                            seconds,
+                            why,
+                        ],
+                    ),
+                );
+            }
+            UiEvent::RetryFinished {
+                attempt,
+                success,
+                error,
+                ..
+            } => {
+                let why = error
+                    .as_deref()
+                    .map(|error| format!(" — {error}"))
+                    .unwrap_or_default();
+                let (level, text) = if success {
+                    (
+                        NoticeLevel::Info,
+                        self.locale.tr(
+                            "Retry succeeded — resuming",
+                            "重试成功 —— 已恢复",
+                        )
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        NoticeLevel::Error,
+                        self.locale.trf(
+                            "All {} retries failed{}",
+                            "全部 {} 次重试均失败{}",
+                            &[attempt.to_string(), why],
+                        ),
+                    )
+                };
+                self.update_retry_cell(level, text);
+                self.retry_cell = None;
+            }
             UiEvent::Palette { .. } => {}
         }
     }
@@ -1618,6 +1707,16 @@ fn thumb_rows(cols: usize, w: u32, h: u32) -> usize {
     }
     let rows = (cols as f64 * h as f64 / (2.0 * w as f64)).round() as usize;
     rows.clamp(2, 12)
+}
+
+/// Retry backoff for the status line: whole seconds stay compact (`2s`),
+/// fractional ones keep one decimal (`2.5s`).
+fn retry_delay_seconds(delay_ms: u64) -> String {
+    if delay_ms % 1000 == 0 {
+        (delay_ms / 1000).to_string()
+    } else {
+        format!("{:.1}", delay_ms as f64 / 1000.0)
+    }
 }
 
 fn plural(n: usize) -> &'static str {

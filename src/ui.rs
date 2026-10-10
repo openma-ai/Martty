@@ -190,6 +190,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
     app.slot_actions.clear();
     app.tab_rects.clear();
+    app.tab_close_rects.clear();
     app.pet_want = None;
     app.harness_thumb = None;
     app.caret_cell = None;
@@ -1187,12 +1188,12 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     if total == 0 || area.width < 4 {
         return;
     }
-    // Per-tab display width: `" {indicator} {label} "` plus the trailing
+    // Per-tab display width: `" {indicator} {label} ×"` plus the trailing
     // arrow. Every indicator — Braille spinner included — is one cell, so
     // the widths only depend on the clamped label.
     let widths: Vec<usize> = tabs
         .iter()
-        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 5)
+        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 6)
         .collect();
     let avail = right.saturating_sub(area.x as usize);
 
@@ -1280,7 +1281,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme.fg_secondary).bg(tab_bg)
         };
         let arrow_width = ARROW.width();
-        let width = indicator.width() + label.width() + 3 + arrow_width;
+        let width = indicator.width() + label.width() + 4 + arrow_width;
         if x + width > right {
             let remaining = total - idx;
             let note = format!(" +{remaining}");
@@ -1291,13 +1292,25 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         }
         app.tab_rects
             .push((Rect::new(x as u16, area.y, width as u16, 1), idx));
+        // The `×` cell closes this tab (issue #146): its own hit rect so a
+        // click here never falls through to `tab_at` and switches instead.
+        app.tab_close_rects.push((
+            Rect::new((x + 4 + label.width()) as u16, area.y, 1, 1),
+            idx,
+        ));
         spans.push(Span::styled(format!(" {indicator} ",), indicator_style));
         spans.push(Span::styled(format!("{label} "), label_style));
+        let close_style = if tab.current {
+            Style::default().fg(active_fg).bg(tab_bg)
+        } else {
+            Style::default().fg(theme.caption).bg(tab_bg)
+        };
+        spans.push(Span::styled("×", close_style));
         let next_fits = tabs.get(idx + 1).is_some_and(|next| {
             let next_label = crate::transcript::clamp_str(&next.label, 16);
             // Every native status marker (including the Braille spinner) is
             // one terminal cell wide.
-            let next_width = next_label.width() + 4;
+            let next_width = next_label.width() + 5;
             x + width + next_width <= right
         });
         let next_bg = tabs
@@ -1904,16 +1917,16 @@ fn status_title(app: &App) -> Line<'static> {
     }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    let key_style = Style::default().fg(theme.fg_tertiary);
     // Mode chips: folded from the durable event stream (same facts as the
     // Web UI chips). Stock defaults render until the host reports its own
     // facts, so the landing screen still advertises preset + permission.
+    // Values only — the bindings live in /keys, not glued to the chips
+    // (issue #148).
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
         format!("· {}", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
-    spans.push(Span::styled(" ctrl+shift+a", key_style));
     let perm = app
         .modes
         .permission
@@ -1938,7 +1951,6 @@ fn status_title(app: &App) -> Line<'static> {
             theme.fg_tertiary
         }),
     ));
-    spans.push(Span::styled(" shift+tab", key_style));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
             format!(" · {approval}"),
@@ -1954,92 +1966,35 @@ fn status_title(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Contextual shortcut hints — a tiny state machine over (run state ×
-/// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty renders nothing (`/keys` lives in the tip
-/// banner, not the dock).
+/// Contextual hints — trimmed to the one affordance worth keeping in the
+/// dock: `esc` interrupts a running turn. Every other binding is
+/// discoverable through `/keys` and the slash descriptions (issue #148);
+/// modal flows (queue editor, slash completion, delete confirm) keep
+/// working, they are just no longer advertised here — and suppress the
+/// interrupt label too, since esc then closes the modal rather than the
+/// turn.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
-    let key = Style::default()
-        .fg(theme.fg_tertiary)
-        .add_modifier(Modifier::BOLD);
-    let lbl = Style::default().fg(theme.caption);
-    let running = !matches!(app.state, RunState::Idle);
-    let edit_queue_key = if cfg!(target_os = "macos") {
-        "⌥↑"
-    } else {
-        "alt+↑"
-    };
-    let pairs: Vec<(&str, &str)> = if app.queue_delete_confirming() {
-        vec![
-            ("⏎", app.locale.tr("delete", "删除")),
-            ("esc", app.locale.tr("back", "返回")),
-        ]
-    } else if app.queue_selecting() {
-        vec![
-            ("↑↓", app.locale.tr("choose", "选择")),
-            ("⏎", app.locale.tr("edit", "编辑")),
-            ("esc", app.locale.tr("close", "关闭")),
-        ]
-    } else if app.slash_completion_open() {
-        vec![
-            ("⏎", app.locale.tr("select", "选择")),
-            ("esc", app.locale.tr("close", "关闭")),
-        ]
-    } else if app.queue_editing() {
-        vec![
-            ("⏎", app.locale.tr("save", "保存")),
-            ("^d", app.locale.tr("delete", "删除")),
-            ("esc", app.locale.tr("cancel", "取消")),
-        ]
-    } else {
-        match (running, app.input.is_empty()) {
-            // Working, nothing typed: stop it or edit the pending FIFO.
-            (true, true) if app.queued > 0 => vec![
-                (edit_queue_key, app.locale.tr("edit queue", "编辑队列")),
-                ("esc", app.locale.tr("interrupt", "中断")),
-            ],
-            (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
-            // Working with a draft: enter queues; ctrl+enter steers without
-            // cancellation.
-            (true, false) => vec![
-                ("⏎", app.locale.tr("queue", "排队")),
-                ("ctrl+⏎", app.locale.tr("steer", "立即转向")),
-                ("esc", app.locale.tr("interrupt", "中断")),
-            ],
-            // Idle, empty: point at the FIFO editor; otherwise nothing.
-            (false, true) if app.queued > 0 => {
-                vec![(edit_queue_key, app.locale.tr("edit queue", "编辑队列"))]
-            }
-            (false, true) => vec![],
-            // Idle with a draft: enter's meaning follows the prefix.
-            (false, false) if app.input.lines()[0].starts_with('/') => {
-                vec![("⏎", app.locale.tr("command", "命令"))]
-            }
-            (false, false) if app.input.lines()[0].starts_with('!') => {
-                vec![("⏎", app.locale.tr("shell", "运行命令"))]
-            }
-            (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
-        }
-    };
-    let mut spans = Vec::new();
-    for (i, (k, l)) in pairs.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                " · ".to_string(),
-                Style::default().fg(theme.border),
-            ));
-        }
-        spans.push(Span::styled(k.to_string(), key));
-        spans.push(Span::styled(format!(" {l}"), lbl));
+    let modal_open = app.queue_delete_confirming()
+        || app.queue_selecting()
+        || app.slash_completion_open()
+        || app.queue_editing();
+    if modal_open || matches!(app.state, RunState::Idle) {
+        return Vec::new();
     }
-    if !pairs.is_empty() {
-        spans.push(Span::styled(
-            " · ".to_string(),
-            Style::default().fg(theme.border),
-        ));
-    }
-    spans
+    vec![
+        Span::styled(
+            "esc".to_string(),
+            Style::default()
+                .fg(theme.fg_tertiary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}", app.locale.tr("interrupt", "中断")),
+            Style::default().fg(theme.caption),
+        ),
+        Span::styled(" · ".to_string(), Style::default().fg(theme.border)),
+    ]
 }
 
 /// Meta row, right side: contextual shortcut hints, model chip (brand
@@ -4170,6 +4125,80 @@ fn shorten_home(path: &str) -> String {
     match std::env::var("HOME") {
         Ok(home) if path.starts_with(&home) => format!("~{}", &path[home.len()..]),
         _ => path.to_string(),
+    }
+}
+
+/// `OSC 111` — restore the terminal's own default background.
+///
+/// The painter fills every cell of the grid (see `draw`), but terminals
+/// also color regions no cell writer can reach — the unusable sub-cell
+/// strip below the last row of a non-integer-height window, lines the
+/// emulator scrolls in, areas restored by non-BCE erases — with the
+/// terminal default background, not with cell colors. Because the app
+/// never set it, that strip read as a gray band under the status bar on
+/// macOS terminals (#145). Syncing the default background to the canvas
+/// color via `OSC 11` makes those emulator-painted regions match.
+pub const OSC_BG_RESET: &str = "\x1b]111\x1b\\";
+
+/// Mirrors crossterm's `Colored::ansi_color_disabled`
+/// (<https://no-color.org/>): a non-empty `NO_COLOR` suppresses all ANSI
+/// colour output. The OSC background sync counts as colour output and
+/// must be suppressed too — with SGR colours off, the terminal's default
+/// fg draws on its default bg, so forcing the bg to the canvas colour
+/// (e.g. light theme's white) makes every glyph invisible on the
+/// same-coloured background (#149 regression: `NO_COLOR` + `--theme
+/// light` rendered a blank white window).
+pub fn ansi_color_disabled() -> bool {
+    !std::env::var("NO_COLOR").unwrap_or_default().is_empty()
+}
+
+/// Emits `OSC 11`/`OSC 111` when the canvas background changes, unless
+/// `NO_COLOR` disables colour output entirely. One instance lives in the
+/// run loop; `restore_terminal` always writes [`OSC_BG_RESET`] directly
+/// because it runs from exit paths (and the panic hook) that cannot reach
+/// this state — an idempotent restore is safe even when nothing was set.
+pub struct CanvasBgSync {
+    enabled: bool,
+    last: Option<ratatui::style::Color>,
+}
+
+impl CanvasBgSync {
+    /// `enabled=false` suppresses emission completely (used under
+    /// `NO_COLOR`; see [`ansi_color_disabled`]).
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last: None,
+        }
+    }
+
+    /// Write the background-sync sequence into `out` when `color` changed
+    /// since the previous call. Writes nothing when disabled or when the
+    /// canvas colour is unchanged.
+    pub fn sync<W: std::io::Write>(
+        &mut self,
+        out: &mut W,
+        color: ratatui::style::Color,
+    ) -> std::io::Result<()> {
+        if !self.enabled || self.last == Some(color) {
+            return Ok(());
+        }
+        self.last = Some(color);
+        out.write_all(canvas_bg_sequence(color).as_bytes())
+    }
+}
+
+/// The sequence setting the terminal default background to `color`
+/// (`OSC 11 ; #rrggbb`), or [`OSC_BG_RESET`] for `Color::Reset` — kitty
+/// backdrop sessions leave cells Reset so the emulator's own background
+/// shows through, and strips should match those cells. Non-Rgb named
+/// canvas colors also take the reset (themes ship Rgb).
+pub fn canvas_bg_sequence(color: ratatui::style::Color) -> String {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => {
+            format!("\x1b]11;#{r:02x}{g:02x}{b:02x}\x1b\\")
+        }
+        _ => OSC_BG_RESET.to_string(),
     }
 }
 

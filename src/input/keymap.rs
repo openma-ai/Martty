@@ -74,6 +74,8 @@ pub enum Action {
     CopySelection,
     /// Cut the keyboard selection (clipboard + yank + delete).
     CutSelection,
+    /// Close the current session tab (issue #146).
+    CloseSession,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -148,6 +150,11 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // readline kill-to-line-end behavior.
         KeyCode::Char('k') if ctrl && shift => KillLine,
         KeyCode::Char('k') if ctrl => KillToEnd,
+        // ctrl+shift+w (⌘w on macOS) closes the session tab; legacy
+        // terminals collapse the chord to ^w, which safely degrades to
+        // delete-word-back.
+        KeyCode::Char('w') if sup => CloseSession,
+        KeyCode::Char('w') if ctrl && shift => CloseSession,
         KeyCode::Char('w') if ctrl => DeleteWordBack,
         // ^e = end of line — also what ghostty/iterm send for ⌘→.
         KeyCode::Char('e') if ctrl && shift => SelectLineEnd,
@@ -902,6 +909,19 @@ pub const KEY_ROWS: &[KeyRow] = &[
         probes: &[p(KeyCode::Char('l'), CTRL, false)],
     },
     KeyRow {
+        action: CloseSession,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+shift+w", "⌘w"],
+        chords_other: &["ctrl+shift+w"],
+        ctx: CtxNote::Always,
+        desc_en: "close this session tab — a running turn asks once to confirm",
+        desc_zh: "关闭当前会话标签 —— 会话仍在运行时需再按一次确认",
+        probes: &[
+            p(KeyCode::Char('w'), CTRL_SHIFT, false),
+            p(KeyCode::Char('w'), SUPER, false),
+        ],
+    },
+    KeyRow {
         action: TabComplete,
         group: KeyGroup::App,
         chords_mac: &["tab"],
@@ -926,8 +946,8 @@ pub const KEY_ROWS: &[KeyRow] = &[
 pub const MOUSE_ROWS: &[MouseRow] = &[
     MouseRow {
         chords: &["click tab"],
-        desc_en: "switch session tab (strip shows 2+ sessions) · /session prev · /session next · /new · /fork · /resume · /close",
-        desc_zh: "点击标签页切换会话（≥2 个会话时显示）· /session prev · /session next · /new · /fork · /resume · /close",
+        desc_en: "switch session tab · click its × to close it (strip shows 2+ sessions) · /session prev · /session next · /new · /fork · /resume · /close",
+        desc_zh: "点击标签页切换会话 · 点标签上的 × 关闭它（≥2 个会话时显示）· /session prev · /session next · /new · /fork · /resume · /close",
     },
     MouseRow {
         chords: &["click"],

@@ -34,7 +34,7 @@ Run `martty harness list` to inspect configuration. If your shell cannot find `m
 
 Martty can reuse a detected local executable without changing your system PATH. Registry npx/uvx entries use the supplied launch recipe. Saving that recipe does not mean the package is already downloaded; a CLI-configured package may download on its first launch.
 
-Binary distributions are selected for the operating system and architecture, verified with SHA-256, and installed in a Martty-owned directory such as `~/.martty/bin/<id>/<version>/<platform>` on macOS. Windows uses its corresponding user directory and platform package; adding the installation to the system PATH is not required.
+Binary distributions are selected for the operating system and architecture, verified with SHA-256, and installed in a Martty-owned directory such as `~/.oma/bin/<id>/<version>/<platform>` on macOS. Windows uses its corresponding user directory and platform package; adding the installation to the system PATH is not required.
 
 If npx or uvx is missing, prepare Node.js/npm or uv. A compatible binary distribution can be used when the entry provides one. Some Registry entries are adapters that still need another CLI. An `executable not found` error means that dependency must be resolved; installing the adapter alone does not prove the agent is ready.
 

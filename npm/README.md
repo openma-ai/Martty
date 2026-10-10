@@ -198,10 +198,11 @@ Creator-authored UI Presets and Theme Plugins preview as process-local dynamic
 Packages, then persist explicitly under `$MARTTY_HOME/plugins` through
 `tui_plugin_save`; `tui_plugin_read` resumes authoring after restart.
 
-`MARTTY_HOME` resolves explicitly first, then to `$DSH_HOME/.martty`, then to
-`~/.martty`. UI choices live in `$MARTTY_HOME/settings.json`. On first use,
-legacy Creator artifacts and settings are copied forward without deleting or
-overwriting the old files.
+`MARTTY_HOME` (or `OMA_HOME`) resolves explicitly first, then to
+`$DSH_HOME/.oma`, then to `~/.oma` — the configuration home Martty shares
+with Backchat. UI choices live in `$MARTTY_HOME/settings.json`. On first use,
+a legacy `.martty` directory and old Creator artifacts/settings are copied
+forward without deleting or overwriting the old files.
 
 Third-party TUI plugins remain ordinary installed packages. Their Host-side
 registrar contributes an absolute Client module entry to `tuiClientPlugins`;

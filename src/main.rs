@@ -398,6 +398,29 @@ fn main() -> Result<()> {
     let (bus_tx, bus_rx) = mpsc::channel::<AppEvent>();
     install_termination_handler(bus_tx.clone())?;
 
+    // Test hook: DSH_TUI_DEMO_DOCK populates the conversation.composer.dock
+    // slot (the session stats row under the composer) through the same
+    // slots-update notification the real stats-view client plugin sends, so
+    // demo/PTY runs can exercise the shipped stats-row layout (#145).
+    if args.demo && std::env::var_os("DSH_TUI_DEMO_DOCK").is_some() {
+        let _ = bus_tx.send(AppEvent::Rpc {
+            method: crate::cordis::SLOTS_UPDATE.to_string(),
+            params: serde_json::json!({
+                "protocol": 0,
+                "slot": "conversation.composer.dock",
+                "rev": 1,
+                "nodes": [
+                    { "id": "stats:counts", "kind": "generic",
+                      "title": "2 turns · 0 steps", "body": "" },
+                    { "id": "stats:time", "kind": "generic",
+                      "title": "LLM 13.6s · Tool call 0s", "body": "" },
+                    { "id": "stats:speed", "kind": "generic",
+                      "title": "TTFT avg 1.9s", "body": "" }
+                ]
+            }),
+        });
+    }
+
     // `--demo` / `--demo-skin`: JSON-RPC attach for palette + scripted turns.
     // Live: official ACP on those fds (Node mux) or a spawned agent.
     let controller = if args.demo {
@@ -533,9 +556,18 @@ fn main() -> Result<()> {
         session_id: app.session_id.clone(),
     });
 
+    // Test hook: DSH_TUI_TEST_PANIC panics after the panic hook is
+    // installed, so tests/osc_bg.rs can prove `restore_terminal` (and its
+    // OSC 111 background restore) runs on the panic path too.
+    if std::env::var_os("DSH_TUI_TEST_PANIC").is_some() {
+        panic!("DSH_TUI_TEST_PANIC");
+    }
+
     let run = (|| -> Result<()> {
         let mut last_tick = std::time::Instant::now();
         let mut frames = FramePacer::new(Instant::now());
+        // Suppressed entirely under NO_COLOR (see ui::ansi_color_disabled).
+        let mut canvas_bg_sync = ui::CanvasBgSync::new(!ui::ansi_color_disabled());
         loop {
             if app.harness_switch_in_progress() {
                 let _ = repair_tui_raw_mode();
@@ -554,6 +586,12 @@ fn main() -> Result<()> {
                 // the cursor, and the frame diff would otherwise leave it
                 // wherever the last cell write happened.
                 std::io::stdout().sync_update(|out| -> Result<()> {
+                    // Sync the terminal's default background to the canvas
+                    // color: strips the emulator fills itself (the sub-cell
+                    // remainder of a non-integer-height window, scrolled-in
+                    // lines, non-BCE erase areas) otherwise show the profile
+                    // bg — a gray band under the status bar (#145).
+                    let _ = canvas_bg_sync.sync(out, app.canvas_background_color());
                     terminal.draw(|f| ui::draw(f, &mut app))?;
                     app.needs_redraw = false;
                     // Reconcile the kitty pixel layers against the freshly
@@ -774,6 +812,8 @@ fn restore_terminal() {
         // Drop any kitty placement (panic-safe: also runs from the hook).
         let _ = stdout.write_all(pet::KITTY_DELETE_ALL.as_bytes());
     }
+    // Hand the profile background back before leaving (#145).
+    let _ = stdout.write_all(ui::OSC_BG_RESET.as_bytes());
     let _ = execute!(stdout, PopKeyboardEnhancementFlags);
     let _ = execute!(
         stdout,

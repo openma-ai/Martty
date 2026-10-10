@@ -56,7 +56,7 @@ depend on a value returned by `apply()` as the disposer; register effects
 through the inspected Cordis APIs.
 
 The authoring root is `$MARTTY_HOME/plugins`; `MARTTY_HOME` resolves from the
-explicit environment variable, then `$DSH_HOME/.martty`, then `~/.martty`.
+explicit environment variable or `OMA_HOME`, then `$DSH_HOME/.oma`, then `~/.oma`.
 User selections live separately in `$MARTTY_HOME/settings.json`.
 
 ## Inspect is the authority

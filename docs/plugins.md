@@ -391,9 +391,9 @@ TUI 合并三个来源，按 builtin、已安装 package、Creator artifact 的�
 
 `tui_plugin_save` 只接受没有 `code.host` 的 Package。只要存在 Host half，无论是否同时
 存在 Client half，完整 Plugin 都归当前 Harness，并使用 Harness 自己的持久安装路径；
-Martty 不把 Host 代码写入 `.martty`。
+Martty 不把 Host 代码写入 `.oma`。
 
-`MARTTY_HOME` 的解析顺序是显式环境变量、`$DSH_HOME/.martty`、`~/.martty`。
+`MARTTY_HOME`（或 `OMA_HOME`）的解析顺序是显式环境变量、`$DSH_HOME/.oma`、`~/.oma`；首次启动自动迁移 `.martty`。
 旧 `$DSH_HOME/.tui-plugins` 与 `~/.dsh-tui/sessions/dsh-tui-settings.json` 在首次启动时
 只复制到新位置；不删除旧数据，也不覆盖已经存在的 Martty 数据。
 

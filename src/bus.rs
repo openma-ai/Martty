@@ -83,6 +83,8 @@ pub struct SessionConnection {
     pub resume_session: bool,
     /// Agent advertised `sessionCapabilities.fork` as an object (`{}`).
     pub fork_session: bool,
+    /// Agent advertised `sessionCapabilities.close` (`{}` or `true`).
+    pub close_session: bool,
     /// Agent advertised `sessionCapabilities.additionalDirectories`.
     pub additional_directories: bool,
 }
@@ -191,6 +193,8 @@ pub enum CtlEvent {
         resume_session: bool,
         /// `sessionCapabilities.fork` was an object (`{}`).
         fork_session: bool,
+        /// `sessionCapabilities.close` was an object (`{}`) or `true`.
+        close_session: bool,
         /// `sessionCapabilities.additionalDirectories` was an object (`{}`).
         additional_directories: bool,
     },
@@ -511,11 +515,21 @@ pub enum Cmd {
     ResumeSession {
         session_id: String,
     },
-    /// `/close`: this client stops viewing a session. ACP has no
-    /// session/close, so the server-side session survives; the controller
+    /// This client stops viewing a session, silently: the controller
     /// drops the session's turn state and queued prompts so nothing more is
-    /// sent into the void, and its later events settle at the router.
+    /// sent into the void, and its later events settle at the router. Used
+    /// by internal discards (a tab replaced while empty, a bind that
+    /// resolves after its requester died); the user-facing close sends
+    /// [`Cmd::CloseSession`] instead, which also notifies capable agents.
     ForgetSession {
+        session_id: String,
+    },
+    /// `/close`, the tab-strip `×`, or ctrl+shift+w: the user closed this
+    /// session's tab. When the owning connection advertised
+    /// `sessionCapabilities.close`, `session/close` goes on the wire first
+    /// (the agent cancels its ongoing work and frees the session); the
+    /// local drop then happens either way.
+    CloseSession {
         session_id: String,
     },
     Shutdown,

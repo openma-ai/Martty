@@ -197,7 +197,7 @@ cordis_define → cordis_run → tui_plugin_save → $MARTTY_HOME/plugins
 ```
 
 Martty 会在下次启动时重新发现这个 Artifact。包含 `code.host` 的 Host-only 或双向
-Plugin 不能写进 `.martty`；Creator 先用 `cordis_inspect_self` 读取已经验证的 Package
+Plugin 不能写进 `.oma`；Creator 先用 `cordis_inspect_self` 读取已经验证的 Package
 源码，再把它整理成普通 Cordis npm Package 或本地 Package，安装进 profile：
 
 ```sh

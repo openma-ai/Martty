@@ -534,7 +534,7 @@ fn welcome_info_uses_the_active_acp_runtime_and_reported_session_model() {
 }
 
 #[test]
-fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
+fn status_chips_show_values_without_inline_key_hints() {
     let flat = |line: &Line| -> String {
         line.spans
             .iter()
@@ -544,35 +544,31 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     let mut app = test_app();
 
     app.locale = crate::locale::Locale::Zh;
-    let zh_line = status_title(&app);
-    let zh = flat(&zh_line);
-    assert!(
-        zh.contains("Standard mode ctrl+shift+a · 工作区可写 shift+tab"),
-        "{zh}"
-    );
+    let zh = flat(&status_title(&app));
+    // Issue #148: values only — the bindings live in /keys, not the dock.
+    assert!(zh.contains("Standard mode · 工作区可写"), "{zh}");
+    assert!(!zh.contains("ctrl+shift+a"), "{zh}");
+    assert!(!zh.contains("shift+tab"), "{zh}");
     assert!(!zh.contains("permission"), "{zh}");
     assert!(!zh.contains("权限"), "{zh}");
 
     app.locale = crate::locale::Locale::En;
     let en_line = status_title(&app);
     let en = flat(&en_line);
-    assert!(
-        en.contains("Standard mode ctrl+shift+a · Workspace Write shift+tab"),
-        "{en}"
-    );
+    assert!(en.contains("Standard mode · Workspace Write"), "{en}");
+    assert!(!en.contains("ctrl+shift+a"), "{en}");
+    assert!(!en.contains("shift+tab"), "{en}");
     assert!(!en.contains("permission"), "{en}");
     assert!(!en.contains("access"), "{en}");
 
-    let key_spans = en_line
-        .spans
-        .iter()
-        .filter(|span| span.content.contains('+'))
-        .collect::<Vec<_>>();
-    assert_eq!(key_spans.len(), 2, "{en}");
-    assert!(key_spans.iter().all(|span| {
-        span.style.fg == Some(app.theme.fg_tertiary)
-            && !span.style.add_modifier.contains(Modifier::BOLD)
-    }));
+    // No chord-looking spans remain anywhere in the chip row.
+    assert!(
+        en_line
+            .spans
+            .iter()
+            .all(|span| !span.content.contains('+')),
+        "{en}"
+    );
     let value_spans = en_line
         .spans
         .iter()
@@ -584,9 +580,39 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     assert!(value_spans
         .iter()
         .all(|span| span.style.fg == Some(app.theme.fg_tertiary)));
-    // Issue #77: the shortcut hints share the light tertiary tone of the
-    // mode labels and the composer stats dock readout (no brand accent).
-    assert_eq!(key_spans[0].style.fg, value_spans[0].style.fg);
+}
+
+#[test]
+fn status_chips_render_optional_approval_plan_and_fallback_labels() {
+    let flat = |line: &Line| -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    let mut app = test_app();
+
+    // Approval and plan chips render when the host reports them — still
+    // values only, no key glued on (#148).
+    app.modes.approval = Some("on-request".into());
+    app.modes.plan = true;
+    let line = status_title(&app);
+    let s = flat(&line);
+    assert!(s.contains(" · on-request"), "{s}");
+    assert!(s.contains(" · plan"), "{s}");
+    assert!(!s.contains('+'), "{s}");
+
+    // zh: a permission id outside the renamed trio falls back to the
+    // shared label, and a sandbox-only mode feeds the same chip.
+    app.locale = crate::locale::Locale::Zh;
+    app.modes.permission = Some("custom-perm".into());
+    let s = flat(&status_title(&app));
+    assert!(s.contains("Custom Perm"), "{s}");
+    app.modes.permission = None;
+    app.modes.sandbox = Some("sandbox-mode".into());
+    let s = flat(&status_title(&app));
+    assert!(s.contains("Sandbox Mode"), "{s}");
+    assert!(!s.contains('+'), "{s}");
 }
 
 #[test]
@@ -619,43 +645,43 @@ fn cordis_protocol_id_is_rendered_as_creator() {
 }
 
 #[test]
-fn meta_row_hints_follow_the_state_machine() {
+fn meta_row_hints_only_advertise_the_running_interrupt() {
     let flat = |spans: Vec<Span>| -> String {
         spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     };
     let mut app = test_app();
-    // idle · empty → no dock hint at all (no /keys; ctrl+k belongs to the editor)
-    let s = flat(context_hints(&app));
-    assert!(s.is_empty(), "{s}");
-    assert!(!s.contains("keys"), "{s}");
-    // idle · draft → enter sends
-    app.input.set("hello".into());
-    let s = flat(context_hints(&app));
-    assert!(s.contains("⏎ send"), "{s}");
-    assert!(!s.contains("keys"), "{s}");
-    // idle · slash recommendations own Enter/Esc; shell drafts relabel Enter
-    app.input.set("/mo".into());
-    let s = flat(context_hints(&app));
-    assert!(s.contains("⏎ select") && s.contains("esc close"), "{s}");
-    app.input.set("!ls".into());
-    assert!(flat(context_hints(&app)).contains("⏎ shell"));
-    // running · empty → interrupt only
-    app.state = RunState::Running;
+    // Issue #148: only the mid-turn interrupt survives in the dock — every
+    // other binding lives in /keys. Idle states render nothing, whatever
+    // the draft holds (plain text, slash command, shell, pending FIFO).
+    for draft in ["", "hello", "/mo", "!ls"] {
+        app.input.set(draft.into());
+        let s = flat(context_hints(&app));
+        assert!(s.is_empty(), "idle draft {draft:?} rendered {s:?}");
+    }
     app.input.clear();
+    app.queued = 2;
+    assert!(flat(context_hints(&app)).is_empty());
+    app.queued = 0;
+    // Running, draft or not: esc interrupt, and nothing else.
+    app.state = RunState::Running;
+    for draft in ["", "follow-up"] {
+        app.input.set(draft.into());
+        let s = flat(context_hints(&app));
+        assert!(s.contains("esc interrupt"), "{s}");
+        assert!(!s.contains("⏎"), "{s}");
+        assert!(!s.contains("queue"), "{s}");
+        assert!(!s.contains("steer"), "{s}");
+        assert!(!s.contains("send"), "{s}");
+    }
+    // zh localizes the surviving label.
+    app.locale = crate::locale::Locale::Zh;
     let s = flat(context_hints(&app));
-    assert!(s.contains("esc interrupt"), "{s}");
+    assert!(s.contains("esc 中断"), "{s}");
     assert!(!s.contains("⏎"), "{s}");
-    // running · draft → queue + send-now + interrupt
-    app.input.set("follow-up".into());
-    let s = flat(context_hints(&app));
-    assert!(
-        s.contains("⏎ queue") && s.contains("ctrl+⏎ steer") && s.contains("esc interrupt"),
-        "{s}"
-    );
 }
 
 #[test]
-fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
+fn meta_row_hints_stay_quiet_while_queue_modals_are_open() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     let flat = |spans: Vec<Span>| -> String {
@@ -665,6 +691,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
     let (ctl, _commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
     app.input.set("queued draft".into());
+    // Plain running state still advertises the interrupt (#148 keeps it).
+    assert!(flat(context_hints(&app)).contains("esc interrupt"));
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -677,10 +705,11 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         &ctl,
     );
 
-    let selecting = flat(context_hints(&app));
-    assert!(selecting.contains("↑↓ choose"), "{selecting}");
-    assert!(selecting.contains("⏎ edit"), "{selecting}");
-    assert!(selecting.contains("esc close"), "{selecting}");
+    // Modal flows still work — they just aren't advertised in the dock,
+    // and an open modal suppresses the interrupt label since esc then
+    // closes the modal rather than the turn.
+    assert!(app.queue_selecting(), "queue picker should be open");
+    assert!(flat(context_hints(&app)).is_empty());
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -689,10 +718,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         &ctl,
     );
 
-    let edit = flat(context_hints(&app));
-    assert!(edit.contains("⏎ save"), "{edit}");
-    assert!(edit.contains("^d delete"), "{edit}");
-    assert!(edit.contains("esc cancel"), "{edit}");
+    assert!(app.queue_editing(), "queue editor should be open");
+    assert!(flat(context_hints(&app)).is_empty());
 
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
@@ -701,9 +728,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         ))),
         &ctl,
     );
-    let confirm = flat(context_hints(&app));
-    assert!(confirm.contains("⏎ delete"), "{confirm}");
-    assert!(confirm.contains("esc back"), "{confirm}");
+    assert!(app.queue_delete_confirming(), "delete confirm should be open");
+    assert!(flat(context_hints(&app)).is_empty());
 }
 
 #[test]
@@ -3859,4 +3885,130 @@ fn harness_icon_is_session_scoped_and_falls_back_on_non_pixel_terminals() {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| draw(frame, &mut app)).unwrap();
     assert!(app.harness_thumb.is_none());
+}
+
+/// #145: the OSC sequence that ties the terminal's *default* background to
+/// the canvas color. Rgb canvases emit `OSC 11 ; #rrggbb`; `Reset` (kitty
+/// backdrop, cells intentionally left Reset) and named colors restore the
+/// profile default via `OSC 111`.
+#[test]
+fn canvas_bg_sequence_bytes() {
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Rgb(0x0f, 0x11, 0x15)),
+        "\x1b]11;#0f1115\x1b\\"
+    );
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Reset),
+        "\x1b]111\x1b\\"
+    );
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Black),
+        "\x1b]111\x1b\\"
+    );
+    assert_eq!(OSC_BG_RESET, "\x1b]111\x1b\\");
+}
+
+/// #145: every cell of every frame must carry a painted background. A row
+/// left at `Color::Reset` is exactly the "gray band" the terminal fills
+/// with its own default bg — sweep heights, widths, themes, banner and the
+/// composer-dock status row on/off so no layout path can skip a row again.
+#[test]
+fn every_frame_cell_has_a_painted_background() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let dock_slot: crate::slots::SlotSnapshot = serde_json::from_value(serde_json::json!({
+        "protocol": 0,
+        "slot": "conversation.composer.dock",
+        "rev": 1,
+        "nodes": [
+            { "id": "stats:counts", "kind": "generic", "title": "1 turn · 3 steps", "body": "" }
+        ]
+    }))
+    .expect("dock slot snapshot");
+
+    for theme in [Theme::dark(), Theme::light()] {
+        for &(w, h) in &[
+            (20u16, 4u16),   // below the drawable minimum: pre-fill still paints
+            (24, 6),
+            (40, 10),
+            (80, 24),
+            (100, 33),
+            (120, 50),
+        ] {
+            for banner in [true, false] {
+                for dock in [false, true] {
+                    let mut app = test_app();
+                    app.theme = theme;
+                    app.show_banner = banner;
+                    if dock {
+                        app.slot_snapshots
+                            .insert("conversation.composer.dock".into(), dock_slot.clone());
+                    }
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+                    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+                    let buf = terminal.backend().buffer();
+                    for y in 0..h {
+                        for x in 0..w {
+                            assert_ne!(
+                                buf[(x, y)].bg,
+                                Color::Reset,
+                                "unpainted cell ({x},{y}) at {w}x{h} theme={:?} banner={banner} dock={dock}",
+                                theme.mode
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// #149 regression: with colour output disabled, `CanvasBgSync` must not
+/// write any OSC sequence — the terminal's default fg draws on its default
+/// bg, and forcing a canvas bg (e.g. light-theme white) blanks the window.
+#[test]
+fn canvas_bg_sync_disabled_writes_nothing() {
+    let mut sync = CanvasBgSync::new(false);
+    let mut out = Vec::new();
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0xff, 0xff, 0xff))
+        .expect("sync");
+    sync.sync(&mut out, ratatui::style::Color::Reset).expect("sync");
+    assert!(out.is_empty(), "disabled sync must emit nothing");
+}
+
+#[test]
+fn canvas_bg_sync_emits_once_and_recovers_on_change() {
+    let mut sync = CanvasBgSync::new(true);
+    let mut out = Vec::new();
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0x0f, 0x11, 0x15))
+        .expect("sync");
+    assert_eq!(out, b"\x1b]11;#0f1115\x1b\\");
+    out.clear();
+    // Unchanged canvas colour: no re-emit.
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0x0f, 0x11, 0x15))
+        .expect("sync");
+    assert!(out.is_empty(), "unchanged colour must not re-emit");
+    // Change to Reset (kitty backdrop): emits the profile restore.
+    sync.sync(&mut out, ratatui::style::Color::Reset).expect("sync");
+    assert_eq!(out, b"\x1b]111\x1b\\");
+}
+
+/// Mirrors crossterm `Colored::ansi_color_disabled`: only a *non-empty*
+/// NO_COLOR suppresses colour output.
+#[test]
+fn ansi_color_disabled_matches_crossterm_semantics() {
+    let prev = std::env::var_os("NO_COLOR");
+    std::env::set_var("NO_COLOR", "1");
+    assert!(ansi_color_disabled());
+    std::env::set_var("NO_COLOR", "anything");
+    assert!(ansi_color_disabled());
+    std::env::set_var("NO_COLOR", "");
+    assert!(!ansi_color_disabled());
+    match prev {
+        Some(v) => std::env::set_var("NO_COLOR", v),
+        None => std::env::remove_var("NO_COLOR"),
+    }
 }

@@ -1492,3 +1492,32 @@ test('empty harness discovery gives an actionable next step', async () => {
   assert.match(result.stdout, /^No Harnesses found\.$/m)
   assert.match(result.stdout, /martty harness add <id> --command <cmd>/)
 })
+
+test('pinned pi-acp specs always resolve @openma/pi-acp@latest instead', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-pi-latest-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    // Whatever an older release pinned into user settings follows latest now:
+    // the unprefixed public package and any @openma/pi-acp@<version> alike.
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', command: 'npx', args: ['pi-acp@0.0.33'],
+    })
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, undefined)
+    module.setDefaultHarness(settingsPath, 'pi-acp')
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@latest'])
+
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', command: 'npx', args: ['@openma/pi-acp@0.1.6'],
+    })
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@latest'])
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    assert.deepEqual(
+      saved.harnesses.find(({ id }) => id === 'pi-acp').args,
+      ['@openma/pi-acp@latest'],
+      'nothing pinned is ever written back to user settings',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

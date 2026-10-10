@@ -30,6 +30,16 @@ All notable changes to this project are documented here. The project follows
 - Add the org contribution guide (`CONTRIBUTING.md`), with Martty's toolchain,
   CI, and release steps, plus a pull request evidence template and a bug report
   template.
+- Close an individual session tab three ways: `/close`, Ctrl+Shift+W (⌘W on
+  macOS), or a click on the tab's × (background tabs too, without switching).
+  A session that is still working — streaming, tool calls, an unanswered ask —
+  asks once to confirm; the second close cancels the in-flight turn first.
+  When `initialize` advertises `sessionCapabilities.close`, `session/close`
+  goes on the wire so the agent cancels its work and frees the session;
+  other agents keep the session server-side and it stays resumable through
+  `session/resume` / `session/list`. Focus moves to the right neighbor,
+  else the left; closing the last tab opens a fresh welcome session
+  instead of ending on an empty strip.
 
 ### Changed
 
@@ -58,6 +68,43 @@ All notable changes to this project are documented here. The project follows
   are rewritten to `deepseek-flash` or `kimi-k2.6` when startup configuration
   is resolved. The same ids stay unchanged on routes whose catalogs still
   list them.
+- Remove the inline keyboard-shortcut hints glued to the composer footer
+  chips; the footer now shows only the current values (agent preset,
+  permission, approval, plan, model, effort). The composer dock's
+  contextual hint row is also trimmed to the single mid-turn
+  `esc interrupt` affordance — `⏎ send`, `⏎ queue`, `ctrl+⏎ steer`,
+  `edit queue`, and the slash/shell/modal hints are no longer advertised
+  there. The bindings themselves are unchanged and remain listed in
+  `/keys` (#148).
+
+### Fixed
+
+- Keep each session's own model and thinking effort. Pi writes
+  `session/set_config_option` into its global defaults, so the connection pool
+  now records every session's config options and re-asserts them, in order,
+  before forwarding that session's `session/prompt`. Sessions that only took
+  the defaults no longer leak their settings into existing sessions either way.
+- Resolve the built-in Pi harness as `@openma/pi-acp@latest` at runtime instead
+  of the unprefixed public `pi-acp` or a version pinned into user settings, so
+  harness upgrades never require a Martty release. Saved entries that pin any
+  `pi-acp`/`@openma/pi-acp@<version>` spec are rewritten to follow `latest`.
+- Share the configuration home with Backchat at `~/.oma` (`$DSH_HOME/.oma` when
+  `DSH_HOME` is set; `MARTTY_HOME` and `OMA_HOME` still win explicitly). An
+  existing `~/.martty` is migrated in place on first launch; the Rust session
+  root falls back to `~/.martty` only when `~/.oma` does not exist.
+- Surface upstream turn failures. A `session/prompt` rejection already showed
+  the agent's error, and now pi's `_meta.pi` turn events do too: an empty
+  assistant chunk carrying `stopReason: "error"` posts the real upstream reason
+  (for example 429 or quota exhausted) as an error notice instead of a silent
+  zero-response turn, and `auto_retry` notices no longer double-print as text.
+- Render auto-retry status on a single updating line per attempt — attempt
+  number, backoff delay, and the error that caused it — ending with either
+  "Retry succeeded — resuming" or an explicit final failure naming the last
+  error, instead of "Retry finished, resuming." after a failed sequence.
+- Scope the session info overlay, status overlay, and model picker provider to
+  the viewed tab: they now read the session's own model and the provider from
+  its catalog, so a `/model` pick made on another tab no longer shows up as
+  this session's provider or model, and `/effort` targets the viewed session.
 
 ## [0.3.1] - 2026-09-30
 
@@ -69,6 +116,15 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Sync the terminal's default background to the canvas color (`OSC 11`,
+  restored with `OSC 111` on exit) so emulator-painted regions — the
+  unusable sub-cell strip below the last row of a non-integer-height
+  window, lines scrolled in by the emulator, areas restored by non-BCE
+  erases — match the theme instead of reading as a gray band under the
+  status bar on macOS terminals (#145). With `NO_COLOR` set the sync is
+  suppressed entirely: the terminal's own default foreground/background
+  pair stays in charge, so e.g. `--theme light` can no longer paint
+  default-white text on a synced-white background.
 - Prefer `@openma/pi-acp@0.1.3` for the Pi entry in both the bundled and refreshed ACP catalog; require Node.js 22.19 or newer for the npm package.
 - Keep the session busy while a queued concurrent steer is still running.
 - Seal startup text before the first prompt turn so pi-acp's first reply renders
