@@ -262,6 +262,15 @@ test('legacy ~/.martty migrates into the shared ~/.oma home once', () => {
     // Explicit MARTTY_HOME / OMA_HOME always win and never migrate.
     assert.equal(storeModule.marttyHome({ MARTTY_HOME: '/opt/martty' }, home), '/opt/martty')
     assert.equal(storeModule.marttyHome({ OMA_HOME: '/opt/oma' }, home), '/opt/oma')
+    // An empty or non-string override is treated as unset, not as the home.
+    assert.equal(
+      storeModule.marttyHome({ MARTTY_HOME: '', OMA_HOME: '', DSH_HOME: dsh }, home),
+      path.join(dsh, '.oma'),
+    )
+    assert.equal(
+      storeModule.marttyHome({ MARTTY_HOME: 7, OMA_HOME: false, DSH_HOME: dsh }, home),
+      path.join(dsh, '.oma'),
+    )
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

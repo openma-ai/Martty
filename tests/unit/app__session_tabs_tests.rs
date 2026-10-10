@@ -1768,6 +1768,19 @@ fn session_overlay_shows_the_tabs_own_provider_and_model() {
     app.cfg.provider = "deepseek-official".into();
     app.last_models.clear();
     assert_eq!(app.session_provider(), "deepseek-official");
+
+    // A session model stored as the bare catalog id still finds its provider:
+    // `entry.id == model` before the `provider/model` rsplit fallback.
+    app.last_models = vec![crate::bus::CatalogModel {
+        provider: "anthropic".into(),
+        id: "claude-fable-5-1".into(),
+        name: "claude-fable-5-1".into(),
+        vision: false,
+    }];
+    app.selected_model = None;
+    app.transcript.last_model = None;
+    app.session_model = Some("claude-fable-5-1".into());
+    assert_eq!(app.session_provider(), "anthropic");
     let _ = ctl;
 }
 

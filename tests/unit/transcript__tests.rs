@@ -843,6 +843,32 @@ fn text_after_a_turn_end_stays_live_while_the_session_runs() {
 }
 
 #[test]
+fn a_replaced_retry_line_starts_a_fresh_cell_instead_of_rewriting() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::RetryStatus {
+        session: "s".into(),
+        attempt: 1,
+        max_attempts: 3,
+        delay_ms: 1000,
+        error: None,
+    });
+    assert_eq!(tr.cells.len(), 1);
+    // The tracked cell was repurposed while the retry was in flight —
+    // rewriting it would corrupt an unrelated line.
+    tr.cells[0].kind = CellKind::User { text: "interjected".into(), queued: false };
+    tr.apply(UiEvent::RetryStatus {
+        session: "s".into(),
+        attempt: 2,
+        max_attempts: 3,
+        delay_ms: 1000,
+        error: None,
+    });
+    assert_eq!(tr.cells.len(), 2);
+    assert!(matches!(&tr.cells[0].kind, CellKind::User { .. }));
+    assert!(matches!(&tr.cells[1].kind, CellKind::Notice { .. }));
+}
+
+#[test]
 fn auto_retry_status_updates_one_line_and_settles_explicitly() {
     let mut tr = t("s");
     tr.apply(UiEvent::RetryStatus {

@@ -1415,6 +1415,77 @@ fn pi_unknown_meta_events_emit_nothing() {
 }
 
 #[test]
+fn pi_auto_retry_snake_case_and_absent_fields_parse() {
+    // pi may spell the counters snake_case; blanks and missing fields parse
+    // to explicit defaults instead of leaking `null` into the status line.
+    let started = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {
+                    "event": "auto_retry", "phase": "start",
+                    "attempt": 1, "max_attempts": 4, "delay_ms": 1500,
+                    "error": "   ",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        started,
+        vec![UiEvent::RetryStatus {
+            session: "s".into(),
+            attempt: 1,
+            max_attempts: 4,
+            delay_ms: 1500,
+            error: None,
+        }]
+    );
+
+    let minimal = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "start", "attempt": 5}},
+            },
+        }),
+    );
+    assert_eq!(
+        minimal,
+        vec![UiEvent::RetryStatus {
+            session: "s".into(),
+            attempt: 5,
+            max_attempts: 0,
+            delay_ms: 0,
+            error: None,
+        }]
+    );
+
+    let ended = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "end", "attempt": 4, "error": ""}},
+            },
+        }),
+    );
+    assert_eq!(
+        ended,
+        vec![UiEvent::RetryFinished {
+            session: "s".into(),
+            attempt: 4,
+            success: false,
+            error: None,
+        }]
+    );
+}
+
+#[test]
 fn pi_auto_retry_unknown_phase_emits_nothing() {
     let parsed = parse_notification(
         "session/update",

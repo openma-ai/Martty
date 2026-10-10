@@ -555,27 +555,22 @@ impl Transcript {
 
     /// The live auto-retry status line: the first attempt pushes a notice,
     /// later events rewrite it in place until `RetryFinished` settles it.
+    /// A tracked index that no longer names a notice cell is forgotten and
+    /// the update starts a fresh line.
     fn update_retry_cell(&mut self, level: NoticeLevel, text: String) {
-        let idx = self.retry_cell.filter(|idx| {
-            matches!(
-                self.cells.get(*idx).map(|cell| &cell.kind),
-                Some(CellKind::Notice { .. })
-            )
-        });
-        match idx {
-            Some(idx) => {
-                let cell = &mut self.cells[idx];
-                if let CellKind::Notice { level: current, text: body } = &mut cell.kind {
+        if let Some(idx) = self.retry_cell {
+            match self.cells.get_mut(idx).map(|cell| &mut cell.kind) {
+                Some(CellKind::Notice { level: current, text: body }) => {
                     *current = level;
                     *body = text;
+                    self.cells[idx].bump();
+                    return;
                 }
-                cell.bump();
-            }
-            None => {
-                self.push_notice(level, text);
-                self.retry_cell = Some(self.cells.len() - 1);
+                _ => self.retry_cell = None,
             }
         }
+        self.push_notice(level, text);
+        self.retry_cell = Some(self.cells.len() - 1);
     }
 
     pub fn push_shell(&mut self, command: String) -> usize {

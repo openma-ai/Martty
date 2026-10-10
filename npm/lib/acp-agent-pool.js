@@ -314,16 +314,12 @@ export function createAgentPool(initial, { spawnAgent, resolveAgent, diagnosticE
         // are re-asserted — the chain keeps cross-session order. Registering
         // the pending reply above (never inside the chain) keeps close() able
         // to settle it while an assert is still in flight.
-        owner.configChain = owner.configChain
-          .then(async () => {
-            try {
-              await applySessionConfig(owner, sessionKey)
-            } catch {
-              // Config assertion is best effort; the turn still proceeds.
-            }
-            if (!closed && !owner.failed) writeAgent(owner, forwarded)
-          })
-          .catch(() => {})
+        owner.configChain = owner.configChain.then(async () => {
+          // Asserts resolve `undefined` on a failed set_config_option rather
+          // than rejecting, so this chain cannot drop the prompt.
+          await applySessionConfig(owner, sessionKey)
+          if (!closed && !owner.failed) writeAgent(owner, forwarded)
+        })
         return
       }
       writeAgent(owner, forwarded)

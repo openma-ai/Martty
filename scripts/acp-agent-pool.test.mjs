@@ -291,7 +291,7 @@ test('config_option_update notifications record into the session config', {timeo
       globalThis.model = 'fable-5';
       const sid = 'session-'+(++next);
       reply({sessionId:sid,configOptions:[{id:'model',currentValue:globalThis.model}]});
-      setTimeout(() => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'config_option_update',sessionId:sid,configOptions:[{id:'model',currentValue:'steered-9'}]}}}),5);
+      if (next === 1) setTimeout(() => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'config_option_update',sessionId:sid,configOptions:[{id:'model',currentValue:'steered-9'}]}}}),5);
       return;
     }
     if (request.method === 'session/set_config_option') {
@@ -323,4 +323,137 @@ test('config_option_update notifications record into the session config', {timeo
     replies.map(reply => reply.result._meta.model),
     ['steered-9','fable-5','steered-9'],
   )
+})
+
+test('malformed config entries are ignored and valid ones still record', {timeout:5000}, async t => {
+  // Mixed-shape configOptions entries must not throw or corrupt the map:
+  // non-objects, arrays, missing/empty/non-string ids, missing values all
+  // drop out of optionEntry; the valid pair records for re-assert.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      const sid = 'session-'+(++next);
+      reply({sessionId:sid,configOptions:[
+        null, 'x', [], {id:'m'}, {configId:42,currentValue:1},
+        {configId:'',currentValue:1}, {configId:'novalue'},
+        {config_id:'snake',current_value:'v'},
+        {id:'model',currentValue:globalThis.model},
+      ]});
+      setTimeout(() => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'config_option_update',sessionId:sid,configOptions:[null, {id:'model'}, {configId:9,currentValue:'x'}]}}}),5);
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+
+  // The agent's junk `config_option_update` notification (all malformed
+  // entries) must leave the recorded config untouched.
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  const b = (await c.request('session/new')).result.sessionId
+  const replies = []
+  for (const sessionId of [a, b, a]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  // The valid 'model=fable-5' entry recorded at session/new still re-asserts;
+  // the malformed notification recorded nothing.
+  assert.deepEqual(replies.map(reply => reply.result._meta.model), ['fable-5','fable-5','fable-5'])
+})
+
+test('a rejected config assert still forwards the prompt', {timeout:5000}, async t => {
+  // The agent answers set_config_option with an error: the assert resolves
+  // undefined, the loop stops asserting, and the turn still goes through.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model},{id:'effort',currentValue:'high'}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      send({id:request.id,error:{code:-32603,message:'config is read-only'}});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  const b = (await c.request('session/new')).result.sessionId
+  const reply = await c.request('session/prompt', {sessionId:a, prompt:[]})
+  assert.equal(reply.result.stopReason, 'end_turn')
+  assert.equal(reply.result._meta.sessionId, 'session-1')
+  void b
+})
+
+test('agent death during a pending assert drops the write but settles the client', {timeout:5000}, async t => {
+  // Killing the agent while its assert is in flight must skip the prompt
+  // write yet still answer the waiting client with the failure.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      setTimeout(() => { globalThis.model = request.params.value; reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]}); }, 250);
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  // Give the other session a different value so A's assert actually writes.
+  const b = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:b, configId:'model', value:'swe-2-high'})
+  const prompt = c.request('session/prompt', {sessionId:a, prompt:[]})
+  await new Promise(resolve => setTimeout(resolve, 120)) // assert in flight
+  c.service.child.kill()
+  const reply = await prompt
+  assert.match(reply.error?.message ?? '', /exited|closed/i, `expected failure reply, got ${JSON.stringify(reply)}`)
+})
+
+test('closing during a pending assert skips the prompt write', {timeout:5000}, async t => {
+  // close() while an assert is in flight must skip the forwarded write and
+  // still settle the client's pending prompt.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      setTimeout(() => { globalThis.model = request.params.value; reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]}); }, 250);
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  const b = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:b, configId:'model', value:'swe-2-high'})
+  const prompt = c.request('session/prompt', {sessionId:a, prompt:[]})
+  await new Promise(resolve => setTimeout(resolve, 120)) // assert in flight
+  c.service.close()
+  const reply = await prompt
+  assert.match(reply.error?.message ?? '', /closed|exited/i, `expected close reply, got ${JSON.stringify(reply)}`)
 })
