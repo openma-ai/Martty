@@ -1282,6 +1282,56 @@ fn close_parked_running_tab_asks_to_confirm_too() {
 }
 
 #[test]
+fn ctrl_shift_w_closes_the_viewed_tab() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    while commands.try_recv().is_ok() {}
+
+    // The keyboard affordance (issue #146): ctrl+shift+w classifies to
+    // Action::CloseSession and takes the same flow as /close.
+    app.handle_key(
+        KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 1);
+    assert_eq!(app.session_id, "s-two", "left neighbor takes over");
+    assert!(
+        commands.try_iter().any(|command| matches!(
+            command,
+            crate::bus::Cmd::CloseSession { session_id } if session_id == "dsh-test"
+        )),
+        "acp closes the shortcut-closed session"
+    );
+}
+
+#[test]
+fn closing_a_parked_tab_left_of_the_viewed_one_shifts_the_index() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two
+    app.open_new_session("s-three".into(), true); // live s-three (rightmost)
+    while commands.try_recv().is_ok() {}
+    assert_eq!(app.session_id, "s-three");
+
+    // Dropping a background tab left of the viewed one shifts the
+    // conceptual index; the live session itself stays put.
+    app.close_session_tab(0, &ctl); // parked dsh-test
+    assert_eq!(app.session_id, "s-three", "live tab untouched");
+    assert_eq!(app.session_tab_count(), 2);
+    assert_eq!(app.parked[0].id, "s-two");
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "s-two", "the shifted index still resolves");
+}
+
+#[test]
 fn clicking_a_tabs_x_closes_that_tab() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();

@@ -735,23 +735,14 @@ async fn run_control(
                         .is_some_and(|connection| connection.close_session)
                 };
             if advertised {
-                match UntypedMessage::new("session/close", serde_json::json!({ "sessionId": id })) {
-                    Ok(request) => {
-                        if let Err(err) =
-                            cx.send_request(request).block_task_setup_deadline().await
-                        {
-                            let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
-                                session_id: id.clone(),
-                                message: format!("session/close: {}", acp_error_message(&err)),
-                            }));
-                        }
-                    }
-                    Err(err) => {
-                        let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
-                            session_id: id.clone(),
-                            message: format!("session/close: {err}"),
-                        }));
-                    }
+                let request =
+                    UntypedMessage::new("session/close", serde_json::json!({ "sessionId": id }))
+                        .expect("static session/close payload is always valid");
+                if let Err(err) = cx.send_request(request).block_task_setup_deadline().await {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+                        session_id: id.clone(),
+                        message: format!("session/close: {}", acp_error_message(&err)),
+                    }));
                 }
             }
         }

@@ -1458,6 +1458,194 @@ async fn close_session_stays_local_when_the_agent_did_not_advertise_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_session_honors_the_per_session_connection_capability() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, CloseSessionRequest, CloseSessionResponse, InitializeResponse,
+        NewSessionResponse,
+    };
+    use std::time::{Duration, Instant};
+
+    // A pooled connection reports its facts per session via
+    // `_meta.marttyConnection` on session/new. That session-level
+    // `sessionCapabilities.close` must also put session/close on the wire
+    // even when initialize itself did not advertise it (issue #146).
+    let (extension_tx, mut extension_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("mux-close-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("mux-close-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                let mut response =
+                    serde_json::to_value(NewSessionResponse::new(SessionId::new("s1")))
+                        .expect("serialize session/new response");
+                response["_meta"]["marttyConnection"] = json!({
+                    "id": "pool-1",
+                    "agentCapabilities": { "sessionCapabilities": { "close": {} } }
+                });
+                responder.respond(
+                    serde_json::from_value(response).expect("deserialize session/new response"),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: CloseSessionRequest, responder, _cx| {
+                let _ = extension_tx.send(request.session_id.to_string());
+                responder.respond(CloseSessionResponse::new())
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline && !ready {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(ready, "startup session/new must bind s1");
+
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s1".into(),
+        })
+        .expect("close session");
+
+    let session_id = tokio::time::timeout(Duration::from_secs(2), extension_rx.recv())
+        .await
+        .expect("session/close should reach the agent on the per-session capability")
+        .expect("extension channel");
+    assert_eq!(session_id, "s1");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_session_wire_failure_reports_a_session_op_failure() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, CloseSessionRequest, InitializeResponse, NewSessionResponse,
+    };
+    use std::time::{Duration, Instant};
+
+    // The agent advertised close but rejects it on the wire: the failure
+    // surfaces as a SessionOpFailed — never silently (issue #146).
+    let agent = Agent
+        .builder()
+        .name("close-rejecting-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                let mut response = serde_json::to_value(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("close-rejecting-mock", "0")),
+                )
+                .expect("serialize initialize response");
+                response["agentCapabilities"]["sessionCapabilities"]["close"] = json!({});
+                responder.respond(
+                    serde_json::from_value(response).expect("deserialize initialize response"),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: CloseSessionRequest, responder, _cx| {
+                responder.respond_with_error(AcpError::new(-32000, "close refused"))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline && !ready {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(ready, "startup session/new must bind s1");
+
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s1".into(),
+        })
+        .expect("close session");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut failed = None;
+    while Instant::now() < deadline && failed.is_none() {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionOpFailed { session_id, message })) => {
+                failed = Some((session_id, message));
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    let (session_id, message) = failed.expect("session/close rejection must surface");
+    assert_eq!(session_id, "s1");
+    assert!(
+        message.contains("session/close") && message.contains("close refused"),
+        "wire error text reaches the tip: {message}"
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeResponse, NewSessionResponse,
