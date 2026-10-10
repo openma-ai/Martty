@@ -1,0 +1,38 @@
+=== llvm-cov report — per-file totals for files touched by this patch ===
+(LLVM line/region coverage; Rust emits no branch records, so the Branch column is empty)
+
+Filename                      Regions    Missed Regions     Cover   Functions  Missed Functions  Executed       Lines      Missed Lines     Cover    Branches   Missed Branches     Cover
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+bus.rs                             13                 0   100.00%           3                 0   100.00%          10                 0   100.00%           0                 0         -
+acp.rs                           3982              1676    57.91%         244                97    60.25%        2625              1125    57.14%           0                 0         -
+acp/control.rs                   1086               485    55.34%          38                19    50.00%         762               376    50.66%           0                 0         -
+app.rs                          10905              2546    76.65%         576               108    81.25%        7467              1790    76.03%           0                 0         -
+controller.rs                     971               612    36.97%          35                25    28.57%         846               538    36.41%           0                 0         -
+input/keymap.rs                   295                 5    98.31%           6                 1    83.33%         150                 4    97.33%           0                 0         -
+ui.rs                            6436               922    85.67%         196                18    90.82%        3246               461    85.80%           0                 0         -
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+TOTAL                           23688              6246    73.63%        1098               268    75.59%       15106              4294    71.57%           0                 0         -
+
+=== changed-line coverage (llvm-cov show ⨯ git diff -U0 added lines) ===
+== src/acp.rs: 58/59 changed executable lines covered
+   MISS 2873: }
+== src/acp/control.rs: 22/30 changed executable lines covered
+   MISS 747: }
+   MISS 750: requester_session_id,
+   MISS 751: prefix,
+   MISS 752: limit,
+   MISS 754: if !list_session {
+   MISS 755: let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionListUnavailable {
+   MISS 756: requester_session_id,
+   MISS 757: prefix,
+== src/app.rs: 120/120 changed executable lines covered
+== src/bus.rs: 0/0 changed executable lines covered
+== src/controller.rs: 2/2 changed executable lines covered
+== src/input/keymap.rs: 2/2 changed executable lines covered
+== src/ui.rs: 12/12 changed executable lines covered
+
+TOTAL changed executable lines covered: 216/225
+
+Note on residual misses: src/acp/control.rs 747-757 are pre-existing
+Cmd::ListSessions lines that diff -U0 re-anchors as '+' inside my hunk
+(not new code); src/acp.rs:2873 is a closing brace.

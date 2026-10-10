@@ -1,0 +1,16 @@
+cargo test --locked — full suite: 850 passed, 0 failed (run on commit 46e563b)
+cargo check --locked --tests — clean
+
+New/changed tests for #147:
+test app::session_tabs_tests::composer_height_memory_rides_with_its_session_tab ... ok
+test input::keymap::tests::ctrl_arrows_step_the_composer_height ... ok
+test ui::tests::composer_border_drag_does_not_place_the_caret ... ok
+test ui::tests::composer_border_survives_a_full_draft ... ok
+test ui::tests::composer_border_hover_highlights_the_cap_row ... ok
+test ui::tests::composer_keyboard_steps_clamp_and_release ... ok
+test ui::tests::composer_top_border_drags_to_resize_and_clamps ... ok
+test ui::tests::pinned_composer_height_reclamps_on_terminal_resize ... ok
+test ui::tests::prompt_jump_button_sits_at_the_corner_and_hovers ... ok
+
+(Full `cargo test --locked` tail in test-output.txt — the file holds the final
+suites; earlier suites scrolled past the capture window.)
