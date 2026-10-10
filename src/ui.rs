@@ -1884,16 +1884,16 @@ fn status_title(app: &App) -> Line<'static> {
     }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    let key_style = Style::default().fg(theme.fg_tertiary);
     // Mode chips: folded from the durable event stream (same facts as the
     // Web UI chips). Stock defaults render until the host reports its own
     // facts, so the landing screen still advertises preset + permission.
+    // Values only — the bindings live in /keys, not glued to the chips
+    // (issue #148).
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
         format!("· {}", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
-    spans.push(Span::styled(" ctrl+shift+a", key_style));
     let perm = app
         .modes
         .permission
@@ -1918,7 +1918,6 @@ fn status_title(app: &App) -> Line<'static> {
             theme.fg_tertiary
         }),
     ));
-    spans.push(Span::styled(" shift+tab", key_style));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
             format!(" · {approval}"),
@@ -1934,92 +1933,35 @@ fn status_title(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Contextual shortcut hints — a tiny state machine over (run state ×
-/// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty renders nothing (`/keys` lives in the tip
-/// banner, not the dock).
+/// Contextual hints — trimmed to the one affordance worth keeping in the
+/// dock: `esc` interrupts a running turn. Every other binding is
+/// discoverable through `/keys` and the slash descriptions (issue #148);
+/// modal flows (queue editor, slash completion, delete confirm) keep
+/// working, they are just no longer advertised here — and suppress the
+/// interrupt label too, since esc then closes the modal rather than the
+/// turn.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
-    let key = Style::default()
-        .fg(theme.fg_tertiary)
-        .add_modifier(Modifier::BOLD);
-    let lbl = Style::default().fg(theme.caption);
-    let running = !matches!(app.state, RunState::Idle);
-    let edit_queue_key = if cfg!(target_os = "macos") {
-        "⌥↑"
-    } else {
-        "alt+↑"
-    };
-    let pairs: Vec<(&str, &str)> = if app.queue_delete_confirming() {
-        vec![
-            ("⏎", app.locale.tr("delete", "删除")),
-            ("esc", app.locale.tr("back", "返回")),
-        ]
-    } else if app.queue_selecting() {
-        vec![
-            ("↑↓", app.locale.tr("choose", "选择")),
-            ("⏎", app.locale.tr("edit", "编辑")),
-            ("esc", app.locale.tr("close", "关闭")),
-        ]
-    } else if app.slash_completion_open() {
-        vec![
-            ("⏎", app.locale.tr("select", "选择")),
-            ("esc", app.locale.tr("close", "关闭")),
-        ]
-    } else if app.queue_editing() {
-        vec![
-            ("⏎", app.locale.tr("save", "保存")),
-            ("^d", app.locale.tr("delete", "删除")),
-            ("esc", app.locale.tr("cancel", "取消")),
-        ]
-    } else {
-        match (running, app.input.is_empty()) {
-            // Working, nothing typed: stop it or edit the pending FIFO.
-            (true, true) if app.queued > 0 => vec![
-                (edit_queue_key, app.locale.tr("edit queue", "编辑队列")),
-                ("esc", app.locale.tr("interrupt", "中断")),
-            ],
-            (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
-            // Working with a draft: enter queues; ctrl+enter steers without
-            // cancellation.
-            (true, false) => vec![
-                ("⏎", app.locale.tr("queue", "排队")),
-                ("ctrl+⏎", app.locale.tr("steer", "立即转向")),
-                ("esc", app.locale.tr("interrupt", "中断")),
-            ],
-            // Idle, empty: point at the FIFO editor; otherwise nothing.
-            (false, true) if app.queued > 0 => {
-                vec![(edit_queue_key, app.locale.tr("edit queue", "编辑队列"))]
-            }
-            (false, true) => vec![],
-            // Idle with a draft: enter's meaning follows the prefix.
-            (false, false) if app.input.lines()[0].starts_with('/') => {
-                vec![("⏎", app.locale.tr("command", "命令"))]
-            }
-            (false, false) if app.input.lines()[0].starts_with('!') => {
-                vec![("⏎", app.locale.tr("shell", "运行命令"))]
-            }
-            (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
-        }
-    };
-    let mut spans = Vec::new();
-    for (i, (k, l)) in pairs.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                " · ".to_string(),
-                Style::default().fg(theme.border),
-            ));
-        }
-        spans.push(Span::styled(k.to_string(), key));
-        spans.push(Span::styled(format!(" {l}"), lbl));
+    let modal_open = app.queue_delete_confirming()
+        || app.queue_selecting()
+        || app.slash_completion_open()
+        || app.queue_editing();
+    if modal_open || matches!(app.state, RunState::Idle) {
+        return Vec::new();
     }
-    if !pairs.is_empty() {
-        spans.push(Span::styled(
-            " · ".to_string(),
-            Style::default().fg(theme.border),
-        ));
-    }
-    spans
+    vec![
+        Span::styled(
+            "esc".to_string(),
+            Style::default()
+                .fg(theme.fg_tertiary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}", app.locale.tr("interrupt", "中断")),
+            Style::default().fg(theme.caption),
+        ),
+        Span::styled(" · ".to_string(), Style::default().fg(theme.border)),
+    ]
 }
 
 /// Meta row, right side: contextual shortcut hints, model chip (brand
