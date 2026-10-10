@@ -30,6 +30,16 @@ All notable changes to this project are documented here. The project follows
 - Add the org contribution guide (`CONTRIBUTING.md`), with Martty's toolchain,
   CI, and release steps, plus a pull request evidence template and a bug report
   template.
+- Close an individual session tab three ways: `/close`, Ctrl+Shift+W (⌘W on
+  macOS), or a click on the tab's × (background tabs too, without switching).
+  A session that is still working — streaming, tool calls, an unanswered ask —
+  asks once to confirm; the second close cancels the in-flight turn first.
+  When `initialize` advertises `sessionCapabilities.close`, `session/close`
+  goes on the wire so the agent cancels its work and frees the session;
+  other agents keep the session server-side and it stays resumable through
+  `session/resume` / `session/list`. Focus moves to the right neighbor,
+  else the left; closing the last tab opens a fresh welcome session
+  instead of ending on an empty strip.
 
 ### Changed
 

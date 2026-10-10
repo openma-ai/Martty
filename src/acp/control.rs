@@ -69,9 +69,8 @@ impl ControlWorkers {
         // Preserve setup FIFO and per-session mutation order without blocking
         // prompts, cancellations, or other sessions' control requests.
         let lane = match &cmd {
-            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } | Cmd::ForkSession { .. } => {
-                "setup".to_string()
-            }
+            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } | Cmd::ForkSession { .. }
+            | Cmd::CloseSession { .. } => "setup".to_string(),
             Cmd::SelectModel { session_id, .. }
             | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. }
@@ -138,7 +137,9 @@ async fn run_control(
         let target = match &cmd {
             Cmd::SelectModel { session_id, .. } | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. } | Cmd::SetConfigOption { session_id, .. }
-            | Cmd::ResumeSession { session_id } => Some(session_id),
+            | Cmd::ResumeSession { session_id } | Cmd::CloseSession { session_id } => {
+                Some(session_id)
+            }
             Cmd::ListSessions { requester_session_id, .. } => Some(requester_session_id),
             _ => None,
         };
@@ -715,6 +716,27 @@ async fn run_control(
                 Err(err) => Err(AcpError::new(-32603, format!("session/fork: {err}"))),
             };
             let _ = done.send(ControlFinish::Setup { result, requester });
+        }
+        // `session/close` (issue #146): the agent cancels the session's
+        // ongoing work and frees its resources. The tab is already gone —
+        // a failure surfaces as a session op failure, never as a retry.
+        Cmd::CloseSession { session_id: id } => {
+            // Reaching this lane means the owning connection advertised
+            // `sessionCapabilities.close` — the main loop gates the enqueue
+            // on exactly that. Put `session/close` on the wire; a failure
+            // surfaces as a session op failure, never as a retry.
+            let request =
+                UntypedMessage::new("session/close", serde_json::json!({ "sessionId": id }))
+                    .expect("static session/close payload is always valid");
+            match cx.send_request(request).block_task_setup_deadline().await {
+                Ok(_) => {}
+                Err(err) => {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+                        session_id: id.clone(),
+                        message: format!("session/close: {}", acp_error_message(&err)),
+                    }));
+                }
+            }
         }
         Cmd::ListSessions {
             requester_session_id,

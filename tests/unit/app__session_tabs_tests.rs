@@ -136,6 +136,7 @@ fn harness_identity_and_capabilities_follow_the_owning_tab() {
             server: Some("beta".into()), auth: crate::acp_auth::AuthSnapshot::none(),
             load_session: false, list_session: true, resume_session: true,
             fork_session: false,
+            close_session: false,
             additional_directories: false,
         },
     }), &ctl);
@@ -584,8 +585,8 @@ fn tab_strip_renders_only_with_multiple_sessions() {
     assert!(row0.contains("dsh-test"), "parked tab label:\n{frame}");
     assert!(row0.contains("s-two"), "live tab label:\n{frame}");
     assert!(
-        row0.contains("dsh-test \u{e0b0}") && row0.contains("s-two \u{e0b0}"),
-        "each tab ends in a Powerline arrow:\n{frame}"
+        row0.contains("dsh-test ×\u{e0b0}") && row0.contains("s-two ×\u{e0b0}"),
+        "each tab ends in its × cell then a Powerline arrow:\n{frame}"
     );
     assert!(!row0.contains('│'), "plain dividers are replaced:\n{frame}");
 
@@ -1062,10 +1063,10 @@ fn close_removes_the_viewed_tab_and_views_a_neighbor() {
         ["dsh-test"]
     );
     match commands.try_recv() {
-        Ok(crate::bus::Cmd::ForgetSession { session_id }) => {
-            assert_eq!(session_id, "s-three", "acp forgets the closed session");
+        Ok(crate::bus::Cmd::CloseSession { session_id }) => {
+            assert_eq!(session_id, "s-three", "acp closes the closed session");
         }
-        other => panic!("expected ForgetSession, got {other:?}"),
+        other => panic!("expected CloseSession, got {other:?}"),
     }
 }
 
@@ -1089,16 +1090,53 @@ fn close_leftmost_tab_keeps_the_same_slot_index() {
 }
 
 #[test]
-fn close_refuses_the_last_tab() {
+fn close_last_tab_reopens_a_fresh_session() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
     app.demo = false;
+    app.session_id = "s-old".into();
+    app.transcript.push_user("old conversation".into(), false);
+
+    // Closing the only tab (issue #146) never leaves an empty strip: it
+    // reopens a fresh welcome tab that requests its own session/new.
     app.run_slash("close", "", &ctl);
-    assert_eq!(app.session_id, "dsh-test");
     assert_eq!(app.session_tab_count(), 1);
+    let fresh = app.session_id.clone();
     assert!(
-        commands.try_recv().is_err(),
-        "closing the last tab must not emit ForgetSession"
+        fresh.starts_with("dsh-") && !app.session_bound,
+        "a fresh placeholder tab replaces the closed one"
+    );
+    assert!(app.show_banner, "the fresh tab is the welcome screen");
+    let sent: Vec<_> = commands.try_iter().collect();
+    assert!(
+        sent.iter().any(|command| matches!(
+            command,
+            crate::bus::Cmd::CloseSession { session_id } if session_id == "s-old"
+        )),
+        "acp closes the dropped session: {sent:?}"
+    );
+    assert!(
+        sent.iter().any(|command| matches!(
+            command,
+            crate::bus::Cmd::NewSession { requester: Some(requester), .. } if requester == &fresh
+        )),
+        "the fresh tab asks for its own session/new: {sent:?}"
+    );
+}
+
+#[test]
+fn close_last_tab_in_demo_reopens_a_bound_welcome_tab() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 1);
+    assert!(app.session_id.starts_with("dsh-"));
+    assert!(app.session_bound && app.show_banner, "demo tabs bind instantly");
+    assert!(
+        commands
+            .try_iter()
+            .any(|command| matches!(command, crate::bus::Cmd::FetchSkills { .. })),
+        "the fresh demo tab fetches its skills"
     );
 }
 
@@ -1123,6 +1161,12 @@ fn close_discards_draft_queue_and_cancels_the_parked_ask() {
     );
     assert!(app.permission_ask.is_some());
 
+    // A busy tab (running turn + pending ask) is never dropped silently:
+    // the first close arms the confirm, the second cancels the turn and
+    // drops the tab (issue #146).
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_id, "s-two", "armed close keeps the tab");
+    assert_eq!(app.session_tab_count(), 2);
     app.run_slash("close", "", &ctl);
     assert_eq!(app.session_id, "dsh-test", "back on the parked tab");
     assert_eq!(
@@ -1133,6 +1177,293 @@ fn close_discards_draft_queue_and_cancels_the_parked_ask() {
     assert!(app.input.is_empty(), "doomed draft did not leak");
     assert_eq!(app.queued, 0, "doomed queue did not leak");
     assert!(!app.session_tabs().iter().any(|t| t.ask_pending));
+}
+
+#[test]
+fn close_running_tab_arms_a_confirm_then_cancels_the_turn() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    app.state = RunState::Running;
+    while commands.try_recv().is_ok() {}
+
+    // The running tab is never dropped silently: the first close only
+    // arms the confirm window and issues no commands.
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "armed close keeps every tab");
+    assert_eq!(app.session_id, "dsh-test");
+    assert!(
+        commands.try_recv().is_err(),
+        "an armed close sends nothing yet"
+    );
+
+    // Confirming inside the window cancels the turn, then closes the tab.
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 1);
+    assert_eq!(app.session_id, "s-two", "right neighbor takes the slot");
+    let mut interrupt = None;
+    let mut closed = None;
+    for command in commands.try_iter() {
+        match command {
+            crate::bus::Cmd::Interrupt { session_id } => {
+                interrupt = Some(session_id)
+            }
+            crate::bus::Cmd::CloseSession { session_id } => {
+                closed = Some(session_id)
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(interrupt.as_deref(), Some("dsh-test"), "turn cancelled first");
+    assert_eq!(closed.as_deref(), Some("dsh-test"), "session closed");
+}
+
+#[test]
+fn close_parked_tab_leaves_the_other_sessions_untouched() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.transcript.push_user("live prompt".into(), false);
+    app.input.insert_str("live draft".into());
+    app.selected_model = Some("live-model".into());
+    app.state = RunState::Running;
+    app.open_new_session("s-two".into(), true); // live s-two
+    app.switch_to_session(0); // back on dsh-test — tabs [dsh-test, s-two]
+
+    // A parked tab's × closes it without disturbing the live tab's state —
+    // the same isolation the per-session fields promise (issue #144/#146).
+    app.close_session_tab(1, &ctl);
+    assert_eq!(app.session_tab_count(), 1);
+    assert_eq!(app.session_id, "dsh-test");
+    assert!(matches!(app.state, RunState::Running), "live turn survives");
+    assert_eq!(app.selected_model.as_deref(), Some("live-model"));
+    assert!(transcript_text(&mut app.transcript).contains("live prompt"));
+    assert!(!app.input.is_empty(), "live draft survives");
+    match commands.try_recv() {
+        Ok(crate::bus::Cmd::CloseSession { session_id }) => {
+            assert_eq!(session_id, "s-two", "only the parked session closes");
+        }
+        other => panic!("expected CloseSession for the parked tab, got {other:?}"),
+    }
+    assert!(commands.try_recv().is_err(), "nothing else leaves the app");
+}
+
+#[test]
+fn close_parked_running_tab_asks_to_confirm_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two
+    app.switch_to_session(0); // live dsh-test — tabs [dsh-test, s-two]
+    app.parked[0].running = true; // parked s-two is mid-turn
+
+    // A busy parked tab gets the same arm→confirm flow: the first × arms,
+    // the second cancels the parked turn and drops the tab.
+    app.close_session_tab(1, &ctl);
+    assert_eq!(app.session_tab_count(), 2, "armed close keeps the tab");
+    app.close_session_tab(1, &ctl);
+    assert_eq!(app.session_tab_count(), 1);
+    let sent: Vec<_> = commands.try_iter().collect();
+    let interrupt = sent.iter().position(|command| matches!(
+        command,
+        crate::bus::Cmd::Interrupt { session_id } if session_id == "s-two"
+    ));
+    let close = sent.iter().position(|command| matches!(
+        command,
+        crate::bus::Cmd::CloseSession { session_id } if session_id == "s-two"
+    ));
+    assert!(
+        interrupt.is_some_and(|i| close.is_some_and(|c| i < c)),
+        "the parked turn is cancelled before its close: {sent:?}"
+    );
+}
+
+#[test]
+fn ctrl_shift_w_closes_the_viewed_tab() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    while commands.try_recv().is_ok() {}
+
+    // Plain ctrl+w must NOT close — it still deletes a word in the
+    // composer (the close chord requires shift too). A bare `w` with a
+    // non-ctrl modifier (⌥w) is not a close either.
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT), &ctl);
+    assert_eq!(app.session_tab_count(), 2, "ctrl+w alone keeps the tab");
+
+    // The keyboard affordance (issue #146): ctrl+shift+w classifies to
+    // Action::CloseSession and takes the same flow as /close.
+    app.handle_key(
+        KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 1);
+    assert_eq!(app.session_id, "s-two", "left neighbor takes over");
+    assert!(
+        commands.try_iter().any(|command| matches!(
+            command,
+            crate::bus::Cmd::CloseSession { session_id } if session_id == "dsh-test"
+        )),
+        "acp closes the shortcut-closed session"
+    );
+}
+
+#[test]
+fn closing_a_parked_tab_left_of_the_viewed_one_shifts_the_index() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two
+    app.open_new_session("s-three".into(), true); // live s-three (rightmost)
+    while commands.try_recv().is_ok() {}
+    assert_eq!(app.session_id, "s-three");
+
+    // Dropping a background tab left of the viewed one shifts the
+    // conceptual index; the live session itself stays put.
+    app.close_session_tab(0, &ctl); // parked dsh-test
+    assert_eq!(app.session_id, "s-three", "live tab untouched");
+    assert_eq!(app.session_tab_count(), 2);
+    assert_eq!(app.parked[0].id, "s-two");
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "s-two", "the shifted index still resolves");
+}
+
+#[test]
+fn close_session_tab_beyond_the_strip_is_a_noop() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    while commands.try_recv().is_ok() {}
+
+    // A stale × rect can outlive a tab: out-of-range closes do nothing.
+    app.close_session_tab(9, &ctl);
+    assert_eq!(app.session_tab_count(), 2);
+    assert!(commands.try_iter().next().is_none());
+}
+
+#[test]
+fn parked_prompt_and_ask_make_the_tab_busy_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    app.open_new_session("s-three".into(), true); // live s-three
+    app.switch_to_session(0); // live dsh-test — parked [s-two, s-three]
+    app.parked[0].prompt_pending = true; // s-two queued a prompt
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.parked[1].permission_ask = Some(crate::app::PermissionAskOverlay {
+        title: "bash".into(),
+        sel: 0,
+        options: vec![],
+        reply: Some(tx),
+    });
+
+    // Queued work and a pending ask are busy too — each arms instead of
+    // silently dropping (issue #146).
+    app.close_session_tab(1, &ctl);
+    app.close_session_tab(2, &ctl);
+    assert_eq!(app.session_tab_count(), 3, "both busy tabs stay armed");
+    assert!(app.close_armed.is_some());
+    let _ = commands.try_iter().count();
+}
+
+#[test]
+fn live_prompt_and_ask_make_the_tab_busy_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    while commands.try_recv().is_ok() {}
+
+    app.prompt_pending = true;
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "queued prompt arms the close");
+
+    app.prompt_pending = false;
+    app.close_armed = None; // drop the first arm — the next close must re-arm
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.permission_ask = Some(crate::app::PermissionAskOverlay {
+        title: "bash".into(),
+        sel: 0,
+        options: vec![],
+        reply: Some(tx),
+    });
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "a pending ask arms the close");
+    let _ = commands.try_iter().count();
+}
+
+#[test]
+fn a_stale_close_confirm_re_arms_instead_of_closing() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.state = crate::app::RunState::Running;
+    app.open_new_session("s-two".into(), true);
+    app.switch_to_session(0);
+    while commands.try_recv().is_ok() {}
+
+    app.run_slash("close", "", &ctl); // arm on busy dsh-test
+    assert!(app.close_armed.is_some());
+    // The confirm window lapses: a later close re-arms rather than
+    // dropping a still-running session on an old confirmation.
+    let (id, _) = app.close_armed.clone().unwrap();
+    app.close_armed = Some((id, Instant::now() - Duration::from_secs(9)));
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "expired confirm re-arms");
+    assert!(commands.try_iter().next().is_none());
+}
+
+#[test]
+fn clicking_a_tabs_x_closes_that_tab() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two — tabs [dsh-test, s-two]
+    app.switch_to_session(0);
+    assert_eq!(app.session_id, "dsh-test");
+    while commands.try_recv().is_ok() {}
+
+    // The × cell is its own hit rect (issue #146): clicking it closes the
+    // tab rather than switching to it. A click off the cell's row misses.
+    app.tab_close_rects
+        .push((ratatui::layout::Rect::new(11, 0, 1, 1), 1));
+    app.tab_close_rects
+        .push((ratatui::layout::Rect::new(30, 2, 1, 1), 3));
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 11, 1),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 2, "a row off the × is not a close");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 30, 0),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 2, "a row above the × is not a close");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 11, 0),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 1);
+    assert_eq!(app.session_id, "dsh-test", "the live tab never moved");
+    assert!(
+        commands.try_iter().any(|command| matches!(
+            command,
+            crate::bus::Cmd::CloseSession { session_id } if session_id == "s-two"
+        )),
+        "acp closes the ×-clicked session"
+    );
 }
 
 #[test]
@@ -1148,11 +1479,11 @@ fn close_of_an_unbound_tab_discards_its_coming_bind() {
 
     // Close the placeholder before session/new resolves.
     app.run_slash("close", "", &ctl);
-    while commands.try_recv().is_ok() {} // drain close's ForgetSession
+    while commands.try_recv().is_ok() {} // drain close's CloseSession
     assert_eq!(app.session_id, "dsh-test", "back on the bound tab");
 
     // The bind resolves after the close: it must be discarded (and its
-    // session forgotten), never rebind the viewed tab.
+    // session closed agent-side too), never rebind the viewed tab.
     app.handle(
         AppEvent::Ctl(CtlEvent::SessionBound {
             session_id: "acp-late".into(),
@@ -1166,10 +1497,10 @@ fn close_of_an_unbound_tab_discards_its_coming_bind() {
     );
     assert!(!app.session_bound || app.session_id == "dsh-test");
     match commands.try_recv() {
-        Ok(crate::bus::Cmd::ForgetSession { session_id }) => {
+        Ok(crate::bus::Cmd::CloseSession { session_id }) => {
             assert_eq!(session_id, "acp-late");
         }
-        other => panic!("expected ForgetSession for the late bind, got {other:?}"),
+        other => panic!("expected CloseSession for the late bind, got {other:?}"),
     }
 
     // A later /new still binds normally — the tombstone kept the FIFO clean.
@@ -1514,9 +1845,9 @@ fn tab_strip_renders_overflow_indicator_when_narrow() {
     assert!(row0.contains("dsh-test"), "head tab on screen:\n{row0}");
 }
 
-/// 8 sessions (dsh-test + sess-01..sess-07). Tab 0 is 13 display cols
-/// (`dsh-test` + padding/arrow), the rest 12 (`sess-0X` + padding/arrow),
-/// so a 64-col row shows a window of five tabs and overflows.
+/// 8 sessions (dsh-test + sess-01..sess-07). Tab 0 is 14 display cols
+/// (`dsh-test` + padding/×/arrow), the rest 13 (`sess-0X` + padding/×/arrow),
+/// so a 64-col row shows a window of four tabs and overflows.
 fn open_eight_tabs() -> (App, Controller, Receiver<AppEvent>) {
     let (mut app, ctl, rx) = test_app();
     for i in 1..8 {
@@ -1565,12 +1896,12 @@ fn mouse_edge_clicks_walk_the_strip_to_every_tab_and_back() {
     // The live session is the newest (tab 7), so the first draw parks the
     // window at the tail with it at the right edge.
     let window = strip_window(&mut app);
-    assert_eq!(window, vec![3, 4, 5, 6, 7], "live tab revealed on open");
-    assert_eq!(app.tab_strip_offset, 3);
+    assert_eq!(window, vec![4, 5, 6, 7], "live tab revealed on open");
+    assert_eq!(app.tab_strip_offset, 4);
 
     // Walk left to the head: clicking the leftmost visible tab switches
     // to it and reveals its left neighbor.
-    for step in (0..3).rev() {
+    for step in (0..4).rev() {
         let first = *strip_window(&mut app).first().expect("window");
         assert!(first > 0, "still tabs to reveal on the left");
         click_tab(&mut app, &ctl, first);
@@ -1585,11 +1916,11 @@ fn mouse_edge_clicks_walk_the_strip_to_every_tab_and_back() {
     click_tab(&mut app, &ctl, 0);
     assert_eq!(app.session_id, "dsh-test", "back on the first session");
     assert_eq!(app.tab_strip_offset, 0, "tab 0 cannot nudge left");
-    assert_eq!(strip_window(&mut app), vec![0, 1, 2, 3, 4], "head window");
+    assert_eq!(strip_window(&mut app), vec![0, 1, 2, 3], "head window");
 
     // Walk right to the tail: clicking the rightmost visible tab switches
     // to it and reveals its right neighbor.
-    for step in 1..=3 {
+    for step in 1..=4 {
         let last = *strip_window(&mut app).last().expect("window");
         assert!(last < 7, "still tabs to reveal");
         click_tab(&mut app, &ctl, last);
@@ -1613,26 +1944,26 @@ fn mouse_edge_clicks_walk_the_strip_to_every_tab_and_back() {
 #[test]
 fn middle_tab_clicks_do_not_nudge_and_switches_out_of_view_reanchor() {
     let (mut app, ctl, _rx) = open_eight_tabs();
-    assert_eq!(strip_window(&mut app), vec![3, 4, 5, 6, 7]);
-    assert_eq!(app.tab_strip_offset, 3);
+    assert_eq!(strip_window(&mut app), vec![4, 5, 6, 7]);
+    assert_eq!(app.tab_strip_offset, 4);
 
     // A middle click switches but leaves the strip where it is.
     click_tab(&mut app, &ctl, 5);
     assert_eq!(app.session_id, "sess-05", "switched to the middle tab");
-    assert_eq!(app.tab_strip_offset, 3, "middle click does not nudge");
-    assert_eq!(strip_window(&mut app), vec![3, 4, 5, 6, 7]);
+    assert_eq!(app.tab_strip_offset, 4, "middle click does not nudge");
+    assert_eq!(strip_window(&mut app), vec![4, 5, 6, 7]);
 
     // Keyboard-style jump far out of the window (back to the head): the
     // draw re-anchors so the live tab is visible again.
     app.switch_view_to_tab(0, &ctl);
-    assert_eq!(strip_window(&mut app), vec![0, 1, 2, 3, 4]);
+    assert_eq!(strip_window(&mut app), vec![0, 1, 2, 3]);
     assert_eq!(app.tab_strip_offset, 0, "live tab 0 pins the head");
 
     // And a jump to the far tail parks the live tab at the right edge.
     app.switch_view_to_tab(7, &ctl);
     let window = strip_window(&mut app);
-    assert_eq!(window, vec![3, 4, 5, 6, 7], "live tab at the right edge");
-    assert_eq!(app.tab_strip_offset, 3);
+    assert_eq!(window, vec![4, 5, 6, 7], "live tab at the right edge");
+    assert_eq!(app.tab_strip_offset, 4);
 }
 
 #[test]

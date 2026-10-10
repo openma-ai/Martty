@@ -1048,6 +1048,7 @@ fn session_connection_snapshot(value: &Value) -> crate::bus::SessionConnection {
         auth, load_session, list_session: list_session_supported(value) || load_session,
         resume_session: resume_session_supported(value),
         fork_session: fork_session_supported(value),
+        close_session: close_session_supported(value),
         additional_directories: additional_directories_supported(value),
     }
 }
@@ -1167,6 +1168,21 @@ fn list_session_supported(init: &Value) -> bool {
         })
         .and_then(|caps| caps.get("list"));
     matches!(list, Some(Value::Object(_)) | Some(Value::Bool(true)))
+}
+
+/// `{}` or `true` advertises `session/close` (issue #146): the agent
+/// cancels the session's ongoing work and frees its resources. Omitted,
+/// null, `false`, and other shapes do not.
+fn close_session_supported(init: &Value) -> bool {
+    let close = init
+        .get("agentCapabilities")
+        .or_else(|| init.get("agent_capabilities"))
+        .and_then(|caps| {
+            caps.get("sessionCapabilities")
+                .or_else(|| caps.get("session_capabilities"))
+        })
+        .and_then(|caps| caps.get("close"));
+    matches!(close, Some(Value::Object(_)) | Some(Value::Bool(true)))
 }
 
 /// `{}` advertises `session/fork`. Omitted, null, booleans, and other
@@ -2265,11 +2281,13 @@ where
                 let list_session = list_session_supported(&init_value) || load_session;
                 let additional_directories = additional_directories_supported(&init_value);
                 let fork_session = fork_session_supported(&init_value);
+                let close_session = close_session_supported(&init_value);
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
                     load_session,
                     list_session,
                     resume_session,
                     fork_session,
+                    close_session,
                     additional_directories,
                 }));
                 let auth_raw = init_value
@@ -2833,14 +2851,13 @@ where
                             }));
                         }
                         Cmd::ForgetSession { session_id } => {
-                            // `/close`: this client stopped viewing the
-                            // session. Drop its turn state and queued
-                            // prompts so nothing more is sent agent-side;
-                            // an in-flight prompt (if any) keeps running
-                            // and its finish is dropped by the prompt_done
-                            // guard. ACP has no session/close — the
-                            // server-side session survives and can be
-                            // re-entered later via session/resume.
+                            // This client stopped viewing the session.
+                            // Drop its turn state and queued prompts so
+                            // nothing more is sent agent-side; an
+                            // in-flight prompt (if any) keeps running and
+                            // its finish is dropped by the prompt_done
+                            // guard. The server-side session survives and
+                            // can be re-entered later via session/resume.
                             parked.retain(|p| p.session.as_deref() != Some(&session_id));
                             if sessions.remove(&session_id).is_some()
                                 && current
@@ -2849,6 +2866,65 @@ where
                             {
                                 // Repoint the id-less fallback at any
                                 // remaining session.
+                                current = sessions
+                                    .keys()
+                                    .next()
+                                    .map(|id| SessionId::new(id.clone()));
+                            }
+                        }
+                        Cmd::CloseSession { session_id } => {
+                            // User-facing close (issue #146): when the
+                            // owning connection advertised
+                            // `sessionCapabilities.close`, put
+                            // `session/close` on the wire first (setup
+                            // lane, after any queued lifecycle request);
+                            // the local drop below happens either way —
+                            // and is the only step for agents that never
+                            // advertised the capability. Only a session
+                            // that actually bound can be closed agent-
+                            // side: an unbound placeholder has no server
+                            // session to free.
+                            let advertised = {
+                                let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                surface
+                                    .session(&session_id)
+                                    .connection
+                                    .as_ref()
+                                    .map(|connection| {
+                                        session_connection_snapshot(connection).close_session
+                                    })
+                                    .unwrap_or_else(|| {
+                                        surface
+                                            .initial_connection
+                                            .as_ref()
+                                            .is_some_and(|connection| connection.close_session)
+                                    })
+                            };
+                            if advertised && sessions.contains_key(&session_id) {
+                                controls.enqueue(
+                                    Cmd::CloseSession {
+                                        session_id: session_id.clone(),
+                                    },
+                                    &cx,
+                                    &bus,
+                                    &surface,
+                                    &methods,
+                                    &selected,
+                                    &cwd,
+                                    load_session,
+                                    resume_session,
+                                    list_session,
+                                    additional_directories,
+                                    &cfg.additional_directories,
+                                    &control_done_tx,
+                                );
+                            }
+                            parked.retain(|p| p.session.as_deref() != Some(&session_id));
+                            if sessions.remove(&session_id).is_some()
+                                && current
+                                    .as_ref()
+                                    .is_some_and(|c| c.to_string() == session_id)
+                            {
                                 current = sessions
                                     .keys()
                                     .next()
