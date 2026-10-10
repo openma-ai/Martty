@@ -30,6 +30,7 @@ test('the status Client Plugin registers /status and opens the markdown overlay'
         state: 'running',
         connection: 'attached',
         server: 'dsh-acp',
+        dshRuntime: { version: '0.2.0-rc.2', source: 'bundled standalone runtime', base: '/cache/dsh' },
         auth: { status: 'configured', method: 'agent' },
         session: { sessionId: 's-1', bound: true },
         model: 'deepseek-flash',
@@ -83,6 +84,7 @@ test('the status Client Plugin registers /status and opens the markdown overlay'
   assert.ok(text.includes('- auth · configured · agent'), text)
   assert.ok(text.includes('- session · s-1'), text)
   assert.ok(text.includes('- server · dsh-acp'), text)
+  assert.ok(text.includes('- dsh · 0.2.0-rc.2 via bundled standalone runtime'), text)
   assert.ok(text.includes('- model · deepseek-flash'), text)
   assert.ok(text.includes('- effort · high'), text)
   assert.ok(text.includes('- permission · workspace-write'), text)
@@ -108,8 +110,20 @@ test('the status overlay omits unset facts', () => {
   assert.ok(text.includes('- session · unbound'), text)
   assert.ok(!text.includes('- auth ·'), text)
   assert.ok(!text.includes('- server ·'), text)
+  assert.ok(!text.includes('- dsh ·'), text)
   assert.ok(!text.includes('- effort ·'), text)
   assert.ok(!text.includes('- TTFT avg ·'), text)
   assert.ok(!text.includes('- rate ·'), text)
   assert.ok(text.includes('- tokens · ↑0 ↓0 (cached 0) · Σ 0'), text)
+
+  const partial = statusMarkdown(
+    {
+      state: 'idle',
+      connection: 'attached',
+      session: { sessionId: undefined, bound: false },
+      dshRuntime: { version: '0.1.7-rc.2' },
+    },
+    { usage: {}, stats: {} },
+  )
+  assert.ok(partial.includes('- dsh · 0.1.7-rc.2'), partial)
 })

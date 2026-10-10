@@ -22,6 +22,31 @@ test('each tab publishes its own Harness identity after a different Harness crea
   assert.equal(status.current().server, 'alpha')
 })
 
+test('captures the advertised dsh runtime from initialize for /status', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({ id: 'init', method: 'initialize' })
+  status.observeAgent({
+    id: 'init',
+    result: {
+      agentInfo: { name: 'dsh-acp' },
+      agentCapabilities: {
+        _meta: { dsh: { runtime: { version: '0.2.0-rc.2', source: 'bundled standalone runtime', base: '/cache/dsh' } } },
+      },
+      authMethods: [],
+    },
+  })
+  assert.deepEqual(status.current().dshRuntime, {
+    version: '0.2.0-rc.2',
+    source: 'bundled standalone runtime',
+    base: '/cache/dsh',
+  })
+
+  status.observeClient({ id: 'init-2', method: 'initialize' })
+  assert.equal(status.current().dshRuntime, undefined)
+  status.observeAgent({ id: 'init-2', result: { agentInfo: { name: 'other' }, authMethods: [] } })
+  assert.equal(status.current().dshRuntime, undefined)
+})
+
 test('a new initialize clears every old Agent projection and ignores late request responses', () => {
   const config = installAcpSessionConfig(makeCtx())
   const status = installAcpSessionStatus(makeCtx(), { sessionConfig: config })

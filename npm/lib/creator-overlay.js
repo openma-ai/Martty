@@ -202,13 +202,35 @@ export async function apply(ctx, config = {}) {
   if (typeof preset !== 'string' || preset.length === 0) {
     throw new Error('tui-creator-overlay: preset must be a non-empty string')
   }
-  const key = await ctx.agentPresets.standingKeyFor(preset)
-  const scopeModule = await ctx.loader.import('@deepseek-ai/dsh-scope')
-  if (typeof scopeModule?.createScope !== 'function') {
-    throw new Error('tui-creator-overlay: profile dsh-scope module is unavailable')
+  // The preset registry hands out scope keys through acquireScope (a lease
+  // carrying generation.key); standingKeyFor never existed on the shipped
+  // registry. Holding the lease for the overlay's lifetime keeps the scope
+  // generation alive until the overlay is disposed.
+  const lease = await ctx.agentPresets.acquireScope?.(preset)
+  if (lease === null || typeof lease !== 'object' || !('key' in lease)) {
+    throw new Error(`tui-creator-overlay: preset scope is unavailable for ${JSON.stringify(preset)}`)
   }
-  const { createScope } = scopeModule
-  const overlay = createScope(ctx, key)
+  const release = typeof lease[Symbol.asyncDispose] === 'function'
+    ? () => lease[Symbol.asyncDispose]()
+    : async () => {}
+  let overlay
+  try {
+    const scopeModule = await ctx.loader.import('@deepseek-ai/dsh-scope')
+    if (typeof scopeModule?.createScope !== 'function') {
+      throw new Error('tui-creator-overlay: profile dsh-scope module is unavailable')
+    }
+    overlay = scopeModule.createScope(ctx, lease.key)
+  } catch (error) {
+    await release()
+    throw error
+  }
+  const dispose = async () => {
+    try {
+      await overlay.dispose()
+    } finally {
+      await release()
+    }
+  }
   try {
     const toolsModule = await ctx.loader.import('@deepseek-ai/dsh-tools')
     if (typeof toolsModule?.defineTool !== 'function') {
@@ -240,9 +262,9 @@ export async function apply(ctx, config = {}) {
       toolsModule.defineTool,
       createTuiPluginStore({ root: config.artifactRoot }),
     )
-    ctx.effect(() => () => overlay.dispose(), `tui-creator-overlay(${JSON.stringify(preset)})`)
+    ctx.effect(() => dispose, `tui-creator-overlay(${JSON.stringify(preset)})`)
   } catch (error) {
-    await overlay.dispose()
+    await dispose()
     throw error
   }
 }

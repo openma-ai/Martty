@@ -48,6 +48,11 @@ function statusMarkdown(status, stats) {
   }
   lines.push(`- session · ${status.session?.bound ? status.session.sessionId : 'unbound'}`)
   if (status.server !== undefined) lines.push(`- server · ${status.server}`)
+  if (status.dshRuntime !== undefined) {
+    const runtime = [status.dshRuntime.version, status.dshRuntime.source && `via ${status.dshRuntime.source}`]
+      .filter(Boolean).join(' ')
+    lines.push(`- dsh · ${runtime}`)
+  }
   if (status.model !== undefined) lines.push(`- model · ${status.model}`)
   if (status.agent !== undefined) lines.push(`- agent · ${status.agent}`)
   if (status.permission !== undefined) lines.push(`- permission · ${status.permission}`)

@@ -5,8 +5,25 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The Creator overlay no longer crashes on the bundled DeepSeek Harness
+  (`0.2.0-rc.2`) with `ctx.agentPresets.standingKeyFor is not a function`. It
+  now takes a scoped preset lease via `acquireScope`, which exists on every
+  published `@deepseek-ai/dsh-agent-preset-registry`, and releases it when the
+  overlay is disposed.
+- `/status` shows the dsh runtime the ACP agent actually booted
+  (`- dsh · <version> via <source>`), reported by dsh-acp through
+  `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the
+  bundled runtime from an explicit or plugin host.
+
 ### Added
 
+- Declare the `@deepseek-ai/dsh` versions this release supports
+  (`0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2`) in `npm/package.json` `dsh.supported`
+  and in the README, matching the range the bundled dsh-acp enforces. dsh
+  runtime selection and compatibility checking remain entirely dsh-acp's
+  job; Martty only displays the result.
 - Check releases in CI before npm publish. A pull request lists pull requests
   merged since the previous tag without failing, and a version bump must keep
   the npm package, lockfile, and Cargo versions together. A `v*` tag must

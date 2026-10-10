@@ -15,6 +15,8 @@ function harness(options = {}) {
   const requestedModules = []
   let requestedPreset
   let disposed = false
+  let leaseReleased = false
+  let scopeKey
   let inspected
   let packageSource = {
     pluginId: 'skin-1',
@@ -53,14 +55,14 @@ function harness(options = {}) {
   const overlay = {
     ctx: {
       get(name) {
-        if (name === 'skills') {
+        if (name === 'skills' && options.noSkills !== true) {
           return {
             register(skill) {
               skills.set(skill.name, skill)
             },
           }
         }
-        if (name === 'systemPrompt') {
+        if (name === 'systemPrompt' && options.noSystemPrompt !== true) {
           return {
             section(section) {
               promptSections.push(section)
@@ -90,21 +92,29 @@ function harness(options = {}) {
       return name === 'sessionPersistence' ? persistence : undefined
     },
     agentPresets: {
-      async standingKeyFor(id) {
+      async acquireScope(id) {
         requestedPreset = id
-        return standingKey
+        if (options.lease !== undefined) return options.lease
+        return {
+          key: standingKey,
+          async [Symbol.asyncDispose]() {
+            leaseReleased = true
+          },
+        }
       },
     },
     loader: {
       async import(name) {
         requestedModules.push(name)
         if (name === '@deepseek-ai/dsh-tools') {
+          if (options.toolsModule !== undefined) return options.toolsModule
           return { defineTool: (definition) => definition }
         }
+        if (options.scopeModule !== undefined) return options.scopeModule
         return {
           createScope(parent, key) {
             assert.equal(parent, ctx)
-            assert.equal(key, standingKey)
+            scopeKey = key
             return overlay
           },
         }
@@ -131,7 +141,7 @@ function harness(options = {}) {
     setPackageSource(value) {
       packageSource = value
     },
-    state: () => ({ disposed, inspected, requestedModules, requestedPreset }),
+    state: () => ({ disposed, inspected, leaseReleased, requestedModules, requestedPreset, scopeKey }),
   }
 }
 
@@ -193,8 +203,70 @@ test('unloading the TUI overlay retracts the skill and prompt together', async (
   await fixture.effects[0].cleanup()
 
   assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
   assert.equal(fixture.skills.size, 0)
   assert.equal(fixture.promptSections.length, 0)
+})
+
+test('a failed mount disposes the overlay and releases the preset scope lease', async () => {
+  const fixture = harness({ noSkills: true })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /skills service is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('rejects when the preset registry hands out no usable lease', async () => {
+  const fixture = harness({ lease: null })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /preset scope is unavailable for "cordis"/,
+  )
+  assert.equal(fixture.state().disposed, false)
+  assert.equal(fixture.state().leaseReleased, false)
+})
+
+test('releases the lease when the scope module cannot create the overlay', async () => {
+  const fixture = harness({ scopeModule: {} })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /dsh-scope module is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, false)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('releases the lease and overlay when the tools module is missing defineTool', async () => {
+  const fixture = harness({ toolsModule: {} })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /dsh-tools module is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('releases the lease and overlay when the scoped systemPrompt service is missing', async () => {
+  const fixture = harness({ noSystemPrompt: true })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /systemPrompt service is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('a lease without asyncDispose still mounts and unloads cleanly', async () => {
+  const fixture = harness({ lease: { key: { preset: 'cordis' } } })
+  await creatorOverlay.apply(fixture.ctx)
+  assert.equal(fixture.skills.has('tui-plugin-development'), true)
+  assert.deepEqual(fixture.state().scopeKey, { preset: 'cordis' })
+
+  await fixture.effects[0].cleanup()
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, false)
 })
 
 test('rejects an empty preset id without touching the preset registry', async () => {

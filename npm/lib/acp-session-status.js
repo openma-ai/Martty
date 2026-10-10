@@ -68,6 +68,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
   let selectionKnown = false
   let connection = 'connecting'
   let server
+  let dshRuntime
   const auth = { status: undefined, method: undefined }
   let initializeId
   let authMethods = []
@@ -94,7 +95,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
     const value = stateFor(sessionId)
     const { permissionPreset: _permissionPreset, sandboxMode: _sandboxMode,
       connectionFacts, ...visible } = value
-    return structuredClone({ connection, server, auth, ...connectionFacts, ...visible })
+    return structuredClone({ connection, server, dshRuntime, auth, ...connectionFacts, ...visible })
   }
 
   function publish() {
@@ -146,6 +147,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
       selectionKnown = false
       connection = 'connecting'
       server = undefined
+      dshRuntime = undefined
       auth.status = undefined
       auth.method = undefined
       delete auth.message
@@ -201,6 +203,10 @@ export function installAcpSessionStatus(ctx, options = {}) {
       fallback.error = message.error?.message
       const result = object(message.result) ? message.result : undefined
       server = readString(result?.agentInfo, 'name')
+      // The runtime the ACP agent actually booted (dsh-acp advertises it in
+      // agentCapabilities._meta.dsh.runtime); shown in /status so users can
+      // tell bundled from host installs (issue #157).
+      dshRuntime = readDshRuntime(result?.agentCapabilities)
       const methods = Array.isArray(result?.authMethods) ? result.authMethods : []
       authMethods = methods
       // initialize advertises choices, not the credential used by this process.
@@ -414,6 +420,15 @@ export function installAcpSessionStatus(ctx, options = {}) {
 function isAuthRequired(error) {
   return object(error) && (error.code === AUTH_REQUIRED_CODE
     || error.code === 'auth_required' || error.code === 'AuthRequired')
+}
+
+function readDshRuntime(capabilities) {
+  const runtime = capabilities?._meta?.dsh?.runtime
+  if (!object(runtime)) return undefined
+  const version = readString(runtime, 'version')
+  const source = readString(runtime, 'source')
+  if (version === undefined && source === undefined) return undefined
+  return { version, source, base: readString(runtime, 'base') }
 }
 
 function readString(value, ...keys) {
