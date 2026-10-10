@@ -75,6 +75,10 @@ All notable changes to this project are documented here. The project follows
   number, backoff delay, and the error that caused it — ending with either
   "Retry succeeded — resuming" or an explicit final failure naming the last
   error, instead of "Retry finished, resuming." after a failed sequence.
+- Scope the session info overlay, status overlay, and model picker provider to
+  the viewed tab: they now read the session's own model and the provider from
+  its catalog, so a `/model` pick made on another tab no longer shows up as
+  this session's provider or model, and `/effort` targets the viewed session.
 
 ## [0.3.1] - 2026-09-30
 

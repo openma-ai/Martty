@@ -4279,7 +4279,7 @@ impl App {
                         }
                         let mode_current = self.current_mode();
                         let model_current = self.current_model();
-                        let model_provider = self.cfg.provider.clone();
+                        let model_provider = self.session_provider().to_string();
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
                                 PickerKind::Model if !models.is_empty() => {
@@ -7232,7 +7232,7 @@ impl App {
                 },
             );
         }
-        let current_provider = self.cfg.provider.clone();
+        let current_provider = self.session_provider().to_string();
         let sel = items
             .iter()
             .position(|i| {
@@ -8151,7 +8151,27 @@ impl App {
         self.selected_model
             .clone()
             .or_else(|| self.transcript.last_model.clone())
+            .or_else(|| self.session_model.clone())
             .unwrap_or_else(|| self.cfg.model.clone())
+    }
+
+    /// Provider the viewed session's model came from — resolved through the
+    /// session's own catalog because `cfg.provider` is app-global and a
+    /// `/model` pick on another tab would otherwise bleed into this one.
+    pub fn session_provider(&self) -> &str {
+        let model = self.current_model();
+        // The running model is the global pick itself: `cfg.provider` is its
+        // recorded provider — the catalog cannot disambiguate duplicate ids.
+        if model == self.cfg.model {
+            return &self.cfg.provider;
+        }
+        let model_id = model.rsplit('/').next().unwrap_or(&model);
+        self.last_models
+            .iter()
+            .find(|entry| entry.id == model || entry.id == model_id)
+            .map(|entry| entry.provider.as_str())
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or(&self.cfg.provider)
     }
 
     /// The effective permission preset: the folded `permission/preset` fact,
@@ -8617,8 +8637,8 @@ impl App {
                 if arg.is_empty() {
                     ctl.send(Cmd::FetchEfforts {
                         session_id: self.session_id.clone(),
-                        provider: self.cfg.provider.clone(),
-                        model: self.cfg.model.clone(),
+                        provider: self.session_provider().to_string(),
+                        model: self.current_model(),
                     });
                 } else {
                     ctl.send(Cmd::SelectModel {
@@ -9020,8 +9040,8 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 .as_deref()
                 .map(|t| format!(" · {t}"))
                 .unwrap_or_default(),
-            self.cfg.provider,
-            self.cfg.model,
+            self.session_provider(),
+            self.current_model(),
             effort_line,
             self.agent_label(&self.current_mode()),
             if self.modes.agent_preset.is_none() {
@@ -9179,7 +9199,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
              - agent · {}{}\n\
              - permission · {}\n\
              - plan · {}",
-            self.cfg.model,
+            self.current_model(),
             effort_line,
             self.agent_label(&self.current_mode()),
             if self.modes.agent_preset.is_none() {

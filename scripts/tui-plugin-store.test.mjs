@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -263,6 +263,31 @@ test('legacy ~/.martty migrates into the shared ~/.oma home once', () => {
     assert.equal(storeModule.marttyHome({ MARTTY_HOME: '/opt/martty' }, home), '/opt/martty')
     assert.equal(storeModule.marttyHome({ OMA_HOME: '/opt/oma' }, home), '/opt/oma')
   } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a failed .martty migration keeps using the legacy home', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'martty-oma-migration-fail-'))
+  try {
+    const legacy = path.join(home, '.martty')
+    mkdirSync(legacy, { recursive: true })
+    const unreadable = path.join(legacy, 'locked.json')
+    writeFileSync(unreadable, '{}')
+    chmodSync(unreadable, 0o000)
+
+    const resolved = storeModule.marttyHome({}, home)
+    chmodSync(unreadable, 0o600)
+    if (resolved === path.join(home, '.oma')) {
+      // Root and other permission-bypassing environments migrate anyway —
+      // the legacy fallback only needs to hold where the copy can fail.
+      assert.equal(process.getuid?.(), 0)
+      return
+    }
+    assert.equal(resolved, legacy, 'migration failure must fall back to the legacy dir')
+    assert.ok(!existsSync(path.join(home, '.oma')), 'no partial shared home left behind')
+  } finally {
+    chmodSync(path.join(home, '.martty', 'locked.json'), 0o600)
     rmSync(home, { recursive: true, force: true })
   }
 })

@@ -162,3 +162,26 @@ fn dump_frame_does_not_swallow_the_next_flag() {
     assert_eq!(args.theme.as_deref(), Some("light"));
     assert!(args.demo);
 }
+
+#[test]
+fn martty_home_falls_back_to_legacy_martty_only_when_oma_is_absent() {
+    use std::fs;
+    let root = std::env::temp_dir().join(format!("dsh-oma-fallback-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join(".martty")).unwrap();
+
+    // Legacy dir exists and .oma does not: keep using .martty (the JS
+    // bootstrap migrates it next launch and the painter follows).
+    assert_eq!(
+        crate::runtime::martty_home_from(None, None, root.to_str().unwrap()),
+        root.join(".martty")
+    );
+
+    // Once .oma exists it always wins, even alongside a legacy dir.
+    fs::create_dir_all(root.join(".oma")).unwrap();
+    assert_eq!(
+        crate::runtime::martty_home_from(None, None, root.to_str().unwrap()),
+        root.join(".oma")
+    );
+    let _ = fs::remove_dir_all(&root);
+}

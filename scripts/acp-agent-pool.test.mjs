@@ -245,3 +245,82 @@ test('a namespaced session can be resumed with the same Harness after restarting
   assert.equal(loaded.result._meta.raw,'session-1')
   assert.equal((await restarted.request('session/prompt',{sessionId:savedId,prompt:[]})).result._meta.fixture,'beta')
 })
+
+test('a config reply without configOptions still records the session pick', {timeout:5000}, async t => {
+  // Agent answers `session/set_config_option` with a bare `{}` — the pool
+  // must still record the value it asserted so drift detection keeps working.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      reply({sessionId:request.params.sessionId});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:a,configId:'model',value:'swe-2-high'})
+  const b = (await c.request('session/new')).result.sessionId
+
+  const replies = []
+  for (const sessionId of [a, b, a, b]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  assert.deepEqual(
+    replies.map(reply => reply.result._meta.model),
+    ['swe-2-high','fable-5','swe-2-high','fable-5'],
+    'echo-less set_config_option replies must still drive per-session re-assert',
+  )
+})
+
+test('config_option_update notifications record into the session config', {timeout:5000}, async t => {
+  // The agent pushes a mid-turn `config_option_update` (e.g. its own steering
+  // changed the model); the pool must track it as that session's value.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      const sid = 'session-'+(++next);
+      reply({sessionId:sid,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      setTimeout(() => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'config_option_update',sessionId:sid,configOptions:[{id:'model',currentValue:'steered-9'}]}}}),5);
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  await new Promise(resolve => setTimeout(resolve, 30)) // let the update land
+  // Session B rewrites the agent-global model; A's next turn must restore the
+  // value the update recorded, not A's session/new default.
+  const b = (await c.request('session/new')).result.sessionId
+  const replies = []
+  for (const sessionId of [a, b, a]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  // A re-asserts the update-recorded 'steered-9' around B's 'fable-5' turn —
+  // had the notification not been recorded, A would still hold 'fable-5' and
+  // its turns would echo 'fable-5' instead.
+  assert.deepEqual(
+    replies.map(reply => reply.result._meta.model),
+    ['steered-9','fable-5','steered-9'],
+  )
+})

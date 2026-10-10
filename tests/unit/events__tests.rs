@@ -1394,3 +1394,37 @@ fn pi_failed_turn_surfaces_the_upstream_reason_and_retry_text_stays_out() {
         vec![UiEvent::TextDelta { session: "s".into(), text: "hello".into() }]
     );
 }
+
+#[test]
+fn pi_unknown_meta_events_emit_nothing() {
+    // A `_meta.pi` event the client does not model must not render.
+    for event in ["futures_event", "auto_retry", "unknown_future_thing"] {
+        let parsed = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": ""},
+                    "_meta": {"pi": {"event": event}},
+                },
+            }),
+        );
+        assert!(parsed.is_empty(), "{event} leaked: {parsed:?}");
+    }
+}
+
+#[test]
+fn pi_auto_retry_unknown_phase_emits_nothing() {
+    let parsed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "paused", "attempt": 1}},
+            },
+        }),
+    );
+    assert!(parsed.is_empty(), "unknown phase leaked: {parsed:?}");
+}
