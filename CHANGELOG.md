@@ -59,6 +59,35 @@ All notable changes to this project are documented here. The project follows
   there. The bindings themselves are unchanged and remain listed in
   `/keys` (#148).
 
+### Fixed
+
+- Keep each session's own model and thinking effort. Pi writes
+  `session/set_config_option` into its global defaults, so the connection pool
+  now records every session's config options and re-asserts them, in order,
+  before forwarding that session's `session/prompt`. Sessions that only took
+  the defaults no longer leak their settings into existing sessions either way.
+- Resolve the built-in Pi harness as `@openma/pi-acp@latest` at runtime instead
+  of the unprefixed public `pi-acp` or a version pinned into user settings, so
+  harness upgrades never require a Martty release. Saved entries that pin any
+  `pi-acp`/`@openma/pi-acp@<version>` spec are rewritten to follow `latest`.
+- Share the configuration home with Backchat at `~/.oma` (`$DSH_HOME/.oma` when
+  `DSH_HOME` is set; `MARTTY_HOME` and `OMA_HOME` still win explicitly). An
+  existing `~/.martty` is migrated in place on first launch; the Rust session
+  root falls back to `~/.martty` only when `~/.oma` does not exist.
+- Surface upstream turn failures. A `session/prompt` rejection already showed
+  the agent's error, and now pi's `_meta.pi` turn events do too: an empty
+  assistant chunk carrying `stopReason: "error"` posts the real upstream reason
+  (for example 429 or quota exhausted) as an error notice instead of a silent
+  zero-response turn, and `auto_retry` notices no longer double-print as text.
+- Render auto-retry status on a single updating line per attempt — attempt
+  number, backoff delay, and the error that caused it — ending with either
+  "Retry succeeded — resuming" or an explicit final failure naming the last
+  error, instead of "Retry finished, resuming." after a failed sequence.
+- Scope the session info overlay, status overlay, and model picker provider to
+  the viewed tab: they now read the session's own model and the provider from
+  its catalog, so a `/model` pick made on another tab no longer shows up as
+  this session's provider or model, and `/effort` targets the viewed session.
+
 ## [0.3.1] - 2026-09-30
 
 ### Changed

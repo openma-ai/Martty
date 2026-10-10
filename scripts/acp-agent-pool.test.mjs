@@ -74,6 +74,46 @@ test('changing the default is configuration only; new sessions retain their own 
   assert.equal(alpha.killed, false)
 })
 
+test('each session keeps its own model when the agent applies config globally', {timeout:5000}, async t => {
+  // pi-acp-style agent: `session/set_config_option` and `session/new` write a
+  // single global model, so a newer session's defaults would otherwise leak
+  // into older sessions' turns.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      globalThis.sets = (globalThis.sets ?? []).concat([[request.params.sessionId,request.params.value]]);
+      reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:a,configId:'model',value:'swe-2-high'})
+  // A newer session loads its own default — globally overwriting A's choice.
+  const b = (await c.request('session/new')).result.sessionId
+
+  const replies = []
+  for (const sessionId of [a, b, a, b]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  assert.deepEqual(
+    replies.map(reply => reply.result._meta.model),
+    ['swe-2-high','fable-5','swe-2-high','fable-5'],
+    'alternating sessions must each run the model they own',
+  )
+})
+
 test('new session failure does not kill or redirect existing sessions', {timeout:5000}, async t => {
   const c = client(t)
   await c.request('initialize', {protocolVersion:1})
@@ -204,4 +244,216 @@ test('a namespaced session can be resumed with the same Harness after restarting
   assert.equal(loaded.result.sessionId,savedId)
   assert.equal(loaded.result._meta.raw,'session-1')
   assert.equal((await restarted.request('session/prompt',{sessionId:savedId,prompt:[]})).result._meta.fixture,'beta')
+})
+
+test('a config reply without configOptions still records the session pick', {timeout:5000}, async t => {
+  // Agent answers `session/set_config_option` with a bare `{}` — the pool
+  // must still record the value it asserted so drift detection keeps working.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      reply({sessionId:request.params.sessionId});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:a,configId:'model',value:'swe-2-high'})
+  const b = (await c.request('session/new')).result.sessionId
+
+  const replies = []
+  for (const sessionId of [a, b, a, b]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  assert.deepEqual(
+    replies.map(reply => reply.result._meta.model),
+    ['swe-2-high','fable-5','swe-2-high','fable-5'],
+    'echo-less set_config_option replies must still drive per-session re-assert',
+  )
+})
+
+test('config_option_update notifications record into the session config', {timeout:5000}, async t => {
+  // The agent pushes a mid-turn `config_option_update` (e.g. its own steering
+  // changed the model); the pool must track it as that session's value.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      const sid = 'session-'+(++next);
+      reply({sessionId:sid,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      if (next === 1) setTimeout(() => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'config_option_update',sessionId:sid,configOptions:[{id:'model',currentValue:'steered-9'}]}}}),5);
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  await new Promise(resolve => setTimeout(resolve, 30)) // let the update land
+  // Session B rewrites the agent-global model; A's next turn must restore the
+  // value the update recorded, not A's session/new default.
+  const b = (await c.request('session/new')).result.sessionId
+  const replies = []
+  for (const sessionId of [a, b, a]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  // A re-asserts the update-recorded 'steered-9' around B's 'fable-5' turn —
+  // had the notification not been recorded, A would still hold 'fable-5' and
+  // its turns would echo 'fable-5' instead.
+  assert.deepEqual(
+    replies.map(reply => reply.result._meta.model),
+    ['steered-9','fable-5','steered-9'],
+  )
+})
+
+test('malformed config entries are ignored and valid ones still record', {timeout:5000}, async t => {
+  // Mixed-shape configOptions entries must not throw or corrupt the map:
+  // non-objects, arrays, missing/empty/non-string ids, missing values all
+  // drop out of optionEntry; the valid pair records for re-assert.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      const sid = 'session-'+(++next);
+      reply({sessionId:sid,configOptions:[
+        null, 'x', [], {id:'m'}, {configId:42,currentValue:1},
+        {configId:'',currentValue:1}, {configId:'novalue'},
+        {config_id:'snake',current_value:'v'},
+        {id:'model',currentValue:globalThis.model},
+      ]});
+      setTimeout(() => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'config_option_update',sessionId:sid,configOptions:[null, {id:'model'}, {configId:9,currentValue:'x'}]}}}),5);
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+
+  // The agent's junk `config_option_update` notification (all malformed
+  // entries) must leave the recorded config untouched.
+  await new Promise(resolve => setTimeout(resolve, 30))
+
+  const b = (await c.request('session/new')).result.sessionId
+  const replies = []
+  for (const sessionId of [a, b, a]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  // The valid 'model=fable-5' entry recorded at session/new still re-asserts;
+  // the malformed notification recorded nothing.
+  assert.deepEqual(replies.map(reply => reply.result._meta.model), ['fable-5','fable-5','fable-5'])
+})
+
+test('a rejected config assert still forwards the prompt', {timeout:5000}, async t => {
+  // The agent answers set_config_option with an error: the assert resolves
+  // undefined, the loop stops asserting, and the turn still goes through.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model},{id:'effort',currentValue:'high'}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      send({id:request.id,error:{code:-32603,message:'config is read-only'}});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  const b = (await c.request('session/new')).result.sessionId
+  const reply = await c.request('session/prompt', {sessionId:a, prompt:[]})
+  assert.equal(reply.result.stopReason, 'end_turn')
+  assert.equal(reply.result._meta.sessionId, 'session-1')
+  void b
+})
+
+test('agent death during a pending assert drops the write but settles the client', {timeout:5000}, async t => {
+  // Killing the agent while its assert is in flight must skip the prompt
+  // write yet still answer the waiting client with the failure.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      setTimeout(() => { globalThis.model = request.params.value; reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]}); }, 250);
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  // Give the other session a different value so A's assert actually writes.
+  const b = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:b, configId:'model', value:'swe-2-high'})
+  const prompt = c.request('session/prompt', {sessionId:a, prompt:[]})
+  await new Promise(resolve => setTimeout(resolve, 120)) // assert in flight
+  c.service.child.kill()
+  const reply = await prompt
+  assert.match(reply.error?.message ?? '', /exited|closed/i, `expected failure reply, got ${JSON.stringify(reply)}`)
+})
+
+test('closing during a pending assert skips the prompt write', {timeout:5000}, async t => {
+  // close() while an assert is in flight must skip the forwarded write and
+  // still settle the client's pending prompt.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      setTimeout(() => { globalThis.model = request.params.value; reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]}); }, 250);
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  const b = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:b, configId:'model', value:'swe-2-high'})
+  const prompt = c.request('session/prompt', {sessionId:a, prompt:[]})
+  await new Promise(resolve => setTimeout(resolve, 120)) // assert in flight
+  c.service.close()
+  const reply = await prompt
+  assert.match(reply.error?.message ?? '', /closed|exited/i, `expected close reply, got ${JSON.stringify(reply)}`)
 })

@@ -121,11 +121,11 @@ test('Martty settings live under the branded home with explicit environment prec
   )
   assert.equal(
     uiSettingsPath([], { DSH_HOME: '/opt/dsh' }, '/Users/test'),
-    path.join('/opt/dsh', '.martty', 'settings.json'),
+    path.join('/opt/dsh', '.oma', 'settings.json'),
   )
   assert.equal(
     uiSettingsPath([], {}, '/Users/test'),
-    path.join('/Users/test', '.martty', 'settings.json'),
+    path.join('/Users/test', '.oma', 'settings.json'),
   )
   assert.equal(
     uiSettingsPath(['--session-root', '/tmp/isolated'], {}, '/Users/test'),

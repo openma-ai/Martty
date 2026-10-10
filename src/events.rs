@@ -95,6 +95,24 @@ pub enum UiEvent {
         title: String,
         details: Option<String>,
     },
+    /// `_meta.pi.event: "auto_retry"` phase `"start"` — the agent is about to
+    /// retry an upstream call (429, quota, scheduling capacity). One status
+    /// line, updated in place as attempts advance.
+    RetryStatus {
+        session: String,
+        attempt: u64,
+        max_attempts: u64,
+        delay_ms: u64,
+        error: Option<String>,
+    },
+    /// `_meta.pi.event: "auto_retry"` phase `"end"` — the retry loop settled.
+    /// `success=false` carries the final upstream reason in `error`.
+    RetryFinished {
+        session: String,
+        attempt: u64,
+        success: bool,
+        error: Option<String>,
+    },
     /// Current model from the standard ACP session config snapshot.
     SessionModel {
         session: String,
@@ -325,6 +343,35 @@ fn parse_session_update(params: &Value) -> Vec<UiEvent> {
         .unwrap_or("");
     match kind {
         "agent_message_chunk" => {
+            let pi = update.get("_meta").and_then(|meta| meta.get("pi"));
+            // pi reports a failed upstream turn (429, quota exhausted, …) on
+            // an empty chunk: `_meta.pi.event == "assistant_message"` with
+            // `stopReason: "error"` and the real reason in `error`. Without
+            // this the chunk carries no text and the failure is invisible.
+            if let Some(error) = pi.filter(|pi| {
+                pi.get("event").and_then(Value::as_str) == Some("assistant_message")
+                    && pi.get("stopReason").and_then(Value::as_str) == Some("error")
+            }) {
+                let reason = error
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_string);
+                return vec![UiEvent::SessionNotice {
+                    session,
+                    severity: "error".into(),
+                    title: "upstream error".into(),
+                    details: reason,
+                }];
+            }
+            // pi's retry progress arrives twice: a structured `session_info_update`
+            // (`_meta.pi.event == "auto_retry"`) and this marked text chunk.
+            // Keep only the structured one so attempts don't pile onto one line.
+            if pi.and_then(|pi| pi.get("notice")).and_then(Value::as_str) == Some("auto_retry")
+            {
+                return Vec::new();
+            }
             let text = acp_text_content(update.get("content"));
             let completion = update
                 .get("_meta")
@@ -365,6 +412,47 @@ fn parse_session_update(params: &Value) -> Vec<UiEvent> {
             }
         }
         "session_info_update" => {
+            if let Some(retry) = update
+                .get("_meta")
+                .and_then(|meta| meta.get("pi"))
+                .filter(|pi| pi.get("event").and_then(Value::as_str) == Some("auto_retry"))
+            {
+                match retry.get("phase").and_then(Value::as_str) {
+                    Some("start") => {
+                        return vec![UiEvent::RetryStatus {
+                            session,
+                            attempt: u64_field(retry, "attempt").unwrap_or(0),
+                            max_attempts: u64_field(retry, "maxAttempts")
+                                .or_else(|| u64_field(retry, "max_attempts"))
+                                .unwrap_or(0),
+                            delay_ms: u64_field(retry, "delayMs")
+                                .or_else(|| u64_field(retry, "delay_ms"))
+                                .unwrap_or(0),
+                            error: retry
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|error| !error.is_empty())
+                                .map(str::to_string),
+                        }];
+                    }
+                    Some("end") => {
+                        return vec![UiEvent::RetryFinished {
+                            session,
+                            attempt: u64_field(retry, "attempt").unwrap_or(0),
+                            success: retry.get("success").and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            error: retry
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|error| !error.is_empty())
+                                .map(str::to_string),
+                        }];
+                    }
+                    _ => return Vec::new(),
+                }
+            }
             if let Some(failure) = update
                 .get("_meta")
                 .and_then(|meta| meta.get("jetbrains"))

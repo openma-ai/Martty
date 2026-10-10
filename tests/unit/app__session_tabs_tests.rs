@@ -1725,3 +1725,161 @@ fn empty_tab_reuse_keeps_draft_and_discards_late_startup_binding() {
     assert_eq!(app.session_tab_count(), 1);
     assert_eq!(app.session_id, "new-session");
 }
+
+#[test]
+fn session_overlay_shows_the_tabs_own_provider_and_model() {
+    let (mut app, ctl, _) = test_app();
+    app.session_model = Some("anthropic/claude-fable-5-1".into());
+    app.last_models = vec![
+        crate::bus::CatalogModel {
+            provider: "swe".into(),
+            id: "swe-2-high".into(),
+            name: "swe-2-high".into(),
+            vision: false,
+        },
+        crate::bus::CatalogModel {
+            provider: "anthropic".into(),
+            id: "claude-fable-5-1".into(),
+            name: "claude-fable-5-1".into(),
+            vision: false,
+        },
+    ];
+    // The app-global pick was made on a different tab; it must not leak here.
+    app.cfg.provider = "swe".into();
+    app.cfg.model = "swe/swe-2-high".into();
+    assert_eq!(app.current_model(), "anthropic/claude-fable-5-1");
+    assert_eq!(app.session_provider(), "anthropic");
+    app.push_session_info();
+    let frame = crate::ui::dump_frame(&mut app, 100, 30);
+    assert!(frame.contains("provider · anthropic / anthropic/claude-fable-5-1"), "{frame}");
+    assert!(!frame.contains("swe / swe/swe-2-high"), "{frame}");
+
+    // The viewed tab's own pick wins over its bound default.
+    app.selected_model = Some("swe/swe-2-high".into());
+    assert_eq!(app.current_model(), "swe/swe-2-high");
+    assert_eq!(app.session_provider(), "swe");
+
+    // Sessions whose catalog entry stores a full `provider/model` id still
+    // resolve, and an unknown model falls back to the global provider.
+    app.last_models[0].id = "swe/swe-2-high".into();
+    assert_eq!(app.session_provider(), "swe");
+    app.selected_model = Some("unknown/model".into());
+    assert_eq!(app.session_provider(), "swe");
+    app.cfg.provider = "deepseek-official".into();
+    app.last_models.clear();
+    assert_eq!(app.session_provider(), "deepseek-official");
+
+    // A session model stored as the bare catalog id still finds its provider:
+    // `entry.id == model` before the `provider/model` rsplit fallback.
+    app.last_models = vec![crate::bus::CatalogModel {
+        provider: "anthropic".into(),
+        id: "claude-fable-5-1".into(),
+        name: "claude-fable-5-1".into(),
+        vision: false,
+    }];
+    app.selected_model = None;
+    app.transcript.last_model = None;
+    app.session_model = Some("claude-fable-5-1".into());
+    assert_eq!(app.session_provider(), "anthropic");
+    let _ = ctl;
+}
+
+#[test]
+fn effort_command_targets_the_tabs_own_model() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.session_model = Some("anthropic/claude-fable-5-1".into());
+    app.last_models = vec![crate::bus::CatalogModel {
+        provider: "anthropic".into(),
+        id: "claude-fable-5-1".into(),
+        name: "claude-fable-5-1".into(),
+        vision: false,
+    }];
+    // A different tab picked swe-2-high — the effort list must not follow it.
+    app.cfg.provider = "swe".into();
+    app.cfg.model = "swe/swe-2-high".into();
+    app.run_slash("effort", "", &ctl);
+    match commands.try_recv() {
+        Ok(Cmd::FetchEfforts { session_id, provider, model }) => {
+            assert_eq!(session_id, app.session_id);
+            assert_eq!(provider, "anthropic");
+            assert_eq!(model, "anthropic/claude-fable-5-1");
+        }
+        other => panic!("expected FetchEfforts, got {other:?}"),
+    }
+}
+
+#[test]
+fn retry_events_paint_one_updating_line_and_an_explicit_result() {
+    let (mut app, ctl, _rx) = test_app();
+    let retry = |attempt: u64, delay_ms: u64| AppEvent::Ui(crate::events::UiEvent::RetryStatus {
+        session: "dsh-test".into(),
+        attempt,
+        max_attempts: 3,
+        delay_ms,
+        error: Some("429 too many requests".into()),
+    });
+    app.handle(retry(1, 2500), &ctl);
+    app.handle(retry(2, 6000), &ctl);
+    let text = transcript_text(&mut app.transcript);
+    assert!(text.contains("attempt 2/3"), "{text}");
+    assert!(text.contains("429 too many requests"), "{text}");
+    assert!(text.contains("6s"), "{text}");
+    assert_eq!(text.matches("attempt 1/3").count(), 0, "attempts rewrite one line");
+
+    // The stale-cell guard survives a trimmed/cleared retry line.
+    app.transcript.cells.clear();
+    app.handle(retry(3, 6000), &ctl);
+
+    // An agent that does not report a max shows `?` instead of a count.
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::RetryStatus {
+            session: "dsh-test".into(),
+            attempt: 1,
+            max_attempts: 0,
+            delay_ms: 6000,
+            error: None,
+        }),
+        &ctl,
+    );
+    assert!(transcript_text(&mut app.transcript).contains("attempt 1/?"));
+
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::RetryFinished {
+            session: "dsh-test".into(),
+            attempt: 3,
+            success: false,
+            error: Some("upstream still failing".into()),
+        }),
+        &ctl,
+    );
+    let text = transcript_text(&mut app.transcript);
+    assert!(text.contains("3"), "{text}");
+    assert!(text.contains("upstream still failing"), "{text}");
+    assert!(!text.contains("resuming"), "{text}");
+
+    app.handle(retry(1, 1500), &ctl);
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::RetryFinished {
+            session: "dsh-test".into(),
+            attempt: 1,
+            success: true,
+            error: None,
+        }),
+        &ctl,
+    );
+    let text = transcript_text(&mut app.transcript);
+    assert!(text.contains("resuming"), "{text}");
+
+    app.handle(
+        AppEvent::Ui(crate::events::UiEvent::SessionNotice {
+            session: "dsh-test".into(),
+            severity: "error".into(),
+            title: "upstream error".into(),
+            details: Some("429 too many requests".into()),
+        }),
+        &ctl,
+    );
+    let text = transcript_text(&mut app.transcript);
+    assert!(text.contains("429 too many requests"), "{text}");
+}

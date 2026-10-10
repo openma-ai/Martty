@@ -2,6 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+/// Martty's configuration home, shared with Backchat: `~/.oma`.
+/// Resolution order: explicit `MARTTY_HOME`/`OMA_HOME`, then `$DSH_HOME/.oma`,
+/// then `~/.oma`. When `.oma` is missing but the legacy `.martty` directory
+/// sits next to it, the legacy directory is used until the JS bootstrap has
+/// migrated it — the painter then lands on the migrated home automatically.
 pub fn martty_home_from(
     martty_home: Option<&str>,
     dsh_home: Option<&str>,
@@ -10,14 +15,22 @@ pub fn martty_home_from(
     if let Some(home) = martty_home.filter(|value| !value.is_empty()) {
         return PathBuf::from(home);
     }
-    if let Some(home) = dsh_home.filter(|value| !value.is_empty()) {
-        return Path::new(home).join(".martty");
+    let base = match dsh_home.filter(|value| !value.is_empty()) {
+        Some(home) => PathBuf::from(home),
+        None => PathBuf::from(user_home),
+    };
+    let oma = base.join(".oma");
+    let legacy = base.join(".martty");
+    if !oma.exists() && legacy.exists() {
+        return legacy;
     }
-    Path::new(user_home).join(".martty")
+    oma
 }
 
 pub fn martty_home() -> PathBuf {
-    let martty = std::env::var("MARTTY_HOME").ok();
+    let martty = std::env::var("MARTTY_HOME")
+        .ok()
+        .or_else(|| std::env::var("OMA_HOME").ok());
     let dsh = std::env::var("DSH_HOME").ok();
     let user = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     martty_home_from(martty.as_deref(), dsh.as_deref(), &user)

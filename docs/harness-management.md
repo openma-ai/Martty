@@ -34,7 +34,7 @@ martty
 
 发现可用的本地程序时，Martty 可以复用该路径，不修改系统 PATH。Registry 的 npx/uvx 条目使用它提供的启动 recipe；保存运行器命令不等于包已经下载，CLI 配置后可能在首次启动时下载。
 
-binary 条目按操作系统与架构选择包，校验 SHA-256，并安装到 Martty 自有目录，例如 macOS 的 `~/.martty/bin/<id>/<version>/<platform>`。Windows 使用对应用户目录和平台包，不要求把安装目录加入系统 PATH。
+binary 条目按操作系统与架构选择包，校验 SHA-256，并安装到 Martty 自有目录，例如 macOS 的 `~/.oma/bin/<id>/<version>/<platform>`。Windows 使用对应用户目录和平台包，不要求把安装目录加入系统 PATH。
 
 缺少 npx 或 uvx 时，需要准备 Node.js/npm 或 uv；若该条目有当前平台可用的 binary 分发，也可使用该分发方式。Registry 中有些程序是适配器，仍依赖另一个 CLI。遇到 `executable not found` 时，应按错误提示补齐依赖，不能把适配器安装成功当作运行条件已齐全。
 

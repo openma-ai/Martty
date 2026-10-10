@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -13,7 +13,7 @@ test('Martty home owns Creator plugins with explicit environment precedence', ()
   )
   assert.equal(
     storeModule.tuiPluginRoot({ DSH_HOME: '/opt/dsh' }),
-    path.join('/opt/dsh', '.martty', 'plugins'),
+    path.join('/opt/dsh', '.oma', 'plugins'),
   )
 })
 
@@ -221,5 +221,82 @@ test('malformed artifact directories remain visible as broken rows', () => {
     assert.throws(() => storeModule.createTuiPluginStore({ root }).resolve('broken-theme'), /broken/i)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('legacy ~/.martty migrates into the shared ~/.oma home once', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'martty-oma-migration-'))
+  try {
+    const legacy = path.join(home, '.martty')
+    mkdirSync(path.join(legacy, 'sessions'), { recursive: true })
+    writeFileSync(path.join(legacy, 'settings.json'), '{"defaultHarness":"pi-acp"}')
+    writeFileSync(path.join(legacy, 'sessions', 'one.jsonl'), '{}')
+
+    const resolved = storeModule.marttyHome({}, home)
+    assert.equal(resolved, path.join(home, '.oma'))
+    assert.equal(
+      readFileSync(path.join(resolved, 'settings.json'), 'utf8'),
+      '{"defaultHarness":"pi-acp"}',
+      'settings carry over to the shared home',
+    )
+    assert.ok(existsSync(path.join(resolved, 'sessions', 'one.jsonl')))
+    assert.ok(existsSync(path.join(legacy, 'settings.json')), 'the legacy dir is left in place')
+
+    // Later launches use the shared home directly — no re-migration.
+    assert.equal(storeModule.marttyHome({}, home), resolved)
+
+    // An existing ~/.oma always wins; nothing is overwritten by legacy data.
+    rmSync(resolved, { recursive: true, force: true })
+    mkdirSync(resolved, { recursive: true })
+    assert.equal(storeModule.marttyHome({}, home), resolved)
+    assert.ok(!existsSync(path.join(resolved, 'settings.json')))
+
+    // $DSH_HOME resolves .oma the same way (and migrates .martty inside it).
+    const dsh = mkdtempSync(path.join(tmpdir(), 'martty-oma-dsh-'))
+    mkdirSync(path.join(dsh, '.martty'), { recursive: true })
+    writeFileSync(path.join(dsh, '.martty', 'settings.json'), '{}')
+    assert.equal(storeModule.marttyHome({ DSH_HOME: dsh }, home), path.join(dsh, '.oma'))
+    assert.ok(existsSync(path.join(dsh, '.oma', 'settings.json')))
+    rmSync(dsh, { recursive: true, force: true })
+
+    // Explicit MARTTY_HOME / OMA_HOME always win and never migrate.
+    assert.equal(storeModule.marttyHome({ MARTTY_HOME: '/opt/martty' }, home), '/opt/martty')
+    assert.equal(storeModule.marttyHome({ OMA_HOME: '/opt/oma' }, home), '/opt/oma')
+    // An empty or non-string override is treated as unset, not as the home.
+    assert.equal(
+      storeModule.marttyHome({ MARTTY_HOME: '', OMA_HOME: '', DSH_HOME: dsh }, home),
+      path.join(dsh, '.oma'),
+    )
+    assert.equal(
+      storeModule.marttyHome({ MARTTY_HOME: 7, OMA_HOME: false, DSH_HOME: dsh }, home),
+      path.join(dsh, '.oma'),
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a failed .martty migration keeps using the legacy home', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'martty-oma-migration-fail-'))
+  try {
+    const legacy = path.join(home, '.martty')
+    mkdirSync(legacy, { recursive: true })
+    const unreadable = path.join(legacy, 'locked.json')
+    writeFileSync(unreadable, '{}')
+    chmodSync(unreadable, 0o000)
+
+    const resolved = storeModule.marttyHome({}, home)
+    chmodSync(unreadable, 0o600)
+    if (resolved === path.join(home, '.oma')) {
+      // Root and other permission-bypassing environments migrate anyway —
+      // the legacy fallback only needs to hold where the copy can fail.
+      assert.equal(process.getuid?.(), 0)
+      return
+    }
+    assert.equal(resolved, legacy, 'migration failure must fall back to the legacy dir')
+    assert.ok(!existsSync(path.join(home, '.oma')), 'no partial shared home left behind')
+  } finally {
+    chmodSync(path.join(home, '.martty', 'locked.json'), 0o600)
+    rmSync(home, { recursive: true, force: true })
   }
 })
