@@ -52,8 +52,12 @@ All notable changes to this project are documented here. The project follows
   list them.
 - Remove the inline keyboard-shortcut hints glued to the composer footer
   chips; the footer now shows only the current values (agent preset,
-  permission, approval, plan, model, effort). The bindings themselves are
-  unchanged and remain listed in `/keys` (#148).
+  permission, approval, plan, model, effort). The composer dock's
+  contextual hint row is also trimmed to the single mid-turn
+  `esc interrupt` affordance — `⏎ send`, `⏎ queue`, `ctrl+⏎ steer`,
+  `edit queue`, and the slash/shell/modal hints are no longer advertised
+  there. The bindings themselves are unchanged and remain listed in
+  `/keys` (#148).
 
 ## [0.3.1] - 2026-09-30
 

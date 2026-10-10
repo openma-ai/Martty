@@ -583,6 +583,39 @@ fn status_chips_show_values_without_inline_key_hints() {
 }
 
 #[test]
+fn status_chips_render_optional_approval_plan_and_fallback_labels() {
+    let flat = |line: &Line| -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    let mut app = test_app();
+
+    // Approval and plan chips render when the host reports them — still
+    // values only, no key glued on (#148).
+    app.modes.approval = Some("on-request".into());
+    app.modes.plan = true;
+    let line = status_title(&app);
+    let s = flat(&line);
+    assert!(s.contains(" · on-request"), "{s}");
+    assert!(s.contains(" · plan"), "{s}");
+    assert!(!s.contains('+'), "{s}");
+
+    // zh: a permission id outside the renamed trio falls back to the
+    // shared label, and a sandbox-only mode feeds the same chip.
+    app.locale = crate::locale::Locale::Zh;
+    app.modes.permission = Some("custom-perm".into());
+    let s = flat(&status_title(&app));
+    assert!(s.contains("Custom Perm"), "{s}");
+    app.modes.permission = None;
+    app.modes.sandbox = Some("sandbox-mode".into());
+    let s = flat(&status_title(&app));
+    assert!(s.contains("Sandbox Mode"), "{s}");
+    assert!(!s.contains('+'), "{s}");
+}
+
+#[test]
 fn cordis_protocol_id_is_rendered_as_creator() {
     let mut app = test_app();
     let (ctl, _commands) = crate::controller::tests::test_controller();
@@ -612,43 +645,43 @@ fn cordis_protocol_id_is_rendered_as_creator() {
 }
 
 #[test]
-fn meta_row_hints_follow_the_state_machine() {
+fn meta_row_hints_only_advertise_the_running_interrupt() {
     let flat = |spans: Vec<Span>| -> String {
         spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     };
     let mut app = test_app();
-    // idle · empty → no dock hint at all (no /keys; ctrl+k belongs to the editor)
-    let s = flat(context_hints(&app));
-    assert!(s.is_empty(), "{s}");
-    assert!(!s.contains("keys"), "{s}");
-    // idle · draft → enter sends
-    app.input.set("hello".into());
-    let s = flat(context_hints(&app));
-    assert!(s.contains("⏎ send"), "{s}");
-    assert!(!s.contains("keys"), "{s}");
-    // idle · slash recommendations own Enter/Esc; shell drafts relabel Enter
-    app.input.set("/mo".into());
-    let s = flat(context_hints(&app));
-    assert!(s.contains("⏎ select") && s.contains("esc close"), "{s}");
-    app.input.set("!ls".into());
-    assert!(flat(context_hints(&app)).contains("⏎ shell"));
-    // running · empty → interrupt only
-    app.state = RunState::Running;
+    // Issue #148: only the mid-turn interrupt survives in the dock — every
+    // other binding lives in /keys. Idle states render nothing, whatever
+    // the draft holds (plain text, slash command, shell, pending FIFO).
+    for draft in ["", "hello", "/mo", "!ls"] {
+        app.input.set(draft.into());
+        let s = flat(context_hints(&app));
+        assert!(s.is_empty(), "idle draft {draft:?} rendered {s:?}");
+    }
     app.input.clear();
+    app.queued = 2;
+    assert!(flat(context_hints(&app)).is_empty());
+    app.queued = 0;
+    // Running, draft or not: esc interrupt, and nothing else.
+    app.state = RunState::Running;
+    for draft in ["", "follow-up"] {
+        app.input.set(draft.into());
+        let s = flat(context_hints(&app));
+        assert!(s.contains("esc interrupt"), "{s}");
+        assert!(!s.contains("⏎"), "{s}");
+        assert!(!s.contains("queue"), "{s}");
+        assert!(!s.contains("steer"), "{s}");
+        assert!(!s.contains("send"), "{s}");
+    }
+    // zh localizes the surviving label.
+    app.locale = crate::locale::Locale::Zh;
     let s = flat(context_hints(&app));
-    assert!(s.contains("esc interrupt"), "{s}");
+    assert!(s.contains("esc 中断"), "{s}");
     assert!(!s.contains("⏎"), "{s}");
-    // running · draft → queue + send-now + interrupt
-    app.input.set("follow-up".into());
-    let s = flat(context_hints(&app));
-    assert!(
-        s.contains("⏎ queue") && s.contains("ctrl+⏎ steer") && s.contains("esc interrupt"),
-        "{s}"
-    );
 }
 
 #[test]
-fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
+fn meta_row_hints_stay_quiet_while_queue_modals_are_open() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     let flat = |spans: Vec<Span>| -> String {
@@ -658,6 +691,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
     let (ctl, _commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
     app.input.set("queued draft".into());
+    // Plain running state still advertises the interrupt (#148 keeps it).
+    assert!(flat(context_hints(&app)).contains("esc interrupt"));
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -670,10 +705,11 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         &ctl,
     );
 
-    let selecting = flat(context_hints(&app));
-    assert!(selecting.contains("↑↓ choose"), "{selecting}");
-    assert!(selecting.contains("⏎ edit"), "{selecting}");
-    assert!(selecting.contains("esc close"), "{selecting}");
+    // Modal flows still work — they just aren't advertised in the dock,
+    // and an open modal suppresses the interrupt label since esc then
+    // closes the modal rather than the turn.
+    assert!(app.queue_selecting(), "queue picker should be open");
+    assert!(flat(context_hints(&app)).is_empty());
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -682,10 +718,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         &ctl,
     );
 
-    let edit = flat(context_hints(&app));
-    assert!(edit.contains("⏎ save"), "{edit}");
-    assert!(edit.contains("^d delete"), "{edit}");
-    assert!(edit.contains("esc cancel"), "{edit}");
+    assert!(app.queue_editing(), "queue editor should be open");
+    assert!(flat(context_hints(&app)).is_empty());
 
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
@@ -694,9 +728,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         ))),
         &ctl,
     );
-    let confirm = flat(context_hints(&app));
-    assert!(confirm.contains("⏎ delete"), "{confirm}");
-    assert!(confirm.contains("esc back"), "{confirm}");
+    assert!(app.queue_delete_confirming(), "delete confirm should be open");
+    assert!(flat(context_hints(&app)).is_empty());
 }
 
 #[test]
