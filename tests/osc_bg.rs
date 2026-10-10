@@ -51,6 +51,13 @@ mod unix {
         cmd.arg("--demo")
             .env("TERM", "xterm-256color")
             .env_remove("TERM_PROGRAM")
+            // Pin the colour/test-hook environment: the spawned binary must
+            // not inherit NO_COLOR or the hooks from the developer's shell —
+            // extra_env below is the only source (a caller's NO_COLOR=1 would
+            // otherwise suppress OSC 11 and fail these tests).
+            .env_remove("NO_COLOR")
+            .env_remove("DSH_TUI_DEMO_DOCK")
+            .env_remove("DSH_TUI_TEST_PANIC")
             .stdin(Stdio::from(slave.try_clone().expect("clone PTY stdin")))
             .stdout(Stdio::from(slave.try_clone().expect("clone PTY stdout")))
             .stderr(Stdio::from(slave));
@@ -239,7 +246,7 @@ mod unix {
         // pattern-matching cmdlines (which would also match this wrapper and
         // the test's own shell). It stays alive to print the exit marker.
         let shell_cmd = format!(
-            "DSH_TUI_DEMO_DOCK=1 {} --demo & echo $! > {}; wait; echo OSC_BG_DONE; sleep 60",
+            "env -u NO_COLOR -u DSH_TUI_TEST_PANIC DSH_TUI_DEMO_DOCK=1 {} --demo & echo $! > {}; wait; echo OSC_BG_DONE; sleep 60",
             env!("CARGO_BIN_EXE_martty"),
             pid_file.display()
         );
