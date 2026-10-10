@@ -15,9 +15,10 @@ x64. Requires Node.js 22.19+.
 
 > **Rename note:** the project and recommended npm package have moved from
 > DeepSeek Harness TUI / `@openma/deepseek-harness-tui` to **Martty** / `martty`.
-> The `dsh-tui` command, configuration, and session data remain compatible.
-> The production profile is now `martty`; legacy `tui` profiles
-> continue to work.
+> Configuration and session data remain compatible. The production profile is
+> now `martty`; legacy `tui` profiles continue to work. The `dsh-tui` command
+> is no longer installed by the `martty` package — see
+> [Migrating from DeepSeek Harness TUI / the scoped package](#migrating-from-deepseek-harness-tui--the-scoped-package).
 
 ## Global Agent TUI
 
@@ -49,8 +50,23 @@ missing profile and installs the TUI plus its ACP dependency; no global
 
 `martty` is the recommended package name. Starting with `0.2.13`, it and the
 legacy `@openma/deepseek-harness-tui` package are published by the same CI run
-with identical versions and artifacts. Existing scoped-package installs remain
-supported. To switch package names:
+with identical versions and artifacts. The scoped name is deprecated; switch
+package names with:
+
+```sh
+npm rm -g @openma/deepseek-harness-tui
+npm install --global martty
+```
+
+Removing the legacy package first is required: published versions of
+`@openma/deepseek-harness-tui` register `dsh-tui` (every version) and
+`martty` (0.2.14/0.2.20) global commands, and npm refuses to link a bin that
+another package already owns (`EEXIST`). When no `martty` bin is in the way,
+the install also succeeds without the removal — a postinstall step then
+retires the stale `dsh-tui` link and `martty` warns at launch while the
+legacy package remains — but removing it is the clean migration.
+
+Inside a `dsh` profile the same switch is:
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
@@ -58,8 +74,13 @@ dsh plugin --profile martty add martty@latest
 ```
 
 The recommended profile changes from `tui` to `martty`; runtime behavior,
-config, and session data remain unchanged. `dsh-tui` and legacy `tui`
-profiles remain compatible.
+config, and session data remain unchanged. Legacy `tui` profiles remain
+compatible.
+
+The `martty` package no longer installs a `dsh-tui` command: the name
+collided with both the legacy package and an unrelated `dsh-tui` package on
+npm, which blocked `npm install --global martty` outright. If your fingers
+still type `dsh-tui`, alias it: `alias dsh-tui=martty`.
 
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
@@ -229,7 +250,8 @@ npx --yes martty --demo
 
 The profile path remains recommended for an existing DSH installation that
 wants standard plugin management and a durable `martty` profile. `martty` is the
-primary command; `dsh-tui` remains a compatibility alias.
+primary command; the legacy `dsh-tui` command is no longer installed
+(`alias dsh-tui=martty` restores it).
 
 ## Highlights
 

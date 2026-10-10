@@ -9,9 +9,12 @@ import { resolveDependencyStack } from '../lib/agent.js'
 import { bootClient, parseClientArgv, painterArgs, uiSettingsPath } from '../lib/boot.js'
 import { runHarnessCommandAsync } from '../lib/harnesses.js'
 import { nativeBinary } from '../lib/spawn-tui.js'
+import { warnAboutLegacyPackage } from '../lib/install-migration.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const configuredBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
+
+warnAboutLegacyPackage({ argv1: process.argv[1] })
 
 const argv = process.argv.slice(2)
 const wantDemoSkin = argv.includes('--demo-skin')

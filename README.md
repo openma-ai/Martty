@@ -410,7 +410,22 @@ GitHub Actions 会构建 macOS arm64/x64、Linux arm64/x64 和 Windows x64 原�
 <summary><strong>从旧包名迁移</strong></summary>
 
 旧的 DeepSeek Harness TUI 包名为 `@openma/deepseek-harness-tui`，旧 profile 通常叫
-`tui`。迁移到 Martty：
+`tui`。
+
+如果是全局 npm 安装，请先删除旧包再安装——已发布的旧包都注册了 `dsh-tui`
+命令，0.2.14/0.2.20 还注册了 `martty`；npm 不允许覆盖属于其他包的全局 bin
+（`EEXIST`）：
+
+```sh
+npm rm -g @openma/deepseek-harness-tui
+npm install --global martty
+```
+
+即使不先删除，只要没有 `martty` bin 挡路，安装也能成功——postinstall 会清掉
+旧包残留的 `dsh-tui` 链接，并且 `martty` 启动时若检测到旧包仍在会给出提示；
+但删除旧包才是完整的迁移。
+
+在 `dsh` profile 内迁移：
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
@@ -418,6 +433,8 @@ dsh plugin --profile martty add martty@latest
 ```
 
 旧配置和会话数据会在首次启动时复制到 Martty 路径，不会删除原数据。
+`martty` 包不再提供 `dsh-tui` 命令（该名字同时与旧包和第三方 `dsh-tui` 包
+冲突）；需要的话可用 `alias dsh-tui=martty` 恢复。
 
 </details>
 

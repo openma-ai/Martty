@@ -80,6 +80,11 @@ try {
   aliasJson.optionalDependencies = Object.fromEntries(nativeTargets.map(({ platform, arch }) => [
     `@openma/martty-${platform}-${arch}`, aliasJson.version,
   ]))
+  // The published package owns exactly one command. `dsh-tui` cannot stay an
+  // alias bin: npm refuses to link a global bin owned by another package, so
+  // it collides with both the legacy package and an unrelated `dsh-tui`
+  // package on the registry.
+  aliasJson.bin = { [aliasName]: packageJson.bin?.[aliasName] ?? 'bin/martty.js' }
   if (Array.isArray(aliasJson.files)) aliasJson.files = aliasJson.files.filter((entry) => entry !== 'vendor')
   writeFileSync(path.join(destination, 'package.json'), `${JSON.stringify(aliasJson, null, 2)}\n`)
   process.stdout.write(`${destination}\n`)

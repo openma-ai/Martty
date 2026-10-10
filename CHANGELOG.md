@@ -79,6 +79,16 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Install `martty` globally alongside or after the legacy
+  `@openma/deepseek-harness-tui` package (#156). The published package no
+  longer declares a `dsh-tui` bin — the name collided with both the legacy
+  package and an unrelated `dsh-tui` package, and npm refuses to link a
+  global bin owned by another package (`EEXIST`). A `postinstall` migration
+  step retires a stale `dsh-tui` link left by the legacy package, `martty`
+  warns at launch while the legacy package remains installed in the same
+  root, and both name `npm rm -g @openma/deepseek-harness-tui` as the fix.
+  Releases whose `martty` bin is owned by the legacy package (0.2.14/0.2.20)
+  still need that removal first; the READMEs document it.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,
