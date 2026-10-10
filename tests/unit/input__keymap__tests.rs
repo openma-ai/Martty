@@ -174,6 +174,28 @@ fn expand_all_lives_on_ctrl_o_not_ctrl_e() {
     );
 }
 
+/// Issue #147: ^↑/^↓ resize the composer for non-mouse terminals; plain
+/// and ⌘-arrows keep their earlier meanings.
+#[test]
+fn ctrl_arrows_step_the_composer_height() {
+    assert_eq!(
+        classify(&key(KeyCode::Up, CTRL), typing()),
+        Some(Action::ComposerGrow)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Down, CTRL), typing()),
+        Some(Action::ComposerShrink)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Up, CTRL), empty()),
+        Some(Action::ComposerGrow)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Down, CTRL), empty()),
+        Some(Action::ComposerShrink)
+    );
+}
+
 #[test]
 fn dual_use_keys_scroll_only_on_empty_draft() {
     assert_eq!(
@@ -262,6 +284,8 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::ModelPicker,
         Action::CycleAgent,
         Action::CyclePermission,
+        Action::ComposerGrow,
+        Action::ComposerShrink,
         Action::TabComplete,
         Action::HistoryPrev,
         Action::HistoryNext,

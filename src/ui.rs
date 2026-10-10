@@ -35,12 +35,25 @@ fn composer_height(height: u16) -> u16 {
     }
 }
 
+/// The legal composer-height range (issue #147): never below the auto
+/// default (`composer_height`) — the border can't drag the well under its
+/// rest height — and never past 5/8 of the main area, so the conversation
+/// keeps at least the remaining 3/8 (and at least 4 rows) to itself.
+fn composer_height_bounds(area: Rect) -> (u16, u16) {
+    let minimum = composer_height(area.height);
+    let maximum = (area.height * 5 / 8)
+        .max(minimum)
+        .min(area.height.saturating_sub(4).max(minimum));
+    (minimum, maximum)
+}
+
 /// Grow with hard/soft-wrapped draft rows, while leaving at least half of a
 /// normal terminal to the conversation. Beyond the cap, `draw_input` keeps a
-/// cursor-following viewport inside the composer. The mouse-only expand
-/// button (issue #92) pins the well to the amplified height instead.
+/// cursor-following viewport inside the composer. A top-border drag or the
+/// ^↑/^↓ keys pin the well to `app.composer_rows` instead — re-clamped to
+/// the legal range every frame, so a terminal resize can never strand it.
 fn resolved_composer_height(area: Rect, app: &App) -> u16 {
-    let minimum = composer_height(area.height);
+    let (minimum, maximum) = composer_height_bounds(area);
     let pet_pad = if app.pet_visible && area.width >= 60 && area.height >= 10 {
         PET_PAD
     } else {
@@ -49,20 +62,18 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     let inner_width = area.width.saturating_sub(2 + pet_pad);
     let prompt_width = "❯ ".width() as u16;
     let wrap_width = inner_width.saturating_sub(prompt_width).max(1) as usize;
-    // Expanded: up to 5/8 of the main area, no compact 12-row cap — the
-    // conversation keeps the remaining 3/8. Auto: half the screen, ≤ 12.
-    let maximum = if app.input_expanded {
-        (area.height * 5 / 8).max(minimum).min(area.height.saturating_sub(4).max(minimum))
-    } else {
-        (area.height / 2).max(minimum).min(12)
-    };
-    let desired = if app.input_expanded {
-        maximum
-    } else {
-        app.input
-            .visual_row_count(wrap_width)
-            .saturating_add(1)
-            .min(maximum as usize) as u16
+    let desired = match app.composer_rows {
+        // Pinned height (drag / keys), clamped into this frame's range.
+        Some(rows) => rows,
+        // Auto: the draft's rows + the meta line, capped at half the
+        // screen and 12 — tighter than the drag ceiling.
+        None => {
+            let auto_max = (area.height / 2).max(minimum).min(12);
+            app.input
+                .visual_row_count(wrap_width)
+                .saturating_add(1)
+                .min(auto_max as usize) as u16
+        }
     };
     desired.max(minimum).min(maximum)
 }
@@ -183,11 +194,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.pet_want = None;
     app.harness_thumb = None;
     app.caret_cell = None;
-    // The mouse-only expand button's frame rect is rebuilt by
-    // `layout_expand_btn`; clear it first so a child view (or a frame where
-    // the card vanished) cannot keep a stale hit-test rect alive. The ↥
-    // prompt-jump button rect rides the same layout pass.
-    app.expand_btn = None;
+    // The composer box rect (its top row is the drag handle) and the ↥
+    // prompt-jump rect are rebuilt by the layout pass below; clear them
+    // first so a child view (or a frame where the card vanished) cannot
+    // keep stale hit-test rects alive.
+    app.composer_box = None;
     app.prompt_jump_btn = None;
     app.prompt_flash_lines = None;
     f.render_widget(
@@ -311,6 +322,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         cap_h + input_dock_body_h + composer_h + navigation_dock_h,
     )
     .intersection(frame);
+    // The resolved height, its legal range and the box itself ride on the
+    // frame for the drag/keyboard resize paths (issue #147). Only the
+    // boxed layout's top border is a real drag handle.
+    app.composer_h = composer_h;
+    app.composer_bounds = composer_height_bounds(main);
+    app.composer_box = if !child_view && cap_h > 0 {
+        Some(composer_box)
+    } else {
+        None
+    };
     let composer = if child_view {
         Rect::new(
             main.x,
@@ -1744,17 +1765,16 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16, navigat
         inner.height.saturating_sub(1 + navigation_dock_h),
     );
     app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
-    layout_expand_btn(app, Rect::new(inner.x, inner.y, inner.width, 1));
+    layout_jump_btn(app, Rect::new(inner.x, inner.y, inner.width, 1));
     draw_input(f, app, well);
     draw_meta_row(
         f,
         app,
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
-    // The mouse-only composer buttons sit on the card's top row, outside
-    // the well; painted last so no text render can paint over them (issue
-    // #92 / ↥ of issue #103).
-    paint_composer_buttons(f, app);
+    // The ↥ button sits on the card's top row, outside the well; painted
+    // last so no text render can paint over it (issue #103).
+    paint_composer_chrome(f, app);
 }
 
 /// Meta row: run state + mode/permission chips left, model right,
@@ -2745,14 +2765,14 @@ fn draw_composer_box(
 ) {
     let theme = app.theme;
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
-    // Leave the cap row's top-right corner to the mouse-only composer
-    // buttons: the workspace title ends four cells early, so the `↥`
-    // prompt-jump glyph (issue #103) and the `⛶` expand glyph (issue #92)
-    // — with a space between them — never cover title text.
+    // Leave the cap row's top-right corner to the ↥ prompt-jump glyph
+    // (issue #103): the workspace title ends three cells early so the
+    // button never covers title text. The rest of the cap row is the
+    // drag-to-resize border (issue #147).
     let mut workspace = workspace_cap_title(app, area.width as usize);
     workspace
         .spans
-        .push(Span::raw(" ".repeat(EXPAND_BTN_W as usize + 1)));
+        .push(Span::raw(" ".repeat(JUMP_BTN_W as usize + 1)));
     let workspace_width = span_widths(&workspace.spans);
     let title_budget = (area.width as usize).saturating_sub(2 + workspace_width + 1);
     let dock_sections = has_input_dock
@@ -2784,9 +2804,9 @@ fn draw_composer_box(
         .style(Style::default().bg(theme.panel));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    // The expand glyph lives on the cap row's top-right, recorded before
-    // any dock actions so both hit-tests stay disjoint.
-    layout_expand_btn(app, Rect::new(area.x, area.y, area.width, 1));
+    // The ↥ glyph lives on the cap row's top-right, recorded before any
+    // dock actions so both hit-tests stay disjoint.
+    layout_jump_btn(app, Rect::new(area.x, area.y, area.width, 1));
     if inner.width < 4 || inner.height < 2 {
         return;
     }
@@ -2841,10 +2861,11 @@ fn draw_composer_box(
     app.att_thumbs.clear();
     app.composer_wrap_width = input.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, input);
-    // The mouse-only composer buttons sit on the card's top border (the cap
-    // row), outside the well — a full draft never hides them. Painted last
-    // so nothing can paint over them (issue #92 / ↥ of issue #103).
-    paint_composer_buttons(f, app);
+    // The ↥ button sits on the card's top border (the cap row), outside
+    // the well — a full draft never hides it. Painted last so nothing can
+    // paint over it, and so the drag-hover border highlight lands on top
+    // (issue #103 / #147).
+    paint_composer_chrome(f, app);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -2952,89 +2973,65 @@ fn paint_caret(f: &mut Frame, x: u16, y: u16) {
     }
 }
 
-/// Mouse-only composer buttons on the cap row's top-right (issue #92 / the
-/// ↥ prompt jump of issue #103): the `⛶` expand/collapse glyph and, one
-/// cell left of it, the `↥` user-prompt jump glyph — both on the card's top
-/// border, outside the text well. Always visible; hovering (no key binding)
-/// highlights them; clicking pins/restores the well height or walks the
-/// user prompts.
-const EXPAND_BTN_W: u16 = 3;
-const EXPAND_BTN_H: u16 = 1;
-const EXPAND_BTN_MARGIN: u16 = 1;
+/// Composer cap-row chrome (issues #103 / #147): the ↥ prompt-jump button
+/// on the top-right of the composer's top border, plus the drag-hover
+/// highlight for the border itself. The ⛶ expand button of issue #92 is
+/// gone — the whole top border is now the resize handle: hovering or
+/// dragging it brightens the cap line, dragging it up/down pins the well
+/// height, and ^↑/^↓ step it for non-mouse terminals.
 /// The ↥ prompt-jump button is 2 cells wide (glyph + one margin), tucked
-/// directly left of the expand button's hit rect.
+/// against the right corner of the cap row.
 const JUMP_BTN_W: u16 = 2;
+const CAP_BTN_H: u16 = 1;
 
-/// Record the expand button's screen rect for hit-testing. `cap` is the
+/// Record the ↥ jump button's screen rect for hit-testing. `cap` is the
 /// composer's top row: the rounded card's cap line (boxed layout) or the
 /// well's first row (short-terminal fallback). Runs every frame, so the
-/// pointer can discover the glyph before hovering it. The ↥ jump button
-/// rect (issue #103) is recorded in the same pass, one cell left of the
-/// expand glyph.
-fn layout_expand_btn(app: &mut App, cap: Rect) {
-    if cap.width < EXPAND_BTN_W + EXPAND_BTN_MARGIN + 1 {
-        app.expand_btn = None;
+/// pointer can discover the glyph before hovering it.
+fn layout_jump_btn(app: &mut App, cap: Rect) {
+    if cap.width < JUMP_BTN_W + 2 {
         app.prompt_jump_btn = None;
         return;
     }
-    let x = cap
-        .x
-        .saturating_add(cap.width)
-        .saturating_sub(EXPAND_BTN_W + EXPAND_BTN_MARGIN);
-    app.expand_btn = Some(Rect::new(x, cap.y, EXPAND_BTN_W, EXPAND_BTN_H));
-    // The jump glyph occupies the cell left of the expand rect (the cap
-    // title leaves both cells free); hide it on caps too narrow to fit.
-    app.prompt_jump_btn = if x >= cap.x.saturating_add(JUMP_BTN_W) {
-        Some(Rect::new(x - JUMP_BTN_W, cap.y, JUMP_BTN_W, EXPAND_BTN_H))
-    } else {
-        None
-    };
+    // The glyph occupies the rect's rightmost cell, one cell inside the
+    // corner `╮` (the cap title leaves the corner cells free).
+    let x = cap.right().saturating_sub(JUMP_BTN_W + 1);
+    app.prompt_jump_btn = Some(Rect::new(x, cap.y, JUMP_BTN_W, CAP_BTN_H));
 }
 
-/// Paint the composer cap-row glyphs — `↥` (prompt jump, issue #103) left
-/// of `⛶` (expand/collapse, issue #92). Idle: quiet caption tone. Hovered:
-/// the glyph brightens to the strongest foreground — no BOLD, which
-/// terminals synthesize by widening the glyph and clip at the cell edge
-/// (the right corner would vanish), and no background chip; the brightness
-/// shift alone is the hover affordance. Called after the card render so it
+/// Paint the composer cap-row chrome. Drag hover (or an active drag)
+/// brightens the whole top border — dashes and corners — to the strongest
+/// foreground; idle it stays at the border tone. The ↥ glyph follows the
+/// same idle/hover brightness shift — no BOLD, which terminals synthesize
+/// by widening the glyph and clip at the cell edge (the right corner would
+/// vanish), and no background chip. Called after the card render so it
 /// always wins the pixels.
-fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
+fn paint_composer_chrome(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
-    // Button rects are derived from the (already clipped) composer layout,
-    // but `set_string` indexes the buffer directly: skip any cell that a
-    // pathological frame put outside it.
     let frame = f.area();
     let b = f.buffer_mut();
-    if let Some(rect) = app.prompt_jump_btn {
-        if rect.width >= JUMP_BTN_W && rect.height >= EXPAND_BTN_H {
-            let tone = if app.hover_prompt_jump_btn {
-                theme.fg
-            } else {
-                theme.caption
-            };
-            // Glyph = the rect's rightmost cell, one cell left of the ⛶.
-            let x = rect.x.saturating_add(rect.width).saturating_sub(1);
-            if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
-                b.set_string(x, rect.y, "↥", Style::default().fg(tone));
+    if app.hover_composer_border || app.composer_resize.is_some() {
+        if let Some(cap) = app.composer_box {
+            // The recorded box is already clipped to the frame, so its cap
+            // cells index the buffer directly.
+            for x in cap.x..cap.right() {
+                let cell = &mut b[(x, cap.y)];
+                if matches!(cell.symbol(), "─" | "╭" | "╮") {
+                    cell.set_fg(theme.fg);
+                }
             }
         }
     }
-    let Some(rect) = app.expand_btn else {
-        return;
-    };
-    if rect.width < EXPAND_BTN_W || rect.height < EXPAND_BTN_H {
-        return;
-    }
-    // The glyph sits one cell in from the card's corner: rightmost cell of
-    // the rect minus one, so the corner `╮` stays visible beside it.
-    let x = rect.x + rect.width - 2;
-    let tone = if app.hover_expand_btn {
-        theme.fg
-    } else {
-        theme.caption
-    };
-    if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
-        b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
+    if let Some(rect) = app.prompt_jump_btn {
+        let tone = if app.hover_prompt_jump_btn {
+            theme.fg
+        } else {
+            theme.caption
+        };
+        let x = rect.x.saturating_add(rect.width).saturating_sub(1);
+        if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
+            b.set_string(x, rect.y, "↥", Style::default().fg(tone));
+        }
     }
 }
 

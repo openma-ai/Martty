@@ -3398,12 +3398,12 @@ fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
     }
 }
 
-/// Issue #92: the composer well's top-right corner carries a mouse-only,
-/// always-visible `⛶` on the composer card's top-right border — outside
-/// the text well, so a full draft never hides it; hover highlights it.
-/// No key binding.
+/// Issue #147: the composer card's whole top border is the resize handle
+/// — the ⛶ button is gone. Pressing it arms a drag that pins the well
+/// height, clamped to [auto default, 5/8 of the main area]; a plain click
+/// (Down+Up, no Drag) changes nothing.
 #[test]
-fn expand_button_is_hover_revealed_and_toggles_the_well() {
+fn composer_top_border_drags_to_resize_and_clamps() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3415,47 +3415,85 @@ fn expand_button_is_hover_revealed_and_toggles_the_well() {
 
     let area = ratatui::layout::Rect::new(0, 0, 100, 34);
     let auto = resolved_composer_height(area, &app);
-    let btn = app.expand_btn.expect("records the expand button rect");
-    assert_eq!(btn.width, 3, "small hit block, no frame");
-    assert_eq!(btn.height, 1);
-    // The glyph sits on the card's cap row (its top border), never on the
-    // text well.
-    assert!(btn.y < app.input_area.y, "outside the well: cap row");
+    let cap_y = app.composer_box.expect("records the composer box").y;
+    assert!(cap_y < app.input_area.y, "the border rides above the well");
+    // The ⛶ glyph is gone — every cap-row cell is plain border or title.
+    let buf = terminal.backend().buffer().clone();
+    for x in 0..100u16 {
+        assert_ne!(buf[(x, cap_y)].symbol(), "⛶", "maximize glyph gone at {x}");
+    }
 
-    // Clicking pins the well to the amplified height.
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 1,
-            btn.y,
-        ),
-        &ctl,
-    );
-    assert!(app.input_expanded);
-    let expanded = resolved_composer_height(area, &app);
-    assert!(
-        expanded > auto,
-        "expanded well {expanded} must exceed the auto height {auto}"
-    );
-    assert_eq!(expanded, 34 * 5 / 8, "amplified to 5/8 of the main area");
+    // A plain click arms then releases the resize without moving the well.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    assert_eq!(app.composer_resize, Some((cap_y, auto)));
+    assert_eq!(app.composer_rows, None, "a press alone pins nothing");
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, cap_y), &ctl);
+    assert!(app.composer_resize.is_none());
+    assert_eq!(app.composer_rows, None, "a click without drag keeps auto");
 
-    // Clicking again restores the draft-following auto height.
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 1,
-            btn.y,
-        ),
-        &ctl,
-    );
-    assert!(!app.input_expanded);
+    // Dragging up grows the well by exactly the pointer's travel.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 9), &ctl);
+    assert_eq!(app.composer_rows, Some(auto + 9));
+    assert_eq!(resolved_composer_height(area, &app), auto + 9);
+    // Past the ceiling clamps at 5/8 of the main area — the conversation
+    // always keeps at least its remaining 3/8.
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 0), &ctl);
+    assert_eq!(app.composer_rows, Some(34 * 5 / 8));
+    // Dragging below the grab clamps at the auto default, never under it.
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 33), &ctl);
+    assert_eq!(app.composer_rows, Some(auto));
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 33), &ctl);
+    assert!(app.composer_resize.is_none());
     assert_eq!(resolved_composer_height(area, &app), auto);
 }
 
-/// The button's hit-test survives the hover-reveal (it never paints over
-/// the caret placement: clicking it must not move the caret).
+/// Hovering the top border lights the whole cap line — the resize
+/// affordance; leaving restores the quiet border tone. The ↥ glyph's
+/// cells hover on their own instead (jump button, issue #103).
 #[test]
-fn expand_button_click_does_not_place_the_caret() {
+fn composer_border_hover_highlights_the_cap_row() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    let cap_y = app.composer_box.expect("composer box").y;
+    assert_eq!(buf[(0, cap_y)].symbol(), "╭", "cap row of the card");
+    assert_eq!(buf[(99, cap_y)].symbol(), "╮");
+    assert_eq!(buf[(0, cap_y)].fg, theme.border, "idle border tone");
+    let dash_x = (0..100u16)
+        .find(|&x| buf[(x, cap_y)].symbol() == "─")
+        .expect("cap row keeps border dashes");
+
+    // Hover: dashes and corners brighten to the strongest foreground.
+    app.handle_mouse(mouse(MouseEventKind::Moved, dash_x, cap_y), &ctl);
+    assert!(app.hover_composer_border);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(0, cap_y)].fg, theme.fg, "left corner brightens");
+    assert_eq!(buf[(dash_x, cap_y)].fg, theme.fg, "dash brightens");
+    assert_eq!(buf[(99, cap_y)].fg, theme.fg, "right corner brightens");
+    assert_eq!(buf[(50, cap_y + 1)].bg, theme.panel, "the well below is untouched");
+
+    // The pointer leaves: quiet border again.
+    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
+    assert!(!app.hover_composer_border);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(dash_x, cap_y)].fg, theme.border, "idle tone restored");
+    assert_eq!(buf[(0, cap_y)].fg, theme.border);
+}
+
+/// The border's hit-test never reaches the text: grabbing it must not
+/// move the caret.
+#[test]
+fn composer_border_drag_does_not_place_the_caret() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3465,119 +3503,23 @@ fn expand_button_click_does_not_place_the_caret() {
     let backend = TestBackend::new(100, 34);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let btn = app.expand_btn.expect("button rect");
+    let cap_y = app.composer_box.expect("composer box").y;
     let before = app.input.cursor_char();
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 1,
-            btn.y,
-        ),
-        &ctl,
-    );
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 2), &ctl);
     assert_eq!(
         app.input.cursor_char(),
         before,
-        "button click toggles the well, never the caret"
+        "border drag resizes the well, never the caret"
     );
-    assert!(app.input_expanded);
+    assert!(app.composer_resize.is_some());
+    assert!(app.composer_rows.is_some());
 }
 
-/// The idle `⛶` is always painted on the card's top-right; hovering turns
-/// it into the brightened glyph on a small chip block; the pointer leaving
-/// restores the quiet tone.
+/// A full draft cannot reach the border: with the well completely filled,
+/// the cap row still takes the drag and carries no button glyph.
 #[test]
-fn expand_button_idle_glyph_and_hover_icon() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    let mut app = test_app();
-    app.show_banner = false;
-    let (ctl, _commands) = crate::controller::tests::test_controller();
-    let backend = TestBackend::new(100, 34);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let btn = app.expand_btn.expect("button rect");
-
-    // Idle: the `⛶` glyph is visible in the quiet caption tone, on the
-    // cap row next to the card corner — a full draft cannot reach it.
-    let buf = terminal.backend().buffer().clone();
-    let theme = app.theme;
-    assert_eq!(buf[(0, btn.y)].symbol(), "╭", "cap row of the card");
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].symbol(),
-        "⛶",
-        "idle state keeps the expand glyph visible"
-    );
-    assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
-    assert_eq!(buf[(btn.x + 2, btn.y)].symbol(), " ", "one cell between glyph and corner");
-
-    // Hover: the same glyph brightened to the strongest foreground — no
-    // BOLD, no background chip; the brightness shift alone is the affordance.
-    app.handle_mouse(mouse(MouseEventKind::Moved, btn.x + 2, btn.y), &ctl);
-    assert!(app.hover_expand_btn);
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    assert_ne!(
-        buf[(btn.x, btn.y)].bg,
-        theme.chip_bg,
-        "no hover background chip"
-    );
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].symbol(),
-        "⛶",
-        "the same glyph, occupied exactly one cell"
-    );
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].fg,
-        theme.fg,
-        "hover brightens the glyph to the strongest foreground"
-    );
-    assert_eq!(
-        buf[(btn.x + 3, btn.y)].symbol(),
-        "╮",
-        "the glyph sits right next to the card's top-right corner"
-    );
-    assert_eq!(buf[(btn.x + 1, btn.y)].bg, buf[(btn.x, btn.y)].bg, "no background change on hover");
-    assert_eq!(
-        buf[(btn.x, btn.y)].symbol(),
-        " ",
-        "no frame characters anywhere"
-    );
-
-    // Expanded: the same cell keeps the same glyph (one icon, two states).
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 2,
-            btn.y,
-        ),
-        &ctl,
-    );
-    assert!(app.input_expanded);
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    let btn2 = app.expand_btn.expect("button rect after expanding");
-    assert_eq!(buf[(btn2.x + 1, btn2.y)].symbol(), "⛶");
-
-    // The pointer leaves: back to the quiet glyph, block gone.
-    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
-    assert!(!app.hover_expand_btn);
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    let idle_btn = app.expand_btn.expect("button rect when idle");
-    assert_eq!(
-        buf[(idle_btn.x + 1, idle_btn.y)].symbol(),
-        "⛶",
-        "idle glyph restored when the pointer leaves"
-    );
-    assert_eq!(buf[(idle_btn.x, idle_btn.y)].bg, theme.panel, "block cleared");
-}
-
-/// A full draft cannot reach the border-mounted glyph: with the well
-/// completely filled, the cap row's right corner still shows `⛶` on
-/// untouched title text.
-#[test]
-fn expand_button_survives_a_full_draft() {
+fn composer_border_survives_a_full_draft() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3588,24 +3530,82 @@ fn expand_button_survives_a_full_draft() {
     let backend = TestBackend::new(100, 34);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    let theme = app.theme;
-    let btn = app.expand_btn.expect("button rect");
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].symbol(),
-        "⛶",
-        "full draft: the glyph stays on the border"
+    let cap_y = app.composer_box.expect("composer box").y;
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 5), &ctl);
+    assert!(
+        app.composer_rows.is_some(),
+        "full draft: the border still resizes"
     );
-    assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
-    // The well rows themselves carry no button glyph.
-    assert_ne!(buf[(btn.x + 2, app.input_area.y)].symbol(), "⛶");
+    let buf = terminal.backend().buffer().clone();
+    for x in 0..100u16 {
+        assert_ne!(buf[(x, app.input_area.y)].symbol(), "↥", "well rows carry no button glyph");
+    }
 }
 
-/// The ↥ user-prompt jump button (issue #103) renders between the project
-/// path and the ⛶ expand glyph — spaces on both sides — and hovers the
-/// same way: quiet caption tone idle, brightest foreground on hover.
+/// ^↑/^↓ step the composer for non-mouse terminals (issue #147): the
+/// first press pins the resolved height, steps clamp inside the frame's
+/// legal range, and shrinking on the floor releases back to auto.
 #[test]
-fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
+fn composer_keyboard_steps_clamp_and_release() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let area = ratatui::layout::Rect::new(0, 0, 100, 34);
+    let auto = resolved_composer_height(area, &app);
+    assert_eq!(app.composer_bounds, (auto, 34 * 5 / 8));
+
+    app.resize_composer_step(1);
+    assert_eq!(app.composer_rows, Some(auto + 1));
+    app.resize_composer_step(100);
+    assert_eq!(app.composer_rows, Some(34 * 5 / 8), "grow clamps at the ceiling");
+    app.resize_composer_step(-100);
+    assert_eq!(app.composer_rows, Some(auto), "shrink clamps at the floor");
+    app.resize_composer_step(-1);
+    assert_eq!(app.composer_rows, None, "shrinking on the floor releases to auto");
+    assert_eq!(resolved_composer_height(area, &app), auto);
+}
+
+/// A pinned composer height re-clamps into the legal range when the
+/// terminal shrinks — the stored value survives, the render never strands.
+#[test]
+fn pinned_composer_height_reclamps_on_terminal_resize() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    app.composer_rows = Some(34 * 5 / 8);
+
+    // Shrink to 16 rows: bounds become (4, 10); the pinned 21 renders 10.
+    let backend = TestBackend::new(100, 16);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let small = ratatui::layout::Rect::new(0, 0, 100, 16);
+    assert_eq!(app.composer_bounds, (4, 10));
+    assert_eq!(resolved_composer_height(small, &app), 10);
+    assert_eq!(app.composer_rows, Some(34 * 5 / 8), "the pin itself survives");
+
+    // Grow back: the pin renders at its full height again.
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let area = ratatui::layout::Rect::new(0, 0, 100, 34);
+    assert_eq!(resolved_composer_height(area, &app), 34 * 5 / 8);
+}
+
+/// The ↥ user-prompt jump button (issue #103) keeps the cap row's
+/// top-right corner now that ⛶ is gone — one cell inside the corner — and
+/// hovers the same way: quiet caption tone idle, brightest foreground on
+/// hover.
+#[test]
+fn prompt_jump_button_sits_at_the_corner_and_hovers() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3616,17 +3616,14 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
     let buf = terminal.backend().buffer().clone();
     let theme = app.theme;
-    let expand = app.expand_btn.expect("expand rect");
+    let composer_box = app.composer_box.expect("composer box");
     let jump = app.prompt_jump_btn.expect("jump rect");
 
-    // Geometry: ↥ (space) ⛶ (space) ╮ — the jump glyph one cell left of
-    // the expand glyph with a space in between, and a space before it.
-    assert_eq!(jump.y, expand.y, "both buttons share the cap row");
-    assert_eq!(jump.x + jump.width, expand.x, "jump rect tucked left of expand");
+    // Geometry: (space) ↥ ╮ — the glyph one cell inside the corner.
+    assert_eq!(jump.y, composer_box.y, "the ↥ rides the cap row");
     assert_eq!(buf[(jump.x + 1, jump.y)].symbol(), "↥");
-    assert_eq!(buf[(expand.x - 2, expand.y)].symbol(), " ", "space before ↥");
-    assert_eq!(buf[(expand.x, expand.y)].symbol(), " ", "space between ↥ and ⛶");
-    assert_eq!(buf[(expand.x + 1, expand.y)].symbol(), "⛶");
+    assert_eq!(buf[(jump.x + 2, jump.y)].symbol(), "╮", "↥ sits right next to the corner");
+    assert_eq!(buf[(jump.x, jump.y)].symbol(), " ", "a space before ↥");
     assert_eq!(buf[(jump.x + 1, jump.y)].fg, theme.caption, "idle tone");
 
     // Hover brightens the ↥ glyph.
@@ -3649,6 +3646,121 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
         theme.caption,
         "idle tone restored when the pointer leaves"
     );
+}
+
+/// While the drag is armed the cap line stays bright even if the pointer
+/// row leaves the border — mid-drag frames paint the highlight, not just
+/// the hover state.
+#[test]
+fn composer_border_highlight_paints_while_dragging() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let cap_y = app.composer_box.expect("composer box").y;
+    let theme = app.theme;
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 3), &ctl);
+    assert!(app.composer_resize.is_some());
+    // No hover flag during a drag — the resize state alone lights the cap.
+    app.hover_composer_border = false;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame mid-drag");
+    let drag_cap_y = app.composer_box.expect("composer box").y;
+    assert_eq!(drag_cap_y, cap_y - 3, "the border rode up with the well");
+    let buf = terminal.backend().buffer().clone();
+    let dash_x = (0..100u16)
+        .find(|&x| buf[(x, drag_cap_y)].symbol() == "─")
+        .expect("cap row keeps border dashes");
+    assert_eq!(buf[(dash_x, drag_cap_y)].fg, theme.fg, "cap stays bright mid-drag");
+    assert_eq!(buf[(0, drag_cap_y)].fg, theme.fg);
+    assert_eq!(
+        buf[(0, cap_y)].symbol(),
+        "│",
+        "the old cap row is inside the taller well now"
+    );
+}
+
+/// Dragging back to exactly the armed height resolves to the same pin —
+/// the setter short-circuits instead of writing an identical value.
+#[test]
+fn composer_border_redrag_to_the_same_height_is_a_noop() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let cap_y = app.composer_box.expect("composer box").y;
+    let auto = resolved_composer_height(Rect::new(0, 0, 100, 34), &app);
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 6), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, cap_y - 6), &ctl);
+    assert_eq!(app.composer_rows, Some(auto + 6));
+
+    // A frame bakes the pin into composer_h; re-grabbing the moved border
+    // then dragging zero rows resolves to the armed height — a no-op.
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let cap_y = app.composer_box.expect("composer box").y;
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.needs_redraw = false;
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y), &ctl);
+    assert_eq!(app.composer_rows, Some(auto + 6));
+    assert!(!app.needs_redraw, "same-height drag stays a no-op");
+}
+
+/// Below the boxed layout's floor the composer falls back to the
+/// borderless inner view: no drag handle exists there, and a stale hover
+/// flag cannot make the chrome painter wander outside the frame.
+#[test]
+fn composer_chrome_survives_the_borderless_fallback() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(100, 8);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    app.hover_composer_border = true;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw fallback frame");
+    assert!(app.composer_box.is_none(), "borderless fallback has no drag handle");
+    assert!(app.prompt_jump_btn.is_some(), "↥ still lands on the inner cap");
+}
+
+/// `layout_jump_btn` yields no rect when the cap row is too narrow for the
+/// glyph plus its margins — the painter must not scribble over the well.
+#[test]
+fn composer_cap_layout_hides_the_jump_glyph_on_tiny_widths() {
+    let mut app = test_app();
+    layout_jump_btn(&mut app, Rect::new(0, 0, 3, 1));
+    assert!(app.prompt_jump_btn.is_none());
+    layout_jump_btn(&mut app, Rect::new(0, 0, 4, 1));
+    assert_eq!(app.prompt_jump_btn, Some(Rect::new(1, 0, 2, 1)));
+}
+
+/// `paint_composer_chrome` writes nothing when the ↥ rect is absent or
+/// points outside the frame — stale rects cannot scribble past the border.
+#[test]
+fn composer_chrome_tolerates_a_missing_or_stray_jump_rect() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|f| {
+            app.prompt_jump_btn = Some(Rect::new(95, 40, 2, 1)); // below the frame
+            paint_composer_chrome(f, &mut app);
+            app.prompt_jump_btn = None;
+            paint_composer_chrome(f, &mut app);
+        })
+        .expect("paint with stray and absent jump rects");
 }
 
 /// Regression: a full queue shelf plus an expanded draft used to push the

@@ -101,7 +101,7 @@ fn keys_slash_opens_a_local_modal_without_polluting_the_timeline() {
     assert!(frame.contains("ctrl+q"), "quit binding missing:\n{frame}");
 
     app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &ctl);
-    let frame = crate::ui::dump_frame(&mut app, 100, 30);
+    let frame = crate::ui::dump_frame(&mut app, 100, 40);
     assert!(
         frame.contains("shift+tab") && frame.contains("permission"),
         "permission binding missing:\n{frame}"

@@ -43,6 +43,14 @@ All notable changes to this project are documented here. The project follows
 
 ### Changed
 
+- Replace the composer's top-right `⛶` maximize button with a drag-to-resize
+  top border (issue #147). Hovering the composer's top border highlights the
+  whole cap line; dragging it up/down pins the well height within
+  [auto default, ~5/8 of the main area], so the conversation always keeps at
+  least the remaining 3/8. Terminals without a mouse use `ctrl+↑`/`ctrl+↓` to
+  step the height (shrinking on the floor releases back to the auto height),
+  and a pinned height re-clamps into the legal range when the terminal
+  shrinks. The height is remembered per session tab.
 - Launch the Pi catalog entry with `@openma/pi-acp@0.1.6` (was 0.1.4) for both
   the bundled snapshot and a refreshed ACP catalog. Official registry records
   stay untouched. 0.1.6 again writes model and thinking changes to pi's global

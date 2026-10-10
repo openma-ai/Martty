@@ -87,7 +87,8 @@ esc interrupt / clear draft · ctrl+c clear/quit · ↑ history · ! shell ·
 / commands · ctrl+p model · ctrl+o expand · ctrl+t theme
 MOUSE: wheel scrolls the conversation · click a tool expands/collapses it ·
 drag selects & copies on release · 2×click
-copies a word · shift+drag uses the terminal's native selection
+copies a word · shift+drag uses the terminal's native selection ·
+drag the composer's top border resizes it (ctrl+↑/↓ without a mouse)
 ";
 
 struct Args {
