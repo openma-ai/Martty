@@ -1,0 +1,28 @@
+=== Issue #144 fix — verification on head 5c3a207 ===
+
+--- new regression tests (node --test, filtered) ---
+✔ each session keeps its own model when the agent applies config globally (29.792081ms)
+ℹ pass 1
+ℹ fail 0
+✔ pinned pi-acp specs always resolve @openma/pi-acp@latest instead (8.345632ms)
+✔ scripts/tui-plugin-store.test.mjs (35.866937ms)
+
+--- new regression tests (cargo, filtered) ---
+test events::tests::pi_failed_turn_surfaces_the_upstream_reason_and_retry_text_stays_out ... ok
+test events::tests::pi_auto_retry_events_become_structured_retry_events ... ok
+test acp_auth::tests::api_key_form_encodes_authenticate_meta ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 842 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+test transcript::tests::auto_retry_status_updates_one_line_and_settles_explicitly ... ok
+test events::tests::pi_auto_retry_events_become_structured_retry_events ... ok
+
+--- full gates ---
+test result: ok. 845 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+ℹ tests 456
+ℹ pass 453
+ℹ fail 0

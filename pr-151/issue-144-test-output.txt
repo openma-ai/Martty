@@ -1,0 +1,21 @@
+=== cargo test --locked ===
+running 845 tests
+test result: ok. 845 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
+running 2 tests
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+=== npm test --prefix npm ===
+✔ gallery plugins register without covering and activate round-trips (3.223446ms)
+✔ disposing static palette fibers unregisters their palettes (3.44728ms)
+✔ boot restore re-activates a saved static gallery palette (34.551197ms)
+✔ boot restore ignores dynamic, unknown and default preferred ids (0.580775ms)
+ℹ tests 456
+ℹ suites 0
+ℹ pass 453
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 3
+ℹ todo 0
+ℹ duration_ms 3259.814584
