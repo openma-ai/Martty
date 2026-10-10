@@ -1725,3 +1725,25 @@ fn empty_tab_reuse_keeps_draft_and_discards_late_startup_binding() {
     assert_eq!(app.session_tab_count(), 1);
     assert_eq!(app.session_id, "new-session");
 }
+
+/// Issue #147: the composer height pins per session tab — each tab keeps
+/// its own dragged/keyboard-set height across switches, and a fresh tab
+/// starts back on the draft-following auto height (`None`).
+#[test]
+fn composer_height_memory_rides_with_its_session_tab() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.demo = false;
+    app.composer_rows = Some(9);
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    assert_eq!(app.composer_rows, None, "fresh tab back on auto height");
+    app.composer_rows = Some(15);
+    app.switch_to_session(0); // back on dsh-test
+    assert_eq!(app.composer_rows, Some(9), "first tab kept its own height");
+    assert_eq!(
+        app.parked[0].composer_rows,
+        Some(15),
+        "s-two parked with its own height"
+    );
+    app.switch_to_session(1); // live s-two again
+    assert_eq!(app.composer_rows, Some(15));
+}

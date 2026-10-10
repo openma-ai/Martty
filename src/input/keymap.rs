@@ -26,6 +26,11 @@ pub enum Action {
     ModelPicker,
     CycleAgent,
     CyclePermission,
+    /// Grow the composer well one row (ctrl+↑, issue #147).
+    ComposerGrow,
+    /// Shrink the composer well one row; on the floor releases the pin
+    /// back to the auto height (ctrl+↓).
+    ComposerShrink,
     TabComplete,
     HistoryPrev,
     HistoryNext,
@@ -179,6 +184,11 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Right if sup => LineEnd,
         KeyCode::Up if sup => JumpTop,
         KeyCode::Down if sup => JumpTail,
+        // ^↑/^↓ step the composer height (issue #147); the chords
+        // previously fell through to plain ↑/↓ (history / cursor), and
+        // these arms sit above those so nothing reachable is shadowed.
+        KeyCode::Up if ctrl => ComposerGrow,
+        KeyCode::Down if ctrl => ComposerShrink,
         // Word hops: ⌥-arrows on macOS · ctrl-arrows on linux/windows.
         KeyCode::Left if alt || ctrl => WordLeft,
         KeyCode::Right if alt || ctrl => WordRight,
@@ -812,6 +822,26 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     // --- app shortcuts ----------------------------------------------------
     KeyRow {
+        action: ComposerGrow,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+↑"],
+        chords_other: &["ctrl+↑"],
+        ctx: CtxNote::Always,
+        desc_en: "composer one row taller (or drag its top border)",
+        desc_zh: "输入框加高一行（或拖上边框）",
+        probes: &[p(KeyCode::Up, CTRL, false)],
+    },
+    KeyRow {
+        action: ComposerShrink,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+↓"],
+        chords_other: &["ctrl+↓"],
+        ctx: CtxNote::Always,
+        desc_en: "composer one row shorter · at minimum restores auto",
+        desc_zh: "输入框降低一行 · 降到最低时恢复自动高度",
+        probes: &[p(KeyCode::Down, CTRL, false)],
+    },
+    KeyRow {
         action: CycleAgent,
         group: KeyGroup::App,
         chords_mac: &["ctrl+shift+a"],
@@ -908,6 +938,11 @@ pub const MOUSE_ROWS: &[MouseRow] = &[
         chords: &["drag"],
         desc_en: "select text · copies on release",
         desc_zh: "拖动选择文本，松开即复制",
+    },
+    MouseRow {
+        chords: &["drag composer top border"],
+        desc_en: "resize the composer height · ctrl+↑/↓ steps it",
+        desc_zh: "拖输入框上边框调高度 · ctrl+↑/↓ 逐行调整",
     },
     MouseRow {
         chords: &["2×click"],

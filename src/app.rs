@@ -856,8 +856,10 @@ pub struct SessionSlot {
     pub input: ComposerEditor,
     /// Images staged in the draft as `[image n]` chips (draft-bound).
     pub pending_images: crate::attachments::Staged,
-    /// Composer well pinned to the amplified height (issue #92).
-    pub input_expanded: bool,
+    /// Composer well height pinned by the top-border drag / ^↑^↓ (issue
+    /// #147); `None` = the draft-following auto height. Rides with the
+    /// session like the draft does — each tab keeps its own height.
+    pub composer_rows: Option<u16>,
     /// Open `@file` browser + its Esc-dismissed `@` token tag. Both are
     /// draft-bound: the menu filters the draft's token, so it follows the
     /// draft to its tab.
@@ -926,7 +928,7 @@ impl SessionSlot {
             title: None,
             input: ComposerEditor::new(),
             pending_images: crate::attachments::Staged::default(),
-            input_expanded: false,
+            composer_rows: None,
             file_menu: None,
             file_menu_dismissed: None,
             scroll_up: 0,
@@ -1349,27 +1351,37 @@ pub struct App {
     pub(crate) input_sel: Option<InputSel>,
     /// A left-button drag inside the composer well is in progress.
     input_selecting: bool,
-    /// Mouse pointer cell from the latest `Moved` event. The composer
-    /// expand button is hover-revealed only while the pointer sits on it
-    /// (issue #92 — mouse-only affordance, no key binding).
+    /// Mouse pointer cell from the latest `Moved` event — drives the
+    /// hover affordances (↥ jump glyph, composer top-border drag handle).
     pub(crate) mouse_pos: Option<(u16, u16)>,
-    /// Composer well enlarged by the mouse-only expand button (issue #92):
-    /// `true` pins the well to the amplified height, `false` restores the
-    /// draft-following auto height.
-    pub(crate) input_expanded: bool,
-    /// Screen rect of the mouse-only expand/collapse button from the
-    /// latest frame — it sits on the composer card's top-right border.
-    /// Recorded every frame, even before the pointer finds it.
-    pub(crate) expand_btn: Option<ratatui::layout::Rect>,
-    /// True while the pointer rests on the expand button; only then does
-    /// the frame painter show it (`needs_redraw` on change).
-    pub(crate) hover_expand_btn: bool,
+    /// Composer well height pinned by the top-border drag or the ^↑/^↓
+    /// keys (issue #147): `Some` pins the well to that many rows, `None`
+    /// is the draft-following auto height.
+    pub(crate) composer_rows: Option<u16>,
+    /// Composer box rect from the latest frame (boxed layout only): its
+    /// top border row is the drag-to-resize handle. `None` in the
+    /// borderless short-terminal fallback and in child views — there is
+    /// no border to grab there.
+    pub(crate) composer_box: Option<ratatui::layout::Rect>,
+    /// Resolved composer well height (rows) from the latest frame — the
+    /// grab anchor for border drags and the step base for ^↑/^↓.
+    pub(crate) composer_h: u16,
+    /// Legal `[min, max]` composer-height range from the latest frame
+    /// (issue #147): the clamp drag events and key steps apply.
+    pub(crate) composer_bounds: (u16, u16),
+    /// An in-progress top-border drag: (pointer row at grab, resolved
+    /// `composer_h` at grab). Each Drag event re-derives the height
+    /// absolutely, so bursts of events between redraws cannot drift.
+    pub(crate) composer_resize: Option<(u16, u16)>,
+    /// True while the pointer rests on the composer's top border — the
+    /// border brightens as the drag affordance (`needs_redraw` on change).
+    pub(crate) hover_composer_border: bool,
     /// Screen rect of the mouse-only `↥` user-prompt jump button (issue
-    /// #103) from the latest frame — one cell left of the expand glyph on
-    /// the composer card's top-right.
+    /// #103) from the latest frame — on the composer card's top-right
+    /// corner, the slot the removed ⛶ used to hold.
     pub(crate) prompt_jump_btn: Option<ratatui::layout::Rect>,
     /// True while the pointer rests on the `↥` button (`needs_redraw` on
-    /// change, same hover policy as the expand button).
+    /// change, same hover policy as the border handle).
     pub(crate) hover_prompt_jump_btn: bool,
     /// Transcript cell of the user prompt the last `↥` click jumped to
     /// (issue #103). The next click walks one prompt back; the oldest
@@ -1906,9 +1918,12 @@ impl App {
             input_sel: None,
             input_selecting: false,
             mouse_pos: None,
-            input_expanded: false,
-            expand_btn: None,
-            hover_expand_btn: false,
+            composer_rows: None,
+            composer_box: None,
+            composer_h: 1,
+            composer_bounds: (1, u16::MAX),
+            composer_resize: None,
+            hover_composer_border: false,
             prompt_jump_btn: None,
             hover_prompt_jump_btn: false,
             prompt_jump_cell: None,
@@ -2038,6 +2053,9 @@ impl App {
     /// a parking slot, leaving cheap placeholders behind. Always paired with
     /// [`Self::put_live_slot`] before anything reads the fields again.
     fn take_live_slot(&mut self) -> SessionSlot {
+        // A border drag never survives a session switch: the pointer's
+        // grab point belongs to the tab it started on.
+        self.composer_resize = None;
         let mut placeholder = Transcript::new(String::new());
         placeholder.locale = self.locale;
         SessionSlot {
@@ -2054,7 +2072,7 @@ impl App {
             // Composer + chat chrome bound to the tab (see `put_live_slot`).
             input: std::mem::take(&mut self.input),
             pending_images: std::mem::take(&mut self.pending_images),
-            input_expanded: std::mem::take(&mut self.input_expanded),
+            composer_rows: self.composer_rows.take(),
             file_menu: self.file_menu.take(),
             file_menu_dismissed: self.file_menu_dismissed.take(),
             scroll_up: std::mem::take(&mut self.scroll_up),
@@ -2140,7 +2158,7 @@ impl App {
         // @file browser, scroll, banner, model pick, running note.
         self.input = slot.input;
         self.pending_images = slot.pending_images;
-        self.input_expanded = slot.input_expanded;
+        self.composer_rows = slot.composer_rows;
         self.file_menu = slot.file_menu;
         self.file_menu_dismissed = slot.file_menu_dismissed;
         self.scroll_up = slot.scroll_up;
@@ -5154,22 +5172,21 @@ impl App {
                     self.jump_to_user_prompt();
                     return;
                 }
-                // The mouse-only expand button (issue #92) wins over caret
-                // placement inside the well: clicking toggles the input
-                // height instead of moving the caret. It lives inside the
-                // well, so it is only live outside child views and the
-                // elicitation form (which owns its own field).
+                // The composer's top border is a drag handle (issue #147):
+                // pressing it arms a resize the Drag events drive — the
+                // grab remembers the pointer row and the resolved height
+                // so every later delta is exact regardless of redraws. A
+                // plain click (Down then Up, no Drag) changes nothing.
                 if self.elicitation_ask.is_none()
                     && self.active_subagent.is_none()
-                    && self.expand_btn_hit(mouse.column, mouse.row)
+                    && self.composer_border_hit(mouse.column, mouse.row)
                 {
                     self.sel = None;
                     self.selecting = false;
                     self.last_click = None;
                     self.input_selecting = false;
                     self.input_sel = None;
-                    self.input_expanded = !self.input_expanded;
-                    self.needs_redraw = true;
+                    self.composer_resize = Some((mouse.row, self.composer_h));
                     return;
                 }
                 // Click inside the composer well: place the caret at the
@@ -5219,6 +5236,21 @@ impl App {
                     self.selecting = true;
                 }
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.composer_resize.is_some() => {
+                // Absolute-delta resize: grab row ↔ height came from the
+                // same frame, so events arriving between redraws still
+                // land on the right total instead of accumulating error.
+                let Some((grab_row, start_h)) = self.composer_resize else {
+                    return;
+                };
+                let (min_h, max_h) = self.composer_bounds;
+                let next = (start_h as i64 + grab_row as i64 - mouse.row as i64)
+                    .clamp(min_h as i64, max_h as i64) as u16;
+                if self.composer_rows != Some(next) {
+                    self.composer_rows = Some(next);
+                    self.needs_redraw = true;
+                }
+            }
             MouseEventKind::Drag(MouseButton::Left) if self.selecting => {
                 // Edge auto-scroll (grok: compute_autoscroll): dragging
                 // past the pane keeps scrolling while events arrive.
@@ -5243,6 +5275,15 @@ impl App {
                 }
                 self.needs_redraw = true;
             }
+            MouseEventKind::Up(MouseButton::Left) if self.composer_resize.is_some() => {
+                self.composer_resize = None;
+                // The border keeps its highlight only while still hovered.
+                self.hover_composer_border = self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.composer_border_hit(mouse.column, mouse.row)
+                    && !self.prompt_jump_btn_hit(mouse.column, mouse.row);
+                self.needs_redraw = true;
+            }
             MouseEventKind::Up(MouseButton::Left) if self.selecting => {
                 self.selecting = false;
                 self.finish_selection();
@@ -5255,9 +5296,14 @@ impl App {
                 // grok-style hover: track which inline chip the pointer is
                 // over; redraw only on changes (mouse moves are a firehose).
                 self.mouse_pos = Some((mouse.column, mouse.row));
-                let over_btn = self.expand_btn_hit(mouse.column, mouse.row);
-                if over_btn != self.hover_expand_btn {
-                    self.hover_expand_btn = over_btn;
+                // Hovering the composer's top border (outside the ↥
+                // glyph) lights it up as the resize affordance.
+                let over_border = self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.composer_border_hit(mouse.column, mouse.row)
+                    && !self.prompt_jump_btn_hit(mouse.column, mouse.row);
+                if over_border != self.hover_composer_border {
+                    self.hover_composer_border = over_border;
                     self.needs_redraw = true;
                 }
                 let over_jump = self.prompt_jump_btn_hit(mouse.column, mouse.row);
@@ -5337,16 +5383,31 @@ impl App {
             .map(|&(_, _, idx)| idx)
     }
 
-    /// Hit-test the mouse-only composer expand button (issue #92). The
-    /// button's rect is recorded by the painter every frame, so the
-    /// pointer can discover it while moving across the card's top-right.
-    fn expand_btn_hit(&self, col: u16, row: u16) -> bool {
-        self.expand_btn.is_some_and(|r| {
-            col >= r.x
-                && col < r.x.saturating_add(r.width)
-                && row >= r.y
-                && row < r.y.saturating_add(r.height)
+    /// Hit-test the composer's top border — the drag-to-resize handle
+    /// (issue #147). Recorded by the painter every frame; only the
+    /// border row itself counts, never the well rows below it.
+    fn composer_border_hit(&self, col: u16, row: u16) -> bool {
+        self.composer_box.is_some_and(|r| {
+            row == r.y && col >= r.x && col < r.x.saturating_add(r.width)
         })
+    }
+
+    /// One keyboard step on the composer height (issue #147): ^↑ grows
+    /// the well a row, ^↓ shrinks it a row. The first press pins the
+    /// resolved height the frame already shows; steps then stay inside
+    /// the frame's legal range. Shrinking while already on the floor
+    /// releases the pin — the well returns to the draft-following auto
+    /// height instead of sticking at its minimum.
+    pub(crate) fn resize_composer_step(&mut self, delta: i64) {
+        let (min_h, max_h) = self.composer_bounds;
+        let cur = self.composer_rows.unwrap_or(self.composer_h);
+        if delta < 0 && cur <= min_h {
+            self.composer_rows = None;
+        } else {
+            let next = (cur as i64 + delta).clamp(min_h as i64, max_h as i64) as u16;
+            self.composer_rows = Some(next);
+        }
+        self.needs_redraw = true;
     }
 
     /// Hit-test the mouse-only `↥` user-prompt jump button (issue #103).
@@ -6581,6 +6642,8 @@ impl App {
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
             Action::CyclePermission => self.cycle_permission(ctl),
+            Action::ComposerGrow => self.resize_composer_step(1),
+            Action::ComposerShrink => self.resize_composer_step(-1),
             Action::HistoryPrev => self.history_prev(),
             Action::HistoryNext => self.history_next(),
             Action::ScrollHalfUp => self.scroll_by(10),
@@ -7628,7 +7691,7 @@ impl App {
         fresh.transcript.locale = self.locale;
         fresh.input = old.input;
         fresh.pending_images = old.pending_images;
-        fresh.input_expanded = old.input_expanded;
+        fresh.composer_rows = old.composer_rows;
         self.put_live_slot(fresh);
         self.after_switch();
     }
@@ -8896,6 +8959,7 @@ impl App {
 - /<skill> · Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文。与内置命令同名时，菜单用 Agent 名前缀区分，选中后仍把原来的 /name 发给 Agent
 - ctrl+o · 展开思考和工具输出 · ctrl+l · 清屏
 - 输入框编辑：readline 组合键 + ⌘/⌥ 方向键 + 键盘选区 · 完整映射见 /keys
+- 拖动输入框上边框 · 调整输入区高度（悬停高亮）· ctrl+↑/↓ 逐行调整
 - 点击工具 · 展开/折叠 · 滚轮滚动对话
 - pgup/pgdn · 翻页 · end 回到最新消息
 - 鼠标拖动 · 选择并复制文本 · 双击复制单词
@@ -8927,6 +8991,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - /<skill> · agent commands join the / menu — enter ships it and the host injects the skill body. A name that matches a builtin keeps a prefixed row; choosing it still sends the original /name line
 - ctrl+o · expand thoughts + tool output · ctrl+l · clear
 - editing · readline chords + ⌘/⌥ arrows (ctrl+arrows elsewhere) · full map in /keys
+- drag the composer's top border · resize the input well (hover highlights) · ctrl+↑/↓ step it
 - click tool · expand/collapse that tool · wheel scrolls the conversation
 - pgup/pgdn · scroll · mouse wheel works · end follows the tail
 - mouse drag · select text — copied on release · 2×click copies a word
