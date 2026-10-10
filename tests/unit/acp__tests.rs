@@ -1646,6 +1646,148 @@ async fn close_session_wire_failure_reports_a_session_op_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_session_drops_unknown_and_non_current_ids_consistently() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, CloseSessionRequest, CloseSessionResponse, InitializeResponse,
+        NewSessionResponse,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    // Bound sessions are tracked in `sessions`: closing an id that never
+    // bound (a dead placeholder) must skip the wire and the repoint;
+    // closing a bound-but-not-current session must not repoint `current`
+    // either — only closing the current session repoints it (issue #146).
+    let next = Arc::new(AtomicUsize::new(0));
+    let (extension_tx, mut extension_rx) = tokio::sync::mpsc::unbounded_channel();
+    let counter = next.clone();
+    let agent = Agent
+        .builder()
+        .name("close-multi-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                let mut response = serde_json::to_value(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("close-multi-mock", "0")),
+                )
+                .expect("serialize initialize response");
+                response["agentCapabilities"]["sessionCapabilities"]["close"] = json!({});
+                responder.respond(
+                    serde_json::from_value(response).expect("deserialize initialize response"),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                responder.respond(NewSessionResponse::new(SessionId::new(format!("s{n}"))))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: CloseSessionRequest, responder, _cx| {
+                let _ = extension_tx.send(request.session_id.to_string());
+                responder.respond(CloseSessionResponse::new())
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline && !ready {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(ready, "startup session/new must bind s1");
+
+    // Bind a second session — `current` becomes s2, leaving s1 bound but
+    // not current.
+    cmd_tx
+        .send(Cmd::NewSession {
+            requester: None,
+            retry_auth: None,
+        })
+        .expect("open second session");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut bound = false;
+    while Instant::now() < deadline && !bound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) if session_id == "s2" => {
+                bound = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(bound, "the second session/new must bind s2");
+
+    // Unknown id: never bound, nothing to free agent-side — no wire close,
+    // no repoint. The local drop still runs (a dead placeholder's parked
+    // copies go with it).
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s9".into(),
+        })
+        .expect("close unknown session");
+
+    // Bound but not current: session/close goes out for s1 and its handle
+    // drops, but `current` stays s2 — the repoint must not fire.
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s1".into(),
+        })
+        .expect("close non-current session");
+
+    // Current: the repoint moves the id-less fallback to a remaining
+    // session (here: none left — current becomes None cleanly).
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s2".into(),
+        })
+        .expect("close current session");
+
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        let id = tokio::time::timeout(Duration::from_secs(2), extension_rx.recv())
+            .await
+            .expect("two bound sessions close on the wire")
+            .expect("extension channel");
+        got.push(id);
+    }
+    // s9 produced nothing on the wire; s1 and s2 did — in enqueue order.
+    assert_eq!(got, ["s1", "s2"], "only bound sessions reach session/close");
+    assert!(
+        extension_rx.try_recv().is_err(),
+        "the unknown id must never reach session/close"
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeResponse, NewSessionResponse,

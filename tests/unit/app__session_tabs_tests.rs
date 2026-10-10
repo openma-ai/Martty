@@ -1291,6 +1291,13 @@ fn ctrl_shift_w_closes_the_viewed_tab() {
     assert_eq!(app.session_id, "dsh-test");
     while commands.try_recv().is_ok() {}
 
+    // Plain ctrl+w must NOT close — it still deletes a word in the
+    // composer (the close chord requires shift too). A bare `w` with a
+    // non-ctrl modifier (⌥w) is not a close either.
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL), &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT), &ctl);
+    assert_eq!(app.session_tab_count(), 2, "ctrl+w alone keeps the tab");
+
     // The keyboard affordance (issue #146): ctrl+shift+w classifies to
     // Action::CloseSession and takes the same flow as /close.
     app.handle_key(
@@ -1332,6 +1339,93 @@ fn closing_a_parked_tab_left_of_the_viewed_one_shifts_the_index() {
 }
 
 #[test]
+fn close_session_tab_beyond_the_strip_is_a_noop() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    while commands.try_recv().is_ok() {}
+
+    // A stale × rect can outlive a tab: out-of-range closes do nothing.
+    app.close_session_tab(9, &ctl);
+    assert_eq!(app.session_tab_count(), 2);
+    assert!(commands.try_iter().next().is_none());
+}
+
+#[test]
+fn parked_prompt_and_ask_make_the_tab_busy_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true); // live s-two, dsh-test parked
+    app.open_new_session("s-three".into(), true); // live s-three
+    app.switch_to_session(0); // live dsh-test — parked [s-two, s-three]
+    app.parked[0].prompt_pending = true; // s-two queued a prompt
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.parked[1].permission_ask = Some(crate::app::PermissionAskOverlay {
+        title: "bash".into(),
+        sel: 0,
+        options: vec![],
+        reply: Some(tx),
+    });
+
+    // Queued work and a pending ask are busy too — each arms instead of
+    // silently dropping (issue #146).
+    app.close_session_tab(1, &ctl);
+    app.close_session_tab(2, &ctl);
+    assert_eq!(app.session_tab_count(), 3, "both busy tabs stay armed");
+    assert!(app.close_armed.is_some());
+    let _ = commands.try_iter().count();
+}
+
+#[test]
+fn live_prompt_and_ask_make_the_tab_busy_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.open_new_session("s-two".into(), true);
+    while commands.try_recv().is_ok() {}
+
+    app.prompt_pending = true;
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "queued prompt arms the close");
+
+    app.prompt_pending = false;
+    app.close_armed = None; // drop the first arm — the next close must re-arm
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.permission_ask = Some(crate::app::PermissionAskOverlay {
+        title: "bash".into(),
+        sel: 0,
+        options: vec![],
+        reply: Some(tx),
+    });
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "a pending ask arms the close");
+    let _ = commands.try_iter().count();
+}
+
+#[test]
+fn a_stale_close_confirm_re_arms_instead_of_closing() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.state = crate::app::RunState::Running;
+    app.open_new_session("s-two".into(), true);
+    app.switch_to_session(0);
+    while commands.try_recv().is_ok() {}
+
+    app.run_slash("close", "", &ctl); // arm on busy dsh-test
+    assert!(app.close_armed.is_some());
+    // The confirm window lapses: a later close re-arms rather than
+    // dropping a still-running session on an old confirmation.
+    let (id, _) = app.close_armed.clone().unwrap();
+    app.close_armed = Some((id, Instant::now() - Duration::from_secs(9)));
+    app.run_slash("close", "", &ctl);
+    assert_eq!(app.session_tab_count(), 2, "expired confirm re-arms");
+    assert!(commands.try_iter().next().is_none());
+}
+
+#[test]
 fn clicking_a_tabs_x_closes_that_tab() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
@@ -1342,9 +1436,21 @@ fn clicking_a_tabs_x_closes_that_tab() {
     while commands.try_recv().is_ok() {}
 
     // The × cell is its own hit rect (issue #146): clicking it closes the
-    // tab rather than switching to it.
+    // tab rather than switching to it. A click off the cell's row misses.
     app.tab_close_rects
         .push((ratatui::layout::Rect::new(11, 0, 1, 1), 1));
+    app.tab_close_rects
+        .push((ratatui::layout::Rect::new(30, 2, 1, 1), 3));
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 11, 1),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 2, "a row off the × is not a close");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 30, 0),
+        &ctl,
+    );
+    assert_eq!(app.session_tab_count(), 2, "a row above the × is not a close");
     app.handle_mouse(
         mouse(MouseEventKind::Down(MouseButton::Left), 11, 0),
         &ctl,

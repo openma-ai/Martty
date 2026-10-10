@@ -721,24 +721,16 @@ async fn run_control(
         // ongoing work and frees its resources. The tab is already gone —
         // a failure surfaces as a session op failure, never as a retry.
         Cmd::CloseSession { session_id: id } => {
-            // Same resolution the main loop gated the enqueue on: this
-            // session's own connection, else the initialize connection
-            // (a direct agent negotiates one for every session).
-            let advertised = snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.close_session)
-                || {
-                    let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
-                    surface
-                        .initial_connection
-                        .as_ref()
-                        .is_some_and(|connection| connection.close_session)
-                };
-            if advertised {
-                let request =
-                    UntypedMessage::new("session/close", serde_json::json!({ "sessionId": id }))
-                        .expect("static session/close payload is always valid");
-                if let Err(err) = cx.send_request(request).block_task_setup_deadline().await {
+            // Reaching this lane means the owning connection advertised
+            // `sessionCapabilities.close` — the main loop gates the enqueue
+            // on exactly that. Put `session/close` on the wire; a failure
+            // surfaces as a session op failure, never as a retry.
+            let request =
+                UntypedMessage::new("session/close", serde_json::json!({ "sessionId": id }))
+                    .expect("static session/close payload is always valid");
+            match cx.send_request(request).block_task_setup_deadline().await {
+                Ok(_) => {}
+                Err(err) => {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
                         session_id: id.clone(),
                         message: format!("session/close: {}", acp_error_message(&err)),
