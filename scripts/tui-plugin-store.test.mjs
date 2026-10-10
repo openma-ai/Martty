@@ -13,7 +13,7 @@ test('Martty home owns Creator plugins with explicit environment precedence', ()
   )
   assert.equal(
     storeModule.tuiPluginRoot({ DSH_HOME: '/opt/dsh' }),
-    path.join('/opt/dsh', '.martty', 'plugins'),
+    path.join('/opt/dsh', '.oma', 'plugins'),
   )
 })
 
@@ -221,5 +221,48 @@ test('malformed artifact directories remain visible as broken rows', () => {
     assert.throws(() => storeModule.createTuiPluginStore({ root }).resolve('broken-theme'), /broken/i)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('legacy ~/.martty migrates into the shared ~/.oma home once', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'martty-oma-migration-'))
+  try {
+    const legacy = path.join(home, '.martty')
+    mkdirSync(path.join(legacy, 'sessions'), { recursive: true })
+    writeFileSync(path.join(legacy, 'settings.json'), '{"defaultHarness":"pi-acp"}')
+    writeFileSync(path.join(legacy, 'sessions', 'one.jsonl'), '{}')
+
+    const resolved = storeModule.marttyHome({}, home)
+    assert.equal(resolved, path.join(home, '.oma'))
+    assert.equal(
+      readFileSync(path.join(resolved, 'settings.json'), 'utf8'),
+      '{"defaultHarness":"pi-acp"}',
+      'settings carry over to the shared home',
+    )
+    assert.ok(existsSync(path.join(resolved, 'sessions', 'one.jsonl')))
+    assert.ok(existsSync(path.join(legacy, 'settings.json')), 'the legacy dir is left in place')
+
+    // Later launches use the shared home directly — no re-migration.
+    assert.equal(storeModule.marttyHome({}, home), resolved)
+
+    // An existing ~/.oma always wins; nothing is overwritten by legacy data.
+    rmSync(resolved, { recursive: true, force: true })
+    mkdirSync(resolved, { recursive: true })
+    assert.equal(storeModule.marttyHome({}, home), resolved)
+    assert.ok(!existsSync(path.join(resolved, 'settings.json')))
+
+    // $DSH_HOME resolves .oma the same way (and migrates .martty inside it).
+    const dsh = mkdtempSync(path.join(tmpdir(), 'martty-oma-dsh-'))
+    mkdirSync(path.join(dsh, '.martty'), { recursive: true })
+    writeFileSync(path.join(dsh, '.martty', 'settings.json'), '{}')
+    assert.equal(storeModule.marttyHome({ DSH_HOME: dsh }, home), path.join(dsh, '.oma'))
+    assert.ok(existsSync(path.join(dsh, '.oma', 'settings.json')))
+    rmSync(dsh, { recursive: true, force: true })
+
+    // Explicit MARTTY_HOME / OMA_HOME always win and never migrate.
+    assert.equal(storeModule.marttyHome({ MARTTY_HOME: '/opt/martty' }, home), '/opt/martty')
+    assert.equal(storeModule.marttyHome({ OMA_HOME: '/opt/oma' }, home), '/opt/oma')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
   }
 })

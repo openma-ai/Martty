@@ -841,3 +841,71 @@ fn text_after_a_turn_end_stays_live_while_the_session_runs() {
     assert!(matches!(&tr.cells[2].kind, CellKind::Assistant { done: true, .. }));
     assert!(!tr.streaming());
 }
+
+#[test]
+fn auto_retry_status_updates_one_line_and_settles_explicitly() {
+    let mut tr = t("s");
+    tr.apply(UiEvent::RetryStatus {
+        session: "s".into(),
+        attempt: 1,
+        max_attempts: 3,
+        delay_ms: 2000,
+        error: Some("429 quota exhausted".into()),
+    });
+    tr.apply(UiEvent::RetryStatus {
+        session: "s".into(),
+        attempt: 2,
+        max_attempts: 3,
+        delay_ms: 4000,
+        error: Some("429 quota exhausted".into()),
+    });
+    assert_eq!(tr.cells.len(), 1, "each attempt rewrites the same line");
+    match &tr.cells[0].kind {
+        CellKind::Notice { level, text } => {
+            assert_eq!(*level, NoticeLevel::Warn);
+            assert!(text.contains("attempt 2/3"), "{text}");
+            assert!(text.contains("429 quota exhausted"), "{text}");
+        }
+        other => panic!("expected notice, got {other:?}"),
+    }
+
+    tr.apply(UiEvent::RetryFinished {
+        session: "s".into(),
+        attempt: 3,
+        success: false,
+        error: Some("quota exhausted".into()),
+    });
+    assert_eq!(tr.cells.len(), 1, "the final result replaces the status line");
+    match &tr.cells[0].kind {
+        CellKind::Notice { level, text } => {
+            assert_eq!(*level, NoticeLevel::Error);
+            assert!(text.contains("3"), "{text}");
+            assert!(text.contains("quota exhausted"), "{text}");
+            assert!(!text.contains("resuming"), "{text}");
+        }
+        other => panic!("expected notice, got {other:?}"),
+    }
+
+    // A new cycle starts a fresh line; a recovery reads as success.
+    tr.apply(UiEvent::RetryStatus {
+        session: "s".into(),
+        attempt: 1,
+        max_attempts: 3,
+        delay_ms: 2000,
+        error: None,
+    });
+    assert_eq!(tr.cells.len(), 2);
+    tr.apply(UiEvent::RetryFinished {
+        session: "s".into(),
+        attempt: 1,
+        success: true,
+        error: None,
+    });
+    match &tr.cells[1].kind {
+        CellKind::Notice { level, text } => {
+            assert_eq!(*level, NoticeLevel::Info);
+            assert!(text.contains("resuming"), "{text}");
+        }
+        other => panic!("expected notice, got {other:?}"),
+    }
+}

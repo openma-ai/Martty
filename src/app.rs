@@ -1598,6 +1598,8 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::UserMessage { session, .. }
         | UiEvent::SessionTitle { session, .. }
         | UiEvent::SessionNotice { session, .. }
+        | UiEvent::RetryStatus { session, .. }
+        | UiEvent::RetryFinished { session, .. }
         | UiEvent::SessionModel { session, .. }
         | UiEvent::Plan { session, .. }
         | UiEvent::PlanMode { session, .. }

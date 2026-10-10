@@ -16,12 +16,15 @@ import {
   installRegistryBinary,
   managedBinaryPath,
   normalizeAcpRegistry,
+  OPENMA_PI_ACP,
   readAcpRegistrySnapshot,
 } from './harness-registry.js'
 
 export { fetchAcpRegistry } from './harness-registry.js'
 
 const HARNESS_ID = /^[a-z0-9][a-z0-9-]*$/
+const PI_ACP_LATEST = OPENMA_PI_ACP
+const PI_ACP_SPEC = /^(?:@openma\/)?pi-acp(?:@.+)?$/
 const ANSI = Object.freeze({ reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m' })
 
 // Kept as a source-compatible empty export. The source of truth is the
@@ -361,8 +364,14 @@ function validateHarness(value) {
     || Object.entries(env).some(([key, item]) => key.length === 0 || typeof item !== 'string'))) {
     throw new Error('harness env must be an object of strings')
   }
-  const normalizedArgs = /^npx(?:\.(?:cmd|bat|exe))?$/i.test(path.win32.basename(value.command))
-    ? [...args].filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
+  const isNpx = /^npx(?:\.(?:cmd|bat|exe))?$/i.test(path.win32.basename(value.command))
+  const normalizedArgs = isNpx
+    ? [...args]
+      .filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
+      // A pinned pi-acp spec (any old `pi-acp@x` or `@openma/pi-acp@x` entry)
+      // always resolves `latest` at runtime instead — harness upgrades ship
+      // through npm, never through a Martty release.
+      .map((arg) => PI_ACP_SPEC.test(arg) ? PI_ACP_LATEST : arg)
     : [...args]
   return {
     id: value.id,

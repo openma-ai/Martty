@@ -74,6 +74,46 @@ test('changing the default is configuration only; new sessions retain their own 
   assert.equal(alpha.killed, false)
 })
 
+test('each session keeps its own model when the agent applies config globally', {timeout:5000}, async t => {
+  // pi-acp-style agent: `session/set_config_option` and `session/new` write a
+  // single global model, so a newer session's defaults would otherwise leak
+  // into older sessions' turns.
+  const global = `
+    if (request.method === 'session/new') {
+      globalThis.model = 'fable-5';
+      reply({sessionId:'session-'+(++next),configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+    if (request.method === 'session/set_config_option') {
+      globalThis.model = request.params.value;
+      globalThis.sets = (globalThis.sets ?? []).concat([[request.params.sessionId,request.params.value]]);
+      reply({sessionId:request.params.sessionId,configOptions:[{id:'model',currentValue:globalThis.model}]});
+      return;
+    }
+  `
+  const c = client(t, fixture('pi', global + `
+    if (request.method === 'session/prompt') {
+      reply({stopReason:'end_turn',_meta:{model:globalThis.model,sessionId:request.params.sessionId}});
+      return;
+    }
+  `))
+  await c.request('initialize', {protocolVersion:1})
+  const a = (await c.request('session/new')).result.sessionId
+  await c.request('session/set_config_option', {sessionId:a,configId:'model',value:'swe-2-high'})
+  // A newer session loads its own default — globally overwriting A's choice.
+  const b = (await c.request('session/new')).result.sessionId
+
+  const replies = []
+  for (const sessionId of [a, b, a, b]) {
+    replies.push(await c.request('session/prompt', {sessionId, prompt:[]}))
+  }
+  assert.deepEqual(
+    replies.map(reply => reply.result._meta.model),
+    ['swe-2-high','fable-5','swe-2-high','fable-5'],
+    'alternating sessions must each run the model they own',
+  )
+})
+
 test('new session failure does not kill or redirect existing sessions', {timeout:5000}, async t => {
   const c = client(t)
   await c.request('initialize', {protocolVersion:1})

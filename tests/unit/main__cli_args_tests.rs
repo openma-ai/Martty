@@ -79,15 +79,15 @@ fn martty_home_precedence_owns_the_default_session_root() {
     );
     assert_eq!(
         crate::runtime::martty_home_from(None, Some("/opt/dsh"), "/Users/test"),
-        PathBuf::from("/opt/dsh/.martty")
+        PathBuf::from("/opt/dsh/.oma")
     );
     assert_eq!(
         crate::runtime::martty_home_from(None, None, "/Users/test"),
-        PathBuf::from("/Users/test/.martty")
+        PathBuf::from("/Users/test/.oma")
     );
     assert_eq!(
         crate::runtime::martty_home_from(None, None, "/Users/test").join("sessions"),
-        PathBuf::from("/Users/test/.martty/sessions")
+        PathBuf::from("/Users/test/.oma/sessions")
     );
 }
 

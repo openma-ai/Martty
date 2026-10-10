@@ -1264,3 +1264,133 @@ fn text_chunks_do_not_merge_across_subagents() {
     coalesce_session_updates(&mut events);
     assert_eq!(events.len(), 2, "chunks for distinct subagents stay separate");
 }
+
+#[test]
+fn pi_auto_retry_events_become_structured_retry_events() {
+    let started = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {
+                    "event": "auto_retry", "phase": "start",
+                    "attempt": 2, "maxAttempts": 3, "delayMs": 2500,
+                    "error": "429 too many requests",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        started,
+        vec![UiEvent::RetryStatus {
+            session: "s".into(),
+            attempt: 2,
+            max_attempts: 3,
+            delay_ms: 2500,
+            error: Some("429 too many requests".into()),
+        }]
+    );
+
+    let failed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {
+                    "event": "auto_retry", "phase": "end",
+                    "success": false, "attempt": 3, "error": "quota exhausted",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        failed,
+        vec![UiEvent::RetryFinished {
+            session: "s".into(),
+            attempt: 3,
+            success: false,
+            error: Some("quota exhausted".into()),
+        }]
+    );
+
+    let recovered = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "end", "success": true, "attempt": 2}},
+            },
+        }),
+    );
+    assert_eq!(
+        recovered,
+        vec![UiEvent::RetryFinished {
+            session: "s".into(),
+            attempt: 2,
+            success: true,
+            error: None,
+        }]
+    );
+}
+
+#[test]
+fn pi_failed_turn_surfaces_the_upstream_reason_and_retry_text_stays_out() {
+    let failed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": ""},
+                "_meta": {"pi": {
+                    "event": "assistant_message", "stopReason": "error",
+                    "error": "429 rate limit exceeded (scheduling capacity exhausted)",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        failed,
+        vec![UiEvent::SessionNotice {
+            session: "s".into(),
+            severity: "error".into(),
+            title: "upstream error".into(),
+            details: Some("429 rate limit exceeded (scheduling capacity exhausted)".into()),
+        }]
+    );
+
+    // The marked retry chunk folds into the structured RetryStatus event
+    // instead of streaming raw text onto the message line.
+    let chunk = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": " Retrying (attempt 1/3, waiting 2s): 429 "},
+                "_meta": {"pi": {"notice": "auto_retry"}},
+            },
+        }),
+    );
+    assert!(chunk.is_empty());
+
+    // Unmarked chunks and non-error assistant meta still flow normally.
+    let plain = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "hello"},
+                "_meta": {"pi": {"event": "assistant_message", "stopReason": "end_turn"}},
+            },
+        }),
+    );
+    assert_eq!(
+        plain,
+        vec![UiEvent::TextDelta { session: "s".into(), text: "hello".into() }]
+    );
+}
