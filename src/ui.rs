@@ -179,6 +179,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
     app.slot_actions.clear();
     app.tab_rects.clear();
+    app.tab_close_rects.clear();
     app.pet_want = None;
     app.harness_thumb = None;
     app.caret_cell = None;
@@ -1166,12 +1167,12 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     if total == 0 || area.width < 4 {
         return;
     }
-    // Per-tab display width: `" {indicator} {label} "` plus the trailing
+    // Per-tab display width: `" {indicator} {label} ×"` plus the trailing
     // arrow. Every indicator — Braille spinner included — is one cell, so
     // the widths only depend on the clamped label.
     let widths: Vec<usize> = tabs
         .iter()
-        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 5)
+        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 6)
         .collect();
     let avail = right.saturating_sub(area.x as usize);
 
@@ -1259,7 +1260,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme.fg_secondary).bg(tab_bg)
         };
         let arrow_width = ARROW.width();
-        let width = indicator.width() + label.width() + 3 + arrow_width;
+        let width = indicator.width() + label.width() + 4 + arrow_width;
         if x + width > right {
             let remaining = total - idx;
             let note = format!(" +{remaining}");
@@ -1270,13 +1271,25 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         }
         app.tab_rects
             .push((Rect::new(x as u16, area.y, width as u16, 1), idx));
+        // The `×` cell closes this tab (issue #146): its own hit rect so a
+        // click here never falls through to `tab_at` and switches instead.
+        app.tab_close_rects.push((
+            Rect::new((x + 4 + label.width()) as u16, area.y, 1, 1),
+            idx,
+        ));
         spans.push(Span::styled(format!(" {indicator} ",), indicator_style));
         spans.push(Span::styled(format!("{label} "), label_style));
+        let close_style = if tab.current {
+            Style::default().fg(active_fg).bg(tab_bg)
+        } else {
+            Style::default().fg(theme.caption).bg(tab_bg)
+        };
+        spans.push(Span::styled("×", close_style));
         let next_fits = tabs.get(idx + 1).is_some_and(|next| {
             let next_label = crate::transcript::clamp_str(&next.label, 16);
             // Every native status marker (including the Braille spinner) is
             // one terminal cell wide.
-            let next_width = next_label.width() + 4;
+            let next_width = next_label.width() + 5;
             x + width + next_width <= right
         });
         let next_bg = tabs

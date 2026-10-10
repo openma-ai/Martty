@@ -1251,6 +1251,212 @@ fn list_session_flag_reads_initialize_payload() {
     })));
 }
 
+#[test]
+fn close_session_flag_reads_initialize_payload() {
+    assert!(close_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "close": {} } }
+    })));
+    assert!(close_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "close": true } }
+    })));
+    assert!(close_session_supported(&json!({
+        "agent_capabilities": { "session_capabilities": { "close": {} } }
+    })));
+    assert!(!close_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "close": false } }
+    })));
+    assert!(!close_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": { "close": null } }
+    })));
+    assert!(!close_session_supported(&json!({
+        "agentCapabilities": { "sessionCapabilities": {} }
+    })));
+    assert!(!close_session_supported(&json!({})));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_session_reaches_the_wire_when_the_agent_advertises_it() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, CloseSessionRequest, CloseSessionResponse, InitializeResponse,
+        NewSessionResponse,
+    };
+    use std::time::{Duration, Instant};
+
+    // `session/close` (issue #146): the agent advertised
+    // `sessionCapabilities.close`, so closing the tab puts the request on
+    // the wire and the agent frees the session's resources.
+    let (extension_tx, mut extension_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("close-capable-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                let mut response = serde_json::to_value(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("close-capable-mock", "0")),
+                )
+                .expect("serialize initialize response");
+                response["agentCapabilities"]["sessionCapabilities"]["close"] = json!({});
+                responder.respond(
+                    serde_json::from_value(response).expect("deserialize initialize response"),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: CloseSessionRequest, responder, _cx| {
+                let _ = extension_tx.send(request.session_id.to_string());
+                responder.respond(CloseSessionResponse::new())
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline && !ready {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(ready, "startup session/new must bind s1");
+
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s1".into(),
+        })
+        .expect("close session");
+
+    let session_id = tokio::time::timeout(Duration::from_secs(2), extension_rx.recv())
+        .await
+        .expect("session/close should reach the agent")
+        .expect("extension channel");
+    assert_eq!(session_id, "s1");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_session_stays_local_when_the_agent_did_not_advertise_it() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, CloseSessionRequest, CloseSessionResponse, InitializeResponse,
+        NewSessionResponse,
+    };
+    use std::time::{Duration, Instant};
+
+    // No `sessionCapabilities.close`: the tab closes locally, the
+    // server-side session survives — and must receive no request.
+    let (extension_tx, mut extension_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("close-unaware-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("close-unaware-mock", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: CloseSessionRequest, responder, _cx| {
+                let _ = extension_tx.send(request.session_id.to_string());
+                responder.respond(CloseSessionResponse::new())
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = false;
+    while Instant::now() < deadline && !ready {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(ready, "startup session/new must bind s1");
+
+    cmd_tx
+        .send(Cmd::CloseSession {
+            session_id: "s1".into(),
+        })
+        .expect("close session");
+
+    // A second session/new rides the same setup lane right after the
+    // close: when its bind lands, the close was already processed — so the
+    // extension channel staying empty is proof no request went out.
+    cmd_tx
+        .send(Cmd::NewSession {
+            requester: None,
+            retry_auth: None,
+        })
+        .expect("open another session");
+    assert!(
+        (0..100).any(|_| matches!(
+            bus_rx.recv_timeout(Duration::from_millis(20)),
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+        )),
+        "the queued session/new must still bind after the close",
+    );
+    assert!(
+        extension_rx.try_recv().is_err(),
+        "an agent without sessionCapabilities.close must receive no session/close",
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     use agent_client_protocol::schema::v1::{
@@ -4156,6 +4362,7 @@ fn stream_owned_new_session_keeps_the_negotiated_connection_facts() {
         server: Some("profile-host".into()), auth: AuthSnapshot::none(),
         load_session: true, list_session: true, resume_session: false,
         fork_session: false,
+        close_session: false,
         additional_directories: false,
     });
     let (bus, events) = std::sync::mpsc::channel();

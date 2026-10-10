@@ -35,6 +35,9 @@ pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦'
 
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_millis(1500);
+/// `/close` on a still-working tab arms this window: a second close inside
+/// it cancels the in-flight turn and drops the tab (issue #146).
+const CLOSE_CONFIRM_WINDOW: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy)]
 struct CtrlCQuitChord {
@@ -163,7 +166,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "close",
         usage: "/close",
-        desc: "close the current session tab (last tab cannot close)",
+        desc: "close the current session tab · ctrl+shift+w · click its ×"
     },
     SlashCommand {
         name: "cordis-plugins",
@@ -1431,6 +1434,8 @@ pub struct App {
     resume_session_cap: bool,
     /// Agent advertised `sessionCapabilities.fork` (`{}`).
     fork_session_cap: bool,
+    /// Agent advertised `sessionCapabilities.close` (`{}` or `true`).
+    close_session_cap: bool,
     /// Agent advertised `sessionCapabilities.additionalDirectories`.
     additional_directories_cap: bool,
     /// `additional_directories_cap` has been learned from initialize.
@@ -1507,6 +1512,10 @@ pub struct App {
     pub ambient_tip_idx: usize,
     pub ambient_tip_at: Instant,
     ctrl_c_armed: Option<CtrlCQuitChord>,
+    /// `/close`·`×`·ctrl+shift+w on a still-working tab arms this: a second
+    /// close inside `CLOSE_CONFIRM_WINDOW` cancels the turn and drops the
+    /// tab (session id + when the confirm was armed).
+    close_armed: Option<(String, Instant)>,
     pub session_id: String,
     /// Parked sessions — every session except the viewed one (issue #94).
     /// Conceptual tab order is this list with the live session spliced in
@@ -1524,6 +1533,8 @@ pub struct App {
     awaiting_binds: VecDeque<AwaitingBind>,
     /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
     pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
+    /// The `×` cell of each tab (issue #146), same tab index.
+    pub(crate) tab_close_rects: Vec<(ratatui::layout::Rect, usize)>,
     /// First tab index rendered in the session tab strip (the strip's
     /// scroll window). Mouse clicks on the window's edge tabs nudge it by
     /// one so the neighboring tab appears — a mouse can walk through every
@@ -1937,6 +1948,7 @@ impl App {
             list_session: false,
             resume_session_cap: false,
             fork_session_cap: false,
+            close_session_cap: false,
             additional_directories_cap: false,
             additional_directories_known: false,
             session_title: None,
@@ -1973,11 +1985,13 @@ impl App {
             ambient_tip_idx: 0,
             ambient_tip_at: Instant::now(),
             ctrl_c_armed: None,
+            close_armed: None,
             session_id,
             parked: Vec::new(),
             current: 0,
             awaiting_binds: VecDeque::new(),
             tab_rects: Vec::new(),
+            tab_close_rects: Vec::new(),
             tab_strip_offset: 0,
             cfg,
             selected_model: None,
@@ -2047,6 +2061,7 @@ impl App {
                 load_session: self.load_session, list_session: self.list_session,
                 resume_session: self.resume_session_cap,
                 fork_session: self.fork_session_cap,
+                close_session: self.close_session_cap,
                 additional_directories: self.additional_directories_cap,
             }),
             title: self.session_title.take(),
@@ -2106,6 +2121,7 @@ impl App {
             list_session: false,
             resume_session: false,
             fork_session: false,
+            close_session: false,
             additional_directories: false,
         }));
         self.session_title = slot.title;
@@ -2328,6 +2344,17 @@ impl App {
     /// Hit-test a screen cell against the tab rects recorded by the painter.
     fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
         self.tab_rects
+            .iter()
+            .find(|(rect, _)| {
+                col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+            })
+            .map(|(_, idx)| *idx)
+    }
+
+    /// Hit-test against each tab's `×` cell (issue #146) — checked before
+    /// `tab_at` so a click on the `×` closes instead of switching.
+    fn tab_close_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_close_rects
             .iter()
             .find(|(rect, _)| {
                 col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
@@ -3968,7 +3995,7 @@ impl App {
                             self.awaiting_binds.push_front(AwaitingBind { id: previous_id, open: true });
                             self.handle_inner(AppEvent::Ctl(CtlEvent::SessionBound { session_id, notice }), ctl);
                         } else {
-                            ctl.send(Cmd::ForgetSession { session_id });
+                            ctl.send(Cmd::CloseSession { session_id });
                         }
                     }
                     CtlEvent::BindFailedTo { previous_id, message } => {
@@ -4493,12 +4520,14 @@ impl App {
                         list_session,
                         resume_session,
                         fork_session,
+                        close_session,
                         additional_directories,
                     } => {
                         self.load_session = load_session;
                         self.list_session = list_session;
                         self.resume_session_cap = resume_session;
                         self.fork_session_cap = fork_session;
+                        self.close_session_cap = close_session;
                         self.note_additional_directories(additional_directories);
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
@@ -4585,8 +4614,9 @@ impl App {
                                 // The requesting tab was closed (/close)
                                 // before the bind resolved. acp already
                                 // registered the new session server-side, so
-                                // forget it and never hijack the viewed tab.
-                                ctl.send(Cmd::ForgetSession {
+                                // close it there (capable agents free its
+                                // resources) and never hijack the viewed tab.
+                                ctl.send(Cmd::CloseSession {
                                     session_id: session_id.clone(),
                                 });
                                 self.show_tip(self.locale.trf(
@@ -5078,7 +5108,12 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
-                // Session tab strip (issue #94): left-click a tab switches.
+                // Session tab strip (issues #94, #146): left-click a tab
+                // switches; a click on its `×` closes it instead.
+                if let Some(tab) = self.tab_close_at(mouse.column, mouse.row) {
+                    self.close_session_tab(tab, ctl);
+                    return;
+                }
                 if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
                     self.switch_view_to_tab(tab, ctl);
                     // Clicking the strip's outermost visible tab also
@@ -6554,6 +6589,7 @@ impl App {
             Action::Esc => self.handle_esc(ctl),
             Action::CtrlC => self.handle_ctrl_c(ctl),
             Action::Quit => self.quit = true,
+            Action::CloseSession => self.close_session_flow(ctl),
             Action::ClearScrollback => {
                 self.transcript.clear();
                 self.sel = None;
@@ -7633,30 +7669,92 @@ impl App {
         self.after_switch();
     }
 
-    /// The `/close` flow (issue #94): stop viewing the current session tab
-    /// and drop everything bound to it (transcript, composer draft, queue,
-    /// asks, subagents). Local only — ACP has no session/close, so the
-    /// server-side session keeps existing; acp.rs forgets its turn state
-    /// and queued prompts so nothing more is sent into the void, and the
-    /// session's later updates drop at the router. An in-flight turn keeps
-    /// running and is dropped when it settles. Never closes the last tab.
+    /// The `/close`·`×`·ctrl+shift+w flow (issues #94, #146): stop viewing
+    /// a session tab and drop everything bound to it (transcript, composer
+    /// draft, queue, asks, subagents). A still-working tab — streaming
+    /// turn, prompt in flight, an unanswered permission/elicitation ask —
+    /// is never dropped silently: the first close arms a confirm window,
+    /// and closing again cancels the turn first, then drops the tab. On
+    /// the ACP side `session/close` goes out when the owning connection
+    /// advertised it (the agent cancels ongoing work and frees the
+    /// session); other agents keep the session server-side, resumable
+    /// through `session/resume`·`session/list`. Closing the live tab
+    /// focuses its right neighbor, else the left one; closing the last
+    /// tab opens a fresh welcome tab so the strip never ends on nothing.
     fn close_session_flow(&mut self, ctl: &Controller) {
+        self.close_session_tab(self.current, ctl);
+    }
+
+    /// Close the tab at index `tab` (`0..session_tab_count()`): the live
+    /// tab or, via a `×` click, a parked one.
+    fn close_session_tab(&mut self, tab: usize, ctl: &Controller) {
         let total = self.session_tab_count();
-        if total < 2 {
-            self.show_tip(self.locale.tr(
-                "cannot close the last session — /new opens another first",
-                "不能关闭最后一个会话 —— 先用 /new 开一个新的",
-            ));
+        if tab >= total {
             return;
         }
-        let doomed = self.session_id.clone();
-        let running = self.state != RunState::Idle || self.prompt_pending;
-        // Compositor-owned overlays (plugin view/select/slider) must be
-        // released with a cancel event before the tab dies — the same path
-        // a tab click takes. Painter popups, asks and the composer draft
-        // die with the slot (ask overlays auto-cancel through Drop).
-        self.cancel_plugin_overlays(ctl);
-        let doomed_slot = self.take_live_slot();
+        let live = tab == self.current;
+        let pidx = if live {
+            None
+        } else {
+            Some(if tab < self.current { tab } else { tab - 1 })
+        };
+        let (doomed, busy) = if let Some(pidx) = pidx {
+            let slot = &self.parked[pidx];
+            (
+                slot.id.clone(),
+                slot.running
+                    || slot.prompt_pending
+                    || slot.permission_ask.is_some()
+                    || slot.elicitation_ask.is_some(),
+            )
+        } else {
+            (
+                self.session_id.clone(),
+                self.state != RunState::Idle
+                    || self.prompt_pending
+                    || self.permission_ask.is_some()
+                    || self.elicitation_ask.is_some(),
+            )
+        };
+        if busy {
+            // One confirm: close again inside the window to cancel the
+            // turn and drop the tab — nothing is discarded silently.
+            let armed = self
+                .close_armed
+                .as_ref()
+                .is_some_and(|(id, started)| {
+                    id == &doomed && started.elapsed() < CLOSE_CONFIRM_WINDOW
+                });
+            if !armed {
+                self.close_armed = Some((doomed.clone(), Instant::now()));
+                self.show_tip(self.locale.trf(
+                    "session {} is still running — close again within 4s to cancel it and close the tab",
+                    "会话 {} 仍在运行 —— 4 秒内再次关闭将取消当前回合",
+                    &[short_id(&doomed)],
+                ));
+                return;
+            }
+            // Confirmed: interrupt the in-flight turn first (`Interrupt`
+            // only aborts when a prompt is in flight — pending asks die
+            // with the slot), then close.
+            ctl.send(Cmd::Interrupt {
+                session_id: doomed.clone(),
+            });
+            self.close_armed = None;
+        }
+
+        if live {
+            // Compositor-owned overlays (plugin view/select/slider) must
+            // be released with a cancel event before the tab dies — the
+            // same path a tab click takes. Painter popups, asks and the
+            // composer draft die with the slot (ask overlays auto-cancel
+            // through Drop).
+            self.cancel_plugin_overlays(ctl);
+        }
+        let doomed_slot = match pidx {
+            Some(pidx) => self.parked.remove(pidx),
+            None => self.take_live_slot(),
+        };
         let discarded = doomed_slot.prompt_queue.len();
         let had_draft = !doomed_slot.input.is_empty()
             || !doomed_slot.pending_images.is_empty();
@@ -7671,31 +7769,47 @@ impl App {
         if let Some(entry) = self.awaiting_binds.iter_mut().find(|entry| entry.id == doomed) {
             entry.open = false;
         }
-        // Forget the session on the ACP side too: drop its turn state and
-        // queued prompts (no-op for an unbound placeholder id).
-        ctl.send(Cmd::ForgetSession {
+        // Close the session on the ACP side too: `session/close` when the
+        // owning connection advertised it, always the local drop (a no-op
+        // for an unbound placeholder id).
+        ctl.send(Cmd::CloseSession {
             session_id: doomed.clone(),
         });
 
-        // View a neighbor first, keeping the closed tab's conceptual slot:
-        // the right neighbor when one exists, else the tab on the left.
-        let right = self.current + 1 < total;
-        let pidx = if right { self.current } else { self.current - 1 };
-        let mut target = self.parked.remove(pidx);
-        target.completed_unseen = false;
-        self.current = if right {
-            self.current
+        if live {
+            if total == 1 {
+                // The last tab: reopen a fresh welcome tab so the strip
+                // never ends on nothing (issue #146).
+                self.reopen_fresh_tab(ctl);
+            } else {
+                // View a neighbor first, keeping the closed tab's
+                // conceptual slot: the right neighbor when one exists,
+                // else the tab on the left.
+                let right = self.current + 1 < total;
+                let pidx = if right { self.current } else { self.current - 1 };
+                let mut target = self.parked.remove(pidx);
+                target.completed_unseen = false;
+                self.current = if right {
+                    self.current
+                } else {
+                    self.current.saturating_sub(1)
+                };
+                self.put_live_slot(target);
+                self.after_switch();
+            }
         } else {
-            self.current.saturating_sub(1)
-        };
-        self.put_live_slot(target);
-        self.after_switch();
+            // A parked tab vanished: the live slot keeps its place among
+            // the remaining tabs.
+            if tab < self.current {
+                self.current -= 1;
+            }
+        }
         self.needs_redraw = true;
 
         let label = short_id(&doomed);
         let mut bits: Vec<String> = Vec::new();
-        if running {
-            bits.push("its running turn keeps settling".into());
+        if busy {
+            bits.push("turn cancelled".into());
         }
         if discarded > 0 {
             bits.push(format!("{discarded} queued dropped"));
@@ -7717,6 +7831,36 @@ impl App {
         }
     }
 
+    /// After the last tab closed, open one fresh welcome tab: a bound demo
+    /// tab when no live ACP transport drives sessions, else a placeholder
+    /// that binds the `session/new` it requests.
+    fn reopen_fresh_tab(&mut self, ctl: &Controller) {
+        if self.demo {
+            let id = format!("dsh-{}", timestamp());
+            let mut slot = SessionSlot::fresh(id.clone(), true);
+            slot.transcript.locale = self.locale;
+            self.put_live_slot(slot);
+            ctl.send(Cmd::FetchSkills {
+                session_id: self.session_id.clone(),
+            });
+        } else {
+            let placeholder = format!("dsh-{}", timestamp());
+            let mut slot = SessionSlot::fresh(placeholder.clone(), false);
+            slot.transcript.locale = self.locale;
+            self.put_live_slot(slot);
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: placeholder.clone(),
+                open: true,
+            });
+            ctl.send(Cmd::NewSession {
+                requester: Some(placeholder),
+                retry_auth: None,
+            });
+            self.show_tip(self.locale.tr("session/new …", "正在创建会话（session/new）…"));
+        }
+        self.after_switch();
+    }
+
     fn set_session_connection(&mut self, connection: crate::bus::SessionConnection) {
         self.server_info = connection.server;
         self.auth = connection.auth;
@@ -7724,6 +7868,7 @@ impl App {
         self.list_session = connection.list_session;
         self.resume_session_cap = connection.resume_session;
         self.fork_session_cap = connection.fork_session;
+        self.close_session_cap = connection.close_session;
         self.additional_directories_cap = connection.additional_directories;
         self.additional_directories_known = true;
     }
