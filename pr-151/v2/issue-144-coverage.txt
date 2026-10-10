@@ -1,0 +1,45 @@
+Issue #144 follow-up — coverage report (branch devin/1791617779-issue-144-model-isolation, head ce146f3 on top of 94e617e)
+
+Rust — cargo llvm-cov --locked (850 tests, all pass; line/region coverage —
+llvm-cov does not emit branch records for Rust):
+  src/app.rs        5377/7065 lines = 76.11%   uncovered-in-changed: none
+  src/events.rs      894/953  lines = 93.81%   uncovered-in-changed: none
+  src/transcript.rs 1100/1317 lines = 83.52%   uncovered-in-changed: none
+  src/runtime.rs      96/192  lines = 50.00%   uncovered-in-changed: none
+Every line added or changed by this patch is executed by tests. Remaining
+uncovered lines are pre-existing code untouched by the change.
+
+JS — node --test --experimental-test-coverage (456 tests pass, 3 platform
+skips):
+  file                    line %   branch %  remaining uncovered
+  acp-agent-pool.js        95.54     79.59    115-117 (session/list id remap,
+                                                pre-existing), 227-228 (setup
+                                                timeout, pre-existing),
+                                                322-323 (defensive catch —
+                                                unreachable by design:
+                                                applySessionConfig already
+                                                swallows assert failures),
+                                                256/295-296/357/360-367
+                                                (pre-existing cordis paths)
+  harness-registry.js      90.25     78.38    all pre-existing registry
+                                                download/parse errors
+  harnesses.js             91.90     84.36    all pre-existing
+  tui-plugin-store.js      93.45     77.61    manifest validation throws +
+                                                plugin-root path (pre-existing)
+
+Gap-closing tests added in ce146f3:
+  scripts/acp-agent-pool.test.mjs
+    - set_config_option replies without configOptions still record the pick
+      (echo fallback) and drive per-session re-assert under alternation
+    - config_option_update notifications record into the session config
+  scripts/tui-plugin-store.test.mjs
+    - a failed .martty->.oma migration keeps using the legacy home
+  tests/unit/app__session_tabs_tests.rs
+    - session overlay shows the tab's own provider/model (catalog-resolved)
+    - /effort FetchEfforts targets the viewed tab's provider+model
+    - retry lifecycle through apply_ui: one updating line, fractional delay,
+      unbounded max ('?'), stale retry cell, explicit failure and success
+  tests/unit/events__tests.rs
+    - unknown _meta.pi events and unknown auto_retry phases emit nothing
+  tests/unit/main__cli_args_tests.rs
+    - .martty fallback only when .oma is absent; .oma wins once present

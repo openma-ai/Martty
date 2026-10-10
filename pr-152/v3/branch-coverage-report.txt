@@ -1,0 +1,78 @@
+BRANCH + LINE COVERAGE — new/changed code of the session-close patch (issue #146)
+================================================================================
+
+Method
+------
+Rust branch coverage requires the nightly flag `-Zcoverage-options=branch`
+(emits BRDA records; what `cargo llvm-cov --branch` produces). Toolchain:
+nightly-2026-10-x86_64 (rustc 1.101.0-nightly, 32dba69d6) + llvm-tools-preview.
+
+    rm -rf /tmp/ntarget && LLVM_PROFILE_FILE='/tmp/bcov/martty-%p-%9m.profraw' \
+      RUSTFLAGS='-C instrument-coverage -Zcoverage-options=branch' \
+      CARGO_TARGET_DIR=/tmp/ntarget cargo +nightly test --locked
+    # 859 tests, all pass; profraws merged with llvm-profdata
+    llvm-cov show <unit-test-bin> -instr-profile=martty.profdata \
+      -sources <file> -show-branches=count > show-<name>.txt
+
+A checker script then intersects `git diff origin/main -U0` added lines with
+the show dumps: every added line must be executed (line coverage), and every
+BRDA record on an added line must have BOTH the True and False sides hit at
+least once (branch coverage). Branch records on the same (line,col) are
+unioned — rustc emits a duplicate record per inline expansion, so a raw
+listing double-counts sides.
+
+Result — changed code in the 7 source files
+-------------------------------------------
+
+    == src/acp.rs:            lines 55/57 covered, branch-sides 8/8 covered
+       LINE-MISS 2872: .map(|id| SessionId::new(id.clone()));
+       LINE-MISS 2873: }
+    == src/acp/control.rs:    lines 10/10 covered, branch-sides 0/0
+    == src/app.rs:            lines 111/111 covered, branch-sides 50/50 covered
+    == src/bus.rs:            lines 0/0 (only enum variants added — no executable lines)
+    == src/controller.rs:     lines 2/2 covered, branch-sides 0/0
+    == src/input/keymap.rs:   lines 2/2 covered, branch-sides 6/6 covered
+    == src/ui.rs:             lines 12/12 covered, branch-sides 2/2 covered
+
+    TOTAL: changed lines 192/194 covered; changed branch-sides 66/66 covered.
+
+The two "missed" lines are a DIFF ARTIFACT, not uncovered new code:
+`.map(|id| SessionId::new(id.clone()));` and its closing brace are
+pre-existing lines of the ForgetSession repoint (identical text at
+src/acp.rs:2855 on origin/main). The -U0 diff re-anchors them into the close
+hunk; they are not part of this patch's logic. Excluding them, every line and
+every branch side of new/changed code is covered — 100% / 100%.
+
+Gaps found by the first branch pass and closed in this round
+------------------------------------------------------------
+1. src/acp.rs:2903 (contains_key False), 2923 (remove → None False),
+   2924 (current-mismatch False): added acp test
+   `close_session_drops_unknown_and_non_current_ids_consistently` — closes an
+   id that never bound (no session/close on the wire, no repoint), a bound
+   non-current session (wire close, current left alone), and the current
+   session (wire close + repoint), asserting wire order [s1, s2].
+2. src/app.rs:7692 (tab-index bounds False): `close_session_tab_beyond_the_strip_is_a_noop`.
+3. src/app.rs:7706/7707 (parked prompt_pending / permission_ask busy sides):
+   `parked_prompt_and_ask_make_the_tab_busy_too` — both arm instead of closing.
+4. src/app.rs:7714/7715 (live prompt_pending / permission_ask busy sides):
+   `live_prompt_and_ask_make_the_tab_busy_too`.
+5. src/app.rs:7726 (expired close_armed False): `a_stale_close_confirm_re_arms_instead_of_closing`.
+6. src/app.rs:2360 (× hit-rect row bounds): the click test now also clicks a
+   row below AND a row above the × cell.
+7. src/input/keymap.rs:152 (close-chord guard False sides): the key test now
+   sends plain ctrl+w (falls through to DeleteWordBack) and ⌥w (no ctrl) before
+   ctrl+shift+w.
+8. src/acp/control.rs: the `Cmd::CloseSession` arm was `if let Err = ...await`,
+   which this nightly emits a broken BRDA for (False: 0 despite observed Ok
+   runs — a known rustc branch-coverage quirk around `if let` on await
+   results). Rewritten as `match` producing clean records; also removed a dead
+   `!advertised` check — the main-loop enqueue gate is the sole producer for
+   that lane, so the lane itself cannot observe unadvertised sessions.
+
+cargo check --locked --tests warnings — provenance
+--------------------------------------------------
+The two warnings in test-output.txt are NOT from this PR:
+- `unused variable: ctl` at tests/unit/ui__tests.rs:3559 — that file has
+  zero lines in `git diff origin/main`; pre-existing.
+- non-snake-case `dd_kills_the_line_and_gg_G_jump` at
+  tests/unit/input__vim__tests.rs:74 — same; pre-existing.
