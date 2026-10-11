@@ -103,6 +103,11 @@ All notable changes to this project are documented here. The project follows
   post-quit TTY restore now leaves the alt screen with `?1047l` instead of
   re-emitting `?1049l`, whose extra cursor restore overwrote whatever the
   painter had just printed to the terminal.
+- Fix the profile bundle inserts for the renamed package: `cordis.patch.yml`
+  still pointed the four TUI plugin rows at
+  `@openma/deepseek-harness-tui/<subpath>`, so a profile installing the
+  `martty`-named package could not import them (`4 entries did not activate`
+  in the Windows profile smoke). They now resolve `martty/<subpath>`.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,

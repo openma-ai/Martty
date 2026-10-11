@@ -21,13 +21,13 @@
 
 - insert:
     - id: tui-client-plugins
-      name: '@openma/deepseek-harness-tui/client-plugin-registry'
+      name: 'martty/client-plugin-registry'
 
     - id: tui-acp-host
-      name: '@openma/deepseek-harness-tui/acp-host'
+      name: 'martty/acp-host'
 
     - id: tui-host-creator
-      name: '@openma/deepseek-harness-tui/creator-overlay'
+      name: 'martty/creator-overlay'
 
     - id: tui-runner
-      name: '@openma/deepseek-harness-tui/runner'
+      name: 'martty/runner'
