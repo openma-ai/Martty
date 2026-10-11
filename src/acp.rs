@@ -34,8 +34,9 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
-    on_receive_notification, on_receive_request, AcpAgent, Agent, ByteStreams, Client, ConnectTo,
-    ConnectionTo, Error as AcpError, Handled, SentRequest, UntypedMessage,
+    is_incoming_transport_closed, on_receive_notification, on_receive_request, AcpAgent, Agent,
+    ByteStreams, Client, ConnectTo, ConnectionTo, Error as AcpError, Handled, SentRequest,
+    UntypedMessage,
 };
 
 use crate::acp_auth::{
@@ -1619,6 +1620,26 @@ async fn request_with_deadline<T>(request: SentRequest<T>, deadline: Duration) -
     }
 }
 
+/// Whether an `initialize` failure is a reply the agent itself authored —
+/// meaning it is attached and may still authenticate — rather than a locally
+/// synthesized failure: transport EOF on a direct spawn, the harness pool's
+/// `agentExited` marker for a dead child, or our own request deadline (a
+/// bare `-32001` with no agent-supplied data).
+fn init_was_answered(err: &AcpError) -> bool {
+    if is_incoming_transport_closed(err) {
+        return false;
+    }
+    if err.data.is_none() && i32::from(err.code) == -32001 {
+        return false;
+    }
+    if let Some(data) = err.data.as_ref() {
+        if data.get("agentExited").and_then(Value::as_bool) == Some(true) {
+            return false;
+        }
+    }
+    true
+}
+
 async fn call_tui_extension(
     cx: &ConnectionTo<Agent>,
     method: &str,
@@ -2286,7 +2307,49 @@ where
                 // The handshake never produced an agent: prompt setup can
                 // only wait on a dead peer, so prompts short-circuit instead
                 // of parking the command loop behind a doomed `session/new`.
-                let agent_absent = init.is_err();
+                // An agent that answered `initialize` with a refusal is still
+                // attached — only failures that are not agent replies count.
+                let mut agent_absent = match &init {
+                    Ok(_) => false,
+                    Err(err) => !init_was_answered(err),
+                };
+                if let Err(err) = &init {
+                    if !agent_absent {
+                        // A refused handshake may carry the agent's auth
+                        // methods in its error data (the -32000 convention):
+                        // mirror the refused-`session/new` path — surface
+                        // them so the user can sign in, and hold prompts
+                        // until authenticate settles. A refusal demanding
+                        // auth while declaring no methods can never be
+                        // remedied, so prompts short-circuit the same way.
+                        let auth_raw = err
+                            .data
+                            .as_ref()
+                            .and_then(|data| data.get("authMethods"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let env = process_env();
+                        methods = parse_auth_methods(
+                            &auth_raw,
+                            &cfg.agent_argv(),
+                            &cfg.workspace,
+                            &env,
+                        );
+                        if is_auth_required_error(err) {
+                            if methods.is_empty() {
+                                agent_absent = true;
+                            } else {
+                                emit_needs_auth_open(
+                                    &bus,
+                                    methods.clone(),
+                                    selected.as_ref(),
+                                    Some(acp_error_message(err)),
+                                );
+                                session_auth_pending = true;
+                            }
+                        }
+                    }
+                }
                 let cwd = std::path::PathBuf::from(&cfg.workspace);
                 if let Ok(init) = init {
                 let agent_name = init

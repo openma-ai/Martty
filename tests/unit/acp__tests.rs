@@ -781,7 +781,8 @@ async fn client_compositor_command_survives_a_failed_initialize() {
                 responder.respond_with_error(AcpError::new(
                     -32603,
                     "agent process exited before completing initialize",
-                ))
+                )
+                .data(json!({ "agentExited": true })))
             },
             on_receive_request!(),
         )
@@ -974,6 +975,280 @@ async fn a_prompt_after_a_refused_startup_session_new_retries_the_bind() {
         .expect("prompt request");
     assert_eq!(session, "s1");
     assert_eq!(news.load(Ordering::SeqCst), 2, "one startup attempt plus one inline retry");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[test]
+fn init_was_answered_tells_an_agent_reply_from_a_dead_transport() {
+    // Any error the agent itself authored counts as answered — it is
+    // attached and may still authenticate — whatever its code or data.
+    assert!(init_was_answered(&AcpError::new(-32603, "refused")));
+    assert!(init_was_answered(
+        &AcpError::new(-32000, "authentication required")
+            .data(json!({ "authMethods": [{ "id": "oauth-x", "name": "Sign in" }] }))
+    ));
+    // A `-32001` reply carrying agent data stays answered even though our
+    // own deadline uses the same code.
+    assert!(init_was_answered(
+        &AcpError::new(-32001, "unsupported client").data(json!({ "reason": "x" }))
+    ));
+    // Locally produced failures are not replies: the bare `-32001` our
+    // deadline synthesizes, the pool's child-exit marker, transport EOF.
+    assert!(!init_was_answered(&AcpError::new(-32001, "agent request timed out")));
+    assert!(!init_was_answered(
+        &AcpError::new(-32603, "exited").data(json!({ "agentExited": true }))
+    ));
+    let closed = AcpError::internal_error().data(json!({
+        "reason": agent_client_protocol::INCOMING_TRANSPORT_CLOSED_REASON,
+        "method": "initialize",
+    }));
+    assert!(!init_was_answered(&closed));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_initialize_with_auth_methods_parks_prompts_for_sign_in() {
+    use agent_client_protocol::schema::v1::{
+        AuthenticateRequest, AuthenticateResponse, NewSessionRequest, NewSessionResponse,
+        PromptResponse, StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    // The agent answers `initialize` with an auth-required refusal that
+    // declares its methods — it is attached and can authenticate, so
+    // prompts park behind sign-in instead of failing fast.
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("init-refused-auth-agent")
+        .on_receive_request(
+            async move |_init: InitializeRequest, responder, _cx| {
+                responder.respond_with_error(AcpError::new(-32000, "sign in first").data(json!({
+                    "authMethods": [
+                        { "id": "oauth-x", "name": "Sign in with X", "description": "OAuth sign-in" }
+                    ]
+                })))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                responder.respond(AuthenticateResponse::new())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: PromptRequest, responder, _cx| {
+                let _ = prompt_tx.send(request.session_id.to_string());
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    // The refusal surfaces as a failed attach, then sign-in is offered
+    // with the methods the agent declared in its error data.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut failed = false;
+    let mut offered = false;
+    while Instant::now() < deadline && !(failed && offered) {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { error, .. })) => {
+                assert!(error.contains("sign in first"), "unexpected failure: {error}");
+                failed = true;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) => {
+                if snapshot.status == AuthStatus::NeedsAuth
+                    && snapshot.methods.iter().any(|method| method.id == "oauth-x")
+                {
+                    offered = true;
+                }
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+    assert!(failed && offered, "refused initialize must surface the failure and the sign-in methods");
+
+    // A prompt before sign-in parks instead of touching the wire or
+    // erroring like a dead attach.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "hello".into() })
+        .expect("prompt while auth is pending");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), prompt_rx.recv()).await.is_err(),
+        "prompt must park while authentication is pending"
+    );
+
+    // Sign in, then the parked intent binds and lands on the wire.
+    cmd_tx
+        .send(Cmd::Authenticate { method_id: "oauth-x".into(), values: Default::default() })
+        .expect("authenticate");
+    let session = tokio::time::timeout(Duration::from_secs(3), prompt_rx.recv())
+        .await
+        .expect("parked prompt drains once authenticate lets session/new bind")
+        .expect("prompt request");
+    assert_eq!(session, "s1");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_initialize_for_auth_without_methods_still_fast_fails() {
+    use std::time::{Duration, Instant};
+
+    // An auth-required refusal with no declared methods can never be
+    // remedied — prompts short-circuit exactly like a dead attach.
+    let agent = Agent
+        .builder()
+        .name("init-refused-no-methods")
+        .on_receive_request(
+            async move |_init: InitializeRequest, responder, _cx| {
+                responder.respond_with_error(AcpError::new(-32000, "sign in first"))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < deadline, "ConnectionFailed never arrived");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { .. })) => break,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "hello".into() })
+        .expect("prompt while unrecoverably refused");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < deadline, "refused prompt never settled");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Error(message))) => {
+                assert!(message.contains("agent is not attached"), "unexpected error: {message}");
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_initialize_without_auth_still_attempts_session_new() {
+    use agent_client_protocol::schema::v1::{
+        NewSessionRequest, NewSessionResponse, PromptResponse, StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    // A non-auth refusal keeps the agent attached: a later prompt still
+    // attempts `session/new` inline rather than failing like a dead peer.
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("init-refused-plain")
+        .on_receive_request(
+            async move |_init: InitializeRequest, responder, _cx| {
+                responder.respond_with_error(AcpError::new(-32603, "unsupported client"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: PromptRequest, responder, _cx| {
+                let _ = prompt_tx.send(request.session_id.to_string());
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < deadline, "ConnectionFailed never arrived");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { error, .. })) => {
+                assert!(error.contains("unsupported client"), "unexpected failure: {error}");
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "hello".into() })
+        .expect("prompt after a non-auth refusal");
+    let session = tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+        .await
+        .expect("prompt binds inline once session/new succeeds")
+        .expect("prompt request");
+    assert_eq!(session, "s1");
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;

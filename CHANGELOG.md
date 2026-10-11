@@ -33,6 +33,12 @@ All notable changes to this project are documented here. The project follows
   (`- dsh · <version> via <source>`), reported by dsh-acp through
   `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the
   bundled runtime from an explicit or plugin host.
+- An agent that answers `initialize` with a refusal is now treated as
+  attached instead of dead: a refusal declaring auth methods offers sign-in
+  and holds prompts until `authenticate` settles, a non-auth refusal lets the
+  next prompt attempt `session/new` inline, and only transport/process
+  failures (the agent never answered) short-circuit prompts with
+  `agent is not attached`.
 
 ### Added
 
