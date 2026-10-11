@@ -132,9 +132,13 @@ All notable changes to this project are documented here. The project follows
   still opens only on an explicit empty-composer Enter). "Sign-in
   needed" notices resolve the advertised method's display name from its
   id instead of falling back to a bare "agent", a configured agent that
-  advertises methods reports "credentials ready" instead of "credential
-  source not reported", and the stale "sign-in needed" notices are
-  hidden once sign-in succeeds instead of sitting above the first turn.
+  advertises methods reports "ready" instead of "credential source not
+  reported", and the stale "sign-in needed" notices are hidden once
+  sign-in succeeds instead of sitting above the first turn. Snapshots
+  raised by a real `auth_required` reply carrying `marttyConnection`
+  data or by an ACP `logout` also name the method (the signed-in one,
+  else the first advertised) instead of "agent", and the credentials
+  row no longer repeats its own label.
 
 
 ### Fixed

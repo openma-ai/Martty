@@ -495,8 +495,9 @@ fn welcome_auth_unknown_source_does_not_claim_authenticate() {
 #[test]
 fn welcome_auth_with_methods_reports_ready_not_unreported() {
     // An agent that advertised auth methods did report its providers, so
-    // a configured status without a named method reads "credentials
-    // ready", not "credential source not reported" (issue #160).
+    // a configured status without a named method reads "ready", not
+    // "credential source not reported" — and the "credentials" label is
+    // not repeated in the value (issue #160).
     let mut app = live_test_app();
     let methods = crate::acp_auth::parse_auth_methods(
         &serde_json::json!([
@@ -509,9 +510,23 @@ fn welcome_auth_with_methods_reports_ready_not_unreported() {
     );
     app.auth = crate::acp_auth::configured_snapshot(methods, None);
     let lines = welcome_info_lines(&app);
+    // The credentials row's value is "ready" — the label is not repeated.
+    let row = lines
+        .iter()
+        .find(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.contains("credentials"))
+        })
+        .expect("credentials row");
+    let value = row
+        .spans
+        .last()
+        .map(|span| span.content.as_ref())
+        .unwrap_or_default();
+    assert_eq!(value, "ready");
     let text = lines.iter().flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref()).collect::<String>();
-    assert!(text.contains("credentials ready"), "{text}");
     assert!(!text.contains("not reported"), "{text}");
 }
 
@@ -4164,6 +4179,12 @@ fn welcome_needs_auth_line_in_english_and_chinese() {
     let en = flat(welcome_info_lines(&app));
     assert!(en.contains("sign-in needed"), "{en}");
     assert!(en.contains("ctrl+g"), "{en}");
+    // No known method stays unspecific — never the type word (issue #160).
+    assert!(!en.contains("agent"), "{en}");
+    // A named method appears in place of the old "agent" fallback.
+    app.auth.method_name = Some("DeepSeek API key".into());
+    let named = flat(welcome_info_lines(&app));
+    assert!(named.contains("sign-in needed · DeepSeek API key"), "{named}");
     app.locale = crate::locale::Locale::Zh;
     let zh = flat(welcome_info_lines(&app));
     assert!(zh.contains("需要登录"), "{zh}");

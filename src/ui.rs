@@ -4101,22 +4101,30 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     } else if let Some(error) = &app.connection_error {
         out.push(kv(app.locale.tr("status", "状态"), format!("{} · {error}", app.locale.tr("connection failed", "连接失败"))));
     } else if matches!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn | crate::acp_auth::AuthStatus::Failed) {
-        let detail = app.auth.method_label().unwrap_or("agent");
+        let detail = app
+            .auth
+            .method_label()
+            .map(|name| format!(" · {name}"))
+            .unwrap_or_default();
         let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
-            format!("{} · {detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
+            format!("{}{detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
         } else {
-            format!("{} · {detail} · ctrl+g", app.locale.tr("sign-in failed", "登录失败"))
+            format!("{}{detail} · ctrl+g", app.locale.tr("sign-in failed", "登录失败"))
         };
         out.push(kv(app.locale.tr("credentials", "凭据"), message));
     } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
-        let detail = app.auth.method_label().unwrap_or("agent");
+        let detail = app
+            .auth
+            .method_label()
+            .map(|name| format!(" · {name}"))
+            .unwrap_or_default();
         out.push(Line::from(vec![
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
                 if app.locale == crate::locale::Locale::Zh {
-                    format!("需要登录 · {detail} — ctrl+g 选择登录方式")
+                    format!("需要登录{detail} — ctrl+g 选择登录方式")
                 } else {
-                    format!("sign-in needed · {detail} — ctrl+g opens the auth picker")
+                    format!("sign-in needed{detail} — ctrl+g opens the auth picker")
                 },
                 Style::default().fg(theme.warn_soft()),
             ),
@@ -4130,7 +4138,9 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
                 if app.auth.methods.is_empty() {
                     app.locale.tr("ready · credential source not reported", "已就绪 · 凭据来源未上报").into()
                 } else {
-                    app.locale.tr("credentials ready", "凭据已就绪").into()
+                    // The row is already labelled "credentials" — do not
+                    // repeat the word in the value (issue #160).
+                    app.locale.tr("ready", "已就绪").into()
                 }
             });
         out.push(kv(

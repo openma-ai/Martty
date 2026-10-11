@@ -445,12 +445,16 @@ pub fn run_terminal_auth(
 }
 
 fn needs_auth_notice(snapshot: &AuthSnapshot, locale: crate::locale::Locale) -> String {
-    let name = snapshot.method_label().unwrap_or("agent");
     let method = snapshot
         .method_id
         .as_ref()
         .and_then(|id| snapshot.methods.iter().find(|m| m.id == *id));
-    let mut lines = vec![locale.trf("sign-in needed · {}", "需要登录 · {}", &[name.into()])];
+    // No known method is no method's name — never the type word "agent"
+    // (issue #160).
+    let mut lines = vec![match snapshot.method_label() {
+        Some(name) => locale.trf("sign-in needed · {}", "需要登录 · {}", &[name.into()]),
+        None => locale.tr("sign-in needed", "需要登录").into(),
+    }];
     if let Some(message) = &snapshot.message {
         if !message.is_empty() {
             lines.push(message.clone());

@@ -4928,10 +4928,237 @@ fn structured_auth_failure_opens_owning_connection_and_parks_original_prompt() {
             assert_eq!(snapshot.status, AuthStatus::NeedsAuth);
             assert_eq!(snapshot.message.as_deref(), Some("403 Insufficient account balance"));
             assert_eq!(snapshot.methods[0].id, "h3:login");
+            // The notice names the advertised method — never the bare
+            // type word "agent" (issue #160).
+            assert_eq!(snapshot.method_label(), Some("Claude login"));
         }
         _ => panic!("expected owning-session authentication panel"),
     }
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn structured_auth_failure_names_the_signed_in_method() {
+    // The agent's marttyConnection data carries no selection: the
+    // snapshot names the method the user signed in with — never "agent"
+    // (issue #160).
+    let selected = AuthMethodInfo {
+        id: "api-key:deepseek".into(),
+        name: Some("DeepSeek API key".into()),
+        description: None,
+        type_name: "agent".into(),
+        form: true,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: None,
+    };
+    let finish = PromptFinish {
+        session_id: "s".into(),
+        result: Err(serde_json::from_value(json!({
+            "code": -32603, "message": "Internal error",
+            "data": {
+                "errorKind": "authentication_failed", "details": "401",
+                "marttyConnection": {"id": "h", "authMethods": [{"id": "h:login", "name": "Claude login"}]}
+            }
+        })).unwrap()),
+        payload: ParkedPromptKind::Text("x".into()),
+        gen: 1,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut parked = VecDeque::new();
+    apply_prompt_finish(
+        finish,
+        &mut HashMap::new(),
+        &mut parked,
+        &tx,
+        std::slice::from_ref(&selected),
+        Some(&selected),
+    );
+    let snapshot = rx
+        .try_iter()
+        .find_map(|event| match event {
+            AppEvent::Ctl(CtlEvent::SessionAuth { snapshot, .. }) => Some(snapshot),
+            _ => None,
+        })
+        .expect("SessionAuth");
+    assert_eq!(snapshot.status, AuthStatus::NeedsAuth);
+    assert_eq!(snapshot.method_label(), Some("DeepSeek API key"));
+}
+
+#[test]
+fn name_needs_auth_prefers_selected_then_advertised_then_nothing() {
+    let method = |id: &str, name: &str| AuthMethodInfo {
+        id: id.into(),
+        name: Some(name.into()),
+        description: None,
+        type_name: "agent".into(),
+        form: false,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: None,
+    };
+    let blank = || AuthSnapshot {
+        status: AuthStatus::NeedsAuth,
+        method_id: None,
+        method_name: None,
+        methods: Vec::new(),
+        message: None,
+    };
+    // The signed-in method wins.
+    let selected = method("sel", "Selected");
+    let mut snap = AuthSnapshot { methods: vec![method("other", "Other")], ..blank() };
+    name_needs_auth(&mut snap, &[], Some(&selected));
+    assert_eq!(snap.method_label(), Some("Selected"));
+    // Then the snapshot's own advertised list.
+    let mut snap = AuthSnapshot { methods: vec![method("first", "First")], ..blank() };
+    name_needs_auth(&mut snap, &[], None);
+    assert_eq!(snap.method_label(), Some("First"));
+    // Then the outer advertised list.
+    let outer = method("outer", "Outer");
+    let mut snap = blank();
+    name_needs_auth(&mut snap, std::slice::from_ref(&outer), None);
+    assert_eq!(snap.method_label(), Some("Outer"));
+    // Nothing to name stays unspecific — never "agent".
+    let mut snap = blank();
+    name_needs_auth(&mut snap, &[], None);
+    assert_eq!(snap.method_label(), None);
+    // A method the snapshot already knows is never overwritten.
+    snap.method_id = Some("kept".into());
+    name_needs_auth(&mut snap, std::slice::from_ref(&outer), Some(&selected));
+    assert_eq!(snap.method_id.as_deref(), Some("kept"));
+    assert_eq!(snap.method_name, None);
+}
+
+#[test]
+fn held_prompt_notice_names_the_method() {
+    // A held prompt's SessionAuth names the method (selected when
+    // signed in, else the first advertised) — never "agent" (#160).
+    let method = AuthMethodInfo {
+        id: "login".into(),
+        name: Some("Login".into()),
+        description: None,
+        type_name: "agent".into(),
+        form: true,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: None,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    emit_held_prompt(&tx, "s1", std::slice::from_ref(&method), None);
+    emit_held_prompt(&tx, "s1", std::slice::from_ref(&method), Some(&method));
+    let mut labels = Vec::new();
+    for event in rx.try_iter() {
+        match event {
+            AppEvent::Ctl(CtlEvent::SessionAuth { session_id, snapshot, open }) => {
+                assert_eq!(session_id, "s1");
+                assert!(open);
+                labels.push(snapshot.method_label().map(str::to_string));
+            }
+            _ => panic!("expected SessionAuth"),
+        }
+    }
+    assert_eq!(labels, [Some("Login".to_string()), Some("Login".to_string())]);
+}
+
+/// A refused session/new carrying `marttyConnection` data names an
+/// advertised method — never the bare type word "agent" (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn setup_refusal_snapshot_names_the_advertised_method() {
+    use agent_client_protocol::schema::v1::{
+        AuthMethod, AuthMethodAgent, InitializeRequest, InitializeResponse,
+        NewSessionRequest,
+    };
+    use std::time::{Duration, Instant};
+
+    let agent = Agent
+        .builder()
+        .name("setup-refusal-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_info(Implementation::new("setup-refusal-mock", "0"))
+                        .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new(
+                            "login", "Login",
+                        ))]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond_with_error(serde_json::from_value(json!({
+                    "code": -32000,
+                    "message": "authentication required",
+                    "data": {
+                        "marttyConnection": {
+                            "id": "h1",
+                            "authMethods": [{"id": "login", "name": "Login"}]
+                        }
+                    }
+                }))
+                .unwrap())
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // The initial session/new fails the same way — the refusal opens
+    // the picker through create_prompt_session.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut opened = false;
+    while Instant::now() < deadline && !opened {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => opened = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(opened, "the refused initial bind opens the picker");
+
+    // A rebind for an existing tab receives a SessionAuth snapshot that
+    // names the advertised method.
+    cmd_tx
+        .send(Cmd::NewSession {
+            requester: Some("s-old".into()),
+            retry_auth: Some("login".into()),
+        })
+        .expect("rebind cmd");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut named = false;
+    while Instant::now() < deadline && !named {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, snapshot, open }))
+                if session_id == "s-old" && snapshot.status == AuthStatus::NeedsAuth =>
+            {
+                assert!(open);
+                assert_eq!(snapshot.method_label(), Some("Login"));
+                named = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(named, "the refusal snapshot names a method");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
 }
 
 #[test]
@@ -5443,6 +5670,9 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
                         .is_some_and(|message| message.contains("input is held"))
                     && open =>
             {
+                // Held prompts name the advertised method — never the
+                // type word "agent" (issue #160).
+                assert_eq!(snapshot.method_label(), Some("Login"));
                 held += 1;
             }
             Ok(_) => {}
@@ -5512,6 +5742,37 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
             .expect("session usable after cancel")
             .as_deref(),
         Some("free")
+    );
+
+    // An image sent with no turn in flight and no control op running takes
+    // the direct begin_prompt arm — the all-idle side of the busy check.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut settled = false;
+    while Instant::now() < deadline && !settled {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::TurnEnd { session, kind }))
+                if session == "s1" && kind == "completed" =>
+            {
+                settled = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(settled, "the free prompt's turn ended");
+    cmd_tx
+        .send(Cmd::PromptImages {
+            session_id: "s1".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("img idle".into())],
+        })
+        .expect("image while fully idle");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("idle image begins its own turn")
+            .as_deref(),
+        Some("img idle")
     );
 
     // Image prompts take the same paths: queued behind a live turn, sent

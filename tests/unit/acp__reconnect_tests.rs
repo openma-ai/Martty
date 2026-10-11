@@ -258,6 +258,88 @@ async fn logout_reply_surfaces_needs_auth_and_reopens_the_picker() {
     client.await.expect("connect join").expect("connect result");
 }
 
+/// Signing out names the method the user signed in with — "signed out"
+/// must not fall back to the bare type word "agent" (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_names_the_signed_in_method() {
+    let agent = Agent
+        .builder()
+        .name("logout-named-mock")
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(
+                            AgentCapabilities::new().auth(
+                                AgentAuthCapabilities::new()
+                                    .logout(LogoutCapabilities::new()),
+                            ),
+                        )
+                        .auth_methods(vec![
+                            agent_client_protocol::schema::v1::AuthMethod::Agent(
+                                agent_client_protocol::schema::v1::AuthMethodAgent::new(
+                                    "api-key:deepseek",
+                                    "DeepSeek API key",
+                                ),
+                            ),
+                        ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: agent_client_protocol::schema::v1::AuthenticateRequest,
+                        responder,
+                        _cx| {
+                responder.respond(
+                    agent_client_protocol::schema::v1::AuthenticateResponse::new(),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: LogoutRequest, responder, _cx| {
+                responder.respond(LogoutResponse::new())
+            },
+            on_receive_request!(),
+        );
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:deepseek".into(),
+            values: Default::default(),
+        })
+        .expect("authenticate cmd");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::Auth(snapshot))
+            if snapshot.status == crate::acp_auth::AuthStatus::Configured)
+    })
+    .await;
+    cmd_tx.send(Cmd::Logout).expect("logout cmd");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::Auth(snapshot))
+            if snapshot.status == crate::acp_auth::AuthStatus::NeedsAuth
+                && snapshot.method_label() == Some("DeepSeek API key"))
+    })
+    .await;
+
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown cmd");
+    client.await.expect("connect join").expect("connect result");
+}
+
 /// A prompt typed while sign-in is pending is queued — never sent — and the
 /// picker is re-opened so the user sees why nothing ran (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

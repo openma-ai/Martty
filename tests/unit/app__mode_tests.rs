@@ -5662,11 +5662,13 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     app.push_session_info();
     let text = overlay_text(&app);
     assert!(text.contains("sign-in failed") && text.contains("denied"), "{text}");
-    // Unnamed-method NeedsAuth falls back to the generic agent label.
+    // Unnamed-method NeedsAuth stays unspecific — never the type word
+    // "agent" (issue #160).
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), None, None);
     app.push_session_info();
     let text = overlay_text(&app);
-    assert!(text.contains("agent"), "{text}");
+    assert!(text.contains("sign-in needed · ctrl+g"), "{text}");
+    assert!(!text.contains("sign-in needed · agent"), "{text}");
     // A method id with no display name still names the method.
     app.auth.method_id = Some("api-key".into());
     app.auth.method_name = None;
@@ -5674,13 +5676,14 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     let text = overlay_text(&app);
     assert!(text.contains("api-key"), "{text}");
     // Configured with an advertised method set but an unknown source no
-    // longer claims "not reported" — the agent did report its providers.
+    // longer claims "not reported" — the agent did report its providers —
+    // and the row does not repeat its "credentials" label (issue #160).
     app.auth.status = crate::acp_auth::AuthStatus::Configured;
     app.auth.method_id = None;
     app.auth.method_name = None;
     app.push_session_info();
     let text = overlay_text(&app);
-    assert!(text.contains("credentials ready") && !text.contains("not reported"), "{text}");
+    assert!(text.contains("credentials · ready") && !text.contains("credentials ready") && !text.contains("not reported"), "{text}");
     // With nothing advertised at all, the source is genuinely not reported.
     app.auth.methods = Vec::new();
     app.push_session_info();
@@ -5690,7 +5693,7 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     app.auth.method_name = Some("gateway".into());
     app.push_session_info();
     let text = overlay_text(&app);
-    assert!(text.contains("credentials ready · gateway"), "{text}");
+    assert!(text.contains("credentials · ready · gateway"), "{text}");
 }
 
 #[test]

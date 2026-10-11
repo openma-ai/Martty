@@ -941,6 +941,7 @@ fn apply_prompt_finish(
                     let mut snapshot = session_connection_snapshot(value).auth;
                     snapshot.status = AuthStatus::NeedsAuth;
                     snapshot.message = Some(acp_error_message(&err));
+                    name_needs_auth(&mut snapshot, methods, selected);
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id: finish.session_id, snapshot, open: true }));
                 } else {
                     emit_needs_auth_open(bus, methods.to_vec(), selected, Some(acp_error_message(&err)));
@@ -973,6 +974,29 @@ fn credit_terminal_method(
     emit_method_auth(bus, surface, configured_snapshot(methods.to_vec(), Some(method)));
 }
 
+/// A NeedsAuth snapshot carrying no method falls back to the bare word
+/// "agent" in the notice — a method type, not a credential. Credit the
+/// method the user signed in with (or the first advertised) so the
+/// notice names something real (issue #160).
+fn name_needs_auth(
+    snapshot: &mut AuthSnapshot,
+    methods: &[AuthMethodInfo],
+    selected: Option<&AuthMethodInfo>,
+) {
+    if snapshot.method_id.is_some() {
+        return;
+    }
+    let named = |m: &AuthMethodInfo| (m.id.clone(), m.name.clone());
+    if let Some((id, name)) = selected
+        .map(named)
+        .or_else(|| snapshot.methods.first().map(named))
+        .or_else(|| methods.first().map(named))
+    {
+        snapshot.method_id = Some(id);
+        snapshot.method_name = name;
+    }
+}
+
 fn emit_needs_auth_open(
     bus: &Sender<AppEvent>,
     methods: Vec<AuthMethodInfo>,
@@ -1002,7 +1026,7 @@ fn emit_held_prompt(
         session_id: session_id.to_string(),
         snapshot: needs_auth_snapshot(
             methods.to_vec(),
-            selected,
+            selected.or_else(|| methods.first()),
             Some("input is held until you sign in — pick a method in the auth picker".into()),
         ),
         open: true,
@@ -3338,6 +3362,7 @@ where
                                             if is_auth_required_error(&err) {
                                                 connection.auth.status = AuthStatus::NeedsAuth;
                                                 connection.auth.message = Some(message.clone());
+                                                name_needs_auth(&mut connection.auth, &methods, selected.as_ref());
                                                 let mut surface = surface.lock().unwrap_or_else(|e| e.into_inner());
                                                 if let Some(id) = &requester { surface.session_mut(Some(id)).connection = Some(value.clone()); }
                                                 for method in &connection.auth.methods {
@@ -3407,10 +3432,14 @@ where
                                 },
                                 ControlFinish::LoggedOut { result } => match result {
                                     Ok(()) => {
-                                        selected = None;
+                                        // Name the method the user just
+                                        // signed out of (or the first
+                                        // advertised) — "signed out" must
+                                        // not fall back to "· agent" (#160).
+                                        let signed_out = selected.take();
                                         emit_method_auth(&bus, &surface, needs_auth_snapshot(
                                             methods.clone(),
-                                            None,
+                                            signed_out.as_ref().or_else(|| methods.first()),
                                             Some("signed out — pick a method to sign in again".into()),
                                         ));
                                         // The picker reopens so the user can

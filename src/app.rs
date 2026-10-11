@@ -9435,11 +9435,13 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
             "demo mode (no API calls)".to_string()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Configured {
             match self.auth.method_label() {
-                Some(name) => format!("credentials ready · {name}"),
+                Some(name) => format!("ready · {name}"),
                 None if self.auth.methods.is_empty() => {
                     "ready · credential source not reported".into()
                 }
-                None => "credentials ready".into(),
+                // The row is labelled "credentials" — do not repeat the
+                // word in the value (issue #160).
+                None => "ready".into(),
             }
         } else if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             "signing in — waiting for Agent response".into()

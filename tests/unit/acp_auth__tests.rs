@@ -261,6 +261,22 @@ fn needs_auth_notice_points_at_auth() {
 }
 
 #[test]
+fn needs_auth_notice_never_names_the_method_type() {
+    // A NeedsAuth snapshot that knows no method stays unspecific — the
+    // bare type word "agent" was the old fallback (issue #160).
+    let snapshot = needs_auth_snapshot(Vec::new(), None, Some("token missing".into()));
+    let (_, text) = snapshot
+        .notice(crate::locale::Locale::En)
+        .expect("notice");
+    assert!(text.contains("sign-in needed"), "{text}");
+    assert!(!text.contains("agent"), "{text}");
+    let (_, zh) = snapshot
+        .notice(crate::locale::Locale::Zh)
+        .expect("zh notice");
+    assert!(zh.contains("需要登录"), "{zh}");
+}
+
+#[test]
 fn structured_auth_failure_keeps_the_provider_reason() {
     let err: AcpError = serde_json::from_value(json!({
         "code": -32603, "message": "Internal error",
