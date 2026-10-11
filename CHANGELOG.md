@@ -99,6 +99,10 @@ All notable changes to this project are documented here. The project follows
   paint over it; with `--ignore-scripts`, the first `martty-cli` (or
   `npx martty`) launch runs the whole converge — retiring stale links,
   recreating `martty`, and sanitizing the legacy manifest.
+- Quitting the TUI no longer loses the `session <id>` resume line: the
+  post-quit TTY restore now leaves the alt screen with `?1047l` instead of
+  re-emitting `?1049l`, whose extra cursor restore overwrote whatever the
+  painter had just printed to the terminal.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,
