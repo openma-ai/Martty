@@ -5046,6 +5046,18 @@ fn name_needs_auth_matches_the_failing_provider() {
 }
 
 #[test]
+fn provider_candidates_skips_an_empty_leading_segment() {
+    // A provider head starting with '-' yields an empty prefix at the
+    // first cut; it is skipped rather than matching every method id.
+    assert_eq!(provider_candidates("-edge"), vec!["-edge".to_string()]);
+    assert_eq!(
+        provider_candidates("deepseek-official/model"),
+        vec!["deepseek-official".to_string(), "deepseek".to_string()]
+    );
+    assert_eq!(provider_candidates("plain"), vec!["plain".to_string()]);
+}
+
+#[test]
 fn held_prompt_notice_names_the_method() {
     // A held prompt's SessionAuth names the credential — the sole
     // advertised method when the provider cannot resolve — never the
