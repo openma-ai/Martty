@@ -2003,6 +2003,40 @@ fn enter_on_an_empty_composer_sends_the_queue_head_now() {
 }
 
 #[test]
+fn queue_head_send_after_a_failed_attach_says_the_attach_failed() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    // Attach finished but failed: no session will ever bind, so the queue
+    // head cannot be promoted — the tip must name the failure, not imply
+    // a bind is still in progress.
+    app.session_bound = false;
+    app.connection_error = Some("attach refused".into());
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+    assert!(app.input.is_empty());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("attach failed"), "tip: {tip}");
+    assert_eq!(app.queued, 1, "the prompt stays queued");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+        "nothing is sent while the attach is dead"
+    );
+}
+
+#[test]
 fn a_deferred_queue_head_steer_returns_to_the_front() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
@@ -2817,6 +2851,32 @@ fn queued_prompts_render_in_a_shelf_above_the_composer_not_the_timeline() {
     assert!(
         composer_row - queue_row <= 3,
         "queue shelf should be attached to the composer, not float in the timeline:\n{frame}"
+    );
+}
+
+#[test]
+fn queue_shelf_names_the_failed_attach_instead_of_promising_a_send() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.show_banner = false;
+    // Attach finished and failed: no session will bind, so Enter can never
+    // promote the queue head — the shelf header must not promise it.
+    app.session_bound = false;
+    app.connection_error = Some("attach refused".into());
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+
+    let frame = crate::ui::dump_frame(&mut app, 90, 24);
+    assert!(
+        frame.contains("attach failed · prompt stays queued"),
+        "queue shelf should name the failed attach:\n{frame}"
+    );
+    assert!(
+        !frame.contains("enter send first"),
+        "send-first hint must not show while the attach is dead:\n{frame}"
     );
 }
 

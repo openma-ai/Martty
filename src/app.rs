@@ -3579,11 +3579,17 @@ impl App {
         }
     }
 
+    /// The attach finished and failed: no session will bind, so no queued
+    /// prompt can be promoted — views must not promise "send first".
+    pub(crate) fn queue_attach_failed(&self) -> bool {
+        !self.session_bound && self.connection_error.is_some()
+    }
+
     /// Identity of everything `queue_snapshot` projects, without the summary
     /// strings: ordered prompt ids (order captures reordering) plus the
-    /// selection/edit/confirm flags. A summary edit always passes through an
-    /// `editing_id` transition, so text changes are covered too.
-    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool) {
+    /// selection/edit/confirm/attach flags. A summary edit always passes
+    /// through an `editing_id` transition, so text changes are covered too.
+    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool, bool) {
         (
             self.prompt_queue.iter().map(|prompt| prompt.id).collect(),
             self.queue_selection
@@ -3591,6 +3597,7 @@ impl App {
                 .map(|prompt| prompt.id),
             self.queue_edit.as_ref().map(|edit| edit.prompt_id),
             self.queue_delete_confirming(),
+            self.queue_attach_failed(),
         )
     }
 
@@ -3657,6 +3664,7 @@ impl App {
             selected_id,
             editing_id,
             delete_confirm: self.queue_delete_confirming(),
+            attach_failed: self.queue_attach_failed(),
         }
     }
 
@@ -9619,9 +9627,19 @@ impl App {
     /// cannot accept the steer, settlement restores the item to the front.
     fn send_queue_head_now(&mut self, ctl: &Controller) {
         if !self.session_bound {
+            // A finished-but-failed attach keeps the queue too: say so —
+            // "still binding" wrongly implies the bind is in progress.
             self.show_tip(self.locale.tr(
-                "session still binding — prompt stays queued",
-                "会话仍在绑定中 —— 消息保留在队列里",
+                if self.queue_attach_failed() {
+                    "agent attach failed — prompt stays queued"
+                } else {
+                    "session still binding — prompt stays queued"
+                },
+                if self.queue_attach_failed() {
+                    "Agent 连接失败 —— 消息保留在队列里"
+                } else {
+                    "会话仍在绑定中 —— 消息保留在队列里"
+                },
             ));
             return;
         }

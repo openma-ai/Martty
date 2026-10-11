@@ -2253,7 +2253,42 @@ where
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
                 }));
-                let init = cx.send_request(initialize_request()).block_task_setup_deadline().await?;
+                let init = cx.send_request(initialize_request()).block_task_setup_deadline().await;
+                // A failed handshake must not kill this task: the attach
+                // channel still carries the local compositor plane, so client
+                // diagnostics such as /status stay reachable. Report the
+                // failure and keep the command loop running without an agent.
+                if let Err(error) = &init {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
+                        target: String::new(),
+                        error: acp_error_message(error),
+                    }));
+                }
+                // Loop state initialized up front: when the handshake failed,
+                // everything below stays empty and agent-bound commands simply
+                // error or park exactly like after a `session/new` failure.
+                let mut session_auth_pending = false;
+                // One stdio connection drives many sessions: each bound id
+                // gets its own turn state, and `current` is only the fallback
+                // target for commands that arrive without a usable id.
+                let mut sessions = HashMap::<String, SessionHandle>::new();
+                let mut current: Option<SessionId> = None;
+                // Prompt-like commands that arrived before the first session
+                // existed (sign-in still pending). They adopt the first bound
+                // session, in arrival order behind the parked intent.
+                let mut pending = VecDeque::<Cmd>::new();
+                let mut methods = Vec::new();
+                let mut selected: Option<AuthMethodInfo> = None;
+                let mut additional_directories = false;
+                let mut load_session = false;
+                let mut resume_session = false;
+                let mut list_session = false;
+                // The handshake never produced an agent: prompt setup can
+                // only wait on a dead peer, so prompts short-circuit instead
+                // of parking the command loop behind a doomed `session/new`.
+                let agent_absent = init.is_err();
+                let cwd = std::path::PathBuf::from(&cfg.workspace);
+                if let Ok(init) = init {
                 let agent_name = init
                     .agent_info
                     .as_ref()
@@ -2273,13 +2308,13 @@ where
                     connection["cwd"] = json!(cfg.workspace);
                     surface.initial_connection = Some(session_connection_snapshot(&connection));
                 }
-                let load_session = init.agent_capabilities.load_session
+                load_session = init.agent_capabilities.load_session
                     || load_session_supported(&init_value);
-                let resume_session = resume_session_supported(&init_value);
+                resume_session = resume_session_supported(&init_value);
                 // Before sessionCapabilities.list existed, Martty-compatible agents paired
                 // session/list with the top-level loadSession flag. Keep that legacy route.
-                let list_session = list_session_supported(&init_value) || load_session;
-                let additional_directories = additional_directories_supported(&init_value);
+                list_session = list_session_supported(&init_value) || load_session;
+                additional_directories = additional_directories_supported(&init_value);
                 let fork_session = fork_session_supported(&init_value);
                 let close_session = close_session_supported(&init_value);
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::AgentCaps {
@@ -2295,7 +2330,7 @@ where
                     .cloned()
                     .unwrap_or(Value::Null);
                 let env = process_env();
-                let methods = parse_auth_methods(
+                methods = parse_auth_methods(
                     &auth_raw,
                     &cfg.agent_argv(),
                     &cfg.workspace,
@@ -2305,7 +2340,7 @@ where
                 let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
                 // Only authenticate selects a method; session/new cannot reveal
                 // which persisted credential (if any) the Agent used.
-                let mut selected: Option<AuthMethodInfo> = None;
+                selected = None;
                 // A form-capable method may already have persistent credentials.
                 // Stay optimistic and let the startup session/new prove auth.
                 if auth.status == AuthStatus::NeedsAuth
@@ -2315,20 +2350,9 @@ where
                     auth.status = AuthStatus::Unknown;
                 }
 
-                let cwd = std::path::PathBuf::from(&cfg.workspace);
                 let needs_open = auth.status == AuthStatus::NeedsAuth;
                 emit_auth(&bus, auth);
                 emit_open_auth_if_needed(&bus, if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None });
-                let mut session_auth_pending = false;
-                // One stdio connection drives many sessions: each bound id
-                // gets its own turn state, and `current` is only the fallback
-                // target for commands that arrive without a usable id.
-                let mut sessions = HashMap::<String, SessionHandle>::new();
-                let mut current: Option<SessionId> = None;
-                // Prompt-like commands that arrived before the first session
-                // existed (sign-in still pending). They adopt the first bound
-                // session, in arrival order behind the parked intent.
-                let mut pending = VecDeque::<Cmd>::new();
                 let mut setup_failed = false;
                 match create_prompt_session(
                     &cx,
@@ -2349,12 +2373,13 @@ where
                     Err(err) => {
                         setup_failed = true;
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
-                            target: agent_name.clone(), error: format!("session/new: {err}")
+                            target: agent_name.clone(), error: format!("session/new: {}", acp_error_message(&err))
                         }));
                     }
                 }
                 if !setup_failed {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
+                }
                 }
                 let mut parked: VecDeque<ParkedPrompt> = VecDeque::new();
 
@@ -2429,6 +2454,12 @@ where
                                             session: None,
                                             kind,
                                         });
+                                        continue;
+                                    }
+                                    if agent_absent {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                            "agent is not attached".into(),
+                                        )));
                                         continue;
                                     }
                                     match create_prompt_session(

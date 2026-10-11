@@ -756,6 +756,136 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_compositor_command_survives_a_failed_initialize() {
+    use std::time::Duration;
+
+    let (invoke_tx, mut invoke_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("init-fails-agent")
+        .on_receive_request(
+            async move |_init: InitializeRequest, responder, cx| {
+                // The local compositor plane may already be up (the muxed
+                // attach channel publishes its catalog before the agent
+                // handshake settles). Mirror that ordering, then fail.
+                cx.send_notification(UntypedMessage::new(
+                    crate::cordis::COMMANDS_UPDATE,
+                    json!({
+                        "protocol": 0,
+                        "commands": [{
+                            "name": "status",
+                            "description": "Session run state and key stats"
+                        }]
+                    }),
+                )?)?;
+                responder.respond_with_error(AcpError::new(
+                    -32603,
+                    "agent process exited before completing initialize",
+                ))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: UntypedMessage, responder, _cx| {
+                let _ = invoke_tx.send((request.method().to_string(), request.params().clone()));
+                responder.respond(json!({ "ok": true }))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "ConnectionFailed never arrived");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { error, .. })) => {
+                assert!(error.contains("agent process exited"), "unexpected failure: {error}");
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::InvokePluginCommand {
+            name: "status".into(),
+            args: String::new(),
+        })
+        .expect("invoke local Client command after the failed handshake");
+
+    let (method, params) = tokio::time::timeout(Duration::from_secs(1), invoke_rx.recv())
+        .await
+        .expect("a failed initialize must not kill the compositor channel")
+        .expect("invocation request");
+    assert_eq!(method, crate::cordis::COMMAND_INVOKE);
+    assert_eq!(params["name"], "status");
+
+    // Local compositor projections still publish: the queue snapshot carries
+    // the dead-attach flag so the view can stop promising "send first".
+    cmd_tx
+        .send(Cmd::QueueSnapshot {
+            snapshot: crate::bus::QueueSnapshot {
+                count: 1,
+                items: vec![crate::bus::QueueSnapshotItem {
+                    id: 3,
+                    ordinal: 1,
+                    summary: "held prompt".into(),
+                }],
+                selected_id: None,
+                editing_id: None,
+                delete_confirm: false,
+                attach_failed: true,
+            },
+        })
+        .expect("queue snapshot while detached");
+    let (method, params) = tokio::time::timeout(Duration::from_secs(1), invoke_rx.recv())
+        .await
+        .expect("queue projection should reach the wire after a failed initialize")
+        .expect("queue projection request");
+    assert_eq!(method, crate::cordis::QUEUE_UPDATE);
+    assert_eq!(params["attachFailed"], true);
+    assert_eq!(params["items"][0]["summary"], "held prompt");
+
+    // A prompt in the detached state must fail fast, not park the loop
+    // behind a `session/new` that can never be answered.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "hello".into() })
+        .expect("prompt while detached");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "detached prompt never settled");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Error(message))) => {
+                assert!(message.contains("agent is not attached"), "unexpected error: {message}");
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeResponse, NewSessionResponse,

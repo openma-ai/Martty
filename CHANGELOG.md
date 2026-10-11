@@ -23,6 +23,12 @@ All notable changes to this project are documented here. The project follows
   first line (an embedded newline could never render there), the agent stderr
   tail renders wrapped in the transcript instead of being hidden under the
   welcome banner, and `/status` shows the full message in a fenced block.
+- `/status` and other client compositor commands now work after a failed ACP
+  attach: the attach task no longer exits on a refused `initialize`, so
+  diagnostics stay reachable. A prompt submitted in that state is held in the
+  queue, and the queue header/tip says the attach failed instead of promising
+  "send first"; prompts that do dispatch fail fast with
+  `agent is not attached` instead of parking behind the dead peer.
 - `/status` shows the dsh runtime the ACP agent actually booted
   (`- dsh · <version> via <source>`), reported by dsh-acp through
   `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the

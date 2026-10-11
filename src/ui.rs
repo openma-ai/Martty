@@ -545,6 +545,15 @@ fn draw_queue_shelf(f: &mut Frame, app: &App, area: Rect) {
                             "  ·  ↑/↓ 选择 · enter 编辑 · esc 关闭",
                         )
                         .to_string()
+                } else if app.queue_attach_failed() {
+                    // The attach finished and failed: no bind is coming, so
+                    // "send first" would promise an action that never lands.
+                    app.locale
+                        .tr(
+                            "  ·  attach failed · prompt stays queued",
+                            "  ·  连接失败 · 消息保留在队列里",
+                        )
+                        .to_string()
                 } else {
                     app.locale
                         .tr(

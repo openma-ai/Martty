@@ -22,6 +22,7 @@ const EMPTY = Object.freeze({
   selectedId: null,
   editingId: null,
   deleteConfirm: false,
+  attachFailed: false,
 })
 
 export function installTuiQueue(ctx) {
@@ -62,6 +63,7 @@ export function installTuiQueue(ctx) {
       selectedId: idOrNull(snapshot.selectedId),
       editingId: idOrNull(snapshot.editingId),
       deleteConfirm: snapshot.deleteConfirm === true,
+      attachFailed: snapshot.attachFailed === true,
     }
     const next = current()
     for (const listener of [...listeners]) listener(next)

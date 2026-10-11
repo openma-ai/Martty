@@ -89,3 +89,30 @@ test('Queue view shows every queued prompt in the composer before selection', ()
   assert.equal(nodes[1].children[0].text, '✎ 1  first queued prompt')
   assert.equal(nodes[1].children[0].tone, 'warn')
 })
+
+test('Queue view names a failed attach instead of promising send first', () => {
+  if (typeof queueView.apply !== 'function') return
+  const makeCurrent = (overrides) => ({
+    count: 1,
+    items: [{ id: 3, ordinal: 1, summary: 'held prompt' }],
+    selectedId: null,
+    editingId: null,
+    deleteConfirm: false,
+    ...overrides,
+  })
+
+  // Collapsed: "send first" would promise a dispatch that can never happen.
+  assert.equal(
+    queueView.dockNodes(makeCurrent({ attachFailed: true }))[0].title,
+    'Queue · 1 · attach failed · prompt stays queued',
+  )
+  assert.equal(
+    queueView.dockNodes(makeCurrent({ attachFailed: false }))[0].title,
+    'Queue · 1 · enter send first · ⌥↑ edit',
+  )
+  // Expanded selection/edit hints still apply while the attach is dead.
+  assert.equal(
+    queueView.dockNodes(makeCurrent({ attachFailed: true, selectedId: 3 }))[0].title,
+    'Queue · 1 · ↑/↓ choose · enter edit · esc close',
+  )
+})

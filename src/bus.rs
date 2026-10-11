@@ -346,6 +346,9 @@ pub struct QueueSnapshot {
     pub selected_id: Option<u64>,
     pub editing_id: Option<u64>,
     pub delete_confirm: bool,
+    /// The attach finished and failed — no session will bind, so the view
+    /// must not promise "enter sends the queue head".
+    pub attach_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
