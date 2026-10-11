@@ -4101,7 +4101,7 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     } else if let Some(error) = &app.connection_error {
         out.push(kv(app.locale.tr("status", "状态"), format!("{} · {error}", app.locale.tr("connection failed", "连接失败"))));
     } else if matches!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn | crate::acp_auth::AuthStatus::Failed) {
-        let detail = app.auth.method_name.as_deref().or(app.auth.method_id.as_deref()).unwrap_or("Agent");
+        let detail = app.auth.method_label().unwrap_or("agent");
         let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             format!("{} · {detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
         } else {
@@ -4109,12 +4109,7 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
         };
         out.push(kv(app.locale.tr("credentials", "凭据"), message));
     } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
-        let detail = app
-            .auth
-            .method_name
-            .as_deref()
-            .or(app.auth.method_id.as_deref())
-            .unwrap_or("agent");
+        let detail = app.auth.method_label().unwrap_or("agent");
         out.push(Line::from(vec![
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
@@ -4129,11 +4124,15 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     } else if app.auth.status == crate::acp_auth::AuthStatus::Configured {
         let detail = app
             .auth
-            .method_name
-            .as_deref()
-            .or(app.auth.method_id.as_deref())
+            .method_label()
             .map(|method| format!("ACP authenticate · {method}"))
-            .unwrap_or_else(|| app.locale.tr("ready · credential source not reported", "已就绪 · 凭据来源未上报").into());
+            .unwrap_or_else(|| {
+                if app.auth.methods.is_empty() {
+                    app.locale.tr("ready · credential source not reported", "已就绪 · 凭据来源未上报").into()
+                } else {
+                    app.locale.tr("credentials ready", "凭据已就绪").into()
+                }
+            });
         out.push(kv(
             app.locale.tr("credentials", "凭据"),
             detail,

@@ -296,16 +296,15 @@ fn terminal_first_method_surfaces_a_sign_in_notice() {
         &Default::default(),
     );
     let snapshot = snapshot_from_methods(methods, &[], &Default::default());
-    assert_eq!(format!("{:?}", snapshot.status), "NeedsAuth");
-    assert_eq!(snapshot.method_id.as_deref(), Some("pi-tui"));
-    assert!(
-        snapshot
-            .message
-            .as_deref()
-            .is_some_and(|text| text.contains("terminal sign-in needed")),
-        "{:?}",
-        snapshot.message
-    );
+    // A terminal-first agent may still have persisted credentials — the
+    // startup snapshot stays Unknown and only a real auth_required reply
+    // proves sign-in is needed, so the picker no longer flashes on a
+    // signed-in startup (issue #160).
+    assert_eq!(format!("{:?}", snapshot.status), "Unknown");
+    // method_label still resolves the advertised name for display.
+    let mut named = snapshot.clone();
+    named.method_id = Some("pi-tui".into());
+    assert_eq!(named.method_label(), Some("Terminal login"));
 }
 
 #[test]

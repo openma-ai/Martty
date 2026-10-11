@@ -493,6 +493,29 @@ fn welcome_auth_unknown_source_does_not_claim_authenticate() {
 }
 
 #[test]
+fn welcome_auth_with_methods_reports_ready_not_unreported() {
+    // An agent that advertised auth methods did report its providers, so
+    // a configured status without a named method reads "credentials
+    // ready", not "credential source not reported" (issue #160).
+    let mut app = live_test_app();
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::configured_snapshot(methods, None);
+    let lines = welcome_info_lines(&app);
+    let text = lines.iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("credentials ready"), "{text}");
+    assert!(!text.contains("not reported"), "{text}");
+}
+
+#[test]
 fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     let flat = |lines: Vec<Line>| lines.iter().flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref()).collect::<Vec<_>>().join("\n");

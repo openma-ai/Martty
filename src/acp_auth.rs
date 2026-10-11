@@ -80,6 +80,21 @@ pub struct AuthSnapshot {
 }
 
 impl AuthSnapshot {
+    /// The selected method's display name: its recorded name, else the
+    /// advertised method matching `method_id`, else the bare id — never
+    /// the method's type (issue #160).
+    pub fn method_label(&self) -> Option<&str> {
+        if let Some(name) = self.method_name.as_deref() {
+            return Some(name);
+        }
+        let id = self.method_id.as_deref()?;
+        self.methods
+            .iter()
+            .find(|method| method.id == id)
+            .and_then(|method| method.name.as_deref())
+            .or(Some(id))
+    }
+
     pub fn none() -> Self {
         Self {
             status: AuthStatus::None,
@@ -214,19 +229,10 @@ pub fn snapshot_from_methods(
             return needs_auth_snapshot(methods, Some(&method), Some(message));
         }
     }
-    if method.form {
-        return needs_auth_snapshot(methods, Some(&method), None);
-    }
-    if method.terminal_launch.is_some() {
-        // A terminal-first agent (pi-acp advertises 20 methods, the first a
-        // terminal login) must still surface a visible sign-in-needed state —
-        // Unknown with no message looked like a ready client (issue #160).
-        return needs_auth_snapshot(
-            methods,
-            Some(&method),
-            Some("terminal sign-in needed — pick a method to continue".into()),
-        );
-    }
+    // A form-capable or terminal-first method may still have persisted
+    // credentials, so guessing "needs sign-in" here would flash the picker
+    // on every signed-in startup: only a real auth_required reply proves
+    // it (issue #160). Missing env vars above are the one local proof.
     AuthSnapshot {
         status: AuthStatus::Unknown,
         method_id: None,
@@ -439,11 +445,7 @@ pub fn run_terminal_auth(
 }
 
 fn needs_auth_notice(snapshot: &AuthSnapshot, locale: crate::locale::Locale) -> String {
-    let name = snapshot
-        .method_name
-        .as_deref()
-        .or(snapshot.method_id.as_deref())
-        .unwrap_or("agent");
+    let name = snapshot.method_label().unwrap_or("agent");
     let method = snapshot
         .method_id
         .as_ref()

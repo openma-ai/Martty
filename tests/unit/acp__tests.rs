@@ -1958,7 +1958,117 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
         "startup session/new proves that persisted credentials work"
     );
     let _ = cmd_tx.send(Cmd::Shutdown);
-    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn needs_auth_looking_methods_never_flash_the_picker_at_startup() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeResponse, NewSessionResponse,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    // pi-acp advertises a terminal method first and a form api-key after;
+    // until session/new proves persisted credentials work, neither may be
+    // treated as "sign-in needed" — that guess is what flashed the picker
+    // ~0.85s into every signed-in startup (issue #160).
+    let sessions = Arc::new(AtomicUsize::new(0));
+    let mut meta = serde_json::Map::new();
+    meta.insert("api-key".into(), json!({ "provider": "deepseek" }));
+    let mut terminal_meta = serde_json::Map::new();
+    terminal_meta.insert(
+        "terminal-auth".into(),
+        json!({ "args": ["login"], "env": {} }),
+    );
+    let agent = Agent
+        .builder()
+        .name("pi-style-startup-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("pi-style-startup-mock", "0"))
+                        .auth_methods(vec![
+                            AuthMethod::Agent(
+                                AuthMethodAgent::new("pi-terminal", "Log in with pi")
+                                    .meta(terminal_meta.clone()),
+                            ),
+                            AuthMethod::Agent(
+                                AuthMethodAgent::new("api-key", "DeepSeek API key")
+                                    .meta(meta.clone()),
+                            ),
+                        ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let sessions = Arc::clone(&sessions);
+                async move |_req: NewSessionRequest, responder, _cx| {
+                    // Slow enough to reproduce the real startup gap in
+                    // which the flash was observed.
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    sessions.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut statuses = Vec::new();
+    let mut opened_auth = false;
+    let mut ready = false;
+    while Instant::now() < deadline && !ready {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) => statuses.push(snapshot.status),
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => opened_auth = true,
+            Ok(AppEvent::Ctl(CtlEvent::Ready { .. })) => ready = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    while let Ok(event) = bus_rx.try_recv() {
+        if matches!(event, AppEvent::Ctl(CtlEvent::OpenAuth)) {
+            opened_auth = true;
+        }
+    }
+
+    assert!(ready, "startup should become ready after session/new");
+    assert!(
+        statuses.iter().all(|status| *status != AuthStatus::NeedsAuth),
+        "no NeedsAuth snapshot may be emitted before a real refusal: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&AuthStatus::Configured),
+        "session/new success still reports credentials ready: {statuses:?}"
+    );
+    assert!(
+        !opened_auth,
+        "startup must not open the auth picker on its own"
+    );
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(2), client)
+        .await
+        .expect("client task should settle");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5108,7 +5218,8 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateResponse,
         InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-        PromptResponse, StopReason,
+        PromptResponse, SessionConfigOption, SessionConfigSelectOption,
+        SetSessionConfigOptionResponse, StopReason,
     };
     use std::time::{Duration, Instant};
 
@@ -5171,6 +5282,20 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
                         responder.respond(PromptResponse::new(StopReason::EndTurn))
                     }
                 }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: SetSessionConfigOptionRequest, responder, _cx| {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                responder.respond(SetSessionConfigOptionResponse::new(vec![
+                    SessionConfigOption::select(
+                        "collaboration_mode",
+                        "Collaboration mode",
+                        "default",
+                        vec![SessionConfigSelectOption::new("default", "Default")],
+                    ),
+                ]))
             },
             on_receive_request!(),
         )
@@ -5434,6 +5559,49 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
             .as_deref(),
         Some("img busy")
     );
+    // With no turn in flight a config-op makes the session busy and
+    // queued images drain once it settles — the busy side of the check.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "login".into(),
+            values: Default::default(),
+        })
+        .expect("authenticate clears the parked state");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut configured = false;
+    while Instant::now() < deadline && !configured {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::Configured =>
+            {
+                configured = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(configured, "sign-in before the busy window");
+    cmd_tx
+        .send(Cmd::SetConfigOption {
+            session_id: "s1".into(),
+            config_id: "collaboration_mode".into(),
+            value: "default".into(),
+        })
+        .expect("config op keeps the session busy");
+    cmd_tx
+        .send(Cmd::PromptImages {
+            session_id: "s1".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("img busy again".into())],
+        })
+        .expect("image while control-busy without a live turn");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("image drains once the control op settles")
+            .as_deref(),
+        Some("img busy again")
+    );
     tokio::time::sleep(Duration::from_millis(250)).await;
     cmd_tx
         .send(Cmd::PromptImages {
@@ -5448,6 +5616,50 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
             .as_deref(),
         Some("img begin")
     );
+
+    // A single parked send reports the singular form.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "auth-gated".into() })
+        .expect("re-park one");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut reparked = false;
+    while Instant::now() < deadline && !reparked {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::NeedsAuth =>
+            {
+                reparked = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(reparked, "one prompt re-parks behind sign-in");
+    assert_eq!(
+        prompt_rx.try_recv().expect("the prompt was on the wire").as_str(),
+        "auth-gated"
+    );
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "s1".into() })
+        .expect("interrupt one");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut singular = false;
+    while Instant::now() < deadline && !singular {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::SessionNotice { session, title, .. }))
+                if session == "s1" && title.contains("cancelled") =>
+            {
+                assert!(title.contains("1 pending prompt"), "{title}");
+                assert!(!title.contains("prompts"), "{title}");
+                singular = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(singular, "one dropped send uses the singular notice");
 
     // Unknown sessions report the failure for both commands.
     cmd_tx

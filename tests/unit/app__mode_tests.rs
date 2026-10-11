@@ -5673,10 +5673,16 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     app.push_session_info();
     let text = overlay_text(&app);
     assert!(text.contains("api-key"), "{text}");
-    // Configured without any method id/name still reports a source.
+    // Configured with an advertised method set but an unknown source no
+    // longer claims "not reported" — the agent did report its providers.
     app.auth.status = crate::acp_auth::AuthStatus::Configured;
     app.auth.method_id = None;
     app.auth.method_name = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("credentials ready") && !text.contains("not reported"), "{text}");
+    // With nothing advertised at all, the source is genuinely not reported.
+    app.auth.methods = Vec::new();
     app.push_session_info();
     let text = overlay_text(&app);
     assert!(text.contains("credential source not reported"), "{text}");
@@ -5905,5 +5911,129 @@ fn esc_on_other_pickers_reports_nothing() {
             .recv_timeout(std::time::Duration::from_millis(100))
             .is_err(),
         "a non-auth picker close sends no auth command"
+    );
+}
+
+#[test]
+fn auth_picker_keeps_composer_typing_and_enter_submits_the_prompt() {
+    // A picker that opens on its own must not swallow keystrokes into a
+    // credential field: printable keys reach the composer, and Enter on a
+    // non-empty composer submits the prompt — never Cmd::Authenticate
+    // (issue #160 blocker).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.open_auth_picker();
+    for ch in "hello there".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &ctl);
+    }
+    assert_eq!(
+        app.input.buf(),
+        "hello there",
+        "printable keys reach the composer, not a credential field"
+    );
+    // Backspace edits the composer; a control-chord still does not type.
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hello ther");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hello ther");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hello therE");
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hello ther");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.picker.is_none());
+    let mut saw_prompt = false;
+    for command in commands.try_iter() {
+        assert!(
+            !matches!(command, Cmd::Authenticate { .. }),
+            "composer text must never be submitted as a credential"
+        );
+        if matches!(command, Cmd::Prompt { ref text, .. } if text == "hello ther") {
+            saw_prompt = true;
+        }
+    }
+    assert!(saw_prompt, "the typed prompt is submitted, not dropped");
+
+    // The credential form needs explicit intent: an empty composer makes
+    // Enter select the highlighted method instead of submitting text.
+    app.open_auth_picker();
+    assert!(app.input.is_empty());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(
+        app.auth_form.is_some(),
+        "an empty-composer Enter on an api-key method opens its form"
+    );
+}
+
+#[test]
+fn sign_in_hides_stale_sign_in_notices() {
+    // Notices pushed while sign-in was pending must not sit above the
+    // first turn once the agent confirms credentials (issue #160).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::needs_auth_snapshot(
+            methods.clone(),
+            methods.first(),
+            None,
+        ))),
+        &ctl,
+    );
+    let notice_count = app
+        .transcript
+        .cells
+        .iter()
+        .filter(|cell| {
+            !cell.hidden
+                && matches!(cell.kind, crate::transcript::CellKind::Notice { .. })
+        })
+        .count();
+    assert_eq!(notice_count, 1, "the needs-auth notice is visible");
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::configured_snapshot(
+            methods,
+            None,
+        ))),
+        &ctl,
+    );
+    let notice_count = app
+        .transcript
+        .cells
+        .iter()
+        .filter(|cell| {
+            !cell.hidden
+                && matches!(cell.kind, crate::transcript::CellKind::Notice { .. })
+        })
+        .count();
+    assert_eq!(
+        notice_count, 0,
+        "a successful sign-in hides the stale needs-auth notice"
     );
 }

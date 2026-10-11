@@ -122,7 +122,19 @@ All notable changes to this project are documented here. The project follows
   claude-agent-acp convention) and the picker still opens only on a
   real `auth_required` reply. Long auth-method names are ellipsized
   inside the picker's label column instead of overflowing into the
-  type column.
+  type column. The picker no longer flashes on a signed-in startup —
+  a form-capable or terminal-first method set is only a guess until a
+  real `auth_required` reply proves sign-in is needed, so startup emits
+  no `NeedsAuth` snapshot and never opens the picker on its own. While
+  the auth picker is open, printable keys keep reaching the composer and
+  Enter on a non-empty composer submits the typed prompt — composer text
+  can no longer be swallowed into a credential field (the api-key form
+  still opens only on an explicit empty-composer Enter). "Sign-in
+  needed" notices resolve the advertised method's display name from its
+  id instead of falling back to a bare "agent", a configured agent that
+  advertises methods reports "credentials ready" instead of "credential
+  source not reported", and the stale "sign-in needed" notices are
+  hidden once sign-in succeeds instead of sitting above the first turn.
 
 
 ### Fixed

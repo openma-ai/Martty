@@ -979,14 +979,14 @@ fn emit_needs_auth_open(
     selected: Option<&AuthMethodInfo>,
     message: Option<String>,
 ) {
-    emit_auth(bus, needs_auth_snapshot(methods, selected, message));
+    // Name the agent's preferred method in the notice — the bare "agent"
+    // fallback reads like a method type, not a credential (issue #160).
+    let first = methods.first().cloned();
+    emit_auth(
+        bus,
+        needs_auth_snapshot(methods, selected.or(first.as_ref()), message),
+    );
     let _ = bus.send(AppEvent::Ctl(CtlEvent::OpenAuth));
-}
-
-fn emit_open_auth_if_needed(bus: &Sender<AppEvent>, status: AuthStatus) {
-    if status == AuthStatus::NeedsAuth {
-        let _ = bus.send(AppEvent::Ctl(CtlEvent::OpenAuth));
-    }
 }
 
 /// A prompt queued behind an auth stall must say so: the owning session's
@@ -2498,24 +2498,15 @@ where
                     &env,
                 );
                 let declared = declared_auth_methods(&auth_raw);
-                let mut auth = snapshot_from_methods(methods.clone(), &declared, &env);
+                let auth = snapshot_from_methods(methods.clone(), &declared, &env);
                 // Only authenticate selects a method; session/new cannot reveal
                 // which persisted credential (if any) the Agent used.
                 let mut selected: Option<AuthMethodInfo> = None;
-                // A form-capable method may already have persistent credentials.
-                // Stay optimistic and let the startup session/new prove auth.
-                if auth.status == AuthStatus::NeedsAuth
-                    && (methods.first().is_some_and(|method| method.form)
-                        || terminal_method.is_some())
-                {
-                    auth = configured_snapshot(methods.clone(), None);
-                    auth.status = AuthStatus::Unknown;
-                }
-
                 let cwd = std::path::PathBuf::from(&cfg.workspace);
-                let needs_open = auth.status == AuthStatus::NeedsAuth;
+                // Startup never opens the picker on its own — the snapshot
+                // only surfaces state; a real auth_required reply is what
+                // opens it (issue #160).
                 emit_auth(&bus, auth);
-                emit_open_auth_if_needed(&bus, if needs_open { AuthStatus::NeedsAuth } else { AuthStatus::None });
                 // One stdio connection drives many sessions: each bound id
                 // gets its own turn state, and `current` is only the fallback
                 // target for commands that arrive without a usable id.

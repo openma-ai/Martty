@@ -1598,6 +1598,9 @@ pub struct App {
     startup_bound: bool,
     /// ACP initialize / authenticate status (live ACP only).
     pub auth: crate::acp_auth::AuthSnapshot,
+    /// Indices of pushed "sign-in needed" notice cells — hidden once
+    /// sign-in succeeds so they do not sit above the first turn (#160).
+    auth_notice_cells: Vec<usize>,
     /// Leave the TUI and run this agent login, then `authenticate`.
     pending_terminal_auth: Option<crate::acp_auth::TerminalAuthLaunch>,
     /// The agent declared `agentCapabilities.auth.logout` in initialize —
@@ -2049,6 +2052,7 @@ impl App {
             // unrequested bind coming; a live ACP start does.
             startup_bound: demo,
             auth: crate::acp_auth::AuthSnapshot::none(),
+            auth_notice_cells: Vec::new(),
             pending_terminal_auth: None,
             agent_auth_logout: false,
             auth_form: None,
@@ -2514,7 +2518,9 @@ impl App {
         };
         for block in &prompt.blocks {
             match block {
-                StagedBlock::Text(text) => slot.transcript.push_user(text.clone(), false),
+                StagedBlock::Text(text) => {
+                    slot.transcript.push_user(text.clone(), false);
+                }
                 StagedBlock::Image(att) => slot.transcript.push_image(
                     att.name.clone(),
                     String::new(),
@@ -4540,9 +4546,21 @@ impl App {
                         let retrying_prompt =
                             self.state == RunState::Running || self.prompt_pending;
                         if let Some((level, text)) = snap.notice(self.locale) {
+                            let index = self.transcript.cells.len();
                             self.transcript.push_notice(level, text);
+                            if snap.status == crate::acp_auth::AuthStatus::NeedsAuth {
+                                self.auth_notice_cells.push(index);
+                            }
                         }
                         if snap.status == crate::acp_auth::AuthStatus::Configured {
+                            // Sign-in succeeded: drop the stale "sign-in
+                            // needed" notices so they do not float above
+                            // the first turn (issue #160).
+                            if !self.auth_notice_cells.is_empty() {
+                                let cells = std::mem::take(&mut self.auth_notice_cells);
+                                let gen = self.transcript.gen();
+                                self.transcript.hide_cells(&cells, gen);
+                            }
                             if self.view_overlay.as_ref().is_some_and(|view| view.id == "builtin.auth.failure") {
                                 self.view_overlay = None;
                             }
@@ -7052,6 +7070,36 @@ impl App {
             self.dispatch(Action::ToggleTheme, ctl);
             return;
         }
+        // Issue #160: the auth picker can open on its own after a refused
+        // prompt, so printable keys keep reaching the composer — a typed
+        // prompt stays visible instead of being eaten by the modal, and a
+        // non-empty composer makes Enter submit it rather than pick a
+        // sign-in method. The credential form still needs an empty-
+        // composer Enter: explicit intent, never stray composer text.
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Auth)
+        {
+            match (key.code, key.modifiers) {
+                (KeyCode::Char(c), m)
+                    if m == KeyModifiers::NONE || m == KeyModifiers::SHIFT =>
+                {
+                    self.input.insert_char(c);
+                    return;
+                }
+                (KeyCode::Backspace, KeyModifiers::NONE) => {
+                    self.input.backspace();
+                    return;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) if !self.input.is_empty() => {
+                    self.picker = None;
+                    self.submit(ctl);
+                    return;
+                }
+                _ => {}
+            }
+        }
         let Some(picker) = &mut self.picker else {
             return;
         };
@@ -9386,26 +9434,19 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         let creds = if self.demo {
             "demo mode (no API calls)".to_string()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Configured {
-            match self
-                .auth
-                .method_name
-                .as_deref()
-                .or(self.auth.method_id.as_deref())
-            {
+            match self.auth.method_label() {
                 Some(name) => format!("credentials ready · {name}"),
-                None => "ready · credential source not reported".into(),
+                None if self.auth.methods.is_empty() => {
+                    "ready · credential source not reported".into()
+                }
+                None => "credentials ready".into(),
             }
         } else if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             "signing in — waiting for Agent response".into()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Failed {
             format!("sign-in failed · {} · ctrl+g", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
         } else if self.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
-            match self
-                .auth
-                .method_name
-                .as_deref()
-                .or(self.auth.method_id.as_deref())
-            {
+            match self.auth.method_label() {
                 Some(name) => format!("sign-in needed · {name} · ctrl+g"),
                 None => "sign-in needed · ctrl+g".into(),
             }
@@ -10153,7 +10194,9 @@ impl App {
         let first_cell = self.transcript.cells.len();
         for block in staged {
             match block {
-                StagedBlock::Text(text) => self.transcript.push_user(text.clone(), false),
+                StagedBlock::Text(text) => {
+                    self.transcript.push_user(text.clone(), false);
+                }
                 StagedBlock::Image(att) => self.transcript.push_image(
                     att.name.clone(),
                     String::new(),
