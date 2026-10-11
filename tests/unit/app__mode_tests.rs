@@ -4962,6 +4962,53 @@ fn open_auth_preserves_draft_and_pending_fifo() {
 }
 
 #[test]
+fn esc_on_the_auth_picker_discards_signin_held_prompts() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    // A refused session/new left the app needing sign-in with no bound
+    // session: the typed /login sits in the client queue, never reaching
+    // acp. Esc on the picker must discard it so the user can carry on
+    // (issue #160).
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key", "name": "API key", "_meta": { "api-key": {} } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.session_bound = false;
+    app.send_agent_text("/login".into(), &ctl);
+    assert_eq!(app.prompt_queue.len(), 1, "the prompt is held for sign-in");
+    assert!(app.queue_signin_pending());
+    app.open_auth_surface();
+    assert!(matches!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Auth)));
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+        &ctl,
+    );
+
+    assert!(app.picker.is_none(), "Esc closed the picker");
+    assert!(app.prompt_queue.is_empty(), "the held prompt was discarded");
+    assert_eq!(app.queued, 0);
+    match commands.recv_timeout(std::time::Duration::from_millis(300)) {
+        Ok(Cmd::AuthSkipped { .. }) => {}
+        other => panic!("Esc must still skip sign-in agent-side: {other:?}"),
+    }
+    assert!(
+        app.transcript.cells.iter().any(|cell| matches!(
+            &cell.kind,
+            crate::transcript::CellKind::Notice { text, .. }
+                if text.contains("discarded 1 held prompt")
+        )),
+        "the discard is visible in the transcript"
+    );
+}
+
+#[test]
 fn auth_retry_does_not_consume_the_followup_fifo_marker() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;

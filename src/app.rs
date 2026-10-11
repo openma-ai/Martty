@@ -7180,6 +7180,23 @@ impl App {
                     ctl.send(Cmd::AuthSkipped {
                         session_id: self.session_id.clone(),
                     });
+                    // Prompts queued behind sign-in before a session exists
+                    // never reached acp, so `AuthSkipped` cannot drop them —
+                    // clear them here or the user stays pinned under a queue
+                    // only a sign-in could drain (issue #160).
+                    if self.queue_signin_pending() && !self.prompt_queue.is_empty() {
+                        let dropped = self.prompt_queue.len();
+                        self.prompt_queue.clear();
+                        self.queued = 0;
+                        self.transcript.push_notice(
+                            crate::transcript::NoticeLevel::Warn,
+                            self.locale.trf(
+                                "sign-in skipped — discarded {} held prompt(s)",
+                                "已跳过登录 —— 丢弃 {} 条排队消息",
+                                &[dropped.to_string()],
+                            ),
+                        );
+                    }
                 }
                 self.picker = None;
             }
