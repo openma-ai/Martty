@@ -1521,3 +1521,32 @@ test('pinned pi-acp specs always resolve @openma/pi-acp@latest instead', async (
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a saved pi-acp config drops the stale "Pi (OpenMA)" label for its id', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-pi-label-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    // Configurations written when the pi harness was branded "Pi (OpenMA)"
+    // keep working; only that stale default display label becomes `pi-acp`.
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', label: 'Pi (OpenMA)', command: 'npx', args: ['@openma/pi-acp@latest'],
+    })
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp-lookalike', label: 'Pi (OpenMA)', command: 'other-acp', args: [],
+    })
+    module.setDefaultHarness(settingsPath, 'pi-acp')
+    assert.equal(module.selectedHarness(settingsPath)?.label, 'pi-acp')
+    // A custom label on pi-acp and any label on other harnesses are kept.
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', label: 'My Pi', command: 'npx', args: ['@openma/pi-acp@latest'],
+    })
+    assert.equal(module.selectedHarness(settingsPath)?.label, 'My Pi')
+    assert.equal(
+      module.savedHarnesses(settingsPath).find(({ id }) => id === 'pi-acp-lookalike')?.label,
+      'Pi (OpenMA)',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
