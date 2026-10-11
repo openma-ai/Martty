@@ -5006,6 +5006,35 @@ fn esc_on_the_auth_picker_discards_signin_held_prompts() {
         )),
         "the discard is visible in the transcript"
     );
+
+    // Esc with nothing held just closes the picker — sign-in is still
+    // skipped agent-side, but no discard is reported (issue #160).
+    app.open_auth_surface();
+    assert!(matches!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Auth)));
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+        &ctl,
+    );
+    assert!(app.picker.is_none(), "Esc closed the picker again");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut skipped = false;
+    while !skipped && std::time::Instant::now() < deadline {
+        match commands.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(Cmd::AuthSkipped { .. }) => skipped = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("commands channel: {err}"),
+        }
+    }
+    assert!(skipped, "Esc still skips sign-in agent-side");
+    assert!(
+        app.transcript.cells.iter().filter(|cell| matches!(
+            &cell.kind,
+            crate::transcript::CellKind::Notice { text, .. }
+                if text.contains("held prompt")
+        )).count() == 1,
+        "no second discard notice when nothing was held"
+    );
 }
 
 #[test]

@@ -7073,14 +7073,21 @@ async fn session_command_edges() {
                         }
                     }))
                     .unwrap()),
+                    // A bare -32000 refusal — no snapshot — still parks
+                    // the prompt behind sign-in (issue #160).
+                    1 => responder.respond_with_error(serde_json::from_value(json!({
+                        "code": -32000,
+                        "message": "authentication required"
+                    }))
+                    .unwrap()),
                     // A non-auth session/new failure surfaces as a plain
                     // error — the loop stays alive.
-                    1 => responder.respond_with_error(serde_json::from_value(json!({
+                    2 => responder.respond_with_error(serde_json::from_value(json!({
                         "code": -32603,
                         "message": "session backend down"
                     }))
                     .unwrap()),
-                    2 => responder.respond(
+                    3 => responder.respond(
                         NewSessionResponse::new(SessionId::new("s1")).modes(
                             SessionModeState::new(
                                 "default",
@@ -7091,7 +7098,7 @@ async fn session_command_edges() {
                     // A rebind refusal carrying the connection snapshot:
                     // non-auth failure reports as a failure, an auth one
                     // re-arms sign-in naming the credential.
-                    3 => responder.respond_with_error(serde_json::from_value(json!({
+                    4 => responder.respond_with_error(serde_json::from_value(json!({
                         "code": -32603,
                         "message": "backend exploded",
                         "data": {
@@ -7221,6 +7228,39 @@ async fn session_command_edges() {
         }
     }
     assert!(skipped, "the held prompt is dropped visibly");
+
+    // A fresh prompt hitting a refused session/new parks behind sign-in
+    // too — the next Esc drops it the same way (issue #160).
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "".into(), text: "authbounce".into() })
+        .expect("prompt refused again");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut reopened = false;
+    while Instant::now() < deadline && !reopened {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => reopened = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(reopened, "the refused session/new reopens the picker");
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "".into() })
+        .expect("auth skipped again");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut skipped_again = false;
+    while Instant::now() < deadline && !skipped_again {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::SessionNotice { title, .. })) if title.contains("held prompt") => {
+                skipped_again = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(skipped_again, "the re-parked prompt is dropped visibly");
 
     // A non-auth session/new failure surfaces as a plain error — the loop
     // stays alive and the next prompt still gets through (issue #160).
