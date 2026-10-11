@@ -1,6 +1,6 @@
 use super::*;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, InitializeRequest, InitializeResponse, LogoutRequest, NewSessionResponse,
+    AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionResponse,
     PromptResponse, SetSessionConfigOptionResponse, StopReason,
 };
 
@@ -861,22 +861,55 @@ async fn authenticate_form_method_without_values_reports_a_visible_failure() {
         .expect("client task");
 }
 
-#[test]
-fn logout_scope_meta_carries_both_agent_extensions() {
-    // dsh-acp reads `_meta.provider`, pi-acp reads
-    // `_meta.pi.logout.provider`; both name the same provider (issue #160).
-    let meta = logout_scope_meta("openrouter");
-    let value = serde_json::to_value(&meta).unwrap();
-    assert_eq!(value["provider"], serde_json::json!("openrouter"));
-    assert_eq!(
-        value["pi"]["logout"]["provider"],
-        serde_json::json!("openrouter")
-    );
-    // The wire request carries it through the schema type untouched.
-    let mut req = LogoutRequest::new();
-    req.meta = Some(meta);
-    assert_eq!(
-        serde_json::to_value(&req.meta).unwrap()["pi"]["logout"]["provider"],
-        serde_json::json!("openrouter")
-    );
+/// `logout` leaves the client bare — no `_meta`, no provider scope: the
+/// agent resolves the credential itself and Martty stays agent-neutral
+/// (issue #160).
+#[tokio::test]
+async fn logout_request_is_bare_and_agent_neutral() {
+    use agent_client_protocol::schema::v1::LogoutRequest;
+    let (meta_seen, meta_rx) = std::sync::mpsc::channel();
+    let agent = Agent
+        .builder()
+        .name("logout-meta-mock")
+        .on_receive_request(
+            async move |req: LogoutRequest, responder, _cx| {
+                let _ = meta_seen.send(req.meta.is_none());
+                responder.respond(
+                    agent_client_protocol::schema::v1::LogoutResponse::new(),
+                )
+            },
+            on_receive_request!(),
+        );
+    let (bus, _events) = std::sync::mpsc::channel();
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (done, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+            run_control(
+                Cmd::Logout,
+                cx,
+                bus,
+                Arc::new(Mutex::new(Surface::default())),
+                vec![],
+                None,
+                std::path::PathBuf::from("/tmp"),
+                false,
+                false,
+                false,
+                false,
+                Vec::new(),
+                done,
+            )
+            .await;
+            match done_rx.recv().await {
+                Some(ControlFinish::LoggedOut { result, .. }) => {
+                    result.expect("logout result");
+                }
+                _ => panic!("expected LoggedOut"),
+            }
+            Ok(())
+        })
+        .await
+        .expect("client task");
+    assert!(meta_rx.recv().expect("meta seen"), "logout carried _meta");
 }

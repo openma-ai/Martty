@@ -422,12 +422,11 @@ async fn logout_names_the_provider_method_not_the_first_advertised() {
     client.await.expect("connect join").expect("connect result");
 }
 
-/// `logout` is scoped to the session's provider in `_meta`: dsh-acp reads
-/// `_meta.provider`, pi-acp reads `_meta.pi.logout.provider` — the request
-/// carries both so either agent clears the credential the session runs on
-/// (issue #160).
+/// `logout` goes to the agent bare — no `_meta` scope — and the notice
+/// still names the session's credential: the agent picks what it clears,
+/// Martty only reports the provider the session ran on (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn logout_scopes_the_request_to_the_session_provider() {
+async fn logout_is_bare_and_the_notice_names_the_session_credential() {
     let (meta_tx, mut meta_rx) = tokio::sync::mpsc::unbounded_channel();
     let agent = Agent
         .builder()
@@ -506,26 +505,32 @@ async fn logout_scopes_the_request_to_the_session_provider() {
 
     let meta = tokio::time::timeout(Duration::from_secs(2), meta_rx.recv())
         .await
-        .expect("logout reached the agent")
-        .expect("logout carries a _meta scope");
-    let value = serde_json::to_value(meta).unwrap();
-    assert_eq!(value["provider"], json!("openrouter"), "dsh-acp scope key");
+        .expect("logout reached the agent");
     assert_eq!(
-        value["pi"]["logout"]["provider"],
-        json!("openrouter"),
-        "pi-acp scope key"
+        serde_json::to_value(&meta).unwrap(),
+        json!(null),
+        "logout is bare — no _meta scope"
     );
     assert!(meta_rx.try_recv().is_err(), "only one logout request is sent");
+
+    // The notice names the credential the session ran on — openrouter's
+    // api-key method — not the last-used or first-advertised method.
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::Auth(snapshot))
+            if snapshot.status == crate::acp_auth::AuthStatus::NeedsAuth
+                && snapshot.method_label() == Some("OpenRouter API key"))
+    })
+    .await;
 
     cmd_tx.send(Cmd::Shutdown).expect("shutdown cmd");
     let _ = client.await;
 }
 
-/// When the agent reports what it cleared, the notice names that provider's
-/// method — the user's own sign-in disambiguates two methods sharing one
-/// provider (issue #160).
+/// The sign-out notice names the provider the session ran on — and the
+/// user's own sign-in disambiguates two methods sharing that provider —
+/// without reading any agent-specific `_meta` in the reply (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn logout_names_the_cleared_provider() {
+async fn logout_names_the_session_credential() {
     let agent = Agent
         .builder()
         .name("logout-cleared-mock")

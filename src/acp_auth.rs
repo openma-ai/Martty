@@ -323,7 +323,9 @@ pub fn is_auth_required_error(err: &AcpError) -> bool {
     {
         return true;
     }
-    is_auth_failure_message(&acp_error_message(err))
+    // A spec-conforming agent reports auth_required as -32000; matching
+    // free-text error messages is deliberately not a signal (issue #160).
+    false
 }
 
 pub fn acp_error_message(err: &AcpError) -> String {
@@ -340,14 +342,6 @@ pub fn acp_error_message(err: &AcpError) -> String {
         }
     }
     err.message.clone()
-}
-
-pub fn is_auth_failure_message(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("authentication required")
-        || lower.contains("authentication fails")
-        || lower.contains("invalid api key")
-        || (lower.contains("api key") && lower.contains("invalid"))
 }
 
 pub fn process_env() -> BTreeMap<String, String> {

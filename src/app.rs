@@ -9392,18 +9392,18 @@ impl App {
     }
 
     fn handle_auth_form_key(&mut self, key: KeyEvent, ctl: &Controller) {
-        let Some(reply) = self
+        let Some((reply, method_id)) = self
             .auth_form
             .as_mut()
-            .and_then(|ask| ask.form.handle_key(key))
+            .and_then(|ask| ask.form.handle_key(key).map(|reply| (reply, ask.method_id.clone())))
         else {
             return;
         };
-        // A reply is only produced by a live form, so the overlay is open.
-        let ask = self.auth_form.take().expect("reply implies open form");
+        // Any reply ends the form interaction: it is done, not just paused.
+        self.auth_form = None;
         match reply {
             crate::elicitation::ElicitationReply::Accepted(values) => {
-                self.submit_auth_values(&ask.method_id, auth_values_from_reply(values), ctl);
+                self.submit_auth_values(&method_id, auth_values_from_reply(values), ctl);
             }
             // Back to the picker — a wrong row must not trap the user.
             crate::elicitation::ElicitationReply::Cancelled => self.open_auth_picker(),

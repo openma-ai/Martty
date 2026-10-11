@@ -423,7 +423,7 @@ async fn plugin_ui_events_are_compositor_notifications_not_prompts() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut compositor_methods = std::collections::HashSet::new();
@@ -638,7 +638,7 @@ async fn cordis_requests_stay_local_when_the_agent_did_not_advertise_cordis() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
@@ -717,7 +717,7 @@ async fn client_compositor_catalog_does_not_require_agent_cordis_capability() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut catalog = None;
@@ -798,7 +798,7 @@ async fn client_compositor_command_does_not_require_agent_cordis_capability() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
@@ -886,7 +886,7 @@ async fn client_compositor_command_survives_a_failed_initialize() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
@@ -1031,7 +1031,7 @@ async fn a_prompt_after_a_refused_startup_session_new_retries_the_bind() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -1146,7 +1146,7 @@ async fn a_refused_initialize_with_auth_methods_parks_prompts_for_sign_in() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // The refusal surfaces as a refused (still attached) connect, then
     // sign-in is offered with the methods the agent declared in its
@@ -1227,7 +1227,7 @@ async fn a_refused_initialize_for_auth_without_methods_still_fast_fails() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -1307,7 +1307,7 @@ async fn a_refused_initialize_without_auth_still_attempts_session_new() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -1425,7 +1425,7 @@ async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut command_ready = false;
@@ -1544,7 +1544,7 @@ async fn overlay_cancel_reaches_the_compositor_while_submit_is_pending() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         if matches!(bus_rx.recv_timeout(Duration::from_millis(20)),
@@ -1658,7 +1658,7 @@ async fn plugin_operation_defers_agent_requests_and_queued_prompts_until_complet
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         if matches!(bus_rx.recv_timeout(Duration::from_millis(20)),
@@ -1928,7 +1928,7 @@ async fn close_session_reaches_the_wire_when_the_agent_advertises_it() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -2009,7 +2009,7 @@ async fn close_session_stays_local_when_the_agent_did_not_advertise_it() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -2116,7 +2116,7 @@ async fn close_session_honors_the_per_session_connection_capability() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -2199,7 +2199,7 @@ async fn close_session_wire_failure_reports_a_session_op_failure() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -2304,7 +2304,7 @@ async fn close_session_drops_unknown_and_non_current_ids_consistently() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -2435,7 +2435,7 @@ async fn form_auth_stays_configured_when_the_startup_session_succeeds() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut auth_status = None;
@@ -2547,7 +2547,7 @@ async fn needs_auth_looking_methods_never_flash_the_picker_at_startup() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(4);
     let mut statuses = Vec::new();
@@ -2666,7 +2666,7 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2771,7 +2771,7 @@ async fn new_session_binds_before_applying_initial_config() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2854,7 +2854,7 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2965,7 +2965,7 @@ async fn effort_selection_uses_the_advertised_thought_level_config_id() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -3088,7 +3088,7 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
 
@@ -3203,7 +3203,7 @@ async fn resume_session_prefers_resume_and_binds_before_applying_initial_config(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -3317,7 +3317,7 @@ async fn resume_session_falls_back_to_load_when_resume_is_rejected() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let startup_deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < startup_deadline {
@@ -3440,7 +3440,7 @@ async fn prompts_while_running_wait_in_fifo_without_session_cancel() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -3584,7 +3584,7 @@ async fn composition_catalog_is_ready_before_the_first_prompt() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
@@ -3704,7 +3704,7 @@ async fn auth_failure_parks_prompts_but_reports_steers_back_to_the_client() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     for text in ["first", "second"] {
         cmd_tx
@@ -3869,7 +3869,7 @@ async fn authenticate_rejection_reports_failure_instead_of_another_sign_in_hint(
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
     while Instant::now() < deadline {
@@ -3963,7 +3963,7 @@ async fn assert_authentication_before_session_setup(setup_error: Option<i32>) {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ready = false;
     while Instant::now() < deadline {
@@ -4102,7 +4102,7 @@ async fn session_new_auth_failure_parks_the_first_intent_without_retry_storms() 
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx
         .send(Cmd::Prompt {
@@ -4271,7 +4271,7 @@ async fn late_steer_rejection_is_not_retried_by_the_transport_after_auth() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx
         .send(Cmd::Prompt {
@@ -4445,7 +4445,7 @@ async fn steer_sends_a_concurrent_prompt_without_interrupting_the_turn() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -4607,7 +4607,7 @@ async fn rejected_steer_reports_deferred_without_transport_retry() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -4767,7 +4767,7 @@ async fn interrupt_sends_session_cancel_while_prompt_is_in_flight() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     cmd_tx
         .send(Cmd::Prompt {
@@ -4995,7 +4995,7 @@ async fn sessions_run_concurrent_prompts_on_one_connection() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Startup binds s1; /new binds s2 and becomes the fallback session.
     cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("new session");
@@ -5149,7 +5149,7 @@ async fn stale_text_prompt_finish_cannot_release_a_rebound_sessions_new_turn() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -5286,7 +5286,7 @@ async fn prompt_for_an_unbound_session_is_rejected_not_rerouted() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -5523,8 +5523,9 @@ fn name_needs_auth_matches_the_failing_provider() {
         message: None,
     };
     let deepseek = method("api-key:deepseek", "DeepSeek API key");
+    let deepseek_official = method("api-key:deepseek-official", "DeepSeek official key");
     let openrouter = method("api-key:openrouter", "OpenRouter API key");
-    let methods = vec![deepseek.clone(), openrouter];
+    let methods = vec![deepseek.clone(), deepseek_official.clone(), openrouter.clone()];
     // The session's model names the failing credential — a last-used
     // method on another provider is never repeated (issue #160).
     let mut snap = AuthSnapshot { methods: methods.clone(), ..blank() };
@@ -5534,11 +5535,20 @@ fn name_needs_auth_matches_the_failing_provider() {
     let mut snap = blank();
     name_needs_auth(&mut snap, &methods, Some("openrouter"));
     assert_eq!(snap.method_label(), Some("OpenRouter API key"));
-    // A config provider like "deepseek-official" still resolves to the
-    // api-key id through its leading hyphen segment.
+    // A `provider::model` value resolves by its exact head — never by
+    // hyphen-prefix or substring guessing on method ids (issue #160).
     let mut snap = blank();
-    name_needs_auth(&mut snap, &methods, Some("deepseek-official"));
-    assert_eq!(snap.method_label(), Some("DeepSeek API key"));
+    name_needs_auth(&mut snap, &methods, Some("deepseek-official::deepseek-flash"));
+    assert_eq!(snap.method_label(), Some("DeepSeek official key"));
+    // "deepseek-official" is not "deepseek": an id that merely contains
+    // the token does not name the credential.
+    let mut snap = blank();
+    name_needs_auth(
+        &mut snap,
+        &[deepseek.clone(), openrouter.clone()],
+        Some("deepseek-official"),
+    );
+    assert_eq!(snap.method_label(), None);
     // A lone advertised method is the only credential possible.
     let login = method("h3:login", "Claude login");
     let mut snap = AuthSnapshot { methods: vec![login], ..blank() };
@@ -5574,29 +5584,44 @@ fn auth_provider_never_guesses_the_launch_provider() {
 }
 
 #[test]
-fn provider_candidates_splits_double_colon_model_ids() {
-    // Multi-provider dsh models encode `provider::model` — the head is the
-    // provider id the agent itself advertises (issue #160).
-    assert_eq!(
-        provider_candidates("deepseek-official::deepseek-v4-pro"),
-        vec!["deepseek-official".to_string(), "deepseek".to_string()]
-    );
-    assert_eq!(
-        provider_candidates("openrouter/deepseek/deepseek-chat"),
-        vec!["openrouter".to_string()]
-    );
+fn provider_head_reads_the_model_value_head() {
+    // Provider ids come straight from the agent's model value —
+    // `provider/model` or `provider::model` — never expanded into
+    // hyphen-prefix guesses (issue #160).
+    assert_eq!(provider_head("deepseek-official::deepseek-v4-pro"), "deepseek-official");
+    assert_eq!(provider_head("openrouter/deepseek/deepseek-chat"), "openrouter");
+    assert_eq!(provider_head("-edge"), "-edge");
+    assert_eq!(provider_head("plain"), "plain");
 }
 
 #[test]
-fn provider_candidates_skips_an_empty_leading_segment() {
-    // A provider head starting with '-' yields an empty prefix at the
-    // first cut; it is skipped rather than matching every method id.
-    assert_eq!(provider_candidates("-edge"), vec!["-edge".to_string()]);
+fn method_for_provider_matches_the_exact_provider_suffix_only() {
+    // `api-key:openrouter` signs openrouter in — an exact id suffix, not a
+    // substring hunt (issue #160).
+    let method = |id: &str| AuthMethodInfo {
+        id: id.into(),
+        name: Some(id.to_string()),
+        description: None,
+        type_name: "agent".into(),
+        form: false,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: None,
+    };
+    let deepseek = method("api-key:deepseek-official");
+    let openrouter = method("api-key:openrouter");
+    let methods = vec![deepseek, openrouter];
     assert_eq!(
-        provider_candidates("deepseek-official/model"),
-        vec!["deepseek-official".to_string(), "deepseek".to_string()]
+        method_for_provider(&methods, "deepseek-official").map(|m| m.id.as_str()),
+        Some("api-key:deepseek-official")
     );
-    assert_eq!(provider_candidates("plain"), vec!["plain".to_string()]);
+    assert_eq!(
+        method_for_provider(&methods, "OPENROUTER").map(|m| m.id.as_str()),
+        Some("api-key:openrouter")
+    );
+    // A different or unknown provider never borrows a name.
+    assert!(method_for_provider(&methods, "deepseek").is_none());
+    assert!(method_for_provider(&methods, "anthropic").is_none());
 }
 
 #[test]
@@ -5686,7 +5711,7 @@ async fn setup_refusal_snapshot_names_the_advertised_method() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // The initial session/new fails the same way — the refusal opens
     // the picker through create_prompt_session.
@@ -5908,7 +5933,7 @@ async fn concurrent_steer_keeps_the_session_running_until_its_prompt_returns() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Drain the bus until `predicate` matches or `wait` elapses.
     let bus_until = |predicate: &dyn Fn(&AppEvent) -> bool, wait: Duration| -> bool {
@@ -6112,7 +6137,7 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Before the session binds the session map is empty: both commands
     // resolve to "no session" and stay silent instead of erroring.
@@ -6672,7 +6697,7 @@ async fn refused_prompt_names_the_failing_provider_not_the_last_sign_in() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Sign in with OpenRouter last — the session's model still runs
     // DeepSeek, so the 401 is DeepSeek's credential.
@@ -6802,7 +6827,7 @@ async fn refused_control_ops_name_the_failing_provider() {
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
@@ -6861,4 +6886,608 @@ async fn refused_control_ops_name_the_failing_provider() {
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
+}
+
+/// Esc on the sign-in picker drops sends queued behind a live turn too —
+/// not only parked refusals — so a queued `/login` cannot pin the session
+/// after the user declines to sign in (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auth_skip_also_discards_prompts_queued_behind_a_live_turn() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeRequest,
+        InitializeResponse, NewSessionRequest, NewSessionResponse, PromptResponse,
+        StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let agent = Agent
+        .builder()
+        .name("auth-skip-queue-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("auth-skip-queue-mock", "0"))
+                        .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new(
+                            "login", "Login",
+                        ))]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: PromptRequest, responder, _cx| {
+                let text = req
+                    .prompt
+                    .iter()
+                    .find_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let _ = prompt_tx.send(text.clone());
+                if text.starts_with("slow") {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut bound = false;
+    while Instant::now() < deadline && !bound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. })) => bound = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(bound, "the session bound");
+
+    // A live turn is in flight; the next send queues behind it.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "slow-turn".into() })
+        .expect("slow prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("slow prompt on the wire")
+            .as_deref(),
+        Some("slow-turn")
+    );
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "/login".into() })
+        .expect("queued prompt");
+
+    // Esc on the picker while the queue holds the send: it is discarded
+    // visibly, like a parked refusal (issue #160).
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "s1".into() })
+        .expect("auth skip");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut skipped = false;
+    while Instant::now() < deadline && !skipped {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::SessionNotice { session, title, .. }))
+                if session == "s1" && title.contains("sign-in skipped") =>
+            {
+                assert!(title.contains("1 held prompt"), "{title}");
+                skipped = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(skipped, "dropping the queued send is visible");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        prompt_rx.try_recv().is_err(),
+        "the queued send never reached the wire"
+    );
+
+    // The user carries on: later sends go straight to the agent.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "carry on".into() })
+        .expect("prompt after skip");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("later sends reach the agent after Esc")
+            .as_deref(),
+        Some("carry on")
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+/// Misc command-edge drives: bogus session ids error visibly instead of
+/// silently resolving, pre-session control ops are skipped, a queued send
+/// settles as a steer finish, catalog answers carry modes when the agent
+/// advertises them, and the static-plugins extension reports its failure
+/// (issue #160 coverage).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_command_edges() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeRequest,
+        InitializeResponse, NewSessionRequest, NewSessionResponse, PromptResponse,
+        SessionMode, SessionModeState, StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    static NEWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static AUTHS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let agent = Agent
+        .builder()
+        .name("edges-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("edges-mock", "0"))
+                        .auth_methods(vec![
+                            AuthMethod::Agent(AuthMethodAgent::new("login", "Login")),
+                            AuthMethod::Agent(AuthMethodAgent::new("gateway", "Gateway")),
+                        ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                match NEWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    // Startup bind is auth-refused: the picker opens and a
+                    // typed prompt parks behind sign-in — Esc drops it
+                    // (issue #160).
+                    0 => responder.respond_with_error(serde_json::from_value(json!({
+                        "code": -32000,
+                        "message": "authentication required",
+                        "data": {
+                            "marttyConnection": {
+                                "id": "h1",
+                                "authMethods": [{"id": "login", "name": "Login"}]
+                            }
+                        }
+                    }))
+                    .unwrap()),
+                    // A non-auth session/new failure surfaces as a plain
+                    // error — the loop stays alive.
+                    1 => responder.respond_with_error(serde_json::from_value(json!({
+                        "code": -32603,
+                        "message": "session backend down"
+                    }))
+                    .unwrap()),
+                    2 => responder.respond(
+                        NewSessionResponse::new(SessionId::new("s1")).modes(
+                            SessionModeState::new(
+                                "default",
+                                vec![SessionMode::new("default", "Default")],
+                            ),
+                        ),
+                    ),
+                    // A rebind refusal carrying the connection snapshot:
+                    // non-auth failure reports as a failure, an auth one
+                    // re-arms sign-in naming the credential.
+                    3 => responder.respond_with_error(serde_json::from_value(json!({
+                        "code": -32603,
+                        "message": "backend exploded",
+                        "data": {
+                            "marttyConnection": {
+                                "id": "h1",
+                                "auth": {"status": "configured", "methodId": "login"}
+                            }
+                        }
+                    }))
+                    .unwrap()),
+                    _ => responder.respond_with_error(serde_json::from_value(json!({
+                        "code": -32000,
+                        "message": "authentication required",
+                        "data": {
+                            "marttyConnection": {
+                                "id": "h1",
+                                "authMethods": [{"id": "login", "name": "Login"}],
+                                "auth": {"status": "configured", "methodId": "login"}
+                            }
+                        }
+                    }))
+                    .unwrap()),
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                match AUTHS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    2 => responder.respond_with_error(serde_json::from_value(json!({
+                        "code": -32603,
+                        "message": "key rejected"
+                    }))
+                    .unwrap()),
+                    _ => responder.respond(serde_json::from_value(json!({})).unwrap()),
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: PromptRequest, responder, _cx| {
+                let text = req
+                    .prompt
+                    .iter()
+                    .find_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let _ = prompt_tx.send(text);
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let _client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // Pre-session control ops targeting a named session are skipped
+    // silently — there is nothing to fail.
+    cmd_tx
+        .send(Cmd::SelectModel { session_id: "ghost".into(), provider: None, model: Some("x".into()), effort: None })
+        .expect("pre-session model op");
+    cmd_tx
+        .send(Cmd::FetchCatalog { session_id: "ghost".into() })
+        .expect("pre-session catalog");
+
+    // The startup session/new is auth-refused: the picker opens and any
+    // prompt typed now parks behind sign-in — Esc must drop it (issue
+    // #160). Pre-session ops above must not have produced failures.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut needs_auth = false;
+    while Instant::now() < deadline && !needs_auth {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => needs_auth = true,
+            Ok(AppEvent::Ctl(CtlEvent::SessionOpFailed { message, .. })) => {
+                panic!("pre-session op must not fail: {message}")
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(needs_auth, "auth refusal opens the picker");
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "".into(), text: "first".into() })
+        .expect("prompt while auth is pending");
+
+    // A steer while a prompt is parked but no session exists settles
+    // deferred — there is nothing in flight to cancel yet (issue #160).
+    cmd_tx
+        .send(Cmd::Steer { session_id: "ghost".into(), message_id: 99, text: "x".into() })
+        .expect("sessionless steer");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut deferred = false;
+    while Instant::now() < deadline && !deferred {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SteerSettled { message_id: 99, deferred: true })) => {
+                deferred = true
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(deferred, "the sessionless steer settles deferred");
+
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "".into() })
+        .expect("auth skipped");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut skipped = false;
+    while Instant::now() < deadline && !skipped {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::SessionNotice { title, .. })) if title.contains("held prompt") => {
+                skipped = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(skipped, "the held prompt is dropped visibly");
+
+    // A non-auth session/new failure surfaces as a plain error — the loop
+    // stays alive and the next prompt still gets through (issue #160).
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "".into(), text: "second".into() })
+        .expect("prompt on a dead backend");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut errored = false;
+    while Instant::now() < deadline && !errored {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Error(message))) if message.contains("session/new") => {
+                errored = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(errored, "the failed session/new reports an error");
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "".into(), text: "third".into() })
+        .expect("prompt after the failure");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut bound = false;
+    while Instant::now() < deadline && !bound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. })) => bound = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(bound, "the session bound");
+
+    // Rebind failures: a non-auth error with a snapshot stays a failure;
+    // an auth one re-arms sign-in naming the credential.
+    cmd_tx
+        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None })
+        .expect("rebind non-auth");
+    cmd_tx
+        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None })
+        .expect("rebind auth");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut failed_plain, mut failed_auth) = (false, false);
+    while Instant::now() < deadline && !(failed_plain && failed_auth) {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::BindFailedTo { message, .. })) if message.contains("backend exploded") => {
+                failed_plain = true;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::BindFailedTo { message, .. })) if message.contains("authentication required") => {
+                failed_auth = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(failed_plain && failed_auth, "both rebind failures surface");
+
+    // A requester-less refused bind reports a bare BindFailed — no
+    // session-scoped snapshot exists to name (issue #160).
+    cmd_tx
+        .send(Cmd::NewSession { requester: None, retry_auth: None })
+        .expect("anonymous rebind");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut anon_failed = false;
+    while Instant::now() < deadline && !anon_failed {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::BindFailed { message })) if message.contains("authentication required") => {
+                anon_failed = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(anon_failed, "the anonymous refusal reports BindFailed");
+
+    // s1's stored connection is NeedsAuth now — a prompt for it queues
+    // behind sign-in rather than hitting the wire (issue #160).
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "held".into() })
+        .expect("prompt on a gated session");
+
+    // authenticate through the advertised methods: a stored-connection
+    // match names the owner, a miss stays ownerless, and a refused key
+    // surfaces as a failed attempt (issue #160).
+    for method_id in ["login", "gateway", "login"] {
+        cmd_tx
+            .send(Cmd::Authenticate { method_id: method_id.into(), values: Default::default() })
+            .expect("authenticate");
+    }
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let (mut signed_in, mut auth_failed) = (0, false);
+    while Instant::now() < deadline && !(signed_in >= 2 && auth_failed) {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpDone(message))) if message.contains("signed in") => {
+                signed_in += 1;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message))) if message.contains("authenticate:") => {
+                auth_failed = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(signed_in, 2, "both key submissions sign in");
+    assert!(auth_failed, "the refused key reports a failed attempt");
+
+    // Named commands on a session that does not exist fail visibly.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "ghost".into(), text: "x".into() })
+        .expect("prompt ghost");
+    cmd_tx
+        .send(Cmd::Steer { session_id: "ghost".into(), message_id: 1, text: "x".into() })
+        .expect("steer ghost");
+    cmd_tx
+        .send(Cmd::SteerImages {
+            session_id: "ghost".into(),
+            message_id: 2,
+            blocks: vec![crate::bus::PromptBlock::Text("x".into())],
+        })
+        .expect("steer images ghost");
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "ghost".into() })
+        .expect("interrupt ghost");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut errors = 0;
+    while Instant::now() < deadline && errors < 4 {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionError { .. } | CtlEvent::SessionOpFailed { .. })) => {
+                errors += 1;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(errors, 4, "every unknown-session command fails visibly");
+
+    // The catalog answer carries the agent-advertised modes.
+    cmd_tx
+        .send(Cmd::FetchCatalog { session_id: "s1".into() })
+        .expect("catalog with modes");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut modes_seen = false;
+    while Instant::now() < deadline && !modes_seen {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionModes { modes, .. })) if !modes.is_empty() => {
+                modes_seen = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(modes_seen, "catalog reports the session modes");
+
+    // A steer the agent cannot answer settles visibly and does not stall
+    // the session.
+    cmd_tx
+        .send(Cmd::Steer { session_id: "s1".into(), message_id: 3, text: "now".into() })
+        .expect("steer");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut settled = false;
+    while Instant::now() < deadline && !settled {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SteerSettled { message_id: 3, .. })) => settled = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(settled, "the steer settled");
+
+    // Static plugins are an agent extension: an agent without it reports
+    // the failure instead of pretending an empty catalog.
+    cmd_tx.send(Cmd::FetchStaticPlugins).expect("static plugins");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut plugins_failed = false;
+    while Instant::now() < deadline && !plugins_failed {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message)))
+                if message.contains("static plugins") =>
+            {
+                plugins_failed = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(plugins_failed, "static-plugin failure surfaces");
+
+    let _ = prompt_rx.try_recv();
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+/// `parked_prompt` maps each sendable command to its held kind — the
+/// image-carrying arms included (issue #160 coverage).
+#[test]
+fn parked_prompt_kinds_cover_images_and_unsendables() {
+    assert!(matches!(
+        parked_prompt(&Cmd::PromptImages {
+            session_id: "s".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("x".into())],
+        }),
+        Some(ParkedPromptKind::Images(_))
+    ));
+    assert!(matches!(
+        parked_prompt(&Cmd::SteerImages {
+            session_id: "s".into(),
+            message_id: 1,
+            blocks: vec![crate::bus::PromptBlock::Text("x".into())],
+        }),
+        Some(ParkedPromptKind::Images(_))
+    ));
+    assert!(matches!(
+        parked_prompt(&Cmd::Steer { session_id: "s".into(), message_id: 1, text: "x".into() }),
+        Some(ParkedPromptKind::Text(_))
+    ));
+    assert!(parked_prompt(&Cmd::Shutdown).is_none());
+}
+
+/// `plugin_op_finish_event` covers the four settle shapes: primary
+/// new-session action, a failed op result, a task-level join failure, and
+/// the silent (cancelled / non-primary / empty) finishes (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_op_finish_event_maps_each_completion_shape() {
+    let id = tokio::spawn(async {}).id();
+    let finish = |result: std::result::Result<Value, AcpError>| {
+        Some(Ok((id, PluginOperationFinish { context: "ctx", result })))
+    };
+    assert!(matches!(
+        plugin_op_finish_event(finish(Ok(json!({"action": "new-session"}))), true, false),
+        Some(CtlEvent::NewSessionRequested)
+    ));
+    assert!(plugin_op_finish_event(finish(Ok(json!({"action": "new-session"}))), true, true).is_none());
+    assert!(plugin_op_finish_event(finish(Ok(json!({"action": "new-session"}))), false, false).is_none());
+    assert!(plugin_op_finish_event(finish(Ok(json!({}))), true, false).is_none());
+    assert!(matches!(
+        plugin_op_finish_event(finish(Err(AcpError::new(-32603, "op blew up"))), false, false),
+        Some(CtlEvent::TuiOpFailed(message)) if message == "ctx failed: op blew up"
+    ));
+    assert!(plugin_op_finish_event(finish(Err(AcpError::new(-32603, "op blew up"))), false, true).is_none());
+    assert!(plugin_op_finish_event(None, true, false).is_none());
+
+    // A panicked task surfaces as a task-level failure, not a hang.
+    let mut set = tokio::task::JoinSet::<PluginOperationFinish>::new();
+    set.spawn(async { panic!("task panic"); });
+    let joined = set.join_next_with_id().await;
+    assert!(matches!(
+        plugin_op_finish_event(joined, true, false),
+        Some(CtlEvent::TuiOpFailed(message)) if message.contains("plugin operation task failed")
+    ));
+    let mut set = tokio::task::JoinSet::<PluginOperationFinish>::new();
+    set.spawn(async { panic!("task panic"); });
+    let joined = set.join_next_with_id().await;
+    assert!(plugin_op_finish_event(joined, true, true).is_none());
+}
+/// `signed_in_notice` counts only the prompts the sign-in actually
+/// released — zero retries is a plain `signed in` (issue #160).
+#[test]
+fn signed_in_notice_counts_retries() {
+    assert_eq!(signed_in_notice(0), "signed in");
+    assert_eq!(signed_in_notice(1), "signed in — retried 1 parked prompt");
+    assert_eq!(signed_in_notice(3), "signed in — retried 3 parked prompts");
 }

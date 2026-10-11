@@ -237,7 +237,14 @@ fn empty_auth_methods_are_none() {
 fn auth_required_error_matches_code() {
     let err = AcpError::auth_required();
     assert!(is_auth_required_error(&err));
-    assert!(is_auth_failure_message("Authentication required"));
+    // Free-text error strings are not an auth_required signal — only the
+    // -32000 code or a structured errorKind counts (issue #160).
+    let plain: AcpError = serde_json::from_value(json!({
+        "code": -32603,
+        "message": "Internal error: turn failed: Authentication Fails, Your api key is invalid"
+    }))
+    .unwrap();
+    assert!(!is_auth_required_error(&plain));
 }
 
 #[test]
@@ -494,4 +501,46 @@ fn command_on_path_skips_non_executable_candidates() {
         None => std::env::remove_var("PATH"),
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn needs_auth_notice_adds_description_and_credential_source() {
+    // With no refusal message the method's own description explains the
+    // method, and its link names the credential source (issue #160).
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "api-key:x",
+            "name": "Key",
+            "description": "Bring your own provider key",
+            "link": "https://provider.example/keys",
+            "_meta": { "api-key": { "variables": [{ "name": "api-key", "secret": true }] } }
+        }]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    let snapshot = needs_auth_snapshot(methods.clone(), methods.first(), None);
+    let (_, text) = snapshot
+        .notice(crate::locale::Locale::En)
+        .expect("notice");
+    assert!(text.contains("Bring your own provider key"), "{text}");
+    assert!(text.contains("credential source · https://provider.example/keys"), "{text}");
+
+    // A refusal message replaces the method description — the agent's own
+    // words explain the failure better than the canned one (issue #160).
+    let mut refused = needs_auth_snapshot(methods.clone(), methods.first(), None);
+    refused.message = Some("HTTP 401 from the provider".into());
+    let (_, text) = refused
+        .notice(crate::locale::Locale::En)
+        .expect("notice");
+    assert!(text.contains("HTTP 401 from the provider"), "{text}");
+    assert!(!text.contains("Bring your own provider key"), "{text}");
+
+    // An empty refusal message adds no line at all (issue #160).
+    let mut empty = needs_auth_snapshot(methods.clone(), methods.first(), None);
+    empty.message = Some(String::new());
+    let (_, text) = empty
+        .notice(crate::locale::Locale::En)
+        .expect("notice");
+    assert!(!text.contains("Bring your own provider key"), "{text}");
 }

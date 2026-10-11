@@ -124,21 +124,6 @@ impl ControlWorkers {
     }
 }
 
-/// Provider scope for `logout` in `_meta`. No negotiated shape exists —
-/// each agent documents its own key (`_meta.provider` for dsh-acp,
-/// `_meta.pi.logout.provider` for pi-acp); an agent only reads its own
-/// extension, so both keys scope the same credential for either (issue
-/// #160).
-fn logout_scope_meta(provider: &str) -> agent_client_protocol::schema::v1::Meta {
-    json!({
-        "provider": provider,
-        "pi": { "logout": { "provider": provider } },
-    })
-    .as_object()
-    .cloned()
-    .unwrap_or_default()
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn run_control(
     cmd: Cmd,
@@ -696,16 +681,14 @@ async fn run_control(
             let _ = done.send(ControlFinish::Authenticated { method, result });
         }
         Cmd::Logout => {
-            // Scope the logout to the session's provider when it can be
-            // named — a bare `logout` lets an agent clear a different
-            // credential than the one the session runs on (issue #160).
+            // A bare `logout`: the agent scopes it to the credential the
+            // session runs on — there is no negotiated _meta shape for a
+            // provider name, and Martty must not send agent-specific ones
+            // (issue #160). The resolved provider is kept only to name the
+            // notice.
             let provider = logout_provider(&surface, &methods, selected.as_ref());
-            let mut request = LogoutRequest::new();
-            if let Some(provider) = provider.as_deref() {
-                request = request.meta(logout_scope_meta(provider));
-            }
             let result = cx
-                .send_request(request)
+                .send_request(LogoutRequest::new())
                 .block_task_setup_deadline()
                 .await;
             let _ = done.send(ControlFinish::LoggedOut { provider, result });

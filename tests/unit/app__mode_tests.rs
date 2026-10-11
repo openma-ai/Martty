@@ -6101,6 +6101,12 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     app.push_session_info();
     let text = overlay_text(&app);
     assert!(text.contains("sign-in failed") && text.contains("denied"), "{text}");
+    // A failure with no message falls back to the generic reason (issue
+    // #160).
+    app.auth.message = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("ACP authenticate failed"), "{text}");
     // Unnamed-method NeedsAuth stays unspecific — never the type word
     // "agent" (issue #160).
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), None, None);
