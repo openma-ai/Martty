@@ -177,7 +177,29 @@ test('fails when the source package is not the legacy package', (t) => {
   )
 
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /expected source package @openma\/deepseek-harness-tui, found some-other-package/)
+  assert.match(result.stderr, /expected source package @openma\/deepseek-harness-tui or martty, found some-other-package/)
+})
+
+test('accepts a source already named martty (post-rename checkout)', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-package-alias-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const source = path.join(root, 'martty')
+  const destination = path.join(root, 'out')
+  mkdirSync(source, { recursive: true })
+  writeFileSync(path.join(source, 'package.json'), JSON.stringify({
+    name: 'martty',
+    version: '1.2.3',
+    bin: { 'martty-cli': 'bin/martty.js' },
+  }, null, 2) + '\n')
+
+  const result = spawnSync(process.execPath, [script, source, destination, 'martty'], {
+    encoding: 'utf8',
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  const out = JSON.parse(readFileSync(path.join(destination, 'package.json'), 'utf8'))
+  assert.equal(out.name, 'martty')
+  assert.deepEqual(out.bin, { 'martty-cli': 'bin/martty.js' })
 })
 
 test('fails when rewriting changes the alias version', (t) => {

@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -80,6 +81,17 @@ function binPath(prefix, name) {
   return path.join(prefix, 'bin', name)
 }
 
+// The `martty` command the postinstall writes is an executable shim file
+// (not an npm-managed symlink): it execs the package's bin/martty.js and
+// removes itself with a reinstall hint once the package is gone.
+function assertMarttyShim(dir) {
+  const file = binPath(dir, 'martty')
+  assert.equal(lstatSync(file).isFile(), true)
+  const content = readFileSync(file, 'utf8')
+  assert.match(content, /martty-command-shim/)
+  assert.match(content, /node_modules.martty.bin.martty\.js/)
+}
+
 function writeFixture(dir, manifest, bins) {
   mkdirSync(path.join(dir, 'bin'), { recursive: true })
   writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
@@ -139,7 +151,7 @@ test('global installs with overlapping bins', async (t) => {
     requireOk(result, 'install martty over legacy')
     assert.match(result.stderr, /still installed/)
     assert.match(result.stderr, /npm rm -g @openma\/deepseek-harness-tui/)
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
     assert.match(readlinkSync(binPath(dir, 'martty-cli')), /node_modules\/martty\//)
     assert.equal(existsSync(binPath(dir, 'dsh-tui')), false,
       'the stale dsh-tui link should be retired by the migration postinstall')
@@ -154,13 +166,11 @@ test('global installs with overlapping bins', async (t) => {
     const result = installGlobal(dir, martty, ['--foreground-scripts'])
     requireOk(result, 'install martty over legacy 0.2.20')
     assert.match(result.stderr, /removed the stale `martty`.*command/)
-    const target = readlinkSync(binPath(dir, 'martty'))
-    assert.match(target, /node_modules\/martty\//,
-      'the postinstall replaced the legacy-owned martty link with ours')
+    assertMarttyShim(dir)
 
     // Removing the legacy package afterwards leaves the new command intact.
     requireOk(removeGlobal(dir, LEGACY_PACKAGE), 'remove legacy package')
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
   })
 
   await t.test('an npm-linked legacy checkout no longer blocks the install', () => {
@@ -190,7 +200,7 @@ test('global installs with overlapping bins', async (t) => {
 
     const result = installGlobal(dir, martty, ['--foreground-scripts'])
     requireOk(result, 'install martty over an npm-linked checkout')
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
     assert.equal(existsSync(binPath(dir, 'dsh-tui')), false)
     assert.match(result.stderr, /still installed/)
 
@@ -207,8 +217,7 @@ test('global installs with overlapping bins', async (t) => {
       'the user\'s checkout manifest is left untouched')
 
     requireOk(removeGlobal(dir, LEGACY_PACKAGE), 'remove stubbed legacy link')
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//,
-      'the martty command survives removing the legacy entry')
+    assertMarttyShim(dir)
   })
 
   await t.test('an unrelated dsh-tui package no longer blocks martty', () => {
@@ -221,7 +230,7 @@ test('global installs with overlapping bins', async (t) => {
     const target = readlinkSync(binPath(dir, 'dsh-tui'))
     assert.match(target, /node_modules\/dsh-tui\//,
       'the third-party dsh-tui link is left untouched')
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
   })
 
   await t.test('a fresh martty install stays silent', () => {
@@ -229,7 +238,7 @@ test('global installs with overlapping bins', async (t) => {
     const result = installGlobal(dir, martty, ['--foreground-scripts'])
     requireOk(result, 'install martty')
     assert.doesNotMatch(result.stderr, new RegExp(LEGACY_PACKAGE.replace('/', '\\/')))
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
     assert.match(readlinkSync(binPath(dir, 'martty-cli')), /node_modules\/martty\//)
   })
 
@@ -243,11 +252,11 @@ test('global installs with overlapping bins', async (t) => {
     assert.equal(existsSync(binPath(dir, 'dsh-tui')), false,
       'npm removes the bin entries the previous martty version owned')
     assert.doesNotMatch(result.stderr, new RegExp(LEGACY_PACKAGE.replace('/', '\\/')))
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
     assert.match(readlinkSync(binPath(dir, 'martty-cli')), /node_modules\/martty\//)
   })
 
-  await t.test('removing martty leaves only the documented dangling link', () => {
+  await t.test('removing martty leaves a self-cleaning shim, not a dead link', () => {
     const dir = prefix('removal')
     requireOk(installGlobal(dir, martty), 'install martty')
     requireOk(removeGlobal(dir, 'martty'), 'remove martty')
@@ -255,10 +264,114 @@ test('global installs with overlapping bins', async (t) => {
     assert.equal(existsSync(binPath(dir, 'martty-cli')), false,
       'npm removes the declared martty-cli link itself')
     // npm never runs uninstall hooks, so the postinstall-created `martty`
-    // link is left dangling until the next install refreshes it — the
-    // documented cleanup wart.
-    assert.equal(existsSync(binPath(dir, 'martty')), false)
+    // command stays behind — but it is a shim that notices the package is
+    // gone: the next invocation prints the reinstall hint and deletes
+    // itself instead of leaving a dead symlink.
+    const shim = binPath(dir, 'martty')
+    assert.equal(lstatSync(shim).isFile(), true)
+    const gone = run(shim, [])
+    assert.equal(gone.status, 127, gone.stderr)
+    assert.match(gone.stderr, /not installed/)
+    assert.equal(existsSync(shim), false, 'the shim removed itself')
+
     requireOk(installGlobal(dir, martty), 'reinstall martty')
-    assert.match(readlinkSync(binPath(dir, 'martty')), /node_modules\/martty\//)
+    assertMarttyShim(dir)
+  })
+
+  await t.test('--ignore-scripts converges on the first martty-cli launch', () => {
+    const dir = prefix('ignore-scripts')
+    requireOk(installGlobal(dir, tarballs['legacy-0.2.20']), 'install legacy 0.2.20')
+
+    requireOk(
+      installGlobal(dir, martty, ['--ignore-scripts']),
+      'install martty with scripts skipped',
+    )
+    // No lifecycle ran: martty-cli is linked, everything else is untouched.
+    assert.match(readlinkSync(binPath(dir, 'martty-cli')), /node_modules\/martty\//)
+    assert.equal(existsSync(binPath(dir, 'martty')), true, 'legacy martty still there')
+    assert.equal(existsSync(binPath(dir, 'dsh-tui')), true, 'legacy dsh-tui still there')
+
+    // The first real launch (what `martty-cli` runs before the TUI boots)
+    // converges the prefix exactly like the postinstall would have.
+    const libDir = path.join(dir, 'lib', 'node_modules', 'martty', 'lib')
+    const launch = run(process.execPath, [
+      '-e',
+      `import('${libDir}/install-migration.js').then((m) => m.warnAboutLegacyPackage({ argv1: '${path.join(dir, 'bin', 'martty-cli')}' }))`,
+    ])
+    assert.equal(launch.status, 0, launch.stderr)
+    assert.match(launch.stderr, /still installed/)
+
+    assertMarttyShim(dir)
+    assert.equal(existsSync(binPath(dir, 'dsh-tui')), false, 'stale dsh-tui retired at launch')
+    assert.equal(existsSync(binPath(dir, 'dsb')), false, 'stale dsb retired at launch')
+    const legacyManifest = JSON.parse(readFileSync(
+      path.join(dir, 'lib', 'node_modules', '@openma', 'deepseek-harness-tui', 'package.json'),
+      'utf8',
+    ))
+    assert.equal('bin' in legacyManifest, false, 'legacy manifest sanitized at launch')
+
+    requireOk(removeGlobal(dir, LEGACY_PACKAGE), 'remove legacy package')
+    assertMarttyShim(dir)
+  })
+
+  // `npm link` of a modern checkout: the source package is named `martty`,
+  // so a linked checkout and the published package are the SAME package to
+  // npm — each replaces the other instead of colliding on bin names.
+  const linkCheckout = path.join(root, 'source-checkout')
+  cpSync(packageRoot, linkCheckout, {
+    recursive: true,
+    filter: (src) => !['node_modules', 'package-lock.json'].includes(path.basename(src)),
+  })
+
+  await t.test('npm link of a source checkout, then install', () => {
+    const dir = prefix('link-then-install')
+    requireOk(
+      npm(['link', '--ignore-scripts'], {
+        cwd: linkCheckout,
+        env: { npm_config_prefix: dir },
+      }),
+      'npm link source checkout',
+    )
+    assert.equal(
+      lstatSync(path.join(dir, 'lib', 'node_modules', 'martty')).isSymbolicLink(),
+      true,
+      'the checkout is linked into the global root',
+    )
+
+    requireOk(installGlobal(dir, martty), 'install martty over the link')
+    assert.equal(
+      lstatSync(path.join(dir, 'lib', 'node_modules', 'martty')).isSymbolicLink(),
+      false,
+      'the published package replaces the link — no EEXIST',
+    )
+    assertMarttyShim(dir)
+    assert.match(readlinkSync(binPath(dir, 'martty-cli')), /node_modules\/martty\//)
+    assert.doesNotMatch(realpathSync(binPath(dir, 'martty-cli')), /source-checkout/,
+      'the published bin is the real package, not the checkout')
+  })
+
+  await t.test('install, then npm link of a source checkout', () => {
+    const dir = prefix('install-then-link')
+    requireOk(installGlobal(dir, martty), 'install martty first')
+    assert.equal(
+      lstatSync(path.join(dir, 'lib', 'node_modules', 'martty')).isSymbolicLink(),
+      false,
+    )
+
+    requireOk(
+      npm(['link', '--ignore-scripts'], {
+        cwd: linkCheckout,
+        env: { npm_config_prefix: dir },
+      }),
+      'npm link source checkout over the install',
+    )
+    assert.equal(
+      lstatSync(path.join(dir, 'lib', 'node_modules', 'martty')).isSymbolicLink(),
+      true,
+      'the link replaces the install — no EEXIST',
+    )
+    assert.match(readlinkSync(binPath(dir, 'martty-cli')), /node_modules\/martty\//)
+    assert.match(realpathSync(binPath(dir, 'martty-cli')), /source-checkout/,
+      'the relative bin link now resolves into the linked checkout')
   })
 })

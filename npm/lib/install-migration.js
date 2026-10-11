@@ -11,10 +11,17 @@
 // package's installed manifest, because `npm rm -g` deletes bin links by
 // name without checking what they point at — left in place, removing the
 // old package would take the fresh `martty` command down with it.
+//
+// `martty` is a small shim file, not a symlink: `npm rm -g martty` removes
+// the package but not this command, and a shim can degrade gracefully —
+// when its package is gone it prints a one-line hint and deletes itself,
+// instead of leaving a dead symlink behind.
+//
 // npm hides postinstall output on success, so the binary re-checks its
-// install root at launch: it warns while the legacy package is still
-// present and (re)creates the `martty` command when scripts were skipped
-// (`--ignore-scripts`) or the link went missing.
+// install root at launch: invoked as a real `martty`/`martty-cli` command
+// it converges the prefix the same way the postinstall does (retire legacy
+// links, recreate `martty`, sanitize) and warns while the legacy package is
+// still present — which is also what recovers a `--ignore-scripts` install.
 //
 // The legacy name is intentionally assembled: `scripts/package-alias.mjs`
 // rewrites the literal `@openma/deepseek-harness-tui` to `martty` in every
@@ -39,6 +46,12 @@ const BIN_FILE = path.join('bin', 'martty.js')
 // belong to the legacy package — an installed `martty` package keeps its
 // own `martty` command and a third-party `dsh-tui` stays untouched.
 const LEGACY_BIN_NAMES = [COMMAND_NAME, 'dsh-tui', 'dsb']
+
+// Marks the `martty` shims this package writes so ownership checks can tell
+// them from a foreign file that happens to mention a martty path.
+const SHIM_MARKER = 'martty-command-shim'
+const NOT_INSTALLED_LINE =
+  'martty: the martty package is not installed - reinstall with: npm i -g martty'
 
 const stderrLine = (line) => process.stderr.write(`${line}\n`)
 
@@ -108,21 +121,43 @@ function commandOwner(file, binFile) {
     if (!stat.isFile()) return 'foreign'
     const content = fs.readFileSync(file, 'utf8')
     if (content.includes(LEGACY_PACKAGE_DIR)) return 'legacy'
-    if (/node_modules[/\\]martty[/\\]/.test(content)) return 'ours'
+    if (content.includes(SHIM_MARKER) || /node_modules[/\\]martty[/\\]/.test(content)) {
+      return 'ours'
+    }
     return 'foreign'
   } catch {
     return 'foreign'
   }
 }
 
+// The POSIX `martty` command is a shim file, not a symlink: `npm rm -g
+// martty` removes the package but not this command, and a shim can notice
+// its target is gone — it prints a one-line hint and deletes itself instead
+// of leaving a dead symlink behind.
+function posixShim(binFile) {
+  const quoted = `'${binFile.replaceAll("'", "'\\''")}'`
+  return `#!/bin/sh
+# ${SHIM_MARKER} — written by the martty package; not managed by npm.
+target=${quoted}
+if [ -f "$target" ]; then
+  exec node "$target" "$@"
+fi
+echo "${NOT_INSTALLED_LINE}" >&2
+rm -f "$0" 2>/dev/null
+exit 127
+`
+}
+
 // Windows receives the same shim triplet npm generates (msys shell wrapper,
-// .cmd, .ps1). `rel` is the bin file's path relative to the shim directory
-// with forward slashes; `backRel` is the backslash variant for cmd.exe.
+// .cmd, .ps1), with the same degrade-and-remove behavior. `rel` is the bin
+// file's path relative to the shim directory with forward slashes;
+// `backRel` is the backslash variant for cmd.exe.
 function windowsShims(dir, binFile) {
   const rel = path.relative(dir, binFile).split(path.sep).join('/')
   const backRel = rel.split('/').join('\\')
   return {
     [COMMAND_NAME]: `#!/bin/sh
+# ${SHIM_MARKER} — written by the martty package; not managed by npm.
 basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")
 
 case \`uname\` in
@@ -133,31 +168,35 @@ case \`uname\` in
     ;;
 esac
 
-if [ -x "$basedir/node" ]; then
-  exec "$basedir/node"  "$basedir/${rel}" "$@"
-else
-  exec node  "$basedir/${rel}" "$@"
+target="$basedir/${rel}"
+if [ -f "$target" ]; then
+  exec node "$target" "$@"
 fi
+echo "${NOT_INSTALLED_LINE}" >&2
+rm -f "$0" 2>/dev/null
+exit 127
 `,
-    [`${COMMAND_NAME}.cmd`]: `@SETLOCAL
-@IF EXIST "%~dp0\\node.exe" (
-  "%~dp0\\node.exe"  "%~dp0\\${backRel}" %*
-) ELSE (
-  @SET PATHEXT=%PATHEXT:;.JS;=;%
-  node  "%~dp0\\${backRel}" %*
-)
+    [`${COMMAND_NAME}.cmd`]: `@echo off
+rem ${SHIM_MARKER} - written by the martty package; not managed by npm.
+set "target=%~dp0${backRel}"
+if not exist "%target%" goto missing
+node "%target%" %*
+exit /b %ERRORLEVEL%
+:missing
+>&2 echo ${NOT_INSTALLED_LINE}
+del "%~f0" 2>nul
+exit /b 127
 `,
     [`${COMMAND_NAME}.ps1`]: `#!/usr/bin/env pwsh
-$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
-
-$exe=""
-if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) { $exe=".exe" }
-$node="$basedir/node$exe"
-if (Test-Path $node) {
-  & $node  "$basedir/${rel}" $args
-} else {
-  & node  "$basedir/${rel}" $args
+# ${SHIM_MARKER} - written by the martty package; not managed by npm.
+$target = Join-Path (Split-Path $MyInvocation.MyCommand.Definition -Parent) '${rel}'
+if (Test-Path -LiteralPath $target) {
+  & node $target @args
+  exit $LASTEXITCODE
 }
+[Console]::Error.WriteLine('${NOT_INSTALLED_LINE}')
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+exit 127
 `,
   }
 }
@@ -197,7 +236,8 @@ export function ensureMarttyLink({ argv1, binDir, packageDir, platform = process
       }
     } else {
       fs.rmSync(target, { force: true })
-      fs.symlinkSync(path.relative(dir, binFile), target)
+      fs.writeFileSync(target, posixShim(binFile))
+      fs.chmodSync(target, 0o755)
     }
   } catch {
     write(`martty: could not create the \`martty\` command in ${dir} — run \`martty-cli\` instead.`)
@@ -216,6 +256,29 @@ function marttyNotice(write, hint) {
   write(`martty:   ${hint}`)
 }
 
+// Remove the bin entries the legacy package owns in `prefix` (POSIX links
+// and Windows shims alike). Foreign entries never qualify; undeletable
+// ones are skipped — they must never fail an install or a launch.
+function retireLegacyBins(prefix, write) {
+  const removed = new Set()
+  for (const name of LEGACY_BIN_NAMES) {
+    for (const file of binCandidates(prefix, name)) {
+      if (!isLegacyOwned(file)) continue
+      try {
+        fs.rmSync(file, { force: true })
+        removed.add(name)
+      } catch {
+        // An undeletable link must not fail the install; the nudge below
+        // still names the blocking package.
+      }
+    }
+  }
+  if (removed.size > 0) {
+    const list = [...removed].map((name) => `\`${name}\``).join(', ')
+    write(`martty: removed the stale ${list} command${removed.size > 1 ? 's' : ''} left by ${LEGACY_PACKAGE} — the TUI now runs as \`martty\`.`)
+  }
+}
+
 // postinstall entry point (`npm_package_name`/`npm_config_*` env): retire
 // the legacy package's bin links, create the `martty` command, and nudge
 // the user to remove the old package. Never fails the install.
@@ -232,24 +295,7 @@ export function migrate(env, write = stderrLine, platform = process.platform) {
 
   const legacyInstalled = legacyInstallDirs(prefix).some((dir) => fs.existsSync(dir))
 
-  const removed = new Set()
-  for (const name of LEGACY_BIN_NAMES) {
-    for (const file of binCandidates(prefix, name)) {
-      if (!isLegacyOwned(file)) continue
-      try {
-        fs.rmSync(file, { force: true })
-        removed.add(name)
-      } catch {
-        // An undeletable link must not fail the install; the nudge below
-        // still names the blocking package.
-      }
-    }
-  }
-
-  if (removed.size > 0) {
-    const list = [...removed].map((name) => `\`${name}\``).join(', ')
-    write(`martty: removed the stale ${list} command${removed.size > 1 ? 's' : ''} left by ${LEGACY_PACKAGE} — the TUI now runs as \`martty\`.`)
-  }
+  retireLegacyBins(prefix, write)
 
   const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
   const binDir = platform === 'win32' ? prefix : path.join(prefix, 'bin')
@@ -319,38 +365,70 @@ export function sanitizeLegacyInstall(prefix, write = stderrLine) {
 }
 
 // Launch-time entry point: npm hides postinstall output unless it fails, so
-// the binary re-checks its own install root, recreates the `martty` command
-// when needed, and warns while the legacy package is still present.
-export function warnAboutLegacyPackage({ argv1, libDir, write = stderrLine } = {}) {
+// the binary re-checks its install root on every run. Invoked through a
+// real command name (`martty`, `martty-cli`, `npx`) it converges the global
+// prefix the same way the postinstall does — retire the legacy links,
+// (re)create `martty`, sanitize the legacy install — which is also what
+// recovers an install whose scripts were skipped. A bare `node
+// bin/martty.js` or a dsh profile layout only gets the warning, never the
+// filesystem changes.
+export function warnAboutLegacyPackage({ argv1, libDir, write = stderrLine, platform = process.platform } = {}) {
   const selfLibDir = libDir ?? path.dirname(fileURLToPath(import.meta.url))
   const packageDir = path.dirname(selfLibDir)
-  const candidateDirs = [path.join(path.dirname(packageDir), ...scopedParts)]
-  // An `npm link`ed binary resolves to the checkout, not the install root;
-  // the prefix is still recoverable from the bin symlink path in argv[1].
-  if (argv1 && path.basename(path.dirname(argv1)) === 'bin') {
-    candidateDirs.push(...legacyInstallDirs(path.dirname(path.dirname(argv1))))
-  }
-  const legacyDir = candidateDirs.find((dir) => fs.existsSync(dir))
-
   if (path.basename(packageDir) === LEGACY_PACKAGE_DIR) {
     legacyNotice(write)
     return
   }
 
   try {
-    ensureMarttyLink({ argv1, packageDir, write })
+    ensureMarttyLink({ argv1, packageDir, platform, write })
   } catch {
     // A read-only prefix or a missing bin dir must not break the launch.
   }
 
-  if (!legacyDir) return
+  // Candidate prefixes to converge: the global root this package sits in
+  // (lib/node_modules layout), plus the root behind the bin that launched
+  // us (covers `npm link` where the package resolves to a checkout).
+  const prefixes = []
+  const nodeModules = path.dirname(packageDir)
+  if (path.basename(nodeModules) === 'node_modules') {
+    const layoutDir = path.dirname(nodeModules)
+    prefixes.push(path.basename(layoutDir) === 'lib' ? path.dirname(layoutDir) : layoutDir)
+  }
+  if (argv1) {
+    const invokedAs = path.basename(argv1).replace(/\.(cmd|ps1)$/i, '')
+    const binDir = path.dirname(argv1)
+    if (
+      (invokedAs === COMMAND_NAME || invokedAs === DECLARED_BIN_NAME)
+      && (path.basename(binDir) === 'bin' || platform === 'win32')
+    ) {
+      prefixes.push(platform === 'win32' && path.basename(binDir) !== 'bin' ? binDir : path.dirname(binDir))
+    }
+  }
 
-  const segments = legacyDir.split(path.sep)
-  const profileAt = segments.lastIndexOf('profiles')
-  const hint = profileAt >= 0
-    ? `dsh plugin --profile ${segments[profileAt + 1]} remove ${LEGACY_PACKAGE}`
-    : `npm rm -g ${LEGACY_PACKAGE}`
-  marttyNotice(write, hint)
+  let hint = null
+  for (const prefix of new Set(prefixes)) {
+    if (!legacyInstallDirs(prefix).some((dir) => fs.existsSync(dir))) continue
+    const segments = prefix.split(path.sep)
+    const profileAt = segments.lastIndexOf('profiles')
+    if (profileAt >= 0) {
+      // A dsh profile: warn with the plugin-removal hint, touch nothing —
+      // profile layouts are managed by dsh, not npm.
+      hint ??= `dsh plugin --profile ${segments[profileAt + 1]} remove ${LEGACY_PACKAGE}`
+      continue
+    }
+    hint ??= `npm rm -g ${LEGACY_PACKAGE}`
+    try {
+      retireLegacyBins(prefix, write)
+      const binDir = platform === 'win32' ? prefix : path.join(prefix, 'bin')
+      ensureMarttyLink({ binDir, packageDir, platform, write })
+      sanitizeLegacyInstall(prefix, write)
+    } catch {
+      // Best effort: nothing here may break the launch.
+    }
+  }
+
+  if (hint) marttyNotice(write, hint)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

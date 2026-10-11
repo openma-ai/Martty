@@ -90,7 +90,8 @@ test('stays silent when the legacy package is absent', (t) => {
   assert.deepEqual(lines, [])
   // …but it did create the `martty` command: postinstall self-links it
   // because npm never declares it for this package.
-  assert.equal(lstatSync(path.join(prefix, 'bin', 'martty')).isSymbolicLink(), true)
+  const content = readFileSync(path.join(prefix, 'bin', 'martty'), 'utf8')
+  assert.match(content, /martty-command-shim/)
 })
 
 test('retires every legacy-owned bin, creates martty, and names the fix', (t) => {
@@ -103,9 +104,10 @@ test('retires every legacy-owned bin, creates martty, and names the fix', (t) =>
   assert.match(lines[0], /removed the stale `martty`, `dsh-tui`, `dsb` commands/)
   assert.match(lines[1], /still installed/)
   assert.match(lines[2], /npm rm -g @openma\/deepseek-harness-tui/)
-  const link = path.join(prefix, 'bin', 'martty')
-  assert.equal(lstatSync(link).isSymbolicLink(), true)
-  assert.match(readlinkSync(link), /bin\/martty\.js$/)
+  const command = path.join(prefix, 'bin', 'martty')
+  assert.equal(lstatSync(command).isFile(), true)
+  assert.equal(lstatSync(command).isSymbolicLink(), false)
+  assert.match(readFileSync(command, 'utf8'), /bin\/martty\.js/)
   assert.throws(() => lstatSync(path.join(prefix, 'bin', 'dsh-tui')), /ENOENT/)
   assert.throws(() => lstatSync(path.join(prefix, 'bin', 'dsb')), /ENOENT/)
   assert.ok(legacyDir.endsWith(path.join('@openma', 'deepseek-harness-tui')))
@@ -125,7 +127,7 @@ test('leaves foreign bins alone but still nudges', (t) => {
   assert.equal(lines.length, 2)
   assert.match(lines[0], /still installed/)
   assert.equal(readlinkSync(path.join(prefix, 'bin', 'dsh-tui')), path.join(foreign, 'cli.js'))
-  assert.equal(lstatSync(path.join(prefix, 'bin', 'martty')).isSymbolicLink(), true)
+  assert.match(readFileSync(path.join(prefix, 'bin', 'martty'), 'utf8'), /martty-command-shim/)
 })
 
 test('detects the legacy package in the Windows-style layout', (t) => {
@@ -145,14 +147,17 @@ test('detects the legacy package in the Windows-style layout', (t) => {
   assert.match(lines[0], /removed the stale `dsh-tui` command/)
   assert.throws(() => lstatSync(path.join(prefix, 'dsh-tui.cmd')), /ENOENT/)
   assert.equal(lstatSync(path.join(prefix, 'dsh-tui')).isFile(), true)
-  // The win32 path wrote the shim triplet in the prefix root, each pointing
-  // at this package's bin file (the source checkout here).
+  // The win32 path wrote the graceful shim triplet in the prefix root,
+  // each pointing at this package's bin file (the source checkout here).
   for (const name of ['martty', 'martty.cmd', 'martty.ps1']) {
     const content = readFileSync(path.join(prefix, name), 'utf8')
+    assert.match(content, /martty-command-shim/)
     assert.match(content, /martty\.js/)
   }
   assert.match(readFileSync(path.join(prefix, 'martty.cmd'), 'utf8'), /%~dp0/)
+  assert.match(readFileSync(path.join(prefix, 'martty.cmd'), 'utf8'), /del "%~f0"/)
   assert.match(readFileSync(path.join(prefix, 'martty.ps1'), 'utf8'), /pwsh/)
+  assert.match(readFileSync(path.join(prefix, 'martty.ps1'), 'utf8'), /Remove-Item/)
 })
 
 test('cleans stale bins even when the legacy directory is gone', (t) => {
@@ -169,7 +174,7 @@ test('cleans stale bins even when the legacy directory is gone', (t) => {
   assert.equal(lines.length, 1)
   assert.match(lines[0], /removed the stale `dsh-tui` command/)
   assert.throws(() => lstatSync(path.join(dangling, 'dsh-tui')), /ENOENT/)
-  assert.equal(lstatSync(path.join(dangling, 'martty')).isSymbolicLink(), true)
+  assert.match(readFileSync(path.join(dangling, 'martty'), 'utf8'), /martty-command-shim/)
 })
 
 test('isLegacyOwned handles every entry kind', (t) => {
@@ -258,7 +263,7 @@ test('runs standalone under npm lifecycle environment variables', (t) => {
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stderr, /removed the stale `martty`, `dsh-tui`, `dsb` commands/)
   assert.match(result.stderr, /npm rm -g @openma\/deepseek-harness-tui/)
-  assert.equal(lstatSync(path.join(prefix, 'bin', 'martty')).isSymbolicLink(), true)
+  assert.match(readFileSync(path.join(prefix, 'bin', 'martty'), 'utf8'), /martty-command-shim/)
   assert.throws(() => lstatSync(path.join(prefix, 'bin', 'dsh-tui')), /ENOENT/)
   assert.ok(legacyDir)
 })
@@ -278,15 +283,18 @@ function linkFixture(t) {
   return { root, packageDir, binDir, lines, write: (line) => lines.push(line) }
 }
 
-test('ensureMarttyLink creates the martty symlink next to martty-cli', (t) => {
+test('ensureMarttyLink creates the martty shim next to martty-cli', (t) => {
   const { packageDir, binDir, write, lines } = linkFixture(t)
 
   const created = ensureMarttyLink({ argv1: path.join(binDir, 'martty-cli'), packageDir, write })
 
   assert.equal(created, true)
   const target = path.join(binDir, 'martty')
-  assert.equal(lstatSync(target).isSymbolicLink(), true)
-  assert.match(readlinkSync(target), /node_modules\/martty\/bin\/martty\.js$/)
+  assert.equal(lstatSync(target).isFile(), true)
+  const content = readFileSync(target, 'utf8')
+  assert.match(content, /martty-command-shim/)
+  assert.match(content, /node_modules\/martty\/bin\/martty\.js/)
+  assert.equal(lstatSync(target).mode & 0o111, 0o111, 'the shim is executable')
   assert.deepEqual(lines, [])
 })
 
@@ -310,7 +318,7 @@ test('ensureMarttyLink accepts the Windows shim suffixes', (t) => {
   assert.equal(ensureMarttyLink({ argv1: path.join(binDir, 'martty-cli.cmd'), packageDir, write }), true)
   rmSync(path.join(binDir, 'martty'))
   assert.equal(ensureMarttyLink({ argv1: path.join(binDir, 'martty-cli.ps1'), packageDir, write }), true)
-  assert.equal(lstatSync(path.join(binDir, 'martty')).isSymbolicLink(), true)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /martty-command-shim/)
   assert.deepEqual(lines, [])
 })
 
@@ -333,7 +341,7 @@ test('ensureMarttyLink refreshes a dangling link into the martty package', (t) =
   )
 
   assert.equal(ensureMarttyLink({ argv1: path.join(binDir, 'martty-cli'), packageDir, write }), true)
-  assert.match(readlinkSync(path.join(binDir, 'martty')), /bin\/martty\.js$/)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /bin\/martty\.js/)
   assert.deepEqual(lines, [])
 })
 
@@ -345,7 +353,7 @@ test('ensureMarttyLink replaces a legacy-owned martty link', (t) => {
   )
 
   assert.equal(ensureMarttyLink({ argv1: path.join(binDir, 'martty-cli'), packageDir, write }), true)
-  assert.match(readlinkSync(path.join(binDir, 'martty')), /node_modules\/martty\/bin\/martty\.js$/)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /node_modules\/martty\/bin\/martty\.js/)
 })
 
 test('ensureMarttyLink leaves a live link into another martty install alone', (t) => {
@@ -369,7 +377,7 @@ test('ensureMarttyLink replaces a legacy-owned martty shim file', (t) => {
     `@"%~dp0\\lib\\node_modules\\@openma\\deepseek-harness-tui\\bin\\martty.js" %*\r\n`)
 
   assert.equal(ensureMarttyLink({ argv1: path.join(binDir, 'martty-cli'), packageDir, write }), true)
-  assert.match(readlinkSync(path.join(binDir, 'martty')), /node_modules\/martty\/bin\/martty\.js$/)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /martty-command-shim/)
   assert.deepEqual(lines, [])
 })
 
@@ -391,7 +399,7 @@ test('ensureMarttyLink resolves the package directory from import.meta', (t) => 
   // No packageDir: falls back to this file's own package root (the npm/
   // source directory), still creating the command.
   assert.equal(ensureMarttyLink({ binDir, write }), true)
-  assert.equal(lstatSync(path.join(binDir, 'martty')).isSymbolicLink(), true)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /martty-command-shim/)
   assert.deepEqual(lines, [])
 })
 
@@ -438,10 +446,11 @@ test('ensureMarttyLink writes the Windows shim triplet on win32', (t) => {
   )
   for (const name of ['martty', 'martty.cmd', 'martty.ps1']) {
     const content = readFileSync(path.join(dir, name), 'utf8')
+    assert.match(content, /martty-command-shim/)
     assert.match(content, /node_modules.martty.bin.martty\.js/)
   }
   assert.match(readFileSync(path.join(dir, 'martty'), 'utf8'), /^#!\/bin\/sh/)
-  assert.match(readFileSync(path.join(dir, 'martty.cmd'), 'utf8'), /@SETLOCAL/)
+  assert.match(readFileSync(path.join(dir, 'martty.cmd'), 'utf8'), /@echo off/)
   assert.match(readFileSync(path.join(dir, 'martty.ps1'), 'utf8'), /pwsh/)
   assert.deepEqual(lines, [])
 })
@@ -676,7 +685,7 @@ test('creates the martty command at launch when invoked as martty-cli', (t) => {
 
   warnAboutLegacyPackage({ libDir, argv1: path.join(binDir, 'martty-cli'), write })
 
-  assert.equal(lstatSync(path.join(binDir, 'martty')).isSymbolicLink(), true)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /martty-command-shim/)
   assert.deepEqual(lines, [])
 })
 
@@ -711,4 +720,118 @@ test('points launches of the legacy binary itself at martty', (t) => {
   assert.equal(lines.length, 2)
   assert.match(lines[0], /previous name.*martty/)
   assert.match(lines[1], /npm rm -g @openma\/deepseek-harness-tui/)
+})
+
+// The generated `martty` shim is a real file users can run: it execs the
+// package binary while installed, and once `npm rm -g martty` has taken the
+// package away it reports the reinstall hint and removes itself — no dead
+// symlink is left behind.
+
+test('the martty shim execs the package binary', (t) => {
+  const { packageDir, binDir } = linkFixture(t)
+  const binFile = path.join(packageDir, 'bin', 'martty.js')
+  writeFileSync(binFile, '#!/usr/bin/env node\nconsole.log("shim-target-ran")\n')
+  ensureMarttyLink({ binDir, packageDir, write: () => {} })
+
+  const result = spawnSync(path.join(binDir, 'martty'), ['--version'], { encoding: 'utf8' })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /shim-target-ran/)
+})
+
+test('the martty shim reports the reinstall hint and removes itself', (t) => {
+  const { packageDir, binDir } = linkFixture(t)
+  ensureMarttyLink({ binDir, packageDir, write: () => {} })
+  const shim = path.join(binDir, 'martty')
+
+  const result = spawnSync(shim, [], { encoding: 'utf8' })
+
+  assert.equal(result.status, 127)
+  assert.match(result.stderr, /not installed/)
+  assert.match(result.stderr, /npm i -g martty/)
+  assert.throws(() => lstatSync(shim), /ENOENT/, 'the shim cleaned itself up')
+})
+
+// warnAboutLegacyPackage converges a global prefix at launch exactly like
+// the postinstall would — this is the recovery path for installs whose
+// lifecycle scripts never ran (`--ignore-scripts`, allowScripts policies).
+
+test('launch as martty-cli converges the prefix like the postinstall', (t) => {
+  const { root, libDir, lines, write } = runtimeFixture(t)
+  const prefix = path.join(root, 'prefix')
+  const legacyDir = installLegacy(prefix, { link: true })
+  writeFileSync(path.join(legacyDir, 'package.json'), JSON.stringify({
+    name: LEGACY_PACKAGE,
+    version: '0.2.20',
+    bin: { martty: 'bin/martty.js', 'dsh-tui': 'bin/martty.js' },
+  }))
+  const binDir = path.join(prefix, 'bin')
+
+  warnAboutLegacyPackage({ libDir, argv1: path.join(binDir, 'martty-cli'), write })
+
+  assert.throws(() => lstatSync(path.join(binDir, 'dsh-tui')), /ENOENT/)
+  assert.throws(() => lstatSync(path.join(binDir, 'dsb')), /ENOENT/)
+  assert.match(readFileSync(path.join(binDir, 'martty'), 'utf8'), /martty-command-shim/)
+  assert.equal(
+    'bin' in JSON.parse(readFileSync(path.join(legacyDir, 'package.json'), 'utf8')),
+    false,
+    'the legacy manifest was sanitized so `npm rm -g` cannot take martty down',
+  )
+  assert.match(lines.at(-1), /npm rm -g @openma\/deepseek-harness-tui/)
+})
+
+test('launch convergence covers the win32 argv[1] prefix layout', (t) => {
+  const { root, libDir, lines, write } = runtimeFixture(t)
+  const prefix = path.join(root, 'winprefix')
+  mkdirSync(path.join(prefix, 'node_modules', '@openma', 'deepseek-harness-tui'), { recursive: true })
+  writeFileSync(
+    path.join(prefix, 'dsh-tui.cmd'),
+    `@"%~dp0\\node_modules\\@openma\\deepseek-harness-tui\\bin\\martty.js" %*\r\n`,
+  )
+
+  warnAboutLegacyPackage({
+    libDir,
+    argv1: path.join(prefix, 'martty-cli.cmd'),
+    write,
+    platform: 'win32',
+  })
+
+  assert.throws(() => lstatSync(path.join(prefix, 'dsh-tui.cmd')), /ENOENT/)
+  assert.match(readFileSync(path.join(prefix, 'martty'), 'utf8'), /martty-command-shim/)
+  assert.match(readFileSync(path.join(prefix, 'martty.ps1'), 'utf8'), /Remove-Item/)
+  assert.match(lines.at(-1), /npm rm -g @openma\/deepseek-harness-tui/)
+})
+
+test('a profile-scoped launch warns without touching the filesystem', (t) => {
+  const { root, nodeModules, libDir, lines, write } = runtimeFixture(t, { scope: 'martty' })
+  const legacyDir = path.join(nodeModules, '@openma', 'deepseek-harness-tui')
+  mkdirSync(legacyDir, { recursive: true })
+  const staleBin = path.join(root, 'profiles', 'martty', 'bin', 'dsh-tui')
+  mkdirSync(path.dirname(staleBin), { recursive: true })
+  writeFileSync(staleBin, `@"%~dp0\\node_modules\\@openma\\deepseek-harness-tui\\bin\\martty.js" %*\r\n`)
+
+  warnAboutLegacyPackage({ libDir, argv1: path.join(root, 'profiles', 'martty', 'bin', 'martty-cli'), write })
+
+  assert.match(lines[0], /still installed/)
+  assert.match(lines[1], /dsh plugin --profile martty remove/)
+  assert.equal(readFileSync(staleBin, 'utf8').includes('deepseek-harness-tui'), true,
+    'profile bin entries are managed by dsh — the launch check never rewrites them')
+})
+
+test('launch converge swallows mid-migration failures and still warns', (t) => {
+  const { root, libDir, lines } = runtimeFixture(t)
+  const prefix = path.join(root, 'prefix')
+  installLegacy(prefix, { link: true })
+  // A write that throws once inside the converge must not break the
+  // launch — the remaining steps are skipped but the warning still lands.
+  let calls = 0
+  const write = (line) => {
+    calls += 1
+    if (calls === 1) throw new Error('write failed')
+    lines.push(line)
+  }
+
+  warnAboutLegacyPackage({ libDir, argv1: path.join(prefix, 'bin', 'martty-cli'), write })
+
+  assert.match(lines.at(-1), /npm rm -g @openma\/deepseek-harness-tui/)
 })

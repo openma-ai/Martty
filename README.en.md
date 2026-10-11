@@ -95,18 +95,22 @@ verifiably belonged to the legacy package (a third-party `dsh-tui` is left
 untouched), creates the `martty` command itself, and detaches the legacy
 package's bin declarations so `npm rm -g @openma/deepseek-harness-tui`
 afterwards leaves `martty` working. Removing the old package afterwards is
-optional cleanup; `martty` warns at launch while it remains.
+optional cleanup; `martty` warns at launch while it remains. The source
+package in this repository is itself named `martty`, so an `npm link`ed
+checkout and the published package are the same package to npm — each
+replaces the other cleanly in either order.
 
 Caveats:
 
 - `npm install --global --ignore-scripts martty` skips the postinstall —
-  run `martty-cli` once (or `npx martty`) and it recreates `martty` at
-  launch. `martty-cli` is also the command to use when an unrelated tool
-  owns a `martty` bin.
-- `npm rm -g martty` removes only the declared `martty-cli` link; the
-  postinstall-created `martty` link is left dangling until the next install
-  recreates it — delete `<prefix>/bin/martty` by hand if uninstalling for
-  good.
+  run `martty-cli` once (or `npx martty`) and the first launch finishes the
+  migration: it retires the stale legacy links, creates `martty`, and
+  detaches the legacy `bin` declarations. `martty-cli` is also the command
+  to use when an unrelated tool owns a `martty` bin.
+- `npm rm -g martty` removes only the declared `martty-cli` link. The
+  `martty` command left behind is a small shim, not a dead symlink: the
+  next `martty` invocation prints the reinstall hint and removes itself,
+  so an uninstall converges to a clean state on first touch.
 
 Inside a `dsh` profile, migrate the package name and profile together:
 

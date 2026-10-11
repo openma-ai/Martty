@@ -1,5 +1,5 @@
 {
-  "name": "@openma/deepseek-harness-tui",
+  "name": "martty",
   "version": "0.3.2-beta.0",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
@@ -57,7 +57,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "martty": "bin/martty.js"
+    "martty-cli": "bin/martty.js"
   },
   "files": [
     "bin",
