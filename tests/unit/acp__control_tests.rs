@@ -1,7 +1,7 @@
 use super::*;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionResponse, PromptResponse,
-    SetSessionConfigOptionResponse, StopReason,
+    AgentCapabilities, InitializeRequest, InitializeResponse, LogoutRequest, NewSessionResponse,
+    PromptResponse, SetSessionConfigOptionResponse, StopReason,
 };
 
 #[tokio::test(start_paused = true)]
@@ -859,4 +859,24 @@ async fn authenticate_form_method_without_values_reports_a_visible_failure() {
         })
         .await
         .expect("client task");
+}
+
+#[test]
+fn logout_scope_meta_carries_both_agent_extensions() {
+    // dsh-acp reads `_meta.provider`, pi-acp reads
+    // `_meta.pi.logout.provider`; both name the same provider (issue #160).
+    let meta = logout_scope_meta("openrouter");
+    let value = serde_json::to_value(&meta).unwrap();
+    assert_eq!(value["provider"], serde_json::json!("openrouter"));
+    assert_eq!(
+        value["pi"]["logout"]["provider"],
+        serde_json::json!("openrouter")
+    );
+    // The wire request carries it through the schema type untouched.
+    let mut req = LogoutRequest::new();
+    req.meta = Some(meta);
+    assert_eq!(
+        serde_json::to_value(&req.meta).unwrap()["pi"]["logout"]["provider"],
+        serde_json::json!("openrouter")
+    );
 }

@@ -115,6 +115,20 @@ impl Surface {
         self.session(id).connection.as_ref().map(prompt_image_supported).unwrap_or(self.prompt_image)
     }
 
+    /// The active session's model provider — the credential `logout`
+    /// should clear. A sole bound session is that session whether or not
+    /// the UI's `ActiveSession` marker has been applied yet (issue #160).
+    fn active_session_provider(&self) -> Option<String> {
+        self.active_session
+            .as_deref()
+            .and_then(|id| self.session(id).model_current.clone())
+            .or_else(|| {
+                (self.sessions.len() == 1)
+                    .then(|| self.sessions.values().next().and_then(|s| s.model_current.clone()))
+                    .flatten()
+            })
+    }
+
     fn session_mut(&mut self, session_id: Option<&str>) -> &mut SessionSurface {
         match session_id {
             Some(id) => self.sessions.entry(id.to_string()).or_default(),
@@ -625,48 +639,27 @@ fn spawn_steer(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn begin_prompt(
     cmd: Cmd,
     cx: &ConnectionTo<Agent>,
     bus: &Sender<AppEvent>,
-    session_id: &Option<SessionId>,
-    _parked: &mut VecDeque<ParkedPrompt>,
-    _methods: &[AuthMethodInfo],
-    _selected: Option<&AuthMethodInfo>,
+    sid: SessionId,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
     gen: u64,
     done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     match cmd {
-        Cmd::Prompt { text, .. } => {
-            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
-            Some(spawn_session_prompt(
-                cx.clone(),
-                bus.clone(),
-                sid,
-                vec![text.clone().into()],
-                ParkedPromptKind::Text(text),
-                gen,
-                done.clone(),
-            ))
-        }
-        Cmd::Steer { text, .. } => {
-            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
-            Some(spawn_session_prompt(
-                cx.clone(),
-                bus.clone(),
-                sid,
-                vec![text.clone().into()],
-                ParkedPromptKind::Text(text),
-                gen,
-                done.clone(),
-            ))
-        }
-        Cmd::PromptImages { blocks, .. } => {
-            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
+        Cmd::Prompt { text, .. } | Cmd::Steer { text, .. } => Some(spawn_session_prompt(
+            cx.clone(),
+            bus.clone(),
+            sid,
+            vec![text.clone().into()],
+            ParkedPromptKind::Text(text),
+            gen,
+            done.clone(),
+        )),
+        Cmd::PromptImages { blocks, .. } | Cmd::SteerImages { blocks, .. } => {
             let payload = ParkedPromptKind::Images(blocks.clone());
             let prompt_image = surface
                 .lock()
@@ -685,39 +678,6 @@ fn begin_prompt(
                 Ok(_) => {
                     // Session-scoped: the failure belongs to the requesting
                     // tab (possibly parked), never to the viewed one.
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
-                        session_id: sid.to_string(),
-                        message: "empty image prompt".into(),
-                    }));
-                    None
-                }
-                Err(err) => {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
-                        session_id: sid.to_string(),
-                        message: err,
-                    }));
-                    None
-                }
-            }
-        }
-        Cmd::SteerImages { blocks, .. } => {
-            let sid = session_id.clone().expect("begin_prompt is only invoked with a bound session");
-            let payload = ParkedPromptKind::Images(blocks.clone());
-            let prompt_image = surface
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .prompt_image_for(&sid.0);
-            match prompt_content_blocks(blocks, prompt_image, workspace) {
-                Ok(content) if !content.is_empty() => Some(spawn_session_prompt(
-                    cx.clone(),
-                    bus.clone(),
-                    sid,
-                    content,
-                    payload,
-                    gen,
-                    done.clone(),
-                )),
-                Ok(_) => {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
                         session_id: sid.to_string(),
                         message: "empty image prompt".into(),
@@ -789,8 +749,6 @@ fn drain_ready_sessions(
     cx: &ConnectionTo<Agent>,
     bus: &Sender<AppEvent>,
     parked: &mut VecDeque<ParkedPrompt>,
-    methods: &[AuthMethodInfo],
-    selected: Option<&AuthMethodInfo>,
     surface: &Arc<Mutex<Surface>>,
     workspace: &str,
     next_gen: &mut u64,
@@ -814,10 +772,7 @@ fn drain_ready_sessions(
             next,
             cx,
             bus,
-            &Some(SessionId::new(key.as_str())),
-            parked,
-            methods,
-            selected,
+            SessionId::new(key.as_str()),
             surface,
             workspace,
             *next_gen,
@@ -990,11 +945,18 @@ fn credit_terminal_method(
 }
 
 /// Provider candidates a method id may embed: the head of
-/// "deepseek/deepseek-v4-pro" is "deepseek"; a config provider like
+/// "deepseek/deepseek-v4-pro" or "deepseek-official::deepseek-v4-pro" is
+/// "deepseek" / "deepseek-official"; a config provider like
 /// "deepseek-official" also yields its leading hyphen segments, longest
 /// first (issue #160).
 fn provider_candidates(provider: &str) -> Vec<String> {
-    let head = provider.split('/').next().unwrap_or(provider);
+    let head = provider
+        .split('/')
+        .next()
+        .unwrap_or(provider)
+        .split("::")
+        .next()
+        .unwrap_or(provider);
     let mut out = vec![head.to_lowercase()];
     let mut cuts: Vec<usize> = head.match_indices('-').map(|(i, _)| i).collect();
     cuts.dedup();
@@ -1030,6 +992,62 @@ fn method_for_provider<'a>(
 /// naming it is not a guess (issue #160).
 fn sole_method(methods: &[AuthMethodInfo]) -> Option<&AuthMethodInfo> {
     (methods.len() == 1).then(|| &methods[0])
+}
+
+/// The provider a method id embeds: `api-key:openrouter` signs `openrouter`
+/// in, so the suffix after the first `:` is the credential's provider — an
+/// id the agent itself chose, not a substring guess (issue #160).
+fn method_provider_id(method: &AuthMethodInfo) -> Option<&str> {
+    method
+        .id
+        .split_once(':')
+        .map(|(_, provider)| provider)
+        .filter(|provider| !provider.is_empty())
+}
+
+/// Which provider `logout` should clear: the bound session's model provider
+/// when it resolves to exactly one advertised credential id, else the
+/// method the user signed in with, else the only provider the agent
+/// advertises. A bare `logout` (no scope) is better than a wrong one — the
+/// agent then applies its own default (issue #160).
+fn logout_provider(
+    surface: &Arc<Mutex<Surface>>,
+    methods: &[AuthMethodInfo],
+    selected: Option<&AuthMethodInfo>,
+) -> Option<String> {
+    let mut ids: Vec<&str> = methods.iter().filter_map(method_provider_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let session_provider = {
+        let surface = surface.lock().unwrap_or_else(|e| e.into_inner());
+        surface.active_session_provider()
+    };
+    session_provider
+        .as_deref()
+        .and_then(|provider| {
+            provider_candidates(provider)
+                .into_iter()
+                .find(|token| ids.contains(&token.as_str()))
+        })
+        .or_else(|| selected.and_then(method_provider_id).map(str::to_string))
+        .or_else(|| (ids.len() == 1).then(|| ids[0].to_string()))
+}
+
+/// Providers the agent says it cleared, from the `logout` response — pi
+/// reports `_meta.pi.logout.cleared`; an agent that does not report is not
+/// claimed either way (issue #160).
+fn logout_cleared_providers(response: &Value) -> Vec<String> {
+    response
+        .pointer("/_meta/pi/logout/cleared")
+        .and_then(Value::as_array)
+        .map(|cleared| {
+            cleared
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A NeedsAuth snapshot carrying no method falls back to the bare word
@@ -1069,16 +1087,14 @@ fn session_provider(surface: &Arc<Mutex<Surface>>, session_id: &str) -> Option<S
 }
 
 /// The provider whose credential is in play: the session's current model
-/// ("deepseek/deepseek-v4-pro") when bound, else the launch provider the
-/// first session will run on (issue #160).
+/// ("deepseek/deepseek-v4-pro") when bound. Without a bound session the
+/// credential is unknown — a client-side default would name one the agent
+/// never did, so the notice stays generic (issue #160).
 fn auth_provider(
     surface: &Arc<Mutex<Surface>>,
     session_id: Option<&str>,
-    cfg: &RuntimeConfig,
-) -> String {
-    session_id
-        .and_then(|id| session_provider(surface, id))
-        .unwrap_or_else(|| cfg.provider.clone())
+) -> Option<String> {
+    session_id.and_then(|id| session_provider(surface, id))
 }
 
 fn emit_needs_auth_open(
@@ -2644,11 +2660,11 @@ where
                             if methods.is_empty() {
                                 agent_absent = true;
                             } else {
-                                let provider = auth_provider(&surface, None, &cfg);
+                                let provider = auth_provider(&surface, None);
                                 emit_needs_auth_open(
                                     &bus,
                                     methods.clone(),
-                                    Some(provider.as_str()),
+                                    provider.as_deref(),
                                     Some(init_refusal_message(err)),
                                 );
                                 session_auth_pending = true;
@@ -2743,7 +2759,7 @@ where
                 // `pending` / `parked` / `session_auth_pending` came in via
                 // `ConnectCarry` and survive a transport respawn.
                 let mut setup_failed = false;
-                let provider = auth_provider(&surface, None, &cfg);
+                let provider = auth_provider(&surface, None);
                 match create_prompt_session(
                     &cx,
                     &cwd,
@@ -2751,7 +2767,7 @@ where
                     &bus,
                     &methods,
                     selected.as_ref(),
-                    Some(provider.as_str()),
+                    provider.as_deref(),
                     additional_directories,
                     &cfg.additional_directories,
                 )
@@ -2850,7 +2866,7 @@ where
                                         )));
                                         continue;
                                     }
-                                    let provider = auth_provider(&surface, None, &cfg);
+                                    let provider = auth_provider(&surface, None);
                                     match create_prompt_session(
                                         &cx,
                                         &cwd,
@@ -2858,7 +2874,7 @@ where
                                         &bus,
                                         &methods,
                                         selected.as_ref(),
-                                        Some(provider.as_str()),
+                                        provider.as_deref(),
                                         additional_directories,
                                         &cfg.additional_directories,
                                     )
@@ -2906,8 +2922,8 @@ where
                                         // the tab re-opens the picker with
                                         // the reason (issue #160).
                                         handle.queue.push_back(next);
-                                        let provider = auth_provider(&surface, Some(&sid.0), &cfg);
-                                        emit_held_prompt(&bus, &sid.0, &methods, Some(provider.as_str()));
+                                        let provider = auth_provider(&surface, Some(&sid.0));
+                                        emit_held_prompt(&bus, &sid.0, &methods, provider.as_deref());
                                     } else if handle.inflight.is_some() || controls.busy(&sid.0) {
                                         handle.queue.push_back(next);
                                     } else {
@@ -2916,10 +2932,7 @@ where
                                             next,
                                             &cx,
                                             &bus,
-                                            &Some(sid),
-                                            &mut parked,
-                                            &methods,
-                                            selected.as_ref(),
+                                            sid,
                                             &surface,
                                             &cfg.workspace,
                                             prompt_gen,
@@ -2929,9 +2942,9 @@ where
                                     }
                                 }
                                 Ok(None) => {
-                                    let provider = auth_provider(&surface, None, &cfg);
+                                    let provider = auth_provider(&surface, None);
                                     queue_connection_prompt(&mut pending, next, session_auth_pending,
-                                        &bus, &methods, Some(provider.as_str()));
+                                        &bus, &methods, provider.as_deref());
                                 }
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
@@ -2979,10 +2992,7 @@ where
                                             },
                                             &cx,
                                             &bus,
-                                            &Some(sid),
-                                            &mut parked,
-                                            &methods,
-                                            selected.as_ref(),
+                                            sid,
                                             &surface,
                                             &cfg.workspace,
                                             prompt_gen,
@@ -3020,8 +3030,8 @@ where
                                     let handle = sessions.entry(sid.to_string()).or_default();
                                     if stalled {
                                         handle.queue.push_back(next);
-                                        let provider = auth_provider(&surface, Some(&sid.0), &cfg);
-                                        emit_held_prompt(&bus, &sid.0, &methods, Some(provider.as_str()));
+                                        let provider = auth_provider(&surface, Some(&sid.0));
+                                        emit_held_prompt(&bus, &sid.0, &methods, provider.as_deref());
                                     } else if handle.inflight.is_some() || controls.busy(&sid.0) {
                                         handle.queue.push_back(next);
                                     } else {
@@ -3030,10 +3040,7 @@ where
                                             next,
                                             &cx,
                                             &bus,
-                                            &Some(sid),
-                                            &mut parked,
-                                            &methods,
-                                            selected.as_ref(),
+                                            sid,
                                             &surface,
                                             &cfg.workspace,
                                             prompt_gen,
@@ -3043,9 +3050,9 @@ where
                                     }
                                 }
                                 Ok(None) => {
-                                    let provider = auth_provider(&surface, None, &cfg);
+                                    let provider = auth_provider(&surface, None);
                                     queue_connection_prompt(&mut pending, next, session_auth_pending,
-                                        &bus, &methods, Some(provider.as_str()));
+                                        &bus, &methods, provider.as_deref());
                                 }
                                 Err(err) => {
                                     let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
@@ -3110,10 +3117,7 @@ where
                                             },
                                             &cx,
                                             &bus,
-                                            &Some(sid),
-                                            &mut parked,
-                                            &methods,
-                                            selected.as_ref(),
+                                            sid,
                                             &surface,
                                             &cfg.workspace,
                                             prompt_gen,
@@ -3454,7 +3458,7 @@ where
                             // session/new in place — the agent may already
                             // accept the freshly written credentials. Whatever
                             // it answers stays visible (#160).
-                            let provider = auth_provider(&surface, None, &cfg);
+                            let provider = auth_provider(&surface, None);
                             match create_prompt_session(
                                 &cx,
                                 &cwd,
@@ -3462,7 +3466,7 @@ where
                                 &bus,
                                 &methods,
                                 selected.as_ref(),
-                                Some(provider.as_str()),
+                                provider.as_deref(),
                                 additional_directories,
                                 &cfg.additional_directories,
                             )
@@ -3523,8 +3527,6 @@ where
                                 &cx,
                                 &bus,
                                 &mut parked,
-                                &methods,
-                                selected.as_ref(),
                                 &surface,
                                 &cfg.workspace,
                                 &mut prompt_gen,
@@ -3583,8 +3585,8 @@ where
                                             if is_auth_required_error(&err) {
                                                 connection.auth.status = AuthStatus::NeedsAuth;
                                                 connection.auth.message = Some(message.clone());
-                                                let provider = auth_provider(&surface, requester.as_deref(), &cfg);
-                                                name_needs_auth(&mut connection.auth, &methods, Some(provider.as_str()));
+                                                let provider = auth_provider(&surface, requester.as_deref());
+                                                name_needs_auth(&mut connection.auth, &methods, provider.as_deref());
                                                 let mut surface = surface.lock().unwrap_or_else(|e| e.into_inner());
                                                 if let Some(id) = &requester { surface.session_mut(Some(id)).connection = Some(value.clone()); }
                                                 for method in &connection.auth.methods {
@@ -3600,8 +3602,8 @@ where
                                                 if is_auth_required_error(&err) { let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, snapshot, open: true })); }
                                             }
                                         } else if is_auth_required_error(&err) {
-                                            let provider = auth_provider(&surface, None, &cfg);
-                                            emit_needs_auth_open(&bus, methods.clone(), Some(provider.as_str()), Some(message));
+                                            let provider = auth_provider(&surface, None);
+                                            emit_needs_auth_open(&bus, methods.clone(), provider.as_deref(), Some(message));
                                         }
                                     }
                                 },
@@ -3622,8 +3624,8 @@ where
                                                 additional_directories, &cfg.additional_directories, &control_done_tx);
                                         }
                                         if current.is_none() {
-                                            let provider = auth_provider(&surface, None, &cfg);
-                                            match create_prompt_session(&cx, &cwd, &surface, &bus, &methods, Some(&method), Some(provider.as_str()), additional_directories, &cfg.additional_directories).await {
+                                            let provider = auth_provider(&surface, None);
+                                            match create_prompt_session(&cx, &cwd, &surface, &bus, &methods, Some(&method), provider.as_deref(), additional_directories, &cfg.additional_directories).await {
                                                 Ok(Some(sid)) => {
                                                     bind_session(&mut sessions, &mut current, &mut pending, sid);
                                                     session_auth_pending = false;
@@ -3654,23 +3656,31 @@ where
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!("authenticate: {}", acp_error_message(&err)))));
                                     }
                                 },
-                                ControlFinish::LoggedOut { result } => match result {
-                                    Ok(()) => {
-                                        // Name the credential the session
-                                        // actually ran on (the signed-out
-                                        // method), else the last sign-in —
-                                        // "signed out" never guesses the
-                                        // first advertised method (#160).
-                                        let signed_out = selected.take();
-                                        let provider = auth_provider(
-                                            &surface,
-                                            current.as_ref().map(|sid| &*sid.0),
-                                            &cfg,
+                                ControlFinish::LoggedOut { provider, result } => match result {
+                                    Ok(response) => {
+                                        // Name the credential the agent
+                                        // says it cleared, else the scope
+                                        // the request was sent with, else
+                                        // the sign-in matching that
+                                        // provider — never the first
+                                        // advertised method (#160).
+                                        let cleared = logout_cleared_providers(
+                                            &serde_json::to_value(&response).unwrap_or_default(),
                                         );
+                                        let scoped = cleared.first().or(provider.as_ref());
+                                        let signed_out = selected.take().filter(|method| {
+                                            method_provider_id(method)
+                                                == scoped.map(String::as_str)
+                                        });
                                         emit_method_auth(&bus, &surface, needs_auth_snapshot(
                                             methods.clone(),
-                                            method_for_provider(&methods, &provider)
-                                                .or(signed_out.as_ref())
+                                            // The sign-in disambiguates
+                                            // methods that share a provider
+                                            // (an OAuth and an API key for
+                                            // the same account).
+                                            signed_out.as_ref()
+                                                .or_else(|| scoped
+                                                    .and_then(|p| method_for_provider(&methods, p)))
                                                 .or_else(|| sole_method(&methods)),
                                             Some("signed out — pick a method to sign in again".into()),
                                         ));
@@ -3686,8 +3696,8 @@ where
                                     }
                                 },
                             }
-                            if active_plugin_operation.is_none() { drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked, &methods,
-                                selected.as_ref(), &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx); }
+                            if active_plugin_operation.is_none() { drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
+                                &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx); }
                         }
                         steer = steer_done_rx.recv() => {
                             if let Some(SteerFinish { session_id, message_id, deferred }) = steer {
@@ -3720,8 +3730,6 @@ where
                                 &cx,
                                 &bus,
                                 &mut parked,
-                                &methods,
-                                selected.as_ref(),
                                 &surface,
                                 &cfg.workspace,
                                 &mut prompt_gen,
@@ -3772,14 +3780,14 @@ where
                                 }));
                             } else {
                                 let ok = matches!(done.result, Ok(_));
-                                let provider = auth_provider(&surface, Some(&done.session_id), &cfg);
+                                let provider = auth_provider(&surface, Some(&done.session_id));
                                 apply_prompt_finish(
                                     done,
                                     &mut sessions,
                                     &mut parked,
                                     &bus,
                                     &methods,
-                                    Some(provider.as_str()),
+                                    provider.as_deref(),
                                 );
                                 if ok && !parked.is_empty() {
                                     // A success releases stalls only for
@@ -3807,8 +3815,6 @@ where
                                     &cx,
                                     &bus,
                                     &mut parked,
-                                    &methods,
-                                    selected.as_ref(),
                                     &surface,
                                     &cfg.workspace,
                                     &mut prompt_gen,
@@ -3828,7 +3834,7 @@ where
                     }
                     if active_plugin_operation.is_none() {
                         drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
-                            &methods, selected.as_ref(), &surface, &cfg.workspace,
+                            &surface, &cfg.workspace,
                             &mut prompt_gen, &prompt_done_tx);
                     }
                 }

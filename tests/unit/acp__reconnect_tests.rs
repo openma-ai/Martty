@@ -422,6 +422,249 @@ async fn logout_names_the_provider_method_not_the_first_advertised() {
     client.await.expect("connect join").expect("connect result");
 }
 
+/// `logout` is scoped to the session's provider in `_meta`: dsh-acp reads
+/// `_meta.provider`, pi-acp reads `_meta.pi.logout.provider` — the request
+/// carries both so either agent clears the credential the session runs on
+/// (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_scopes_the_request_to_the_session_provider() {
+    let (meta_tx, mut meta_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("logout-scope-mock")
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(
+                            AgentCapabilities::new().auth(
+                                AgentAuthCapabilities::new()
+                                    .logout(LogoutCapabilities::new()),
+                            ),
+                        )
+                        .auth_methods(vec![
+                            agent_client_protocol::schema::v1::AuthMethod::Agent(
+                                agent_client_protocol::schema::v1::AuthMethodAgent::new(
+                                    "api-key:openrouter",
+                                    "OpenRouter API key",
+                                ),
+                            ),
+                            agent_client_protocol::schema::v1::AuthMethod::Agent(
+                                agent_client_protocol::schema::v1::AuthMethodAgent::new(
+                                    "api-key:deepseek-official",
+                                    "DeepSeek API key",
+                                ),
+                            ),
+                        ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1")).config_options(vec![
+                        agent_client_protocol::schema::v1::SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "openrouter/deepseek/deepseek-chat",
+                            vec![agent_client_protocol::schema::v1::SessionConfigSelectOption::new(
+                                "openrouter/deepseek/deepseek-chat",
+                                "DeepSeek Chat",
+                            )],
+                        ),
+                    ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: LogoutRequest, responder, _cx| {
+                let _ = meta_tx.send(req.meta);
+                responder.respond(LogoutResponse::new())
+            },
+            on_receive_request!(),
+        );
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+
+    // `SessionBound` precedes config application — the session's model
+    // provider is recorded when the `Catalog` event lands.
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::Catalog { session_id, .. })
+            if session_id.as_deref() == Some("s1"))
+    })
+    .await;
+    // The UI marks the bound session active the same way the app does.
+    cmd_tx
+        .send(Cmd::ActiveSession {
+            session_id: Some("s1".into()),
+        })
+        .expect("active session cmd");
+    cmd_tx.send(Cmd::Logout).expect("logout cmd");
+
+    let meta = tokio::time::timeout(Duration::from_secs(2), meta_rx.recv())
+        .await
+        .expect("logout reached the agent")
+        .expect("logout carries a _meta scope");
+    let value = serde_json::to_value(meta).unwrap();
+    assert_eq!(value["provider"], json!("openrouter"), "dsh-acp scope key");
+    assert_eq!(
+        value["pi"]["logout"]["provider"],
+        json!("openrouter"),
+        "pi-acp scope key"
+    );
+    assert!(meta_rx.try_recv().is_err(), "only one logout request is sent");
+
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown cmd");
+    let _ = client.await;
+}
+
+/// When the agent reports what it cleared, the notice names that provider's
+/// method — the user's own sign-in disambiguates two methods sharing one
+/// provider (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_names_the_cleared_provider() {
+    let agent = Agent
+        .builder()
+        .name("logout-cleared-mock")
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(
+                            AgentCapabilities::new().auth(
+                                AgentAuthCapabilities::new()
+                                    .logout(LogoutCapabilities::new()),
+                            ),
+                        )
+                        .auth_methods(vec![
+                            agent_client_protocol::schema::v1::AuthMethod::Agent(
+                                agent_client_protocol::schema::v1::AuthMethodAgent::new(
+                                    "oauth:openrouter",
+                                    "OpenRouter OAuth",
+                                ),
+                            ),
+                            agent_client_protocol::schema::v1::AuthMethod::Agent(
+                                agent_client_protocol::schema::v1::AuthMethodAgent::new(
+                                    "api-key:openrouter",
+                                    "OpenRouter API key",
+                                ),
+                            ),
+                        ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1")).config_options(vec![
+                        agent_client_protocol::schema::v1::SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "openrouter/deepseek/deepseek-chat",
+                            vec![agent_client_protocol::schema::v1::SessionConfigSelectOption::new(
+                                "openrouter/deepseek/deepseek-chat",
+                                "DeepSeek Chat",
+                            )],
+                        ),
+                    ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: agent_client_protocol::schema::v1::AuthenticateRequest,
+                        responder,
+                        _cx| {
+                responder.respond(
+                    agent_client_protocol::schema::v1::AuthenticateResponse::new(),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: LogoutRequest, responder, _cx| {
+                let mut response = LogoutResponse::new();
+                response.meta = Some(
+                    json!({"pi": {"logout": {"cleared": ["openrouter"]}, "authStatus": {"kind": "none", "providers": []}}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                );
+                responder.respond(response)
+            },
+            on_receive_request!(),
+        );
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:openrouter".into(),
+            values: Default::default(),
+        })
+        .expect("authenticate cmd");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::Auth(snapshot))
+            if snapshot.status == crate::acp_auth::AuthStatus::Configured)
+    })
+    .await;
+    cmd_tx.send(Cmd::Logout).expect("logout cmd");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::Auth(snapshot))
+            if snapshot.status == crate::acp_auth::AuthStatus::NeedsAuth
+                && snapshot.method_label() == Some("OpenRouter API key"))
+    })
+    .await;
+
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown cmd");
+    client.await.expect("connect join").expect("connect result");
+}
+
+/// Signing out with no session and no provider scope still names the
+/// credential the user signed in with (issue #160).
+#[test]
+fn logout_provider_falls_back_to_the_selected_method() {
+    use crate::acp_auth::AuthMethodInfo;
+    let method = |id: &str, name: &str| AuthMethodInfo {
+        id: id.into(),
+        name: Some(name.into()),
+        description: None,
+        type_name: "agent".into(),
+        form: false,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: None,
+    };
+    let openrouter = method("api-key:openrouter", "OpenRouter API key");
+    let deepseek = method("api-key:deepseek-official", "DeepSeek API key");
+    let terminal = method("pi-terminal-login", "Log in with pi");
+    let methods = vec![openrouter.clone(), deepseek.clone(), terminal];
+    let surface = std::sync::Arc::new(std::sync::Mutex::new(Surface::default()));
+
+    // No session: the sign-in's own provider suffix names the scope.
+    assert_eq!(
+        logout_provider(&surface, &methods, Some(&deepseek)),
+        Some("deepseek-official".to_string())
+    );
+    // Nothing known and several providers: bare logout — no scope is
+    // better than a wrong one.
+    assert_eq!(logout_provider(&surface, &methods, None), None);
+    // A lone advertised provider is the only credential possible.
+    assert_eq!(
+        logout_provider(&surface, std::slice::from_ref(&openrouter), None),
+        Some("openrouter".to_string())
+    );
+}
+
 /// A prompt typed while sign-in is pending is queued — never sent — and the
 /// picker is re-opened so the user sees why nothing ran (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -575,16 +818,23 @@ async fn run_attach_stdio_connects_and_shuts_down() {
     task.await.expect("run join").expect("run result");
 }
 
-/// A spawn argv that dies immediately surfaces `ConnectionFailed` instead of
+/// A spawn whose pipes are dead surfaces `ConnectionFailed` instead of
 /// hanging the client: the run stays alive with no agent attached, prompts
 /// fail fast, and `Cmd::Shutdown` still ends the loop (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_spawn_fails_fast_when_the_agent_dies() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    // The child keeps its pipes open long enough for `connect_with` to
+    // establish the transport and send `initialize`, then dies — the
+    // in-flight handshake fails inside the command loop, the path `run`
+    // reports as `ConnectionFailed` while staying alive for fail-fast
+    // prompts. (A child dead before the transport exists makes `run`
+    // itself return Err, which `run_blocking` maps to the same event —
+    // tolerated below via `client.is_finished()`.)
     let client = tokio::spawn(run(
         test_cfg(),
-        AcpEndpoint::Spawn(vec!["sh".into(), "-c".into(), "exit 0".into()]),
+        AcpEndpoint::Spawn(vec!["sh".into(), "-c".into(), "sleep 1".into()]),
         bus_tx,
         cmd_rx,
     ));
@@ -592,6 +842,12 @@ async fn run_spawn_fails_fast_when_the_agent_dies() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         assert!(std::time::Instant::now() < deadline, "ConnectionFailed never arrived");
+        if client.is_finished() {
+            // The wire failure raced ahead of the event loop: `run`
+            // reported it as an error return instead — still no hang.
+            assert!(client.await.expect("run join").is_err(), "dead spawn must fail the run");
+            return;
+        }
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
             Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { .. })) => break,
             Ok(_) => {}

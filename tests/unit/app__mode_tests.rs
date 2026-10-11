@@ -4890,7 +4890,7 @@ fn agent_slash_commands_pass_through_unfiltered() {
 
 #[test]
 fn empty_auth_with_several_methods_opens_the_picker() {
-    let (mut app, ctl, _rx) = test_app();
+    let (mut app, _ctl, _rx) = test_app();
     app.demo = false;
     let methods = crate::acp_auth::parse_auth_methods(
         &serde_json::json!([
@@ -4910,7 +4910,7 @@ fn empty_auth_with_several_methods_opens_the_picker() {
         &Default::default(),
     );
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
-    app.open_auth_surface(&ctl);
+    app.open_auth_surface();
     let picker = app.picker.as_ref().expect("auth picker");
     assert!(matches!(picker.kind, PickerKind::Auth));
     assert_eq!(picker.items.len(), 2);

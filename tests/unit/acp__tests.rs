@@ -5564,6 +5564,30 @@ fn name_needs_auth_matches_the_failing_provider() {
 }
 
 #[test]
+fn auth_provider_never_guesses_the_launch_provider() {
+    // Without a bound session the credential in play is unknown: the
+    // launch-config provider is Martty's own preset, not something the
+    // agent named — the notice stays generic (issue #160).
+    let surface = std::sync::Arc::new(std::sync::Mutex::new(Surface::default()));
+    assert_eq!(auth_provider(&surface, None), None);
+    assert_eq!(auth_provider(&surface, Some("s-missing")), None);
+}
+
+#[test]
+fn provider_candidates_splits_double_colon_model_ids() {
+    // Multi-provider dsh models encode `provider::model` — the head is the
+    // provider id the agent itself advertises (issue #160).
+    assert_eq!(
+        provider_candidates("deepseek-official::deepseek-v4-pro"),
+        vec!["deepseek-official".to_string(), "deepseek".to_string()]
+    );
+    assert_eq!(
+        provider_candidates("openrouter/deepseek/deepseek-chat"),
+        vec!["openrouter".to_string()]
+    );
+}
+
+#[test]
 fn provider_candidates_skips_an_empty_leading_segment() {
     // A provider head starting with '-' yields an empty prefix at the
     // first cut; it is skipped rather than matching every method id.

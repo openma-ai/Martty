@@ -16,9 +16,13 @@ pub(super) enum ControlFinish {
         method: AuthMethodInfo,
         result: Result<(), AcpError>,
     },
-    /// ACP `logout` / `auth/logout` completed (ok or agent error).
+    /// ACP `logout` / `auth/logout` completed (ok or agent error); carries
+    /// the provider scope the request was sent with, and the response so
+    /// the agent's own report of what was cleared can be surfaced (issue
+    /// #160).
     LoggedOut {
-        result: Result<(), AcpError>,
+        provider: Option<String>,
+        result: Result<agent_client_protocol::schema::v1::LogoutResponse, AcpError>,
     },
 }
 
@@ -120,6 +124,21 @@ impl ControlWorkers {
     }
 }
 
+/// Provider scope for `logout` in `_meta`. No negotiated shape exists —
+/// each agent documents its own key (`_meta.provider` for dsh-acp,
+/// `_meta.pi.logout.provider` for pi-acp); an agent only reads its own
+/// extension, so both keys scope the same credential for either (issue
+/// #160).
+fn logout_scope_meta(provider: &str) -> agent_client_protocol::schema::v1::Meta {
+    json!({
+        "provider": provider,
+        "pi": { "logout": { "provider": provider } },
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_control(
     cmd: Cmd,
@@ -127,9 +146,7 @@ async fn run_control(
     bus: Sender<AppEvent>,
     surface: Arc<Mutex<Surface>>,
     methods: Vec<AuthMethodInfo>,
-    // Kept for the enqueue signature: auth notices name the provider's
-    // credential, not the last-used method (issue #160).
-    _selected: Option<AuthMethodInfo>,
+    selected: Option<AuthMethodInfo>,
     cwd: std::path::PathBuf,
     load_session: bool,
     resume_session: bool,
@@ -679,12 +696,19 @@ async fn run_control(
             let _ = done.send(ControlFinish::Authenticated { method, result });
         }
         Cmd::Logout => {
+            // Scope the logout to the session's provider when it can be
+            // named — a bare `logout` lets an agent clear a different
+            // credential than the one the session runs on (issue #160).
+            let provider = logout_provider(&surface, &methods, selected.as_ref());
+            let mut request = LogoutRequest::new();
+            if let Some(provider) = provider.as_deref() {
+                request = request.meta(logout_scope_meta(provider));
+            }
             let result = cx
-                .send_request(LogoutRequest::new())
+                .send_request(request)
                 .block_task_setup_deadline()
-                .await
-                .map(|_| ());
-            let _ = done.send(ControlFinish::LoggedOut { result });
+                .await;
+            let _ = done.send(ControlFinish::LoggedOut { provider, result });
         }
         Cmd::NewSession { .. } => {
             let mut request = new_session_request(&cwd, additional_directories, &directories);

@@ -4579,7 +4579,7 @@ impl App {
                     CtlEvent::SessionAuth { session_id, snapshot, open } => {
                         if session_id == self.session_id {
                             self.handle_inner(AppEvent::Ctl(CtlEvent::Auth(snapshot)), ctl);
-                            if open { self.open_auth_surface(ctl); }
+                            if open { self.open_auth_surface(); }
                         } else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
                             if let Some(connection) = &mut slot.connection { connection.auth = snapshot; }
                         }
@@ -4647,7 +4647,7 @@ impl App {
                         self.auth = snap;
                     }
                     CtlEvent::OpenAuth => {
-                        self.open_auth_surface(ctl);
+                        self.open_auth_surface();
                     }
                     CtlEvent::AgentCaps {
                         load_session,
@@ -6801,7 +6801,7 @@ impl App {
             Action::AttachClipboard => self.clip_image("", ctl),
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
-            Action::OpenAuth => self.open_auth_surface(ctl),
+            Action::OpenAuth => self.open_auth_surface(),
             Action::CyclePermission => self.cycle_permission(ctl),
             Action::ComposerGrow => self.resize_composer_step(1),
             Action::ComposerShrink => self.resize_composer_step(-1),
@@ -9107,12 +9107,12 @@ impl App {
             }),
             Err(err) => {
                 self.transcript.push_notice(NoticeLevel::Error, err);
-                self.open_auth_surface(ctl);
+                self.open_auth_surface();
             }
         }
     }
 
-    pub(crate) fn open_auth_surface(&mut self, _ctl: &Controller) {
+    pub(crate) fn open_auth_surface(&mut self) {
         if self.demo {
             return;
         }
