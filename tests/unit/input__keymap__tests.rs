@@ -481,3 +481,13 @@ fn ctrl_shift_l_classifies_as_open_auth() {
         Some(crate::input::keymap::Action::OpenAuth)
     );
 }
+
+#[test]
+fn plain_g_does_not_open_auth() {
+    // The 'g' arm's ctrl guard must keep plain g typing/vim keys elsewhere.
+    let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_ne!(
+        classify(&key, crate::input::keymap::KeyCtx::default()),
+        Some(crate::input::keymap::Action::OpenAuth)
+    );
+}

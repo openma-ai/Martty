@@ -4173,3 +4173,50 @@ fn fielded_form_renders_the_error_line() {
         .collect();
     assert!(text.contains("too short"), "{text}");
 }
+
+#[test]
+fn auth_picker_clamps_long_labels_before_the_meta_column() {
+    // pi-acp advertises ~40-char method names; they must ellipsize instead
+    // of overflowing into the type column (issue #160).
+    use crate::app::{Picker, PickerItem, PickerKind, PICKER_LABEL_COL};
+    let mut app = test_app();
+    app.show_banner = false;
+    // Theme is a kind that can mark a current entry: item `a` exercises the
+    // `✓` row (clamp to COL-3), item `b` the plain row (clamp to COL-1).
+    app.active_palette_id = "a".into();
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Theme,
+        title: " sign in ".into(),
+        sel: 0,
+        items: vec![
+            PickerItem {
+                id: "a".into(),
+                label: "Sign in with a very long provider name that overflows".into(),
+                meta: "agent".into(),
+                provider: None,
+            },
+            PickerItem {
+                id: "b".into(),
+                label: "Another long method name that also overflows here".into(),
+                meta: "agent".into(),
+                provider: None,
+            },
+        ],
+    });
+    let frame = dump_frame(&mut app, 100, 30);
+    for line in frame.lines().filter(|l| l.contains('…') && l.contains("agent")) {
+        // The picker floats inside the frame — measure the meta column
+        // relative to the row's own leading marker.
+        let start = line.find('▸').or_else(|| line.find('│')).unwrap_or(0);
+        let meta_col = line[start..]
+            .find("agent")
+            .map(|index| line[start..start + index].chars().count())
+            .expect("meta column still rendered");
+        assert!(
+            meta_col <= 2 + PICKER_LABEL_COL + 2,
+            "label overflowed the {PICKER_LABEL_COL}-char column: {line}"
+        );
+    }
+    assert!(frame.contains('…'), "long labels ellipsize:\n{frame}");
+}

@@ -502,6 +502,11 @@ pub enum Cmd {
     /// ACP `logout` (v2 `auth/logout`): offered only when the agent declared
     /// `agentCapabilities.auth.logout`; the picker reopens on success.
     Logout,
+    /// The auth picker was dismissed without choosing a method. Prompts
+    /// parked on that session for a post-sign-in retry can never run now —
+    /// they are dropped visibly so the session cannot stall behind a picker
+    /// the user already closed (issue #160).
+    AuthSkipped { session_id: String },
     /// Terminal sign-in finished on the TTY (exit 0): drop the current
     /// transport, respawn the configured agent, and re-run `initialize`.
     /// Never implies `authenticate` — terminal methods must not be sent to

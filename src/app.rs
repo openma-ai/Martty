@@ -7062,7 +7062,14 @@ impl App {
         let page = self.picker_page_rows.max(1);
         let sel_before = picker.sel;
         match key.code {
-            KeyCode::Esc => self.picker = None,
+            KeyCode::Esc => {
+                if kind == PickerKind::Auth {
+                    ctl.send(Cmd::AuthSkipped {
+                        session_id: self.session_id.clone(),
+                    });
+                }
+                self.picker = None;
+            }
             KeyCode::Up => picker.sel = picker.sel.checked_sub(1).unwrap_or(n - 1),
             KeyCode::Down => picker.sel = (picker.sel + 1) % n,
             KeyCode::PageUp => picker.sel = picker.sel.saturating_sub(page),

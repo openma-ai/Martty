@@ -451,3 +451,32 @@ fn terminal_method_args_fall_back_when_meta_has_only_env() {
     assert_eq!(launch.args, vec!["login"]);
     assert_eq!(launch.env.get("B").map(String::as_str), Some("2"));
 }
+
+#[cfg(unix)]
+#[test]
+fn command_on_path_skips_non_executable_candidates() {
+    // A file that exists on PATH but lacks +x must fail the executability
+    // check and keep the search going — the short-circuit on a hit (or a
+    // metadata error) is what unwrap_or(false) is for.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("martty-path-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("martty-stub-160");
+    std::fs::write(&stub, b"#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o644)).unwrap();
+    // A directory never counts as a runnable command either.
+    std::fs::create_dir_all(dir.join("martty-dircmd-160")).unwrap();
+    let exe = dir.join("martty-runcmd-160");
+    std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let saved = std::env::var_os("PATH");
+    std::env::set_var("PATH", &dir);
+    assert!(command_on_path("martty-stub-160").is_none());
+    assert!(command_on_path("martty-dircmd-160").is_none());
+    assert_eq!(command_on_path("martty-runcmd-160"), Some(exe));
+    match &saved {
+        Some(v) => std::env::set_var("PATH", v),
+        None => std::env::remove_var("PATH"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

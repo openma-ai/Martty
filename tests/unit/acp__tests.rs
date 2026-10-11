@@ -5102,3 +5102,400 @@ async fn concurrent_steer_keeps_the_session_running_until_its_prompt_returns() {
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateResponse,
+        InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
+        PromptResponse, StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    // The agent refuses slash input with -32000 like the real agents do, and
+    // answers session/new slowly so the test can reach resolve_cmd_session's
+    // empty-sessions arm deterministically (#160).
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let agent = Agent
+        .builder()
+        .name("auth-release-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("auth-release-mock", "0"))
+                        .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new(
+                            "login", "Login",
+                        ))]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                responder.respond(AuthenticateResponse::new())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                async move |req: PromptRequest, responder, _cx| {
+                    let text = req
+                        .prompt
+                        .iter()
+                        .find_map(|block| match block {
+                            ContentBlock::Text(text) => Some(text.text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let _ = prompt_tx.send(text.clone());
+                    if text.starts_with('/') {
+                        responder.respond_with_error(AcpError::new(
+                            -32000,
+                            "Authentication required: authenticate with one of the advertised auth methods",
+                        ))
+                    } else {
+                        if text.starts_with("slow") {
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                        }
+                        responder.respond(PromptResponse::new(StopReason::EndTurn))
+                    }
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // Before the session binds the session map is empty: both commands
+    // resolve to "no session" and stay silent instead of erroring.
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "ghost".into() })
+        .expect("auth skip before any session");
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "ghost".into() })
+        .expect("interrupt before any session");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    while let Ok(event) = bus_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Ctl(CtlEvent::SessionOpFailed { .. })),
+            "no session means nothing to fail"
+        );
+    }
+
+    // A typed /login is refused and parks behind the auth picker.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "/login".into() })
+        .expect("prompt");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut needs_auth = false;
+    while Instant::now() < deadline && !needs_auth {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::NeedsAuth =>
+            {
+                needs_auth = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(needs_auth, "/login refusal opened the picker");
+    assert_eq!(
+        prompt_rx.try_recv().expect("/login was on the wire").as_str(),
+        "/login"
+    );
+
+    // Esc on the picker declines sign-in: the parked /login is dropped
+    // visibly instead of stalling every later prompt.
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "s1".into() })
+        .expect("auth skip");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut skipped = false;
+    while Instant::now() < deadline && !skipped {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::SessionNotice { session, title, .. }))
+                if session == "s1" && title.contains("sign-in skipped") =>
+            {
+                assert!(title.contains("1 held prompt"), "{title}");
+                skipped = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(skipped, "dropping the held prompt is visible");
+
+    // Skipping with nothing held is a silent no-op.
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "s1".into() })
+        .expect("empty auth skip");
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // Later input flows to the agent instead of hanging on the dead park.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "hello".into() })
+        .expect("prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("hello reaches the agent after auth was skipped")
+            .as_deref(),
+        Some("hello")
+    );
+
+    // Another refusal re-parks; followups entered while it is held report
+    // why they are waiting and never reach the wire.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "/login".into() })
+        .expect("prompt");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut reparked = false;
+    while Instant::now() < deadline && !reparked {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::NeedsAuth =>
+            {
+                reparked = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(reparked, "second refusal re-parks");
+    assert_eq!(
+        prompt_rx.try_recv().expect("/login re-sent").as_str(),
+        "/login"
+    );
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "held text".into() })
+        .expect("held text");
+    cmd_tx
+        .send(Cmd::PromptImages {
+            session_id: "s1".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("held image".into())],
+        })
+        .expect("held image");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut held = 0;
+    while Instant::now() < deadline && held < 2 {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, snapshot, open }))
+                if session_id == "s1"
+                    && snapshot.status == AuthStatus::NeedsAuth
+                    && snapshot
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("input is held"))
+                    && open =>
+            {
+                held += 1;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(held, 2, "held prompts say why they wait");
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        prompt_rx.try_recv().is_err(),
+        "held prompts stay off the wire"
+    );
+
+    // Esc with no live turn still resolves: held + queued sends are dropped
+    // visibly and the UI's pending turn is settled.
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "s1".into() })
+        .expect("interrupt");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut noticed = false;
+    let mut interrupted = false;
+    while Instant::now() < deadline && !(noticed && interrupted) {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ui(crate::events::UiEvent::SessionNotice { session, title, .. }))
+                if session == "s1" && title.contains("cancelled") =>
+            {
+                assert!(title.contains("3 pending prompts"), "{title}");
+                noticed = true;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::Interrupted { session_id }))
+                if session_id == "s1" =>
+            {
+                interrupted = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(noticed && interrupted, "esc resolves held and queued prompts");
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        prompt_rx.try_recv().is_err(),
+        "discarded prompts never reach the wire"
+    );
+
+    // Esc with nothing pending is silent.
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "s1".into() })
+        .expect("empty interrupt");
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    while let Ok(event) = bus_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Ctl(CtlEvent::Interrupted { .. })),
+            "nothing pending means nothing to cancel"
+        );
+    }
+
+    // The session still works afterwards.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "free".into() })
+        .expect("prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("session usable after cancel")
+            .as_deref(),
+        Some("free")
+    );
+
+    // Image prompts take the same paths: queued behind a live turn, sent
+    // when free.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "slow-gate".into() })
+        .expect("slow prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("slow prompt on the wire")
+            .as_deref(),
+        Some("slow-gate")
+    );
+    cmd_tx
+        .send(Cmd::PromptImages {
+            session_id: "s1".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("img queued".into())],
+        })
+        .expect("image behind a live turn");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("queued image drains after the turn")
+            .as_deref(),
+        Some("img queued")
+    );
+    // A control-lane op in flight makes the session busy the same way.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "login".into(),
+            values: Default::default(),
+        })
+        .expect("authenticate keeps the session busy");
+    cmd_tx
+        .send(Cmd::PromptImages {
+            session_id: "s1".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("img busy".into())],
+        })
+        .expect("image while control-busy");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("image drains once the control op settles")
+            .as_deref(),
+        Some("img busy")
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    cmd_tx
+        .send(Cmd::PromptImages {
+            session_id: "s1".into(),
+            blocks: vec![crate::bus::PromptBlock::Text("img begin".into())],
+        })
+        .expect("image while free");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("image sent while free")
+            .as_deref(),
+        Some("img begin")
+    );
+
+    // Unknown sessions report the failure for both commands.
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "ghost".into() })
+        .expect("interrupt unknown");
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "ghost".into() })
+        .expect("auth skip unknown");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut failures = std::collections::BTreeSet::new();
+    while Instant::now() < deadline && failures.len() < 2 {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionOpFailed { session_id, message }))
+                if session_id == "ghost" =>
+            {
+                failures.insert(message);
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(
+        failures.iter().any(|message| message.contains("interrupt")),
+        "{failures:?}"
+    );
+    assert!(
+        failures.iter().any(|message| message.contains("auth skip")),
+        "{failures:?}"
+    );
+
+    // Catalog requests just read the cached session surface.
+    cmd_tx
+        .send(Cmd::FetchCatalog { session_id: "s1".into() })
+        .expect("catalog for s1");
+
+    // Once the last session is gone the map is empty again: the same
+    // commands resolve to "no session" and stay silent (Ok(None) arm).
+    cmd_tx
+        .send(Cmd::ForgetSession { session_id: "s1".into() })
+        .expect("forget s1");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    cmd_tx
+        .send(Cmd::AuthSkipped { session_id: "ghost".into() })
+        .expect("auth skip with no sessions");
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "ghost".into() })
+        .expect("interrupt with no sessions");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    while let Ok(event) = bus_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Ctl(CtlEvent::SessionOpFailed { .. })),
+            "no sessions means nothing to fail"
+        );
+    }
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}

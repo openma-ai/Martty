@@ -918,6 +918,15 @@ fn apply_prompt_finish(
                         acp_error_message(&err)
                     ),
                 }));
+                let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
+                    session: finish.session_id.clone(),
+                    kind: "interrupted".into(),
+                }));
+                // The sign-in *succeeded* — this refusal answers the
+                // retried message, not the credential. Re-opening the
+                // picker or flipping the status back to "sign-in needed"
+                // would lie about the auth state and loop the sign-in
+                // prompt after every accepted credential (issue #160).
             } else {
                 // Park the payload with its owning session so the retry
                 // (after `authenticate`) lands on the right tab.
@@ -925,18 +934,18 @@ fn apply_prompt_finish(
                     session: Some(finish.session_id.clone()),
                     kind: finish.payload,
                 });
-            }
-            let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
-                session: finish.session_id.clone(),
-                kind: "interrupted".into(),
-            }));
-            if let Some(value) = err.data.as_ref().and_then(|data| data.get("marttyConnection")) {
-                let mut snapshot = session_connection_snapshot(value).auth;
-                snapshot.status = AuthStatus::NeedsAuth;
-                snapshot.message = Some(acp_error_message(&err));
-                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id: finish.session_id, snapshot, open: true }));
-            } else {
-                emit_needs_auth_open(bus, methods.to_vec(), selected, Some(acp_error_message(&err)));
+                let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
+                    session: finish.session_id.clone(),
+                    kind: "interrupted".into(),
+                }));
+                if let Some(value) = err.data.as_ref().and_then(|data| data.get("marttyConnection")) {
+                    let mut snapshot = session_connection_snapshot(value).auth;
+                    snapshot.status = AuthStatus::NeedsAuth;
+                    snapshot.message = Some(acp_error_message(&err));
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth { session_id: finish.session_id, snapshot, open: true }));
+                } else {
+                    emit_needs_auth_open(bus, methods.to_vec(), selected, Some(acp_error_message(&err)));
+                }
             }
         }
         Err(err) => {
@@ -979,6 +988,26 @@ fn emit_open_auth_if_needed(bus: &Sender<AppEvent>, status: AuthStatus) {
     if status == AuthStatus::NeedsAuth {
         let _ = bus.send(AppEvent::Ctl(CtlEvent::OpenAuth));
     }
+}
+
+/// A prompt queued behind an auth stall must say so: the owning session's
+/// tab gets the sign-in surface with the reason instead of waiting on a
+/// turn that never starts (issue #160).
+fn emit_held_prompt(
+    bus: &Sender<AppEvent>,
+    session_id: &str,
+    methods: &[AuthMethodInfo],
+    selected: Option<&AuthMethodInfo>,
+) {
+    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: session_id.to_string(),
+        snapshot: needs_auth_snapshot(
+            methods.to_vec(),
+            selected,
+            Some("input is held until you sign in — pick a method in the auth picker".into()),
+        ),
+        open: true,
+    }));
 }
 
 /// Queue a prompt-like command for the first session that binds. When the
@@ -2641,8 +2670,15 @@ where
                             };
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt") {
                                 Ok(Some(sid)) => {
+                                    let stalled = auth_stalled_for(&sid.0, &parked, &surface);
                                     let handle = sessions.entry(sid.to_string()).or_default();
-                                    if handle.inflight.is_some() || controls.busy(&sid.0) || auth_stalled_for(&sid.0, &parked, &surface) {
+                                    if stalled {
+                                        // Held for sign-in — never silently:
+                                        // the tab re-opens the picker with
+                                        // the reason (issue #160).
+                                        handle.queue.push_back(next);
+                                        emit_held_prompt(&bus, &sid.0, &methods, selected.as_ref());
+                                    } else if handle.inflight.is_some() || controls.busy(&sid.0) {
                                         handle.queue.push_back(next);
                                     } else {
                                         prompt_gen += 1;
@@ -2749,8 +2785,12 @@ where
                             };
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "prompt_images") {
                                 Ok(Some(sid)) => {
+                                    let stalled = auth_stalled_for(&sid.0, &parked, &surface);
                                     let handle = sessions.entry(sid.to_string()).or_default();
-                                    if handle.inflight.is_some() || controls.busy(&sid.0) || auth_stalled_for(&sid.0, &parked, &surface) {
+                                    if stalled {
+                                        handle.queue.push_back(next);
+                                        emit_held_prompt(&bus, &sid.0, &methods, selected.as_ref());
+                                    } else if handle.inflight.is_some() || controls.busy(&sid.0) {
                                         handle.queue.push_back(next);
                                     } else {
                                         prompt_gen += 1;
@@ -2879,7 +2919,71 @@ where
                                         if handle.inflight.is_some() {
                                             abort_turn(&cx, &Some(sid), &bus);
                                             handle.turn_aborted = true;
+                                        } else {
+                                            // No live turn, but queued or
+                                            // auth-held prompts still pin
+                                            // the session: Esc must resolve
+                                            // those too — drop the pending
+                                            // sends, say so, and settle the
+                                            // turn the UI believes is in
+                                            // flight (issue #160).
+                                            let queued = std::mem::take(&mut handle.queue).len();
+                                            let held = parked.iter().filter(|prompt| {
+                                                prompt.session.as_deref() == Some(&*sid.0)
+                                            }).count();
+                                            parked.retain(|prompt| {
+                                                prompt.session.as_deref() != Some(&*sid.0)
+                                            });
+                                            let dropped = queued + held;
+                                            if dropped > 0 {
+                                                let _ = bus.send(AppEvent::Ui(
+                                                    crate::events::UiEvent::SessionNotice {
+                                                        session: sid.to_string(),
+                                                        severity: "warn".into(),
+                                                        title: format!(
+                                                            "cancelled — discarded {} pending prompt{}",
+                                                            dropped,
+                                                            if dropped == 1 { "" } else { "s" }
+                                                        ),
+                                                        details: None,
+                                                    },
+                                                ));
+                                                let _ = bus.send(AppEvent::Ctl(CtlEvent::Interrupted {
+                                                    session_id: sid.to_string(),
+                                                }));
+                                            }
                                         }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+                                    session_id: cmd_session.clone(),
+                                    message: err,
+                                }));
+                                }
+                            }
+                        }
+                        Cmd::AuthSkipped { session_id: cmd_session } => {
+                            match resolve_cmd_session(&sessions, &current, &cmd_session, "auth skip") {
+                                Ok(Some(sid)) => {
+                                    let before = parked.len();
+                                    parked.retain(|prompt| {
+                                        prompt.session.as_deref() != Some(&*sid.0)
+                                    });
+                                    let dropped = before - parked.len();
+                                    if dropped > 0 {
+                                        let _ = bus.send(AppEvent::Ui(
+                                            crate::events::UiEvent::SessionNotice {
+                                                session: sid.to_string(),
+                                                severity: "warn".into(),
+                                                title: format!(
+                                                    "sign-in skipped — discarded {} held prompt(s)",
+                                                    dropped
+                                                ),
+                                                details: None,
+                                            },
+                                        ));
                                     }
                                 }
                                 Ok(None) => {}
@@ -3218,10 +3322,10 @@ where
                                 _ => {}
                             }
                         }
-                        completion = control_done_rx.recv(), if active_plugin_operation.is_none() => {
-                            match completion {
-                                Some(ControlFinish::SessionOperationDone { session_id }) => controls.settled(&session_id),
-                                Some(ControlFinish::Setup { result, requester }) => match result {
+                        Some(finish) = control_done_rx.recv(), if active_plugin_operation.is_none() => {
+                            match finish {
+                                ControlFinish::SessionOperationDone { session_id } => controls.settled(&session_id),
+                                ControlFinish::Setup { result, requester } => match result {
                                     Ok((sid, setup, notice)) => {
                                         bind_session(&mut sessions, &mut current, &mut pending, sid.clone());
                                         session_auth_pending = false;
@@ -3263,7 +3367,7 @@ where
                                         }
                                     }
                                 },
-                                Some(ControlFinish::Authenticated { method, result }) => match result {
+                                ControlFinish::Authenticated { method, result } => match result {
                                     Ok(()) => {
                                         selected = Some(method.clone());
                                         emit_method_auth(&bus, &surface, configured_snapshot(methods.clone(), Some(&method)));
@@ -3311,7 +3415,7 @@ where
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!("authenticate: {}", acp_error_message(&err)))));
                                     }
                                 },
-                                Some(ControlFinish::LoggedOut { result }) => match result {
+                                ControlFinish::LoggedOut { result } => match result {
                                     Ok(()) => {
                                         selected = None;
                                         emit_method_auth(&bus, &surface, needs_auth_snapshot(
@@ -3330,7 +3434,6 @@ where
                                         ))));
                                     }
                                 },
-                                None => {}
                             }
                             if active_plugin_operation.is_none() { drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked, &methods,
                                 selected.as_ref(), &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx); }

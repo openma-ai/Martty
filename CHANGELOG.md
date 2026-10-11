@@ -111,6 +111,14 @@ All notable changes to this project are documented here. The project follows
   sign-in and, if refused again, is discarded with a visible notice
   instead of stalling the session queue; a successful Terminal Auth
   credits the launched method by name in the credentials line.
+  Closing the auth picker reports the skip so prompts held for a
+  post-sign-in retry are dropped visibly instead of pinning the
+  session; a prompt queued while sign-in is unresolved says "input is
+  held until you sign in" rather than spinning on "contacting
+  runtime", and Esc with no live turn still resolves queued and held
+  prompts (the wire shows `session/cancel` and the drained sends).
+  Long auth-method names are ellipsized inside the picker's label
+  column instead of overflowing into the type column.
 
 
 ### Fixed

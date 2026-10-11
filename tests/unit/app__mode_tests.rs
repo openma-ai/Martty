@@ -5853,3 +5853,57 @@ fn vim_mode_defers_to_an_open_queue_edit() {
     // Vim was skipped — the queue editor let the key type through.
     assert_eq!(app.input.buf(), "keepx", "vim never saw the key");
 }
+
+#[test]
+fn esc_on_the_auth_picker_reports_auth_skipped() {
+    // Closing the auth picker declines sign-in for now: acp must hear about
+    // it so prompts held for a post-sign-in retry are dropped instead of
+    // stalling the session behind a dismissed picker (issue #160).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([{ "id": "oauth-personal", "name": "Google" }]),
+        &["antigravity-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.open_auth_picker();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(app.picker.is_none());
+    let command = commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("closing the auth picker reports the skip");
+    assert!(matches!(
+        command,
+        Cmd::AuthSkipped { session_id } if session_id == "dsh-test"
+    ));
+}
+
+#[test]
+fn esc_on_other_pickers_reports_nothing() {
+    use crate::app::{Picker, PickerItem};
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Theme,
+        title: " theme ".into(),
+        sel: 0,
+        items: vec![PickerItem {
+            id: "default".into(),
+            label: "default".into(),
+            meta: "theme".into(),
+            provider: None,
+        }],
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(app.picker.is_none());
+    assert!(
+        commands
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err(),
+        "a non-auth picker close sends no auth command"
+    );
+}

@@ -3548,11 +3548,16 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
     let mut rows = Vec::with_capacity(item_count);
     for item in &items {
         // The current model/mode gets a ✓ pinned to its label — it survives
-        // narrow terminals, unlike a right-edge tag.
+        // narrow terminals, unlike a right-edge tag. A label longer than the
+        // column is ellipsized so it cannot bleed into the meta column
+        // (pi-acp's method names run past 30 chars).
         let label = if is_current(item) {
-            format!("{} ✓", item.label)
+            format!(
+                "{} ✓",
+                crate::transcript::clamp_str(&item.label, crate::app::PICKER_LABEL_COL - 3)
+            )
         } else {
-            item.label.clone()
+            crate::transcript::clamp_str(&item.label, crate::app::PICKER_LABEL_COL - 1)
         };
         rows.push(Row::new(vec![
             Cell::from(Span::styled(
