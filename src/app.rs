@@ -9859,8 +9859,8 @@ impl App {
             } else {
                 self.show_tip(if self.queue_signin_pending() {
                     self.locale.tr(
-                        "sign-in needed · prompt stays queued — /auth to retry",
-                        "需要登录 · 消息保留在队列里 —— /auth 重试",
+                        "sign-in needed · prompt stays queued — ctrl+g opens the auth picker",
+                        "需要登录 · 消息保留在队列里 —— ctrl+g 打开登录选择器",
                     )
                 } else {
                     self.locale.tr(
@@ -9944,14 +9944,14 @@ impl App {
                 if self.queue_attach_failed() {
                     "agent attach failed — prompt stays queued"
                 } else if self.queue_signin_pending() {
-                    "sign-in needed — /auth to retry"
+                    "sign-in needed — ctrl+g opens the auth picker"
                 } else {
                     "session still binding — prompt stays queued"
                 },
                 if self.queue_attach_failed() {
                     "Agent 连接失败 —— 消息保留在队列里"
                 } else if self.queue_signin_pending() {
-                    "需要先登录 —— /auth 重试"
+                    "需要先登录 —— ctrl+g 打开登录选择器"
                 } else {
                     "会话仍在绑定中 —— 消息保留在队列里"
                 },
