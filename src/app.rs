@@ -1631,6 +1631,10 @@ pub struct App {
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
     pub connection_error: Option<String>,
+    /// The agent answered `initialize` with a refusal — it is attached but
+    /// refused the handshake. Distinct from a dead attach (`connection_error`
+    /// alone): the send path stays open because `session/new` can still bind.
+    pub attach_refused: bool,
     pub needs_redraw: bool,
 }
 
@@ -2071,6 +2075,7 @@ impl App {
             bus_tx,
             server_info: None,
             connection_error: None,
+            attach_refused: false,
             needs_redraw: true,
         };
         app.transcript.locale = locale;
@@ -3603,11 +3608,31 @@ impl App {
         }
     }
 
+    /// The attach finished and failed: no session will bind, so no queued
+    /// prompt can be promoted — views must not promise "send first". An
+    /// answered refusal is not "failed": the agent is attached, so a
+    /// queued prompt can still retry `session/new` once it is sent.
+    pub(crate) fn queue_attach_failed(&self) -> bool {
+        !self.session_bound && self.connection_error.is_some() && !self.attach_refused
+    }
+
+    /// The agent is attached but sign-in must complete before a bind can
+    /// land — the queue head stays put until authentication settles.
+    pub(crate) fn queue_signin_pending(&self) -> bool {
+        !self.session_bound
+            && matches!(
+                self.auth.status,
+                crate::acp_auth::AuthStatus::NeedsAuth
+                    | crate::acp_auth::AuthStatus::SigningIn
+                    | crate::acp_auth::AuthStatus::Failed
+            )
+    }
+
     /// Identity of everything `queue_snapshot` projects, without the summary
     /// strings: ordered prompt ids (order captures reordering) plus the
-    /// selection/edit/confirm flags. A summary edit always passes through an
-    /// `editing_id` transition, so text changes are covered too.
-    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool) {
+    /// selection/edit/confirm/attach flags. A summary edit always passes
+    /// through an `editing_id` transition, so text changes are covered too.
+    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool, bool, bool) {
         (
             self.prompt_queue.iter().map(|prompt| prompt.id).collect(),
             self.queue_selection
@@ -3615,6 +3640,8 @@ impl App {
                 .map(|prompt| prompt.id),
             self.queue_edit.as_ref().map(|edit| edit.prompt_id),
             self.queue_delete_confirming(),
+            self.queue_attach_failed(),
+            self.queue_signin_pending(),
         )
     }
 
@@ -3681,6 +3708,8 @@ impl App {
             selected_id,
             editing_id,
             delete_confirm: self.queue_delete_confirming(),
+            attach_failed: self.queue_attach_failed(),
+            auth_pending: self.queue_signin_pending(),
         }
     }
 
@@ -4070,6 +4099,7 @@ impl App {
                     },
                     CtlEvent::Starting { runtime } => {
                         self.connection_error = None;
+                        self.attach_refused = false;
                         self.state = RunState::Starting;
                         self.run_started = Some(Instant::now());
                         self.state_note = if runtime == "harness" {
@@ -4083,6 +4113,7 @@ impl App {
                     }
                     CtlEvent::Ready { server } => {
                         self.connection_error = None;
+                        self.attach_refused = false;
                         self.server_info = Some(server.clone());
                         if !self.prompt_pending {
                             self.state = RunState::Idle;
@@ -4094,6 +4125,11 @@ impl App {
                         if !target.is_empty() { self.server_info = Some(target); }
                         if self.server_info.is_none() { self.server_info = Some("ACP".into()); }
                         self.connection_error = Some(error.clone());
+                        self.attach_refused = false;
+                        // A failed attach must show its error, not the welcome
+                        // page — the banner skips transcript lines entirely
+                        // (same convention as BindFailedTo above).
+                        self.show_banner = false;
                         self.session_id = "unavailable".into();
                         self.session_bound = false;
                         self.session_model = None;
@@ -4104,6 +4140,30 @@ impl App {
                         self.run_started = None;
                         self.state_note.clear();
                         self.transcript.push_notice(NoticeLevel::Error, error);
+                    }
+                    CtlEvent::ConnectionRefused { target, error } => {
+                        if !target.is_empty() { self.server_info = Some(target); }
+                        if self.server_info.is_none() { self.server_info = Some("ACP".into()); }
+                        self.connection_error = Some(error.clone());
+                        self.attach_refused = true;
+                        // Same transcript convention as a failed attach: the
+                        // refusal replaces the welcome page. The auth state
+                        // is kept — a sign-in offer may have just opened.
+                        self.show_banner = false;
+                        self.session_id = "unavailable".into();
+                        self.session_bound = false;
+                        self.session_model = None;
+                        self.selected_model = None;
+                        self.prompt_pending = false;
+                        self.state = RunState::Idle;
+                        self.run_started = None;
+                        self.state_note.clear();
+                        // An auth-carrying refusal already printed its
+                        // needs-auth block with this message (the Auth event
+                        // lands first) — don't print it twice.
+                        if !self.queue_signin_pending() {
+                            self.transcript.push_notice(NoticeLevel::Error, error);
+                        }
                     }
                     CtlEvent::PromptQueued {
                         session_id: Some(sid),
@@ -4608,6 +4668,7 @@ impl App {
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
                         self.connection_error = None;
+                        self.attach_refused = false;
                         // The session that just bound, for the queue dispatch
                         // below (prompts submitted while the tab was unbound
                         // are held in its queue — acp.rs rejects unbound ids).
@@ -9594,7 +9655,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         let acp = if self.demo {
             "demo".to_string()
         } else if self.connection_error.is_some() {
-            "failed".to_string()
+            if self.attach_refused { "refused" } else { "failed" }.to_string()
         } else if self.attached {
             "attached".to_string()
         } else {
@@ -9785,10 +9846,29 @@ impl App {
                 blocks: vec![StagedBlock::Text(text.clone())],
             });
             self.queued += 1;
-            self.show_tip(self.locale.tr(
-                "queued · empty enter sends first · alt+↑ edit",
-                "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
-            ));
+            // A refused attach can reattach inline: the prompt's own Enter
+            // releases the queue head so `session/new` retries without a
+            // second keypress. Sign-in pending, a dead attach, and a retry
+            // already in flight keep the queue.
+            if self.attach_refused
+                && !self.queue_signin_pending()
+                && !self.prompt_pending
+                && self.state != RunState::Running
+            {
+                self.send_queue_head_now(ctl);
+            } else {
+                self.show_tip(if self.queue_signin_pending() {
+                    self.locale.tr(
+                        "sign-in needed · prompt stays queued — /auth to retry",
+                        "需要登录 · 消息保留在队列里 —— /auth 重试",
+                    )
+                } else {
+                    self.locale.tr(
+                        "queued · empty enter sends first · alt+↑ edit",
+                        "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
+                    )
+                });
+            }
         } else {
             self.transcript.push_user(text.clone(), false);
             self.prompt_pending = true;
@@ -9854,10 +9934,27 @@ impl App {
     /// Empty Enter promotes the FIFO head into the active turn. If the agent
     /// cannot accept the steer, settlement restores the item to the front.
     fn send_queue_head_now(&mut self, ctl: &Controller) {
-        if !self.session_bound {
+        // An agent that answered `initialize` with a refusal is attached —
+        // a non-auth refusal lets the head through so `session/new` retries
+        // inline; everything else unbound keeps the queue.
+        if !self.session_bound && !(self.attach_refused && !self.queue_signin_pending()) {
+            // A finished-but-failed attach keeps the queue too: say so —
+            // "still binding" wrongly implies the bind is in progress.
             self.show_tip(self.locale.tr(
-                "session still binding — prompt stays queued",
-                "会话仍在绑定中 —— 消息保留在队列里",
+                if self.queue_attach_failed() {
+                    "agent attach failed — prompt stays queued"
+                } else if self.queue_signin_pending() {
+                    "sign-in needed — /auth to retry"
+                } else {
+                    "session still binding — prompt stays queued"
+                },
+                if self.queue_attach_failed() {
+                    "Agent 连接失败 —— 消息保留在队列里"
+                } else if self.queue_signin_pending() {
+                    "需要先登录 —— /auth 重试"
+                } else {
+                    "会话仍在绑定中 —— 消息保留在队列里"
+                },
             ));
             return;
         }

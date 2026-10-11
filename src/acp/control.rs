@@ -900,6 +900,8 @@ async fn run_control(
                         "selectedId": snapshot.selected_id,
                         "editingId": snapshot.editing_id,
                         "deleteConfirm": snapshot.delete_confirm,
+                        "attachFailed": snapshot.attach_failed,
+                        "authPending": snapshot.auth_pending,
                     }),
                 )
                 .await;

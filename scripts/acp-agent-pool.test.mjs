@@ -213,6 +213,9 @@ test('a failed initialization preserves the ACP error and leaves older sessions 
   const failed = await c.request('session/new')
   assert.equal(failed.error.code,-32001)
   assert.equal(failed.error.data.reason,'fixture')
+  // A reply the agent itself authored is not marked as a pool-synthesized
+  // child exit — the client can still try session work and sign in.
+  assert.equal(failed.error.data.agentExited, undefined)
   assert.equal((await c.request('session/prompt',{sessionId:first,prompt:[]})).result._meta.fixture,'alpha')
 })
 
@@ -227,6 +230,9 @@ test('process exit reports a bounded stderr tail exactly once', {timeout:5000}, 
   assert.match(failed.error.message,/17/)
   assert.match(failed.error.message,/diagnostic-tail/)
   assert.equal(failed.error.message.split('Agent stderr:').length,2)
+  // The pool marks its synthesized child-exit error so the client can tell
+  // a dead child apart from a refusal the agent authored.
+  assert.equal(failed.error.data.agentExited, true)
   assert.ok(Buffer.byteLength(failed.error.message)<8400)
 })
 
@@ -430,6 +436,7 @@ test('agent death during a pending assert drops the write but settles the client
   c.service.child.kill()
   const reply = await prompt
   assert.match(reply.error?.message ?? '', /exited|closed/i, `expected failure reply, got ${JSON.stringify(reply)}`)
+  assert.equal(reply.error.data.agentExited, true)
 })
 
 test('closing during a pending assert skips the prompt write', {timeout:5000}, async t => {

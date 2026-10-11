@@ -4,6 +4,7 @@ import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createInterface } from 'node:readline'
 import test from 'node:test'
 import { apply, resolveAgent } from '../npm/lib/acp-client.js'
@@ -136,6 +137,44 @@ test('environment Harness override preserves quoted executable paths and argumen
   } finally {
     if (before === undefined) delete process.env.DSH_TUI_AGENT
     else process.env.DSH_TUI_AGENT = before
+  }
+})
+
+test('resolveStackedAgent falls back to a martty-named profile install', () => {
+  const beforeAgent = process.env.DSH_TUI_AGENT
+  const beforeHome = process.env.DSH_HOME
+  delete process.env.DSH_TUI_AGENT
+  const home = mkdtempSync(path.join(tmpdir(), 'martty-profile-fallback-'))
+  const modules = path.join(home, 'profiles', 'martty', 'node_modules')
+  const bin = path.join(modules, '.bin', 'dsh-acp')
+  const creator = path.join(modules, 'martty', 'creator')
+  try {
+    mkdirSync(path.dirname(bin), { recursive: true })
+    writeFileSync(bin, '#!/bin/sh\n')
+    mkdirSync(creator, { recursive: true })
+    writeFileSync(path.join(creator, 'package.json'), '{}\n')
+    process.env.DSH_HOME = home
+    // An anchor outside any package makes the dependency-stack resolution
+    // throw, exercising the profile fallback — where the `martty` package
+    // name must resolve next to the legacy `@openma/deepseek-harness-tui`.
+    const anchor = pathToFileURL(path.join(home, 'loose', 'agent.js')).href
+    assert.deepEqual(resolveStackedAgent(anchor), {
+      command: bin,
+      args: ['--bundle', creator],
+    })
+    // Without a creator package the profile is skipped; without the
+    // dsh-acp bin the same is true — both end on the bare default.
+    rmSync(path.join(creator, 'package.json'))
+    assert.deepEqual(resolveStackedAgent(anchor), { command: 'dsh-acp', args: [] })
+    writeFileSync(path.join(creator, 'package.json'), '{}\n')
+    rmSync(bin)
+    assert.deepEqual(resolveStackedAgent(anchor), { command: 'dsh-acp', args: [] })
+  } finally {
+    if (beforeAgent === undefined) delete process.env.DSH_TUI_AGENT
+    else process.env.DSH_TUI_AGENT = beforeAgent
+    if (beforeHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = beforeHome
+    rmSync(home, { recursive: true, force: true })
   }
 })
 
@@ -358,4 +397,114 @@ test('Harness child does not inherit the outer npm exec package or call selectio
   `)
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(JSON.parse(result.stdout.trim()), { registry: 'https://registry.npmjs.org/', custom: 'kept' })
+})
+
+test('agent stderr warnings surface in the input dock when tuiSlots is present', async (t) => {
+  const updates = []
+  const registrations = []
+  const ctx = {
+    tuiSlots: {
+      register(options, nodes) {
+        registrations.push({ options, nodes })
+        return { update(nodes) { updates.push(nodes) }, dispose() {} }
+      },
+    },
+  }
+  const script = [
+    `process.stderr.write('[dsh-acp] harness host: bundled\\n')`,
+    `process.stderr.write('dsh-acp: warning: 1 entry did not activate\\n')`,
+    `process.stderr.write('tui-creator-overlay (/x/creator-overlay.js): RemoteError: Unknown agent preset: cordis\\n')`,
+    `process.stderr.write('\\n')`,
+    `process.stderr.write('    at Proxy.retain (/x/registry.js:643)\\n')`,
+    `process.stderr.end('warn: dangling tail line')`,
+  ].join('\n')
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', script] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  assert.equal(registrations.length, 1)
+  assert.equal(registrations[0].options.name, 'conversation.input.dock')
+  assert.equal(registrations[0].options.id, 'acp-agent-warnings')
+  assert.deepEqual(registrations[0].nodes, [])
+  const notice = updates.at(-1)?.[0]
+  assert.equal(notice.kind, 'notice')
+  assert.equal(notice.level, 'warn')
+  assert.match(notice.text, /1 entry did not activate/)
+  assert.match(notice.text, /RemoteError: Unknown agent preset: cordis/)
+  assert.match(notice.text, /dangling tail line/)
+  assert.doesNotMatch(notice.text, /harness host|Proxy\.retain/)
+})
+
+test('ctx.get supplies tuiSlots for the dock warnings contribution', async (t) => {
+  const updates = []
+  const ctx = {
+    get(name) {
+      if (name !== 'tuiSlots') return undefined
+      return {
+        register() {
+          return { update(nodes) { updates.push(nodes) }, dispose() {} }
+        },
+      }
+    },
+  }
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', `process.stderr.write('warn: hi\\n')`] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  assert.match(updates.at(-1)?.[0]?.text ?? '', /warn: hi/)
+})
+
+test('the dock notice keeps only the newest four warning lines', async (t) => {
+  const updates = []
+  const ctx = {
+    tuiSlots: {
+      register() {
+        return { update(nodes) { updates.push(nodes) }, dispose() {} }
+      },
+    },
+  }
+  const writes = [1, 2, 3, 4, 5, 6]
+    .map((n) => `process.stderr.write('warn: line ${n}\\n')`)
+    .join('\n')
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', writes] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  const text = updates.at(-1)?.[0]?.text ?? ''
+  assert.equal(text, 'warn: line 3\nwarn: line 4\nwarn: line 5\nwarn: line 6')
+})
+
+test('without tuiSlots, stderr warnings stay diagnostics-only', async (t) => {
+  const ctx = {}
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', `process.stderr.write('warn: silent\\n')`] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  assert.match(ctx.acpClient.diagnostics?.() ?? '', /warn: silent/)
+})
+
+test('a tuiSlots register failure keeps stderr diagnostics-only', async (t) => {
+  const ctx = {
+    get() {
+      return { register() { throw new Error('slot occupied') } }
+    },
+  }
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', `process.stderr.write('warn: still silent\\n')`] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  assert.match(ctx.acpClient.diagnostics?.() ?? '', /warn: still silent/)
+})
+
+test('a disposed dock contribution never breaks the stderr drain', async (t) => {
+  let calls = 0
+  const ctx = {
+    tuiSlots: {
+      register() {
+        return {
+          update() { calls += 1; throw new Error('disposed') },
+          dispose() {},
+        }
+      },
+    },
+  }
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', `process.stderr.write('warn: one\\nwarn: two\\n')`] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  assert.equal(calls, 2)
 })

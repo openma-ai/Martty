@@ -298,3 +298,51 @@ test('painter SIGTERM (fiber dispose) is not a process quit', () => {
 test('host TTY restore is a no-op without a TTY', () => {
   assert.doesNotThrow(() => restoreHostTty())
 })
+
+test('host TTY restore leaves the alt screen without a cursor restore', () => {
+  const written = []
+  const rawModes = []
+  const savedInTty = process.stdin.isTTY
+  const savedOutTty = process.stdout.isTTY
+  const savedRaw = process.stdin.setRawMode
+  const savedWrite = process.stdout.write
+  process.stdin.isTTY = true
+  process.stdin.setRawMode = (value) => rawModes.push(value)
+  process.stdout.isTTY = true
+  process.stdout.write = (chunk) => {
+    written.push(chunk)
+    return true
+  }
+  try {
+    restoreHostTty()
+  } finally {
+    process.stdin.isTTY = savedInTty
+    process.stdout.isTTY = savedOutTty
+    process.stdin.setRawMode = savedRaw
+    process.stdout.write = savedWrite
+  }
+  assert.deepEqual(rawModes, [false])
+  // ?1047l reclaims the alt screen if the painter died dirty; a second ?1049l
+  // on the main screen would also restore the cursor saved at ?1049h and the
+  // next output would overwrite the `session <id>` line the painter printed.
+  assert.equal(
+    written.join(''),
+    '\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1047l',
+  )
+  assert.ok(!written.join('').includes('1049'))
+})
+
+test('host TTY restore tolerates a closed stdin', () => {
+  const savedInTty = process.stdin.isTTY
+  const savedRaw = process.stdin.setRawMode
+  process.stdin.isTTY = true
+  process.stdin.setRawMode = () => {
+    throw new Error('stdin already closed')
+  }
+  try {
+    assert.doesNotThrow(() => restoreHostTty())
+  } finally {
+    process.stdin.isTTY = savedInTty
+    process.stdin.setRawMode = savedRaw
+  }
+})

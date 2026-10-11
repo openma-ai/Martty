@@ -575,24 +575,53 @@ async fn run_attach_stdio_connects_and_shuts_down() {
     task.await.expect("run join").expect("run result");
 }
 
-/// A spawn argv that dies immediately fails the run instead of hanging the
-/// client — the connect error propagates to the caller (issue #160).
+/// A spawn argv that dies immediately surfaces `ConnectionFailed` instead of
+/// hanging the client: the run stays alive with no agent attached, prompts
+/// fail fast, and `Cmd::Shutdown` still ends the loop (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_spawn_fails_fast_when_the_agent_dies() {
-    let (bus_tx, _bus_rx) = std::sync::mpsc::channel();
-    let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        run(
-            test_cfg(),
-            AcpEndpoint::Spawn(vec!["sh".into(), "-c".into(), "exit 0".into()]),
-            bus_tx,
-            cmd_rx,
-        ),
-    )
-    .await
-    .expect("no hang");
-    assert!(result.is_err(), "spawned agent that exits must error");
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(run(
+        test_cfg(),
+        AcpEndpoint::Spawn(vec!["sh".into(), "-c".into(), "exit 0".into()]),
+        bus_tx,
+        cmd_rx,
+    ));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "ConnectionFailed never arrived");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { .. })) => break,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "hello".into() })
+        .expect("prompt while detached");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "detached prompt never settled");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Error(message))) => {
+                assert!(message.contains("agent is not attached"), "unexpected error: {message}");
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let result = tokio::time::timeout(Duration::from_secs(10), client)
+        .await
+        .expect("no hang");
+    result.expect("run join").expect("run result");
 }
 
 /// A prompt with no bound session and no pending sign-in is parked with a

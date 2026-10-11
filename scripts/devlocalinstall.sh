@@ -77,7 +77,8 @@ for (const name of names) {
     continue // bundle not installed
   }
   const bin = pkg.bin
-  const binScript = typeof bin === 'string' ? bin : bin?.['martty'] ?? bin?.['dsh-tui']
+  const binScript =
+    typeof bin === 'string' ? bin : bin?.['martty'] ?? bin?.['martty-cli'] ?? bin?.['dsh-tui']
   if (typeof binScript !== 'string' || !binScript.length) continue
   out.candidates.push({
     name,

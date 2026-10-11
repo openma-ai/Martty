@@ -34,8 +34,9 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
-    on_receive_notification, on_receive_request, AcpAgent, Agent, ByteStreams, Client, ConnectTo,
-    ConnectionTo, Error as AcpError, Handled, SentRequest, UntypedMessage,
+    is_incoming_transport_closed, on_receive_notification, on_receive_request, AcpAgent, Agent,
+    ByteStreams, Client, ConnectTo, ConnectionTo, Error as AcpError, Handled, SentRequest,
+    UntypedMessage,
 };
 
 use crate::acp_auth::{
@@ -1901,6 +1902,38 @@ async fn request_with_deadline<T>(request: SentRequest<T>, deadline: Duration) -
     }
 }
 
+/// Whether an `initialize` failure is a reply the agent itself authored —
+/// meaning it is attached and may still authenticate — rather than a locally
+/// synthesized failure: transport EOF on a direct spawn, the harness pool's
+/// `agentExited` marker for a dead child, or our own request deadline (a
+/// bare `-32001` with no agent-supplied data).
+fn init_was_answered(err: &AcpError) -> bool {
+    if is_incoming_transport_closed(err) {
+        return false;
+    }
+    if err.data.is_none() && i32::from(err.code) == -32001 {
+        return false;
+    }
+    if let Some(data) = err.data.as_ref() {
+        if data.get("agentExited").and_then(Value::as_bool) == Some(true) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The message of a refusal the agent itself answered. Our transport wraps
+/// agent error replies with an "Agent stderr:" diagnostics tail, but a
+/// refused handshake's own words are the diagnosis — the tail is unrelated
+/// launch noise, so drop it before surfacing the refusal.
+fn init_refusal_message(err: &AcpError) -> String {
+    let message = acp_error_message(err);
+    match message.split_once("\nAgent stderr:") {
+        Some((head, _)) => head.trim_end().to_string(),
+        None => message,
+    }
+}
+
 async fn call_tui_extension(
     cx: &ConnectionTo<Agent>,
     method: &str,
@@ -2555,7 +2588,97 @@ where
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
                 }));
-                let init = cx.send_request(initialize_request()).block_task_setup_deadline().await?;
+                let init = cx.send_request(initialize_request()).block_task_setup_deadline().await;
+                // A failed handshake must not kill this task: the attach
+                // channel still carries the local compositor plane, so client
+                // diagnostics such as /status stay reachable. Report the
+                // failure and keep the command loop running without an agent.
+                // Loop state initialized up front: when the handshake failed,
+                // everything below stays empty and agent-bound commands simply
+                // error or park exactly like after a `session/new` failure.
+                // One stdio connection drives many sessions: each bound id
+                // gets its own turn state, and `current` is only the fallback
+                // target for commands that arrive without a usable id.
+                let mut sessions = HashMap::<String, SessionHandle>::new();
+                let mut current: Option<SessionId> = None;
+                // `pending` / `parked` / `session_auth_pending` came in via
+                // `ConnectCarry` and survive a transport respawn.
+                let mut methods = Vec::new();
+                let mut selected: Option<AuthMethodInfo> = None;
+                let mut additional_directories = false;
+                let mut load_session = false;
+                let mut resume_session = false;
+                let mut list_session = false;
+                // The handshake never produced an agent: prompt setup can
+                // only wait on a dead peer, so prompts short-circuit instead
+                // of parking the command loop behind a doomed `session/new`.
+                // An agent that answered `initialize` with a refusal is still
+                // attached — only failures that are not agent replies count.
+                let mut agent_absent = match &init {
+                    Ok(_) => false,
+                    Err(err) => !init_was_answered(err),
+                };
+                if let Err(err) = &init {
+                    if !agent_absent {
+                        // A refused handshake may carry the agent's auth
+                        // methods in its error data (the -32000 convention):
+                        // mirror the refused-`session/new` path — surface
+                        // them so the user can sign in, and hold prompts
+                        // until authenticate settles. A refusal demanding
+                        // auth while declaring no methods can never be
+                        // remedied, so prompts short-circuit the same way.
+                        let auth_raw = err
+                            .data
+                            .as_ref()
+                            .and_then(|data| data.get("authMethods"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let env = process_env();
+                        methods = parse_auth_methods(
+                            &auth_raw,
+                            &cfg.agent_argv(),
+                            &cfg.workspace,
+                            &env,
+                        );
+                        if is_auth_required_error(err) {
+                            if methods.is_empty() {
+                                agent_absent = true;
+                            } else {
+                                let provider = auth_provider(&surface, None, &cfg);
+                                emit_needs_auth_open(
+                                    &bus,
+                                    methods.clone(),
+                                    Some(provider.as_str()),
+                                    Some(init_refusal_message(err)),
+                                );
+                                session_auth_pending = true;
+                            }
+                        }
+                    }
+                    if agent_absent {
+                        // Locally synthesized failure (dead transport, an
+                        // exited child, our own deadline) or an auth
+                        // refusal that declared no methods — no live agent
+                        // can take another command.
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
+                            target: String::new(),
+                            error: acp_error_message(err),
+                        }));
+                    } else {
+                        // The agent answered — it is attached, so the
+                        // refused surface keeps the send path open: a queued
+                        // prompt retries `session/new` once it reaches the
+                        // command loop. Emit after `needs-auth` so the App
+                        // has already recorded the auth state when it
+                        // classifies the refusal.
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionRefused {
+                            target: String::new(),
+                            error: init_refusal_message(err),
+                        }));
+                    }
+                }
+                let cwd = std::path::PathBuf::from(&cfg.workspace);
+                if let Ok(init) = init {
                 let agent_name = init
                     .agent_info
                     .as_ref()
@@ -2575,13 +2698,13 @@ where
                     connection["cwd"] = json!(cfg.workspace);
                     surface.initial_connection = Some(session_connection_snapshot(&connection));
                 }
-                let load_session = init.agent_capabilities.load_session
+                load_session = init.agent_capabilities.load_session
                     || load_session_supported(&init_value);
-                let resume_session = resume_session_supported(&init_value);
+                resume_session = resume_session_supported(&init_value);
                 // Before sessionCapabilities.list existed, Martty-compatible agents paired
                 // session/list with the top-level loadSession flag. Keep that legacy route.
-                let list_session = list_session_supported(&init_value) || load_session;
-                let additional_directories = additional_directories_supported(&init_value);
+                list_session = list_session_supported(&init_value) || load_session;
+                additional_directories = additional_directories_supported(&init_value);
                 let fork_session = fork_session_supported(&init_value);
                 let close_session = close_session_supported(&init_value);
                 let auth_logout = init.agent_capabilities.auth.logout.is_some()
@@ -2602,7 +2725,7 @@ where
                     .cloned()
                     .unwrap_or(Value::Null);
                 let env = process_env();
-                let methods = parse_auth_methods(
+                methods = parse_auth_methods(
                     &auth_raw,
                     &cfg.agent_argv(),
                     &cfg.workspace,
@@ -2612,17 +2735,11 @@ where
                 let auth = snapshot_from_methods(methods.clone(), &declared, &env);
                 // Only authenticate selects a method; session/new cannot reveal
                 // which persisted credential (if any) the Agent used.
-                let mut selected: Option<AuthMethodInfo> = None;
-                let cwd = std::path::PathBuf::from(&cfg.workspace);
+                selected = None;
                 // Startup never opens the picker on its own — the snapshot
                 // only surfaces state; a real auth_required reply is what
                 // opens it (issue #160).
                 emit_auth(&bus, auth);
-                // One stdio connection drives many sessions: each bound id
-                // gets its own turn state, and `current` is only the fallback
-                // target for commands that arrive without a usable id.
-                let mut sessions = HashMap::<String, SessionHandle>::new();
-                let mut current: Option<SessionId> = None;
                 // `pending` / `parked` / `session_auth_pending` came in via
                 // `ConnectCarry` and survive a transport respawn.
                 let mut setup_failed = false;
@@ -2658,12 +2775,13 @@ where
                     Err(err) => {
                         setup_failed = true;
                         let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
-                            target: agent_name.clone(), error: format!("session/new: {err}")
+                            target: agent_name.clone(), error: format!("session/new: {}", acp_error_message(&err))
                         }));
                     }
                 }
                 if !setup_failed {
                     let _ = bus.send(AppEvent::Ctl(CtlEvent::Ready { server: agent_name }));
+                }
                 }
                 let (prompt_done_tx, mut prompt_done_rx) =
                     tokio::sync::mpsc::unbounded_channel::<PromptFinish>();
@@ -2726,6 +2844,13 @@ where
                                         });
                                         continue;
                                     }
+                                    if agent_absent {
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::Error(
+                                            "agent is not attached".into(),
+                                        )));
+                                        continue;
+                                    }
+                                    let provider = auth_provider(&surface, None, &cfg);
                                     match create_prompt_session(
                                         &cx,
                                         &cwd,

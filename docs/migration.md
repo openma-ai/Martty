@@ -48,8 +48,8 @@ ACP 负责 agent 控制面，私有 compositor 通道负责 Node → Rust 绘制
 make rust-test
 cd npm && npm test
 cd ../host && npm test
-dsh-tui --demo
-dsh-tui --demo-skin
+martty --demo
+martty --demo-skin
 ```
 
 ## 下一步 — 对话槽

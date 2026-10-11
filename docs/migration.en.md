@@ -55,8 +55,8 @@ Verification:
 make rust-test
 cd npm && npm test
 cd ../host && npm test
-dsh-tui --demo
-dsh-tui --demo-skin
+martty --demo
+martty --demo-skin
 ```
 
 ## Next — conversation slots

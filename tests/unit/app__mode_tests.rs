@@ -2005,6 +2005,329 @@ fn enter_on_an_empty_composer_sends_the_queue_head_now() {
 }
 
 #[test]
+fn queue_head_send_after_a_failed_attach_says_the_attach_failed() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    // Attach finished but failed: no session will ever bind, so the queue
+    // head cannot be promoted — the tip must name the failure, not imply
+    // a bind is still in progress.
+    app.session_bound = false;
+    app.connection_error = Some("attach refused".into());
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+    assert!(app.input.is_empty());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("attach failed"), "tip: {tip}");
+    assert_eq!(app.queued, 1, "the prompt stays queued");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+        "nothing is sent while the attach is dead"
+    );
+}
+
+#[test]
+fn queue_head_send_while_still_binding_keeps_the_binding_tip() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    // No connection_error recorded: the attach is still in flight, so the
+    // bind genuinely may land — the tip keeps promising "still binding",
+    // not the failed-attach wording.
+    app.session_bound = false;
+    app.connection_error = None;
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+    assert!(app.input.is_empty());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("still binding"), "tip: {tip}");
+    assert!(!tip.contains("attach failed"), "tip: {tip}");
+    assert_eq!(app.queued, 1, "the prompt stays queued");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+        "nothing is sent while the session is unbound"
+    );
+}
+
+#[test]
+fn a_refused_attach_sends_the_queue_head_for_a_bind_retry() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    // The agent answered `initialize` with a non-auth refusal: it is still
+    // attached, so the queue head must reach the command channel — the acp
+    // loop retries `session/new` inline when the prompt arrives (issue #157).
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "unsupported client".into(),
+        }),
+        &ctl,
+    );
+    assert!(!app.session_bound);
+    assert!(app.attach_refused);
+    assert!(
+        !app.queue_attach_failed(),
+        "a refused attach is not the dead-attach surface"
+    );
+    assert_eq!(app.state, RunState::Idle);
+
+    app.send_agent_text("hello".into(), &ctl);
+
+    // The prompt's own submit releases the queue head on a refused attach —
+    // no second Enter on the empty composer (round-5 real-TUI check).
+    match commands.recv_timeout(std::time::Duration::from_millis(300)) {
+        Ok(Cmd::Prompt { text, .. }) => assert_eq!(text, "hello"),
+        other => {
+            panic!("the queue head must be sent for the inline session/new retry: {other:?}")
+        }
+    }
+    assert_eq!(app.queued, 0, "the prompt left the queue");
+}
+
+#[test]
+fn a_typed_prompt_releases_the_retry_on_a_refused_attach() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "unsupported client".into(),
+        }),
+        &ctl,
+    );
+    // The real input path: type into the composer and submit with Enter —
+    // the prompt must reach the agent without another keypress.
+    for ch in "hi".chars() {
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char(ch),
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+    }
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+    match commands.recv_timeout(std::time::Duration::from_millis(300)) {
+        Ok(Cmd::Prompt { text, .. }) => assert_eq!(text, "hi"),
+        other => panic!("a typed prompt must dispatch on its own Enter: {other:?}"),
+    }
+    assert_eq!(app.queued, 0, "nothing stays queued on a refused attach");
+}
+
+#[test]
+fn a_second_prompt_stays_queued_while_the_refused_retry_is_in_flight() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "unsupported client".into(),
+        }),
+        &ctl,
+    );
+    app.send_agent_text("first".into(), &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)),
+        Ok(Cmd::Prompt { .. })
+    ));
+    // The bind retry is in flight (prompt_pending): the next prompt must not
+    // dispatch a steer to a session that does not exist yet — it queues for
+    // the SessionBound flush instead.
+    app.send_agent_text("second".into(), &ctl);
+    assert_eq!(app.queued, 1, "the second prompt waits for the bind");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+        "no steer may leave while the retry is unbound"
+    );
+}
+
+#[test]
+fn queue_head_send_while_sign_in_is_pending_keeps_the_sign_in_tip() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    // Sign-in is pending on a refused attach: the prompt stays queued — the
+    // bind retry only makes sense after authentication settles.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::AuthSnapshot {
+            status: crate::acp_auth::AuthStatus::NeedsAuth,
+            method_id: Some("oauth-x".into()),
+            method_name: Some("Sign in with X".into()),
+            methods: Vec::new(),
+            message: Some("sign in first".into()),
+        })),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "sign in first".into(),
+        }),
+        &ctl,
+    );
+    assert!(app.attach_refused);
+    assert!(app.queue_signin_pending());
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+    assert!(app.input.is_empty());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("sign-in needed"), "tip: {tip}");
+    assert!(!tip.contains("attach failed"), "tip: {tip}");
+    assert_eq!(app.queued, 1, "the prompt stays queued");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+        "nothing is sent while sign-in is pending"
+    );
+
+    // A prompt submitted while sign-in is pending also names the hold — the
+    // generic "empty enter sends first" tip would promise a send that the
+    // gate still declines.
+    app.send_agent_text("typed".into(), &ctl);
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("sign-in needed"), "tip: {tip}");
+    assert_eq!(app.queued, 2, "the typed prompt queues behind the held one");
+
+    // Signing-in and a failed sign-in hold the head the same way — the
+    // queue only opens once authentication has a route forward.
+    for status in [
+        crate::acp_auth::AuthStatus::SigningIn,
+        crate::acp_auth::AuthStatus::Failed,
+    ] {
+        app.auth.status = status;
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+        let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+        assert!(tip.contains("sign-in needed"), "tip for {status:?}: {tip}");
+        assert_eq!(app.queued, 2, "the prompts stay queued for {status:?}");
+    }
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+        "nothing is sent while sign-in is unresolved"
+    );
+}
+
+#[test]
+fn an_auth_carrying_refusal_shows_the_refusal_once() {
+    let (mut app, ctl, _rx) = test_app();
+    // The needs-auth block already carries the refusal text — the refused
+    // connect itself must not print the same message a second time.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::AuthSnapshot {
+            status: crate::acp_auth::AuthStatus::NeedsAuth,
+            method_id: Some("oauth-x".into()),
+            method_name: Some("Sign in with X".into()),
+            methods: Vec::new(),
+            message: Some("sign in first".into()),
+        })),
+        &ctl,
+    );
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "sign in first".into(),
+        }),
+        &ctl,
+    );
+
+    let mentions = app
+        .transcript
+        .cells
+        .iter()
+        .filter(|cell| match &cell.kind {
+            crate::transcript::CellKind::Notice { text, .. } => text.contains("sign in first"),
+            _ => false,
+        })
+        .count();
+    assert_eq!(mentions, 1, "the refusal must render exactly once");
+}
+
+#[test]
+fn a_refused_attach_reports_refused_in_status_and_keeps_the_server() {
+    let (mut app, ctl, _rx) = test_app();
+    // An empty target keeps the server name the handshake reported; /status
+    // names the refused attach instead of the dead-attach "failed".
+    app.server_info = Some("kept-agent".into());
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: String::new(),
+            error: "unsupported client".into(),
+        }),
+        &ctl,
+    );
+    assert_eq!(app.server_info.as_deref(), Some("kept-agent"));
+
+    app.demo = false;
+    let status_text = |app: &mut App| {
+        app.push_status_info();
+        let view = app.view_overlay.as_ref().expect("status overlay opened");
+        match &view.nodes[0] {
+            crate::slots::TuiNode::Markdown { text, .. } => text.clone(),
+            _ => panic!("status content is a markdown node"),
+        }
+    };
+    let text = status_text(&mut app);
+    assert!(text.contains("- acp · refused"), "status text: {text}");
+
+    // A recovered attach reports attached again; a peer that never shook
+    // hands reports not attached.
+    app.connection_error = None;
+    app.attach_refused = false;
+    app.attached = true;
+    let text = status_text(&mut app);
+    assert!(text.contains("- acp · attached"), "status text: {text}");
+    app.attached = false;
+    let text = status_text(&mut app);
+    assert!(text.contains("- acp · not attached"), "status text: {text}");
+}
+
+#[test]
 fn a_deferred_queue_head_steer_returns_to_the_front() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
@@ -2132,6 +2455,14 @@ fn connection_failure_clears_pending_surface_and_recovers_on_ready() {
     assert_eq!(app.session_id, "unavailable");
     assert_eq!(app.server_info.as_deref(), Some("Cline"));
     assert_eq!(app.connection_error.as_deref(), Some("process exited (1)"));
+    // The banner skips transcript lines — a failed attach leaves it so the
+    // full error (including the agent stderr tail) stays readable wrapped
+    // in the transcript.
+    assert!(!app.show_banner);
+    assert!(matches!(
+        app.transcript.cells.last().map(|cell| &cell.kind),
+        Some(crate::transcript::CellKind::Notice { .. })
+    ));
     app.handle(AppEvent::Ctl(CtlEvent::Ready { server: "recovered-acp".into() }), &ctl);
     assert!(app.connection_error.is_none());
 }
@@ -2811,6 +3142,66 @@ fn queued_prompts_render_in_a_shelf_above_the_composer_not_the_timeline() {
     assert!(
         composer_row - queue_row <= 3,
         "queue shelf should be attached to the composer, not float in the timeline:\n{frame}"
+    );
+}
+
+#[test]
+fn queue_shelf_names_the_failed_attach_instead_of_promising_a_send() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.show_banner = false;
+    // Attach finished and failed: no session will bind, so Enter can never
+    // promote the queue head — the shelf header must not promise it.
+    app.session_bound = false;
+    app.connection_error = Some("attach refused".into());
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+
+    let frame = crate::ui::dump_frame(&mut app, 90, 24);
+    assert!(
+        frame.contains("attach failed · prompt stays queued"),
+        "queue shelf should name the failed attach:\n{frame}"
+    );
+    assert!(
+        !frame.contains("enter send first"),
+        "send-first hint must not show while the attach is dead:\n{frame}"
+    );
+}
+
+#[test]
+fn queue_shelf_names_the_sign_in_hold_instead_of_the_failed_attach() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.show_banner = false;
+    // Refused attach + sign-in pending: the shelf names the auth hold, not
+    // the dead-attach wording (the agent is attached and can sign in).
+    app.session_bound = false;
+    app.connection_error = Some("sign in first".into());
+    app.attach_refused = true;
+    app.auth = crate::acp_auth::AuthSnapshot {
+        status: crate::acp_auth::AuthStatus::NeedsAuth,
+        method_id: Some("oauth-x".into()),
+        method_name: Some("Sign in with X".into()),
+        methods: Vec::new(),
+        message: Some("sign in first".into()),
+    };
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+
+    let frame = crate::ui::dump_frame(&mut app, 90, 24);
+    assert!(
+        frame.contains("sign-in needed · prompt stays queued"),
+        "queue shelf should name the sign-in hold:\n{frame}"
+    );
+    assert!(
+        !frame.contains("attach failed"),
+        "a refused attach is not the dead-attach surface:\n{frame}"
     );
 }
 

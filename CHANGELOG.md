@@ -5,8 +5,56 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The Creator overlay no longer crashes on the bundled DeepSeek Harness
+  (`0.2.0-rc.2`) with `ctx.agentPresets.standingKeyFor is not a function`. It
+  now takes a scoped preset lease via `acquireScope`, which exists on every
+  published `@deepseek-ai/dsh-agent-preset-registry`, and releases it when the
+  overlay is disposed.
+- The Creator overlay now activates on the bundled runtime: the preset roster
+  fills in shortly after the overlay mounts, so `acquireScope` retries briefly
+  on `agent-preset/not-found` (bounded by `scopeWaitMs`) instead of failing the
+  entry on the first attempt.
+- Agent stderr warnings are now visible in the TUI: warning/error lines from
+  the spawned agent (e.g. "1 entry did not activate" and its RemoteError) show
+  as a notice in the input dock, so a failed bundle entry is no longer silent.
+- A failed ACP attach now shows the whole error: the status row keeps only the
+  first line (an embedded newline could never render there), the agent stderr
+  tail renders wrapped in the transcript instead of being hidden under the
+  welcome banner, and `/status` shows the full message in a fenced block.
+- `/status` and other client compositor commands now work after a failed ACP
+  attach: the attach task no longer exits on a refused `initialize`, so
+  diagnostics stay reachable. A prompt submitted in that state is held in the
+  queue, and the queue header/tip says the attach failed instead of promising
+  "send first"; prompts that do dispatch fail fast with
+  `agent is not attached` instead of parking behind the dead peer.
+- `/status` shows the dsh runtime the ACP agent actually booted
+  (`- dsh · <version> via <source>`), reported by dsh-acp through
+  `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the
+  bundled runtime from an explicit or plugin host.
+- An agent that answers `initialize` with a refusal is now treated as
+  attached instead of dead: a refusal declaring auth methods offers sign-in
+  and holds prompts until `authenticate` settles, a non-auth refusal lets the
+  next prompt attempt `session/new` inline, and only transport/process
+  failures (the agent never answered) short-circuit prompts with
+  `agent is not attached`. The refused attach is its own surface — `/status`
+  reports `acp · refused` and the landing row says `initialize refused`; a
+  queued prompt on a non-auth refusal is sent so `session/new` retries
+  (reaching the inline retry from the real queue, not just directly), and
+  the prompt's own Enter releases it — the reattach (initialize, then
+  `session/new`, then `session/prompt`) needs no second keypress; while
+  sign-in is pending the queue header and the submit tip say "sign-in
+  needed" instead of "attach failed", and the refusal renders once — the
+  needs-auth block no longer duplicates the attach notice.
+
 ### Added
 
+- Declare the `@deepseek-ai/dsh` versions this release supports
+  (`0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2`) in `npm/package.json` `dsh.supported`
+  and in the README, matching the range the bundled dsh-acp enforces. dsh
+  runtime selection and compatibility checking remain entirely dsh-acp's
+  job; Martty only displays the result.
 - Check releases in CI before npm publish. A pull request lists pull requests
   merged since the previous tag without failing, and a version bump must keep
   the npm package, lockfile, and Cargo versions together. A `v*` tag must
@@ -146,6 +194,35 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Install `martty` globally alongside or after the legacy
+  `@openma/deepseek-harness-tui` package (#156) — in every state it can be
+  in. The `martty` package (and the source `npm/package.json`, so `npm
+  link`ed checkouts link as the same package and replace — or get replaced
+  by — an installed `martty` in either order) declares only `martty-cli`, a
+  bin name nothing else owns, so `npm install --global martty` can never
+  fail with `EEXIST` (npm links bins before any lifecycle script, which
+  also made every `martty`-owning legacy release — 0.2.14/0.2.20,
+  `npm link`ed legacy checkouts — unblockable). A `postinstall` migration
+  step then retires the legacy package's stale `martty`/`dsh-tui`/`dsb`
+  links (third-party `dsh-tui` stays untouched), creates the `martty`
+  command itself — a self-cleaning shim that, after `npm rm -g martty`,
+  prints the reinstall hint once and removes itself instead of leaving a
+  dead link — and detaches the legacy package's `bin` declarations so a
+  later `npm rm -g @openma/deepseek-harness-tui` cannot take `martty` down
+  with it. `martty` warns at launch while the legacy package remains —
+  deferred to process exit on interactive terminals so the TUI cannot
+  paint over it; with `--ignore-scripts`, the first `martty-cli` (or
+  `npx martty`) launch runs the whole converge — retiring stale links,
+  recreating `martty`, and sanitizing the legacy manifest.
+- Quitting the TUI no longer loses the `session <id>` resume line: the
+  post-quit TTY restore now leaves the alt screen with `?1047l` instead of
+  re-emitting `?1049l`, whose extra cursor restore overwrote whatever the
+  painter had just printed to the terminal.
+- Fix the profile bundle inserts for the renamed package: `cordis.patch.yml`
+  still pointed the four TUI plugin rows at
+  `@openma/deepseek-harness-tui/<subpath>`, so a profile installing the
+  `martty`-named package could not import them (`4 entries did not activate`
+  in the Windows profile smoke). They now resolve `martty/<subpath>`.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,

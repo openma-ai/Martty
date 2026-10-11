@@ -75,16 +75,11 @@ export function resolveStackedAgent(anchor = import.meta.url, options = {}) {
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
   for (const profile of ['tui-test', 'martty', 'tui']) {
     const bin = join(home, 'profiles', profile, 'node_modules', '.bin', 'dsh-acp')
-    const creator = join(
-      home,
-      'profiles',
-      profile,
-      'node_modules',
-      '@openma',
-      'deepseek-harness-tui',
-      'creator',
-    )
-    if (existsSync(bin) && existsSync(join(creator, 'package.json'))) {
+    const creator = [
+      join(home, 'profiles', profile, 'node_modules', '@openma', 'deepseek-harness-tui', 'creator'),
+      join(home, 'profiles', profile, 'node_modules', 'martty', 'creator'),
+    ].find((dir) => existsSync(join(dir, 'package.json')))
+    if (existsSync(bin) && creator) {
       return { command: bin, args: ['--bundle', creator] }
     }
   }

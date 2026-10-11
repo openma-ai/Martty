@@ -33,6 +33,8 @@ test('the native Queue projection publishes immutable snapshots to Client plugin
     selectedId: 9,
     editingId: null,
     deleteConfirm: false,
+    attachFailed: true,
+    authPending: true,
   })
 
   assert.deepEqual(service.current(), {
@@ -44,6 +46,8 @@ test('the native Queue projection publishes immutable snapshots to Client plugin
     selectedId: 9,
     editingId: null,
     deleteConfirm: false,
+    attachFailed: true,
+    authPending: true,
   })
   assert.equal(seen.length, 1)
 
@@ -53,4 +57,7 @@ test('the native Queue projection publishes immutable snapshots to Client plugin
   stop()
   service.observe({ protocol: 0, items: [] })
   assert.equal(seen.length, 1)
+  // A snapshot without the flags defaults to a live attach.
+  assert.equal(service.current().attachFailed, false)
+  assert.equal(service.current().authPending, false)
 })
