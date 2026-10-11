@@ -348,6 +348,12 @@ struct SessionHandle {
     /// the primary prompt returned and before its own response does. The
     /// session stays busy until every in-flight prompt has returned.
     steers_inflight: usize,
+    /// Prompts requeued after an auth stall. Each one gets exactly one
+    /// retry after sign-in: a second `-32000` means the agent refused the
+    /// message outright (e.g. a harness-native `/login`), not "still
+    /// unauthenticated" — re-parking it would stall the session forever
+    /// (#160).
+    auth_retries: usize,
 }
 
 /// Resolve the session a command addresses: the id the UI carried, or the
@@ -840,7 +846,9 @@ fn requeue_parked_prompts(
                         blocks,
                     },
                 };
-                sessions.entry(sid).or_default().queue.push_front(cmd);
+                let handle = sessions.entry(sid).or_default();
+                handle.queue.push_front(cmd);
+                handle.auth_retries += 1;
                 retried += 1;
             }
             (None, kind) => still_parked.push_back(ParkedPrompt { session: None, kind }),
@@ -852,6 +860,7 @@ fn requeue_parked_prompts(
 
 fn apply_prompt_finish(
     finish: PromptFinish,
+    sessions: &mut HashMap<String, SessionHandle>,
     parked: &mut VecDeque<ParkedPrompt>,
     bus: &Sender<AppEvent>,
     methods: &[AuthMethodInfo],
@@ -887,15 +896,36 @@ fn apply_prompt_finish(
             // the caller (it owns the session map); nothing parks here.
         }
         Err(err) if is_auth_required_error(&err) => {
-            // Park the payload with its owning session so the retry (after
-            // `authenticate`) lands on the right tab. The turn itself is
-            // over for the UI: settle the session's transcript and badge
-            // like any other turn end — but never start a new prompt while
-            // the stall stands.
-            parked.push_back(ParkedPrompt {
-                session: Some(finish.session_id.clone()),
-                kind: finish.payload,
-            });
+            // A requeued prompt refused again already had its sign-in
+            // retry: the refusal is the agent's answer to the message
+            // itself, so drop it visibly instead of re-parking — a held
+            // entry would stall this session's queue forever (#160).
+            let already_retried = sessions
+                .get_mut(&finish.session_id)
+                .is_some_and(|handle| {
+                    if handle.auth_retries > 0 {
+                        handle.auth_retries -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            if already_retried {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionError {
+                    session_id: finish.session_id.clone(),
+                    message: format!(
+                        "still refused after sign-in — prompt discarded: {}",
+                        acp_error_message(&err)
+                    ),
+                }));
+            } else {
+                // Park the payload with its owning session so the retry
+                // (after `authenticate`) lands on the right tab.
+                parked.push_back(ParkedPrompt {
+                    session: Some(finish.session_id.clone()),
+                    kind: finish.payload,
+                });
+            }
             let _ = bus.send(AppEvent::Ui(crate::events::UiEvent::TurnEnd {
                 session: finish.session_id.clone(),
                 kind: "interrupted".into(),
@@ -920,6 +950,19 @@ fn apply_prompt_finish(
             }));
         }
     }
+}
+
+/// A terminal sign-in's post-reconnect bind: credit the method the launch
+/// ran — the blind "sign-in needed" snapshot cannot name it (issue #160).
+fn credit_terminal_method(
+    bus: &Sender<AppEvent>,
+    surface: &Arc<Mutex<Surface>>,
+    methods: &[AuthMethodInfo],
+    method_id: &Option<String>,
+) {
+    let Some(id) = method_id.as_deref() else { return };
+    let Some(method) = methods.iter().find(|method| method.id == id) else { return };
+    emit_method_auth(bus, surface, configured_snapshot(methods.to_vec(), Some(method)));
 }
 
 fn emit_needs_auth_open(
@@ -1431,6 +1474,11 @@ struct ConnectCarry {
     pending: VecDeque<Cmd>,
     parked: VecDeque<ParkedPrompt>,
     session_auth_pending: bool,
+    /// The terminal-auth method whose launch triggered this reconnect: the
+    /// post-`initialize` snapshot stays optimistic and, once a session
+    /// binds, credits this method instead of advertising "sign-in needed"
+    /// for the first advertised one (issue #160).
+    terminal_method: Option<String>,
 }
 
 impl ConnectCarry {
@@ -1440,6 +1488,7 @@ impl ConnectCarry {
             pending: VecDeque::new(),
             parked: VecDeque::new(),
             session_auth_pending: false,
+            terminal_method: None,
         }
     }
 }
@@ -1578,6 +1627,29 @@ where
     }
 }
 
+/// The package a dynamic plugin row resolves to: `currentPackageId`, then
+/// `activeRun.packageId`, then the last advertised package.
+fn plugin_package_id<'a>(
+    row: &'a Value,
+    packages: &'a [Value],
+    index: usize,
+) -> std::result::Result<&'a str, String> {
+    row.get("currentPackageId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            row.get("activeRun")
+                .and_then(|run| run.get("packageId"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            packages
+                .last()
+                .and_then(|package| package.get("packageId"))
+                .and_then(Value::as_str)
+        })
+        .ok_or_else(|| format!("plugins[{index}] has no package"))
+}
+
 fn dynamic_plugins_from_value(value: &Value) -> std::result::Result<Vec<CordisPluginItem>, String> {
     let rows = value
         .as_array()
@@ -1593,21 +1665,7 @@ fn dynamic_plugins_from_value(value: &Value) -> std::result::Result<Vec<CordisPl
                 .get("packages")
                 .and_then(Value::as_array)
                 .ok_or_else(|| format!("plugins[{index}].packages is missing"))?;
-            let package_id = row
-                .get("currentPackageId")
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    row.get("activeRun")
-                        .and_then(|run| run.get("packageId"))
-                        .and_then(Value::as_str)
-                })
-                .or_else(|| {
-                    packages
-                        .last()
-                        .and_then(|package| package.get("packageId"))
-                        .and_then(Value::as_str)
-                })
-                .ok_or_else(|| format!("plugins[{index}] has no package"))?;
+            let package_id = plugin_package_id(row, packages, index)?;
             let package = packages.iter().find(|package| {
                 package.get("packageId").and_then(Value::as_str) == Some(package_id)
             });
@@ -1799,6 +1857,18 @@ fn ensure_client_compositor(surface: &Arc<Mutex<Surface>>, bus: &Sender<AppEvent
 fn client_projection_available(surface: &Arc<Mutex<Surface>>) -> bool {
     let surface = surface.lock().unwrap_or_else(|error| error.into_inner());
     surface.client_compositor || surface.cordis
+}
+
+/// Whether a finished JoinSet entry is the operation the loop is tracking.
+fn plugin_op_is_primary<T>(
+    finished: &Option<std::result::Result<(tokio::task::Id, T), tokio::task::JoinError>>,
+    active: Option<tokio::task::Id>,
+) -> bool {
+    match finished {
+        Some(Ok((id, _))) => active == Some(*id),
+        Some(Err(error)) => active == Some(error.id()),
+        None => false,
+    }
 }
 
 async fn connect<T>(
@@ -2341,6 +2411,7 @@ where
                     mut pending,
                     mut parked,
                     mut session_auth_pending,
+                    terminal_method,
                 } = carry;
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::Starting {
                     runtime: "acp".into(),
@@ -2406,7 +2477,8 @@ where
                 // A form-capable method may already have persistent credentials.
                 // Stay optimistic and let the startup session/new prove auth.
                 if auth.status == AuthStatus::NeedsAuth
-                    && methods.first().is_some_and(|method| method.form)
+                    && (methods.first().is_some_and(|method| method.form)
+                        || terminal_method.is_some())
                 {
                     auth = configured_snapshot(methods.clone(), None);
                     auth.status = AuthStatus::Unknown;
@@ -2436,7 +2508,18 @@ where
                 )
                 .await
                 {
-                    Ok(Some(sid)) => bind_session(&mut sessions, &mut current, &mut pending, sid),
+                    Ok(Some(sid)) => {
+                        let owner = sid.0.clone();
+                        bind_session(&mut sessions, &mut current, &mut pending, sid);
+                        // A respawned connection (Terminal Auth reconnect)
+                        // credits the method its launch ran (#160) and
+                        // arrives with parked prompts to retry.
+                        credit_terminal_method(&bus, &surface, &methods, &terminal_method);
+                        requeue_connection_prompts(
+                            &mut sessions, &current, &mut parked, &surface,
+                            connection_id(&surface, &owner).as_deref(),
+                        );
+                    }
                     Ok(None) => {
                         session_auth_pending = true;
                     }
@@ -3017,7 +3100,7 @@ where
                                     .map(|id| SessionId::new(id.clone()));
                             }
                         }
-                        Cmd::AgentReconnect => {
+                        Cmd::AgentReconnect { method_id } => {
                             if can_reconnect {
                                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(
                                     "terminal sign-in finished — restarting the agent…".into(),
@@ -3027,6 +3110,7 @@ where
                                     pending,
                                     parked,
                                     session_auth_pending: false,
+                                    terminal_method: method_id,
                                 }));
                             }
                             // A host-owned stream cannot be respawned: retry
@@ -3046,8 +3130,16 @@ where
                             .await
                             {
                                 Ok(Some(sid)) => {
+                                    let owner = sid.0.clone();
                                     bind_session(&mut sessions, &mut current, &mut pending, sid);
                                     session_auth_pending = false;
+                                    credit_terminal_method(&bus, &surface, &methods, &method_id);
+                                    // Fresh credentials may clear the stall
+                                    // that parked prompts on this connection.
+                                    requeue_connection_prompts(
+                                        &mut sessions, &current, &mut parked, &surface,
+                                        connection_id(&surface, &owner).as_deref(),
+                                    );
                                 }
                                 Ok(None) => {
                                     session_auth_pending = true;
@@ -3101,11 +3193,7 @@ where
                             ); }
                         }
                         finished = plugin_operations.join_next_with_id(), if !plugin_operations.is_empty() => {
-                            let primary = match &finished {
-                                Some(Ok((id, _))) => active_plugin_operation == Some(*id),
-                                Some(Err(error)) => active_plugin_operation == Some(error.id()),
-                                None => false,
-                            };
+                            let primary = plugin_op_is_primary(&finished, active_plugin_operation);
                             let cancelled = primary && active_plugin_cancelled;
                             if primary {
                                 active_plugin_operation = None;
@@ -3287,7 +3375,7 @@ where
                             ); }
                         }
                         finish = prompt_done_rx.recv() => {
-                            let Some(done) = finish else { continue };
+                            let _ = finish.map(|done| {
                             let key = done.session_id.clone();
                             // A session closed with `/close` (ForgetSession)
                             // while its prompt was in flight: the turn ends
@@ -3295,14 +3383,14 @@ where
                             // tab, and an auth error must not park a retry
                             // for a session nobody views. Drop the finish.
                             let Some(handle) = sessions.get_mut(&key) else {
-                                continue;
+                                return;
                             };
                             // Stale finish (the session was forgotten and
                             // re-bound; a new turn owns the handle now):
                             // clear nothing — the new turn's occupancy
                             // marker must survive a late old finish.
                             if handle.inflight.as_ref().map(|(gen, _)| *gen) != Some(done.gen) {
-                                continue;
+                                return;
                             }
                             handle.inflight = None;
                             let aborted = std::mem::take(&mut handle.turn_aborted);
@@ -3332,6 +3420,7 @@ where
                                 let ok = matches!(done.result, Ok(_));
                                 apply_prompt_finish(
                                     done,
+                                    &mut sessions,
                                     &mut parked,
                                     &bus,
                                     &methods,
@@ -3379,6 +3468,7 @@ where
                                     }),
                                 });
                             }
+                            });
                         }
                     }
                     if active_plugin_operation.is_none() {

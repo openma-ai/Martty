@@ -4100,7 +4100,7 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
         let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             format!("{} · {detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
         } else {
-            format!("{} · {detail} · ctrl+shift+l", app.locale.tr("sign-in failed", "登录失败"))
+            format!("{} · {detail} · ctrl+g", app.locale.tr("sign-in failed", "登录失败"))
         };
         out.push(kv(app.locale.tr("credentials", "凭据"), message));
     } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
@@ -4114,9 +4114,9 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
                 if app.locale == crate::locale::Locale::Zh {
-                    format!("需要登录 · {detail} — ctrl+shift+l 选择登录方式")
+                    format!("需要登录 · {detail} — ctrl+g 选择登录方式")
                 } else {
-                    format!("sign-in needed · {detail} — ctrl+shift+l opens the auth picker")
+                    format!("sign-in needed · {detail} — ctrl+g opens the auth picker")
                 },
                 Style::default().fg(theme.warn_soft()),
             ),

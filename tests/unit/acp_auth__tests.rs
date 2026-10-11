@@ -42,6 +42,95 @@ fn terminal_auth_without_command_keeps_agent_args() {
 }
 
 #[test]
+fn terminal_auth_advertised_command_replaces_the_spawn_argv() {
+    // pi-acp style: the `_meta["terminal-auth"]` block carries the full
+    // login argv — `node dist/bin.js --terminal-login` — which the client's
+    // wrapper spawn argv cannot express (claude-agent-acp alignment).
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "pi-login",
+            "name": "Log in with pi",
+            "type": "terminal",
+            "_meta": {
+                "terminal-auth": {
+                    "command": "/usr/bin/node",
+                    "args": ["/opt/pi-acp/dist/bin.js", "--terminal-login"]
+                }
+            }
+        }]),
+        &["openma-pi-acp".into()],
+        "/tmp/ws",
+        &BTreeMap::new(),
+    );
+    let launch = methods[0].terminal_launch.as_ref().unwrap();
+    assert_eq!(launch.command, "/usr/bin/node");
+    assert_eq!(launch.args, ["/opt/pi-acp/dist/bin.js", "--terminal-login"]);
+    assert_eq!(launch.method_id, "pi-login");
+}
+
+#[test]
+fn terminal_type_meta_command_replaces_the_spawn_argv() {
+    let methods = parse_auth_methods(
+        &json!([{
+            "id": "tty-login",
+            "type": "terminal",
+            "_meta": { "command": "/bin/agent-login", "args": ["--go"] }
+        }]),
+        &["wrapper-agent".into(), "--serve".into()],
+        "/tmp/ws",
+        &BTreeMap::new(),
+    );
+    let launch = methods[0].terminal_launch.as_ref().unwrap();
+    assert_eq!(launch.command, "/bin/agent-login");
+    assert_eq!(launch.args, ["--go"]);
+}
+
+#[test]
+fn run_terminal_auth_reports_status_and_spawn_errors() {
+    let launch = |command: &str, args: Vec<&str>| TerminalAuthLaunch {
+        label: "login helper".into(),
+        command: command.into(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        env: BTreeMap::new(),
+        cwd: None,
+        method_id: "m".into(),
+    };
+    let ok = run_terminal_auth(
+        &launch("sh", vec!["-c", "exit 0"]),
+        crate::locale::Locale::En,
+    );
+    assert!(ok.is_ok(), "{ok:?}");
+    let exited = run_terminal_auth(
+        &launch("sh", vec!["-c", "exit 7"]),
+        crate::locale::Locale::En,
+    )
+    .unwrap_err();
+    assert!(exited.contains("exited 7"), "{exited}");
+    let spawn_err = run_terminal_auth(
+        &launch("definitely-not-a-real-binary-160", Vec::new()),
+        crate::locale::Locale::En,
+    )
+    .unwrap_err();
+    assert!(spawn_err.contains("could not start"), "{spawn_err}");
+}
+
+#[test]
+fn run_terminal_auth_reports_a_failed_spawn() {
+    // A missing working directory makes the OS spawn itself fail, so the
+    // process-error surface is exercised without mutating the test env.
+    let launch = TerminalAuthLaunch {
+        label: "login helper".into(),
+        command: "/bin/true".into(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        cwd: Some("/definitely-not-a-real-dir-160".into()),
+        method_id: "m".into(),
+    };
+    let err = run_terminal_auth(&launch, crate::locale::Locale::En).unwrap_err();
+    assert!(err.contains("could not start"), "{err}");
+}
+
+#[test]
 fn api_key_form_encodes_authenticate_meta() {
     let methods = parse_auth_methods(
         &json!([{
@@ -227,8 +316,11 @@ fn terminal_launch_runs_the_client_argv_not_the_agent_meta_command() {
         .terminal_launch
         .as_ref()
         .expect("terminal launch");
-    assert_eq!(launch.command, "fake-agent");
-    assert_eq!(launch.args, vec!["--verbose", "login", "--fast"]);
+    // The advertised command is the whole argv[0] (claude-agent-acp
+    // alignment): its args run verbatim, never prefixed by the client's
+    // spawn args.
+    assert_eq!(launch.command, "evil-agent");
+    assert_eq!(launch.args, vec!["login", "--fast"]);
     assert_eq!(launch.env.get("EXTRA").map(String::as_str), Some("1"));
 }
 

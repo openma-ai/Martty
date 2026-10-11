@@ -58,6 +58,7 @@ fn counting_agent(
     inits: Arc<AtomicUsize>,
     news: Arc<AtomicUsize>,
     fail_first_session: bool,
+    auth_methods: Vec<agent_client_protocol::schema::v1::AuthMethod>,
 ) -> impl ConnectTo<Client> {
     Agent
         .builder()
@@ -67,7 +68,8 @@ fn counting_agent(
                 inits.fetch_add(1, Ordering::SeqCst);
                 responder.respond(
                     InitializeResponse::new(req.protocol_version)
-                        .agent_capabilities(AgentCapabilities::new()),
+                        .agent_capabilities(AgentCapabilities::new())
+                        .auth_methods(auth_methods.clone()),
                 )
             },
             on_receive_request!(),
@@ -94,6 +96,14 @@ fn counting_agent(
         )
 }
 
+fn tty_login_method() -> agent_client_protocol::schema::v1::AuthMethod {
+    let method = agent_client_protocol::schema::v1::AuthMethodTerminal::new(
+        "tty-login",
+        "TTY login",
+    );
+    agent_client_protocol::schema::v1::AuthMethod::Terminal(method)
+}
+
 /// Terminal sign-in ends in `Cmd::AgentReconnect`: the spawn loop must drop
 /// the transport, spawn a fresh agent, re-run `initialize`, and re-bind a
 /// session — the only spec-compliant continuation (issue #160).
@@ -105,7 +115,9 @@ async fn terminal_sign_in_reconnect_respawns_and_reinitializes() {
         let inits = Arc::clone(&inits);
         let news = Arc::clone(&news);
         move || -> std::result::Result<_, AcpError> {
-            Ok(counting_agent(Arc::clone(&inits), Arc::clone(&news), true))
+            Ok(counting_agent(Arc::clone(&inits), Arc::clone(&news), true, vec![
+                tty_login_method(),
+            ]))
         }
     };
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
@@ -122,7 +134,9 @@ async fn terminal_sign_in_reconnect_respawns_and_reinitializes() {
         matches!(e, AppEvent::Ctl(CtlEvent::OpenAuth))
     })
     .await;
-    fwd_tx.send(Cmd::AgentReconnect).expect("reconnect cmd");
+    fwd_tx
+        .send(Cmd::AgentReconnect { method_id: Some("tty-login".into()) })
+        .expect("reconnect cmd");
 
     // Second connect: a brand-new initialize ran and session/new bound.
     wait_event(&bus_rx, |e| {
@@ -131,6 +145,18 @@ async fn terminal_sign_in_reconnect_respawns_and_reinitializes() {
     .await;
     assert_eq!(inits.load(Ordering::SeqCst), 2, "one initialize per spawn");
     assert_eq!(news.load(Ordering::SeqCst), 2, "one session/new per connect");
+    // The bind credits the launched method: a Configured snapshot names it
+    // instead of a blind "sign-in needed" for the first advertised (#160).
+    wait_event(&bus_rx, |e| {
+        matches!(
+            e,
+            AppEvent::Ctl(CtlEvent::Auth(snapshot))
+            | AppEvent::Ctl(CtlEvent::SessionAuth { snapshot, .. })
+                if snapshot.status == crate::acp_auth::AuthStatus::Configured
+                    && snapshot.method_id.as_deref() == Some("tty-login")
+        )
+    })
+    .await;
 
     fwd_tx.send(Cmd::Shutdown).expect("shutdown cmd");
     task.await.expect("loop join").expect("loop result");
@@ -143,7 +169,7 @@ async fn terminal_sign_in_reconnect_respawns_and_reinitializes() {
 async fn agent_reconnect_on_attach_retries_session_new_in_place() {
     let inits = Arc::new(AtomicUsize::new(0));
     let news = Arc::new(AtomicUsize::new(0));
-    let agent = counting_agent(Arc::clone(&inits), Arc::clone(&news), true);
+    let agent = counting_agent(Arc::clone(&inits), Arc::clone(&news), true, vec![]);
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
@@ -152,7 +178,7 @@ async fn agent_reconnect_on_attach_retries_session_new_in_place() {
         matches!(e, AppEvent::Ctl(CtlEvent::OpenAuth))
     })
     .await;
-    cmd_tx.send(Cmd::AgentReconnect).expect("reconnect cmd");
+    cmd_tx.send(Cmd::AgentReconnect { method_id: None }).expect("reconnect cmd");
     wait_event(&bus_rx, |e| {
         matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
     })
@@ -237,7 +263,7 @@ async fn logout_reply_surfaces_needs_auth_and_reopens_the_picker() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prompt_typed_while_auth_pending_is_queued_not_sent() {
     let news = Arc::new(AtomicUsize::new(0));
-    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::clone(&news), true);
+    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::clone(&news), true, vec![]);
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
@@ -514,7 +540,7 @@ async fn spawn_cmd_bridge_forwards_and_stops_when_the_client_drops() {
 /// transcript instead of pretending the sign-out happened (issue #160).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn logout_failure_reports_tui_op_failed() {
-    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), false);
+    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), false, vec![]);
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
@@ -568,7 +594,7 @@ async fn attach_reconnect_keeps_needs_auth_when_session_new_still_fails() {
         matches!(e, AppEvent::Ctl(CtlEvent::OpenAuth))
     })
     .await;
-    cmd_tx.send(Cmd::AgentReconnect).expect("reconnect cmd");
+    cmd_tx.send(Cmd::AgentReconnect { method_id: None }).expect("reconnect cmd");
     wait_event(&bus_rx, |e| {
         matches!(e, AppEvent::Ctl(CtlEvent::OpenAuth))
     })
@@ -618,7 +644,7 @@ async fn attach_reconnect_reports_session_new_errors() {
         matches!(e, AppEvent::Ctl(CtlEvent::OpenAuth))
     })
     .await;
-    cmd_tx.send(Cmd::AgentReconnect).expect("reconnect cmd");
+    cmd_tx.send(Cmd::AgentReconnect { method_id: None }).expect("reconnect cmd");
     wait_event(&bus_rx, |e| {
         matches!(e, AppEvent::Ctl(CtlEvent::Error(message)) if message.contains("session/new"))
     })
@@ -668,6 +694,288 @@ async fn second_prompt_while_auth_pending_reemits_the_picker() {
         matches!(e, AppEvent::Ctl(CtlEvent::OpenAuth))
     })
     .await;
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown");
+    client.await.expect("connect join").expect("connect result");
+}
+
+/// The dynamic-plugin package id falls back from `currentPackageId` to
+/// `activeRun.packageId` to the last advertised package, then errors.
+#[test]
+fn plugin_package_id_falls_back_through_every_arm() {
+    let packages = json!([{"packageId": "p1"}, {"packageId": "p2"}]);
+    let packages = packages.as_array().unwrap();
+    let current = json!({"currentPackageId": "p0", "activeRun": {"packageId": "pr"}});
+    assert_eq!(plugin_package_id(&current, packages, 0).unwrap(), "p0");
+    let active = json!({"activeRun": {"packageId": "pr"}});
+    assert_eq!(plugin_package_id(&active, packages, 0).unwrap(), "pr");
+    let last = json!({"activeRun": {}});
+    assert_eq!(plugin_package_id(&last, packages, 0).unwrap(), "p2");
+    let missing = json!({});
+    let empty: Vec<serde_json::Value> = vec![];
+    assert!(plugin_package_id(&missing, &empty, 3)
+        .unwrap_err()
+        .contains("plugins[3] has no package"));
+}
+
+/// A relative workspace joins under `current_dir()` — the `joined` path is
+/// not absolute in that arm.
+#[test]
+fn abs_fs_path_resolves_relative_workspace_against_cwd() {
+    let abs = abs_fs_path("some/file.txt", "rel-workspace").expect("resolvable");
+    assert!(abs.is_absolute());
+    assert!(abs.ends_with(
+        std::path::Path::new("rel-workspace").join("some/file.txt")
+    ));
+}
+
+/// `plugin_op_is_primary` matches the tracked id on Ok and panicked
+/// finishes, and rejects an empty join set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_op_is_primary_matches_ok_err_and_empty() {
+    let mut set = tokio::task::JoinSet::new();
+    let id = set.spawn(async { 7u8 }).id();
+    let finished = set.join_next_with_id().await;
+    assert!(plugin_op_is_primary(&finished, Some(id)));
+    assert!(!plugin_op_is_primary(&finished, None));
+    assert!(!plugin_op_is_primary::<u8>(&None, Some(id)));
+
+    let mut failing = tokio::task::JoinSet::new();
+    let panicking = failing.spawn(async { panic!("op panicked") }).id();
+    let finished = failing.join_next_with_id().await;
+    assert!(matches!(&finished, Some(Err(_))));
+    assert!(plugin_op_is_primary(&finished, Some(panicking)));
+}
+
+/// A `session/update` notification reaches the `availableCommands` /
+/// `available_commands` reader in either spelling, and updates without it
+/// take the absent arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_update_notifications_feed_available_commands() {
+    let agent = Agent
+        .builder()
+        .name("notify-mock")
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new()),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: PromptRequest, responder, cx| {
+                use agent_client_protocol::schema::v1 as acpv1;
+                cx.send_notification(acpv1::SessionNotification::new(
+                    SessionId::new("s1"),
+                    acpv1::SessionUpdate::AvailableCommandsUpdate(
+                        acpv1::AvailableCommandsUpdate::new(vec![
+                            acpv1::AvailableCommand::new("one", "d"),
+                        ]),
+                    ),
+                ))
+                .expect("commands notify");
+                // An update without the key takes the absent arm.
+                cx.send_notification(acpv1::SessionNotification::new(
+                    SessionId::new("s1"),
+                    acpv1::SessionUpdate::AgentMessageChunk(acpv1::ContentChunk::new(
+                        acpv1::ContentBlock::Text(acpv1::TextContent::new("chunk")),
+                    )),
+                ))
+                .expect("chunk notify");
+                responder.respond(
+                    agent_client_protocol::schema::v1::PromptResponse::new(
+                        agent_client_protocol::schema::v1::StopReason::EndTurn,
+                    ),
+                )
+            },
+            on_receive_request!(),
+        );
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: String::new(),
+            text: "go".into(),
+        })
+        .expect("prompt");
+    // The prompt finishes once every session/update notification was seen.
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Rpc { method, params }
+            if method == "session/update" && params.get("update").is_some())
+    })
+    .await;
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown");
+    client.await.expect("connect join").expect("connect result");
+}
+
+/// A steer against the bound session reaches `begin_prompt` and settles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steer_with_a_bound_session_begins_the_prompt() {
+    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), false, vec![]);
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    cmd_tx
+        .send(Cmd::Steer {
+            session_id: String::new(),
+            message_id: 9,
+            text: "nudge".into(),
+        })
+        .expect("steer");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SteerSettled { .. }))
+    })
+    .await;
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown");
+    client.await.expect("connect join").expect("connect result");
+}
+
+/// Session ops resolve their target: an unknown id on an empty map is
+/// skipped, and an unknown id with bound sessions reports SessionOpFailed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_ops_resolve_or_report_their_target() {
+    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), false, vec![]);
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+    // Before any session binds, an unknown target resolves to None → skip.
+    cmd_tx
+        .send(Cmd::SetConfigOption {
+            session_id: "ghost".into(),
+            config_id: "c".into(),
+            value: "v".into(),
+        })
+        .expect("config op");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    // With a session bound, an unknown target reports a visible failure.
+    cmd_tx
+        .send(Cmd::SetPermission {
+            session_id: "bogus".into(),
+            preset: "p".into(),
+        })
+        .expect("permission op");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionOpFailed { .. }))
+    })
+    .await;
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown");
+    client.await.expect("connect join").expect("connect result");
+}
+
+/// SteerImages against the bound session reaches the image-payload arm of
+/// `begin_prompt`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steer_images_with_a_bound_session_begins_the_prompt() {
+    let agent = counting_agent(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), false, vec![]);
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    cmd_tx
+        .send(Cmd::SteerImages {
+            session_id: String::new(),
+            message_id: 9,
+            blocks: vec![crate::bus::PromptBlock::Image(crate::bus::ImagePart {
+                data: "aGk=".into(),
+                media_type: "image/png".into(),
+                name: "i.png".into(),
+                path: "/tmp/i.png".into(),
+            })],
+        })
+        .expect("steer images");
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SteerSettled { .. }))
+    })
+    .await;
+    cmd_tx.send(Cmd::Shutdown).expect("shutdown");
+    client.await.expect("connect join").expect("connect result");
+}
+
+/// A prompt whose session is forgotten while in flight finishes into the
+/// missing-handle arm — its events are dropped, never parked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_finish_for_a_forgotten_session_is_dropped() {
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let release_rx = std::sync::Arc::new(std::sync::Mutex::new(Some(release_rx)));
+    let agent = Agent
+        .builder()
+        .name("hold-mock")
+        .on_receive_request(
+            async move |req: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(req.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new()),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let release_rx = std::sync::Arc::clone(&release_rx);
+                async move |_req: PromptRequest, responder, _cx| {
+                    let taken = release_rx.lock().unwrap().take();
+                    if let Some(rx) = taken {
+                        let _ = rx.await;
+                    }
+                    responder.respond(
+                        agent_client_protocol::schema::v1::PromptResponse::new(
+                            agent_client_protocol::schema::v1::StopReason::EndTurn,
+                        ),
+                    )
+                }
+            },
+            on_receive_request!(),
+        );
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(connect_once(agent, test_cfg(), bus_tx, cmd_rx));
+    wait_event(&bus_rx, |e| {
+        matches!(e, AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+    })
+    .await;
+    cmd_tx
+        .send(Cmd::Prompt {
+            session_id: String::new(),
+            text: "hold me".into(),
+        })
+        .expect("prompt");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cmd_tx
+        .send(Cmd::ForgetSession {
+            session_id: "s1".into(),
+        })
+        .expect("forget");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    release_tx.send(()).expect("release");
+    tokio::time::sleep(Duration::from_millis(300)).await;
     cmd_tx.send(Cmd::Shutdown).expect("shutdown");
     client.await.expect("connect join").expect("connect result");
 }

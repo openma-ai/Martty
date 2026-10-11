@@ -505,8 +505,10 @@ pub enum Cmd {
     /// Terminal sign-in finished on the TTY (exit 0): drop the current
     /// transport, respawn the configured agent, and re-run `initialize`.
     /// Never implies `authenticate` — terminal methods must not be sent to
-    /// `authenticate` (issue #160).
-    AgentReconnect,
+    /// `authenticate` (issue #160). `method_id` names the method the user
+    /// launched so the post-reconnect snapshot can credit it instead of the
+    /// advertised first method (issue #160).
+    AgentReconnect { method_id: Option<String> },
     /// Live ACP `/new` → `session/new` (cwd = workspace).
     NewSession { requester: Option<String>, retry_auth: Option<String> },
     /// Live ACP `/fork` → `session/fork` of `source_session_id`.

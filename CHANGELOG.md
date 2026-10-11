@@ -86,8 +86,9 @@ All notable changes to this project are documented here. The project follows
   different method), gateway methods collect base URL + key + optional
   provider name, env-var methods are reported rather than started, and
   terminal methods run a spec-compliant Terminal Auth: the TUI leaves the
-  screen, runs the client's own configured agent argv with the method's
-  args/env, and on exit 0 respawns the agent and re-runs `initialize` —
+  screen, runs the method's advertised `_meta["terminal-auth"]` argv (or
+  the client's configured agent argv plus the method's args/env), and on
+  exit 0 respawns the agent and re-runs `initialize` —
   terminal methods are never sent to `authenticate`. When the agent
   declares `agentCapabilities.auth.logout`, the picker gains a
   "Log out / switch method" row that calls the ACP `logout` method and
@@ -96,6 +97,21 @@ All notable changes to this project are documented here. The project follows
   shown, not opened, so it is safe on headless/SSH sessions). Auth and
   reconnect failures are visible notices — nothing typed while signed
   out is silently queued or sent as a substitute credential.
+- Slash input that names no client command passes through to the agent
+  instead of a client-side "unknown command" warning, so a typed `/login`
+  reaches `session/prompt` and the agent's auth-required reply opens the
+  picker. `ctrl+g` opens the auth picker everywhere `ctrl+shift+l`
+  collapses to plain `ctrl+l` (tmux, legacy terminals); `ctrl+shift+l`
+  still works. A terminal method that advertises
+  `_meta["terminal-auth"].command` runs that argv (the claude-agent-acp
+  shape — e.g. pi-acp's `node dist/bin.js --terminal-login`), falling back
+  to the client's agent argv when no command is advertised. The TUI
+  fully repaints when a Terminal Auth subprocess returns, and Ctrl-C
+  during Terminal Auth cancels the login flow instead of quitting Martty.
+  A prompt parked by an auth-required reply is retried once after
+  sign-in and, if refused again, is discarded with a visible notice
+  instead of stalling the session queue; a successful Terminal Auth
+  credits the launched method by name in the credentials line.
 
 
 ### Fixed

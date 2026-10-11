@@ -4519,6 +4519,24 @@ impl App {
                         }
                     }
                     CtlEvent::Auth(snap) => {
+                        // A terminal sign-in cannot name itself through
+                        // `authenticate`: the post-reconnect configured
+                        // snapshot carries no method, so the identity
+                        // recorded when its TTY launch started stands in
+                        // (#160). Only a method that is itself a terminal
+                        // launch may fill the blank.
+                        let mut snap = snap;
+                        if snap.method_id.is_none()
+                            && self
+                                .auth
+                                .method_id
+                                .as_ref()
+                                .and_then(|id| self.auth.methods.iter().find(|m| m.id == *id))
+                                .is_some_and(|m| m.terminal_launch.is_some())
+                        {
+                            snap.method_id = self.auth.method_id.clone();
+                            snap.method_name = self.auth.method_name.clone();
+                        }
                         let retrying_prompt =
                             self.state == RunState::Running || self.prompt_pending;
                         if let Some((level, text)) = snap.notice(self.locale) {
@@ -4545,8 +4563,8 @@ impl App {
                             self.open_text_overlay("builtin.auth.failure",
                                 self.locale.tr("Sign-in failed", "登录失败").into(),
                                 format!("{}\n\n{}", snap.message.as_deref().unwrap_or("ACP authenticate failed"),
-                                    self.locale.tr("Close this panel, then pick a method again (ctrl+shift+l). Browser authorization alone does not mean the Agent accepted sign-in.",
-                                        "关闭面板后用 ctrl+shift+l 重新选择登录方式。浏览器授权完成不代表 Agent 已接受登录。")));
+                                    self.locale.tr("Close this panel, then pick a method again (ctrl+g). Browser authorization alone does not mean the Agent accepted sign-in.",
+                                        "关闭面板后用 ctrl+g 重新选择登录方式。浏览器授权完成不代表 Agent 已接受登录。")));
                         }
                         self.auth = snap;
                     }
@@ -6309,8 +6327,6 @@ impl App {
         // Vim mode: plain keys become vim commands, but only with no
         // modal above (see the note at the top of this function).
         if self.vim.is_active()
-            && self.elicitation_ask.is_none()
-            && self.auth_form.is_none()
             && self.queue_edit.is_none()
             && !self.slash_completion_open()
         {
@@ -8931,14 +8947,16 @@ impl App {
             "image" => self.send_image(arg, ctl),
             "clip" => self.clip_image(arg, ctl),
             other => {
-                self.transcript.push_notice(
-                    NoticeLevel::Warn,
-                    if self.locale == Locale::Zh {
-                        format!("未知命令 /{other} — 使用 /help 查看命令")
-                    } else {
-                        format!("unknown command /{other} — /help lists commands")
-                    },
-                );
+                // Not a client command: slash input passes through to the
+                // agent as advertised (issue #160). A harness-native `/login`
+                // reaches the agent, whose auth_required reply opens the
+                // picker — the client never owns auth slash commands.
+                let text = if arg.is_empty() {
+                    format!("/{other}")
+                } else {
+                    format!("/{other} {arg}")
+                };
+                self.send_agent_text(text, ctl);
             }
         }
     }
@@ -8947,10 +8965,18 @@ impl App {
     /// The picker that started it is already answered — close it so the
     /// resumed frame reflects the reconnect outcome, not a stale row.
     pub fn take_terminal_auth(&mut self) -> Option<crate::acp_auth::TerminalAuthLaunch> {
-        if self.pending_terminal_auth.is_some() {
+        if let Some(launch) = self.pending_terminal_auth.take() {
             self.picker = None;
+            self.auth.method_id = Some(launch.method_id.clone());
+            self.auth.method_name = self
+                .auth
+                .methods
+                .iter()
+                .find(|method| method.id == launch.method_id)
+                .and_then(|method| method.name.clone());
+            return Some(launch);
         }
-        self.pending_terminal_auth.take()
+        None
     }
 
     /// A TTY sign-in launch just returned (issue #160): exit 0 means the
@@ -8960,7 +8986,9 @@ impl App {
     /// user can retry or pick a different method.
     pub fn finish_terminal_auth(&mut self, result: Result<(), String>, ctl: &Controller) {
         match result {
-            Ok(()) => ctl.send(Cmd::AgentReconnect),
+            Ok(()) => ctl.send(Cmd::AgentReconnect {
+                method_id: self.auth.method_id.clone(),
+            }),
             Err(err) => {
                 self.transcript.push_notice(NoticeLevel::Error, err);
                 self.open_auth_surface(ctl);
@@ -8982,8 +9010,8 @@ impl App {
         self.run_started = None;
         self.state_note.clear();
         self.show_tip(self.locale.tr(
-            "pick an auth method (ctrl+shift+l reopens this)",
-            "请选择登录方式（ctrl+shift+l 重新打开）",
+            "pick an auth method (ctrl+g reopens this)",
+            "请选择登录方式（ctrl+g 重新打开）",
         ));
         self.open_auth_picker();
     }
@@ -9276,7 +9304,7 @@ impl App {
 - ↓ · 空输入时展开 Agent 会话导航；←/→ 选择，enter 打开，esc 折叠
 - /agent · 切换 ACP 广告的 Agent 预设
 - /lang · 切换界面语言：/lang zh 或 /lang en
-- ctrl+shift+l · 登录选择器（Agent 声明的方式；声明 auth.logout 时可登出）
+- ctrl+g（或 ctrl+shift+l）· 登录选择器（Agent 声明的方式；声明 auth.logout 时可登出）
 - /effort · 推理强度 · /permission 权限预设 · /plan 计划模式
 - /resume · 恢复持久会话并继续写入原日志
 - /fork · Agent 声明 sessionCapabilities.fork 时，用 session/fork 分叉当前会话并打开新标签；原会话保留。不接受参数，也不按 Harness 名称判断
@@ -9308,7 +9336,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - ctrl+shift+a · cycle agent preset directly
 - ↓ · expand Agent transcript navigation from an empty prompt · ←/→ choose, enter opens, esc collapses
 - /agent · switch the agent preset advertised over ACP
-- ctrl+shift+l · auth picker (agent-advertised methods; logout when auth.logout is declared)
+- ctrl+g (or ctrl+shift+l) · auth picker (agent-advertised methods; logout when auth.logout is declared)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
 - /resume · pick up a durable session — transcript replays, log continues
 - /fork · when the agent advertises sessionCapabilities.fork, session/fork branches the current session into a new tab and leaves the original in place. No arguments, and not gated on the harness name
@@ -9357,13 +9385,13 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 .as_deref()
                 .or(self.auth.method_id.as_deref())
             {
-                Some(name) => format!("ACP authenticate · {name}"),
+                Some(name) => format!("credentials ready · {name}"),
                 None => "ready · credential source not reported".into(),
             }
         } else if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             "signing in — waiting for Agent response".into()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Failed {
-            format!("sign-in failed · {} · ctrl+shift+l", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
+            format!("sign-in failed · {} · ctrl+g", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
         } else if self.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
             match self
                 .auth
@@ -9371,8 +9399,8 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 .as_deref()
                 .or(self.auth.method_id.as_deref())
             {
-                Some(name) => format!("sign-in needed · {name} · ctrl+shift+l"),
-                None => "sign-in needed · ctrl+shift+l".into(),
+                Some(name) => format!("sign-in needed · {name} · ctrl+g"),
+                None => "sign-in needed · ctrl+g".into(),
             }
         } else if self.cfg.has_credentials() {
             match self.cfg.credential_source() {

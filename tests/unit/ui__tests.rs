@@ -505,7 +505,7 @@ fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     app.auth.status = crate::acp_auth::AuthStatus::Failed;
     let failed = flat(welcome_info_lines(&app));
     assert!(failed.contains("sign-in failed"), "{failed}");
-    assert!(failed.contains("ctrl+shift+l"), "{failed}");
+    assert!(failed.contains("ctrl+g"), "{failed}");
     assert!(!failed.contains("host dsh"), "{failed}");
 }
 
@@ -4140,7 +4140,7 @@ fn welcome_needs_auth_line_in_english_and_chinese() {
     );
     let en = flat(welcome_info_lines(&app));
     assert!(en.contains("sign-in needed"), "{en}");
-    assert!(en.contains("ctrl+shift+l"), "{en}");
+    assert!(en.contains("ctrl+g"), "{en}");
     app.locale = crate::locale::Locale::Zh;
     let zh = flat(welcome_info_lines(&app));
     assert!(zh.contains("需要登录"), "{zh}");

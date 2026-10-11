@@ -124,9 +124,12 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('q') if ctrl => Quit,
         // ctrl+shift+l before the plain ctrl arm: the auth picker is a
         // deliberate chord, while legacy terminals that collapse shift
-        // still get clear-scrollback, not a surprise modal.
+        // still get clear-scrollback, not a surprise modal. ctrl+g is the
+        // always-delivered fallback (tmux and most legacy terminals send
+        // ctrl+shift+l as plain ctrl+l).
         KeyCode::Char('l') if ctrl && shift => OpenAuth,
         KeyCode::Char('l') if ctrl => ClearScrollback,
+        KeyCode::Char('g') if ctrl => OpenAuth,
         KeyCode::Char('t') if ctrl => ToggleTheme,
         // ^o (not ^e): ghostty/iterm send ^e for ⌘→, and "explode the
         // transcript" on ⌘→ was evil.
@@ -868,12 +871,15 @@ pub const KEY_ROWS: &[KeyRow] = &[
     KeyRow {
         action: OpenAuth,
         group: KeyGroup::App,
-        chords_mac: &["ctrl+shift+l"],
-        chords_other: &["ctrl+shift+l"],
+        chords_mac: &["ctrl+g", "ctrl+shift+l"],
+        chords_other: &["ctrl+g", "ctrl+shift+l"],
         ctx: CtxNote::Always,
         desc_en: "auth picker · sign in / log out",
         desc_zh: "登录选择器 · 登录 / 登出",
-        probes: &[p(KeyCode::Char('l'), CTRL_SHIFT, false)],
+        probes: &[
+            p(KeyCode::Char('l'), CTRL_SHIFT, false),
+            p(KeyCode::Char('g'), CTRL, false),
+        ],
     },
     KeyRow {
         action: CyclePermission,

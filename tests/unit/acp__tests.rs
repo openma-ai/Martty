@@ -190,7 +190,7 @@ fn prompt_response_usage_reaches_the_ui() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut parked = VecDeque::new();
 
-    apply_prompt_finish(finish, &mut parked, &tx, &[], None);
+    apply_prompt_finish(finish, &mut HashMap::new(), &mut parked, &tx, &[], None);
 
     match rx.try_recv().expect("standard usage UI event") {
         AppEvent::Ui(crate::events::UiEvent::Usage {
@@ -228,7 +228,7 @@ fn prompt_error_ends_the_ui_turn_before_reporting_the_error() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut parked = VecDeque::new();
 
-    apply_prompt_finish(finish, &mut parked, &tx, &[], None);
+    apply_prompt_finish(finish, &mut HashMap::new(), &mut parked, &tx, &[], None);
 
     assert!(matches!(
         rx.try_recv(),
@@ -240,6 +240,85 @@ fn prompt_error_ends_the_ui_turn_before_reporting_the_error() {
         Ok(AppEvent::Ctl(CtlEvent::SessionError { session_id, message }))
             if session_id == "s" && message == "prompt: boom"
     ));
+}
+
+#[test]
+fn a_refused_retry_is_dropped_visibly_not_reparked() {
+    // The requeued prompt earned one retry at sign-in; a second -32000 is
+    // the agent's answer to the message itself — report and drop it, or the
+    // held entry stalls this session's queue forever (#160).
+    let mut sessions = HashMap::from([("s".into(), SessionHandle::default())]);
+    sessions.get_mut("s").unwrap().auth_retries = 1;
+    let finish = PromptFinish {
+        session_id: "s".into(),
+        result: Err(serde_json::from_value(json!({
+            "code": -32000, "message": "auth required",
+            "data": { "marttyConnection": { "id": "h1", "authMethods": [] } }
+        })).unwrap()),
+        payload: ParkedPromptKind::Text("/login".into()),
+        gen: 1,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut parked = VecDeque::new();
+
+    apply_prompt_finish(finish, &mut sessions, &mut parked, &tx, &[], None);
+
+    assert!(parked.is_empty());
+    assert_eq!(sessions["s"].auth_retries, 0);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::Ctl(CtlEvent::SessionError { session_id, message }))
+            if session_id == "s" && message.contains("still refused after sign-in")
+    ));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::Ui(crate::events::UiEvent::TurnEnd { session, kind }))
+            if session == "s" && kind == "interrupted"
+    ));
+
+    // With no retry token a first refusal still parks on its session.
+    let finish = PromptFinish {
+        session_id: "s".into(),
+        result: Err(serde_json::from_value(json!({
+            "code": -32000, "message": "auth required",
+            "data": { "marttyConnection": { "id": "h1", "authMethods": [] } }
+        })).unwrap()),
+        payload: ParkedPromptKind::Text("plain".into()),
+        gen: 1,
+    };
+    apply_prompt_finish(finish, &mut sessions, &mut parked, &tx, &[], None);
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].session.as_deref(), Some("s"));
+}
+
+#[test]
+fn terminal_sign_in_credit_names_the_launched_method() {
+    let surface = Arc::new(Mutex::new(Surface::default()));
+    let mut methods = Vec::new();
+    for raw in [
+        json!({"id": "other", "type": "terminal", "_meta": {"terminal-auth": {}}}),
+        json!({"id": "tty-login", "type": "terminal", "_meta": {"terminal-auth": {}}}),
+    ] {
+        methods.extend(parse_auth_methods(&json!([raw]), &["fake-agent".into()], ".", &process_env()));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // No launched id: silent.
+    credit_terminal_method(&tx, &surface, &methods, &None);
+    assert!(rx.try_recv().is_err());
+    // A launched id the agent does not advertise: silent.
+    credit_terminal_method(&tx, &surface, &methods, &Some("ghost".into()));
+    assert!(rx.try_recv().is_err());
+    // The launched method: the snapshot becomes Configured carrying it.
+    credit_terminal_method(&tx, &surface, &methods, &Some("tty-login".into()));
+    match rx.try_recv() {
+        Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+        | Ok(AppEvent::Ctl(CtlEvent::SessionAuth { snapshot, .. })) => {
+            assert_eq!(snapshot.status, AuthStatus::Configured);
+            assert_eq!(snapshot.method_id.as_deref(), Some("tty-login"));
+        }
+        other => panic!("expected an auth snapshot, got {}", other.is_ok()),
+    }
 }
 
 #[test]
@@ -4682,7 +4761,9 @@ fn auth_stalls_and_retries_stay_on_the_owning_harness() {
     assert_eq!(requeue_connection_prompts(&mut sessions, &None, &mut parked, &surface, Some("beta")), 1);
     assert!(parked.is_empty());
     assert_eq!(sessions["b"].queue.len(), 1);
+    assert_eq!(sessions["b"].auth_retries, 1);
     assert!(sessions["a"].queue.is_empty());
+    assert_eq!(sessions["a"].auth_retries, 0);
 }
 
 #[test]
@@ -4725,7 +4806,7 @@ fn structured_auth_failure_opens_owning_connection_and_parks_original_prompt() {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let mut parked = VecDeque::new();
-    apply_prompt_finish(finish, &mut parked, &tx, &[], None);
+    apply_prompt_finish(finish, &mut HashMap::new(), &mut parked, &tx, &[], None);
     assert_eq!(parked.len(), 1);
     assert_eq!(parked[0].session.as_deref(), Some("claude-session"));
     assert!(matches!(&parked[0].kind, ParkedPromptKind::Text(text) if text == "original request"));

@@ -4447,7 +4447,7 @@ fn auth_failure_is_visible_on_landing_and_retry_clears_it() {
     let view = app.view_overlay.as_ref().expect("visible failure dialog, not hidden transcript");
     assert_eq!(view.id, "builtin.auth.failure");
     assert!(matches!(&view.nodes[0], crate::slots::TuiNode::Markdown { text, .. }
-        if text.contains("Account is not eligible") && text.contains("ctrl+shift+l")));
+        if text.contains("Account is not eligible") && text.contains("ctrl+g")));
     app.start_auth("oauth-personal", &ctl);
     assert!(app.view_overlay.is_none());
     assert_eq!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn);
@@ -4567,7 +4567,7 @@ fn open_auth_preserves_draft_and_pending_fifo() {
         Some(PickerKind::Auth)
     ));
     let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
-    assert!(tip.contains("ctrl+shift+l"), "tip: {tip}");
+    assert!(tip.contains("ctrl+g"), "tip: {tip}");
 }
 
 #[test]
@@ -5511,6 +5511,10 @@ fn take_terminal_auth_closes_the_picker() {
     assert!(app.pending_terminal_auth.is_some());
     assert!(app.take_terminal_auth().is_some());
     assert!(app.picker.is_none(), "the picker is answered by the launch");
+    // The status line can name the method whose terminal flow ran instead
+    // of "credential source not reported" (#160).
+    assert_eq!(app.auth.method_id.as_deref(), Some("tui-login"));
+    assert_eq!(app.auth.method_name.as_deref(), Some("Terminal"));
 }
 
 #[test]
@@ -5652,7 +5656,7 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     );
     app.push_session_info();
     let text = overlay_text(&app);
-    assert!(text.contains("ctrl+shift+l"), "{text}");
+    assert!(text.contains("ctrl+g"), "{text}");
     app.auth.status = crate::acp_auth::AuthStatus::Failed;
     app.auth.message = Some("denied".into());
     app.push_session_info();
@@ -5663,6 +5667,24 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     app.push_session_info();
     let text = overlay_text(&app);
     assert!(text.contains("agent"), "{text}");
+    // A method id with no display name still names the method.
+    app.auth.method_id = Some("api-key".into());
+    app.auth.method_name = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("api-key"), "{text}");
+    // Configured without any method id/name still reports a source.
+    app.auth.status = crate::acp_auth::AuthStatus::Configured;
+    app.auth.method_id = None;
+    app.auth.method_name = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("credential source not reported"), "{text}");
+    // A named method is credited by name.
+    app.auth.method_name = Some("gateway".into());
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("credentials ready · gateway"), "{text}");
 }
 
 #[test]
@@ -5684,12 +5706,27 @@ fn help_overlay_documents_the_auth_picker_in_chinese_too() {
 }
 
 #[test]
-fn unknown_slash_command_reports_a_visible_warning() {
-    let (mut app, ctl, _rx) = test_app();
+fn unclaimed_slash_input_passes_through_to_the_agent() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
     app.demo = false;
+    app.session_bound = true;
     app.run_slash("ghost", "arg", &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "/ghost arg"
+    ));
+    // A harness-native /login rides the same transport: the agent's
+    // auth_required reply is what opens the picker (#160).
+    app.prompt_pending = false;
+    app.state = RunState::Idle;
+    app.run_slash("login", "", &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "/login"
+    ));
     assert!(
-        last_notice_text(&app).is_some_and(|text| text.contains("unknown command /ghost")),
+        last_notice_text(&app).is_none_or(|text| !text.contains("unknown command")),
         "{:?}",
         last_notice_text(&app)
     );
@@ -5745,6 +5782,7 @@ fn configured_snapshot_closes_the_auth_picker() {
 fn cordis_approval_alt_digit_short_circuit() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
     app.pending_cordis_approvals.push(crate::bus::PendingCordisApproval {
         request_id: "r1".into(),
         agent_id: "a".into(),
@@ -5765,14 +5803,53 @@ fn cordis_approval_alt_digit_short_circuit() {
 }
 
 #[test]
-fn unknown_slash_command_warns_in_chinese() {
-    let (mut app, ctl, _rx) = test_app();
+fn unclaimed_slash_input_passes_through_in_chinese_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
     app.demo = false;
     app.locale = crate::locale::Locale::Zh;
+    app.session_bound = true;
     app.run_slash("ghost", "arg", &ctl);
-    assert!(
-        last_notice_text(&app).is_some_and(|text| text.contains("未知命令 /ghost")),
-        "{:?}",
-        last_notice_text(&app)
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "/ghost arg"
+    ));
+}
+
+/// With vim on, an open slash-completion keeps the key — the vim arm's
+/// `!slash_completion_open()` guard is what skips vim, not the input.
+#[test]
+fn vim_mode_defers_to_an_open_slash_completion() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.run_slash("vim", "on", &ctl);
+    assert!(app.vim.is_active());
+    app.input.set("/h".into());
+    assert!(app.slash_completion_open(), "slash completion is open");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        &ctl,
     );
+    assert_eq!(app.input.buf(), "/hx", "completion-owned typing still lands");
+}
+
+/// Vim on with an open queue edit skips vim — the queue editor owns the
+/// key at that modal level.
+#[test]
+fn vim_mode_defers_to_an_open_queue_edit() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.run_slash("vim", "on", &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.vim.mode, crate::input::VimMode::Normal);
+    app.input.set("keep".into());
+    app.queue_edit = Some(crate::app::QueueEditState {
+        prompt_id: 1,
+        delete_confirm: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    // Vim was skipped — the queue editor let the key type through.
+    assert_eq!(app.input.buf(), "keepx", "vim never saw the key");
 }

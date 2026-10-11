@@ -348,12 +348,59 @@ pub fn process_env() -> BTreeMap<String, String> {
     std::env::vars().collect()
 }
 
+#[cfg(unix)]
+fn command_on_path(command: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(command))
+            .find(|candidate| {
+                candidate
+                    .metadata()
+                    .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            })
+    })
+}
+
 pub fn run_terminal_auth(
     launch: &TerminalAuthLaunch,
     locale: crate::locale::Locale,
 ) -> Result<(), String> {
-    let mut cmd = std::process::Command::new(&launch.command);
-    cmd.args(&launch.args);
+    // The unix child runs through `sh`, which would report a missing
+    // binary as a plain exit status — keep the spawn error explicit.
+    #[cfg(unix)]
+    {
+        let runnable = if launch.command.contains('/') {
+            std::path::Path::new(&launch.command).is_file()
+        } else {
+            command_on_path(&launch.command).is_some()
+        };
+        if !runnable {
+            return Err(locale.trf(
+                "could not start {}: not found",
+                "无法启动 {}：未找到",
+                &[launch.label.clone()],
+            ));
+        }
+    }
+    #[cfg(unix)]
+    let mut cmd = {
+        // Ctrl-C on the lent-out TTY must kill the login flow, not Martty:
+        // the parent ignores SIGINT for the duration and the login runs
+        // through a tiny sh wrapper that restores the default disposition
+        // (ignored signals survive exec) before exec'ing the real command.
+        let mut wrapped = std::process::Command::new("sh");
+        wrapped.arg("-c").arg("trap - INT; exec \"$@\"").arg("sh");
+        wrapped.arg(&launch.command).args(&launch.args);
+        wrapped
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut direct = std::process::Command::new(&launch.command);
+        direct.args(&launch.args);
+        direct
+    };
     if let Some(cwd) = &launch.cwd {
         cmd.current_dir(cwd);
     }
@@ -363,7 +410,14 @@ pub fn run_terminal_auth(
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    match cmd.status() {
+    #[cfg(unix)]
+    let held_sigint = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    let status = cmd.status();
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, held_sigint);
+    }
+    match status {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => Err(locale.trf(
             "{} exited {}",
@@ -596,16 +650,29 @@ fn terminal_auth_from_method(
     env: &BTreeMap<String, String>,
 ) -> Option<TerminalAuthLaunch> {
     let label = auth_method_name(method).unwrap_or_else(|| "Login".into());
-    let agent_command = agent_argv
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "dsh-acp".into());
+    let agent_command = || {
+        agent_argv
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "dsh-acp".into())
+    };
     if let Some(block) = terminal_auth_block(method) {
-        // The spec pins the launch to the client's own configured agent
-        // command: only the method's args/env may come from the agent. An
-        // agent-supplied `_meta["terminal-auth"].command` is ignored so an
-        // agent can never make the client run an arbitrary binary (#160).
-        let mut args = agent_argv[1..].to_vec();
+        // claude-agent-acp alignment: the agent advertises its own login
+        // argv in `_meta["terminal-auth"]` — e.g. pi-acp needs
+        // `node dist/bin.js --terminal-login`, which the client's spawn
+        // argv cannot express (it may be a wrapper script). Running the
+        // advertised command trusts the agent no further than the spawn
+        // command we already exec for it. Without `command`, the client's
+        // configured agent argv + the advertised args apply.
+        let advertised = block
+            .get("command")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let mut args = if advertised.is_some() {
+            Vec::new()
+        } else {
+            agent_argv[1..].to_vec()
+        };
         args.extend(string_array(block.get("args")));
         let mut merged = env.clone();
         merged.extend(string_record(block.get("env")));
@@ -616,7 +683,9 @@ fn terminal_auth_from_method(
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&label)
                 .to_string(),
-            command: agent_command.to_string(),
+            command: advertised
+                .map(str::to_string)
+                .unwrap_or_else(agent_command),
             args,
             env: merged,
             cwd: Some(cwd.to_string()),
@@ -627,14 +696,22 @@ fn terminal_auth_from_method(
         return None;
     }
     let meta = auth_method_meta(method);
-    let command = agent_command;
+    let advertised = meta
+        .and_then(|m| m.get("command"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let command = advertised.map(str::to_string).unwrap_or_else(agent_command);
     let meta_args = string_array(meta.and_then(|m| m.get("args")));
     let method_args = if !meta_args.is_empty() {
         meta_args
     } else {
         string_array(method.get("args"))
     };
-    let mut args = agent_argv[1..].to_vec();
+    let mut args = if advertised.is_some() {
+        Vec::new()
+    } else {
+        agent_argv[1..].to_vec()
+    };
     args.extend(method_args);
     let mut merged = env.clone();
     merged.extend(string_record(method.get("env")));
