@@ -431,6 +431,26 @@ export function warnAboutLegacyPackage({ argv1, libDir, write = stderrLine, plat
   if (hint) marttyNotice(write, hint)
 }
 
+// Deliver the launch notices collected by warnAboutLegacyPackage. On an
+// interactive POSIX terminal the TUI repaints the whole screen for the
+// session — printing now would bury the notice behind the first frame — so
+// it is deferred to process exit, where it lands right above the next
+// prompt. Piped stderr and Windows consoles get it immediately: an
+// exit-handler write only flushes synchronously to a POSIX TTY or a file.
+export function reportLaunchNotices(
+  lines,
+  { tty = process.stderr.isTTY, platform = process.platform, write = stderrLine } = {},
+) {
+  if (lines.length === 0) return
+  if (tty && platform !== 'win32') {
+    process.once('exit', () => {
+      for (const line of lines) write(line)
+    })
+    return
+  }
+  for (const line of lines) write(line)
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   migrate(process.env)
 }

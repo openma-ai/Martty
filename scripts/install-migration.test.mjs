@@ -18,6 +18,7 @@ import test from 'node:test'
 import {
   migrate,
   warnAboutLegacyPackage,
+  reportLaunchNotices,
   ensureMarttyLink,
   sanitizeLegacyInstall,
   isLegacyOwned,
@@ -834,4 +835,45 @@ test('launch converge swallows mid-migration failures and still warns', (t) => {
   warnAboutLegacyPackage({ libDir, argv1: path.join(prefix, 'bin', 'martty-cli'), write })
 
   assert.match(lines.at(-1), /npm rm -g @openma\/deepseek-harness-tui/)
+})
+
+// reportLaunchNotices: hands the notices bin/martty.js collected to the
+// user. On an interactive POSIX terminal it defers them to process exit so
+// the TUI cannot paint over them; everywhere else they print immediately.
+
+test('reportLaunchNotices prints immediately when stderr is not a TTY', () => {
+  const lines = []
+  const write = (line) => lines.push(line)
+  reportLaunchNotices(['one', 'two'], { tty: false, write })
+  assert.deepEqual(lines, ['one', 'two'])
+  reportLaunchNotices([], { tty: false, write })
+  reportLaunchNotices([])
+  assert.deepEqual(lines, ['one', 'two'])
+})
+
+test('reportLaunchNotices prints immediately on Windows consoles', () => {
+  // Exit-handler writes do not flush synchronously to a Windows console,
+  // so the notice must print now rather than risk being dropped at exit.
+  const lines = []
+  reportLaunchNotices(['now'], { tty: true, platform: 'win32', write: (line) => lines.push(line) })
+  assert.deepEqual(lines, ['now'])
+})
+
+test('reportLaunchNotices defers to process exit on a POSIX TTY', () => {
+  const lines = []
+  const originalOnce = process.once
+  let exitHandler
+  process.once = (event, handler) => {
+    if (event === 'exit') exitHandler = handler
+    return process
+  }
+  try {
+    reportLaunchNotices(['deferred'], { tty: true, platform: 'linux', write: (line) => lines.push(line) })
+  } finally {
+    process.once = originalOnce
+  }
+  assert.deepEqual(lines, [], 'nothing printed before exit')
+  assert.equal(typeof exitHandler, 'function', 'an exit handler was registered')
+  exitHandler()
+  assert.deepEqual(lines, ['deferred'])
 })

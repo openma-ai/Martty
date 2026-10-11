@@ -425,7 +425,8 @@ npm install --global martty
 确实属于旧包的 `martty`/`dsh-tui`/`dsb` 链接（第三方 `dsh-tui` 保持原样），
 自行创建 `martty` 命令，并摘除旧包清单里的 bin 声明，使之后执行
 `npm rm -g @openma/deepseek-harness-tui` 不会误删新的 `martty`。删除旧包
-只是可选的收尾；旧包还在时 `martty` 每次启动都会提示。本仓库的源码包名
+只是可选的收尾；旧包还在时 `martty` 每次启动都会提示——交互终端中提示
+会延迟到进程退出时打印，避免被界面覆盖。本仓库的源码包名
 本身就是 `martty`，因此 `npm link` 的检出目录与正式包对 npm 来说是同一个包，
 两个方向都能干净替换、不会冲突。
 

@@ -94,10 +94,11 @@ All notable changes to this project are documented here. The project follows
   prints the reinstall hint once and removes itself instead of leaving a
   dead link — and detaches the legacy package's `bin` declarations so a
   later `npm rm -g @openma/deepseek-harness-tui` cannot take `martty` down
-  with it. `martty` warns at launch while the legacy package remains; with
-  `--ignore-scripts`, the first `martty-cli` (or `npx martty`) launch runs
-  the whole converge — retiring stale links, recreating `martty`, and
-  sanitizing the legacy manifest.
+  with it. `martty` warns at launch while the legacy package remains —
+  deferred to process exit on interactive terminals so the TUI cannot
+  paint over it; with `--ignore-scripts`, the first `martty-cli` (or
+  `npx martty`) launch runs the whole converge — retiring stale links,
+  recreating `martty`, and sanitizing the legacy manifest.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,

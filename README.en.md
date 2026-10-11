@@ -95,7 +95,9 @@ verifiably belonged to the legacy package (a third-party `dsh-tui` is left
 untouched), creates the `martty` command itself, and detaches the legacy
 package's bin declarations so `npm rm -g @openma/deepseek-harness-tui`
 afterwards leaves `martty` working. Removing the old package afterwards is
-optional cleanup; `martty` warns at launch while it remains. The source
+optional cleanup; `martty` warns at launch while it remains — on an
+interactive terminal the notice is deferred to process exit so the TUI
+cannot paint over it. The source
 package in this repository is itself named `martty`, so an `npm link`ed
 checkout and the published package are the same package to npm — each
 replaces the other cleanly in either order.

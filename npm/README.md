@@ -69,7 +69,9 @@ verifiably belonged to the legacy package (a third-party `dsh-tui` stays
 untouched), creates the `martty` command itself, and detaches the legacy
 package's bin declarations so a later `npm rm -g` can't take `martty` down
 with it. Removing `@openma/deepseek-harness-tui` afterwards is optional
-cleanup; `martty` warns at launch while it remains. With `--ignore-scripts`
+cleanup; `martty` warns at launch while it remains — on an interactive
+terminal the notice prints when the session exits, so the TUI cannot hide
+it. With `--ignore-scripts`
 the postinstall never runs — invoke `martty-cli` once (or `npx martty`) and
 the first launch finishes the migration itself. And after `npm rm -g
 martty`, the `martty` command left behind is a self-cleaning shim: invoking

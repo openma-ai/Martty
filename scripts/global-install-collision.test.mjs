@@ -10,6 +10,7 @@ import {
   readlinkSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -312,6 +313,42 @@ test('global installs with overlapping bins', async (t) => {
 
     requireOk(removeGlobal(dir, LEGACY_PACKAGE), 'remove legacy package')
     assertMarttyShim(dir)
+  })
+
+  await t.test('an interactive TTY launch defers the notice to exit', (t) => {
+    // The TUI repaints the whole terminal for the session, so on a TTY the
+    // migration notice is held until process exit — otherwise it sits
+    // behind the first frame the entire time. `script(1)` allocates a real
+    // pty for the child; without one (piped stdio) it prints immediately.
+    if (run('script', ['-qec', 'true', '/dev/null']).status !== 0) {
+      t.skip('script(1) with -qec is unavailable for a pty run')
+      return
+    }
+    const dir = prefix('tty-defer')
+    requireOk(installGlobal(dir, tarballs['legacy-0.2.20']), 'install legacy 0.2.20')
+    requireOk(installGlobal(dir, martty), 'install martty over legacy')
+    // The fixture tarball strips dependencies for an offline install; give
+    // the installed bin the source tree's node_modules so the real
+    // bin/martty.js loads. It still exits 1 — the fixture ships no native
+    // binary — which makes the notice's ORDER observable: deferred output
+    // lands after the failure line, immediate output before it.
+    symlinkSync(
+      path.join(packageRoot, 'node_modules'),
+      path.join(dir, 'lib', 'node_modules', 'martty', 'node_modules'),
+    )
+    const tty = run('script', ['-qec', `"${binPath(dir, 'martty')}" --version`, '/dev/null'])
+    assert.equal(tty.status, 1, `pty launch should exit 1 (no vendored binary):\n${tty.stdout}`)
+    const missing = tty.stdout.indexOf('native package')
+    const notice = tty.stdout.indexOf('still installed')
+    assert.ok(missing >= 0 && notice > missing,
+      `the TTY launch defers the notice past the failure output:\n${tty.stdout}`)
+
+    const piped = run(binPath(dir, 'martty'), ['--version'])
+    assert.ok(
+      piped.stderr.indexOf('still installed') >= 0
+        && piped.stderr.indexOf('still installed') < piped.stderr.indexOf('native package'),
+      `piped stderr still gets the notice first:\n${piped.stderr}`,
+    )
   })
 
   // `npm link` of a modern checkout: the source package is named `martty`,
