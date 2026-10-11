@@ -4580,8 +4580,12 @@ impl App {
                         if session_id == self.session_id {
                             self.handle_inner(AppEvent::Ctl(CtlEvent::Auth(snapshot)), ctl);
                             if open { self.open_auth_surface(); }
-                        } else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
-                            if let Some(connection) = &mut slot.connection { connection.auth = snapshot; }
+                        } else {
+                            if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
+                                if let Some(connection) = &mut slot.connection {
+                                    connection.auth = snapshot;
+                                }
+                            }
                         }
                     }
                     CtlEvent::Auth(snap) => {

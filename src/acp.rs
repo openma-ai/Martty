@@ -3696,8 +3696,10 @@ where
                                     }
                                 },
                             }
-                            if active_plugin_operation.is_none() { drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
-                                &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx); }
+                            // This arm is select-guarded on `active_plugin_operation`
+                            // being none, so draining is unconditional here.
+                            drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
+                                &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx);
                         }
                         steer = steer_done_rx.recv() => {
                             if let Some(SteerFinish { session_id, message_id, deferred }) = steer {

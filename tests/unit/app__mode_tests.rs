@@ -6092,6 +6092,10 @@ fn session_info_line_reflects_needs_auth_and_failed() {
     app.push_session_info();
     let text = overlay_text(&app);
     assert!(text.contains("ctrl+g"), "{text}");
+    app.auth.status = crate::acp_auth::AuthStatus::SigningIn;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("signing in"), "{text}");
     app.auth.status = crate::acp_auth::AuthStatus::Failed;
     app.auth.message = Some("denied".into());
     app.push_session_info();
@@ -6474,4 +6478,84 @@ fn sign_in_hides_stale_sign_in_notices() {
         notice_count, 0,
         "a successful sign-in hides the stale needs-auth notice"
     );
+}
+
+#[test]
+fn session_auth_for_a_parked_session_updates_its_stored_snapshot() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.startup_bound = true;
+    app.open_new_session("s-parked".into(), true);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionConnection {
+        session_id: "s-parked".into(),
+        connection: crate::bus::SessionConnection {
+            server: Some("beta".into()),
+            auth: crate::acp_auth::AuthSnapshot::none(),
+            load_session: false,
+            list_session: true,
+            resume_session: true,
+            fork_session: false,
+            close_session: false,
+            additional_directories: false,
+        },
+    }), &ctl);
+    app.open_new_session("s-live".into(), true);
+    let pidx = app
+        .parked
+        .iter()
+        .position(|slot| slot.id == "s-parked")
+        .expect("first session parked by the second bind");
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-parked".into(),
+        snapshot: crate::acp_auth::needs_auth_snapshot(
+            Vec::new(), None, Some("sign in".into())),
+        open: true,
+    }), &ctl);
+    let stored = app.parked[pidx].connection.as_ref().map(|c| &c.auth);
+    assert!(
+        matches!(stored.map(|a| &a.status), Some(crate::acp_auth::AuthStatus::NeedsAuth)),
+        "SessionAuth for a parked session refreshes its stored snapshot"
+    );
+
+    // A parked slot with no connection recorded simply has nothing to update.
+    app.open_new_session("s-bare".into(), true);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-bare".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: false,
+    }), &ctl);
+    app.open_new_session("s-live2".into(), true);
+    let bidx = app
+        .parked
+        .iter()
+        .position(|slot| slot.id == "s-bare")
+        .expect("s-bare parked");
+    app.parked[bidx].connection = None;
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-bare".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: false,
+    }), &ctl);
+    assert!(app.parked[bidx].connection.is_none());
+
+    // An auth event for a session that exists nowhere is ignored outright.
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-ghost".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: true,
+    }), &ctl);
+
+    // The live session keeps routing the snapshot normally: open:false just
+    // refreshes auth state, open:true also surfaces the picker.
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-live2".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: false,
+    }), &ctl);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-live2".into(),
+        snapshot: crate::acp_auth::needs_auth_snapshot(
+            Vec::new(), None, Some("sign in".into())),
+        open: true,
+    }), &ctl);
 }
