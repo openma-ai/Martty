@@ -117,8 +117,12 @@ All notable changes to this project are documented here. The project follows
   held until you sign in" rather than spinning on "contacting
   runtime", and Esc with no live turn still resolves queued and held
   prompts (the wire shows `session/cancel` and the drained sends).
-  Long auth-method names are ellipsized inside the picker's label
-  column instead of overflowing into the type column.
+  A typed `/login` or `/logout` is an ordinary prompt — it ships to
+  the agent verbatim (the agent answers plainly, per the
+  claude-agent-acp convention) and the picker still opens only on a
+  real `auth_required` reply. Long auth-method names are ellipsized
+  inside the picker's label column instead of overflowing into the
+  type column.
 
 
 ### Fixed

@@ -255,7 +255,7 @@ fn a_refused_retry_is_dropped_visibly_not_reparked() {
             "code": -32000, "message": "auth required",
             "data": { "marttyConnection": { "id": "h1", "authMethods": [] } }
         })).unwrap()),
-        payload: ParkedPromptKind::Text("/login".into()),
+        payload: ParkedPromptKind::Text("auth-gated".into()),
         gen: 1,
     };
     let (tx, rx) = std::sync::mpsc::channel();
@@ -5116,6 +5116,7 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
     // answers session/new slowly so the test can reach resolve_cmd_session's
     // empty-sessions arm deterministically (#160).
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let agent = Agent
         .builder()
         .name("auth-release-mock")
@@ -5158,7 +5159,7 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
                         })
                         .unwrap_or_default();
                     let _ = prompt_tx.send(text.clone());
-                    if text.starts_with('/') {
+                    if text == "auth-gated" {
                         responder.respond_with_error(AcpError::new(
                             -32000,
                             "Authentication required: authenticate with one of the advertised auth methods",
@@ -5172,6 +5173,13 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
                 }
             },
             on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |_note: CancelNotification, _cx| {
+                let _ = cancel_tx.send(());
+                Ok(())
+            },
+            on_receive_notification!(),
         );
     let cfg = RuntimeConfig {
         bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
@@ -5199,9 +5207,9 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
         );
     }
 
-    // A typed /login is refused and parks behind the auth picker.
+    // A normal prompt refused with -32000 parks behind the auth picker.
     cmd_tx
-        .send(Cmd::Prompt { session_id: "s1".into(), text: "/login".into() })
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "auth-gated".into() })
         .expect("prompt");
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut needs_auth = false;
@@ -5217,13 +5225,13 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
             Err(err) => panic!("{err}"),
         }
     }
-    assert!(needs_auth, "/login refusal opened the picker");
+    assert!(needs_auth, "the refusal opened the picker");
     assert_eq!(
-        prompt_rx.try_recv().expect("/login was on the wire").as_str(),
-        "/login"
+        prompt_rx.try_recv().expect("the prompt was on the wire").as_str(),
+        "auth-gated"
     );
 
-    // Esc on the picker declines sign-in: the parked /login is dropped
+    // Esc on the picker declines sign-in: the parked prompt is dropped
     // visibly instead of stalling every later prompt.
     cmd_tx
         .send(Cmd::AuthSkipped { session_id: "s1".into() })
@@ -5266,7 +5274,7 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
     // Another refusal re-parks; followups entered while it is held report
     // why they are waiting and never reach the wire.
     cmd_tx
-        .send(Cmd::Prompt { session_id: "s1".into(), text: "/login".into() })
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "auth-gated".into() })
         .expect("prompt");
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut reparked = false;
@@ -5284,8 +5292,8 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
     }
     assert!(reparked, "second refusal re-parks");
     assert_eq!(
-        prompt_rx.try_recv().expect("/login re-sent").as_str(),
-        "/login"
+        prompt_rx.try_recv().expect("re-sent on the wire").as_str(),
+        "auth-gated"
     );
 
     cmd_tx
@@ -5470,6 +5478,32 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
         failures.iter().any(|message| message.contains("auth skip")),
         "{failures:?}"
     );
+
+    // A live turn still takes session/cancel on the wire — the
+    // refused-prompt cleanup must not degrade interrupt handling (#160).
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "slow-turn".into() })
+        .expect("live prompt");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+            .await
+            .expect("live prompt sent")
+            .as_deref(),
+        Some("slow-turn")
+    );
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "s1".into() })
+        .expect("interrupt a live turn");
+    tokio::time::timeout(Duration::from_secs(2), cancel_rx.recv())
+        .await
+        .expect("session/cancel reaches the agent");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    while let Ok(event) = bus_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Ctl(CtlEvent::SessionOpFailed { .. })),
+            "interrupting a live turn does not fail"
+        );
+    }
 
     // Catalog requests just read the cached session surface.
     cmd_tx

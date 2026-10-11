@@ -8955,9 +8955,9 @@ impl App {
             "clip" => self.clip_image(arg, ctl),
             other => {
                 // Not a client command: slash input passes through to the
-                // agent as advertised (issue #160). A harness-native `/login`
-                // reaches the agent, whose auth_required reply opens the
-                // picker — the client never owns auth slash commands.
+                // agent as advertised (issue #160) — the client never owns
+                // auth slash commands, and only a real auth_required reply
+                // opens the picker.
                 let text = if arg.is_empty() {
                     format!("/{other}")
                 } else {

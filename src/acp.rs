@@ -350,9 +350,8 @@ struct SessionHandle {
     steers_inflight: usize,
     /// Prompts requeued after an auth stall. Each one gets exactly one
     /// retry after sign-in: a second `-32000` means the agent refused the
-    /// message outright (e.g. a harness-native `/login`), not "still
-    /// unauthenticated" — re-parking it would stall the session forever
-    /// (#160).
+    /// message outright, not "still unauthenticated" — re-parking it
+    /// would stall the session forever (#160).
     auth_retries: usize,
 }
 
