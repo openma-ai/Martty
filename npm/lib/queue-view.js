@@ -37,7 +37,9 @@ function dockNodes(queue) {
       : `Queue · ${count} · ↑/↓ choose · enter edit · esc close`
     : queue.attachFailed === true
       ? `Queue · ${count} · attach failed · prompt stays queued`
-      : `Queue · ${count} · enter send first · ⌥↑ edit`
+      : queue.authPending === true
+        ? `Queue · ${count} · sign-in needed · prompt stays queued`
+        : `Queue · ${count} · enter send first · ⌥↑ edit`
   const nodes = [{
     id: 'summary',
     kind: 'generic',

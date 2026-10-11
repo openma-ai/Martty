@@ -554,6 +554,15 @@ fn draw_queue_shelf(f: &mut Frame, app: &App, area: Rect) {
                             "  ·  连接失败 · 消息保留在队列里",
                         )
                         .to_string()
+                } else if app.queue_signin_pending() {
+                    // Sign-in must settle before a bind can land — the head
+                    // stays queued until then.
+                    app.locale
+                        .tr(
+                            "  ·  sign-in needed · prompt stays queued",
+                            "  ·  需要登录 · 消息保留在队列里",
+                        )
+                        .to_string()
                 } else {
                     app.locale
                         .tr(
@@ -4042,7 +4051,12 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
         // the transcript as a wrapped notice; the status row shows only its
         // first line — embedded newlines cannot render in a one-line span.
         let headline = error.lines().next().unwrap_or_default();
-        out.push(kv(app.locale.tr("status", "状态"), format!("{} · {headline}", app.locale.tr("connection failed", "连接失败"))));
+        let label = if app.attach_refused {
+            app.locale.tr("initialize refused", "初始化被拒绝")
+        } else {
+            app.locale.tr("connection failed", "连接失败")
+        };
+        out.push(kv(app.locale.tr("status", "状态"), format!("{label} · {headline}")));
     } else if matches!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn | crate::acp_auth::AuthStatus::Failed) {
         let detail = app.auth.method_name.as_deref().or(app.auth.method_id.as_deref()).unwrap_or("Agent");
         let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {

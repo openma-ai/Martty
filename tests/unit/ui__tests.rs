@@ -470,6 +470,21 @@ fn failed_connection_landing_keeps_only_the_first_error_line() {
 }
 
 #[test]
+fn a_refused_attach_landing_says_initialize_refused_not_failed() {
+    let mut app = live_test_app();
+    app.server_info = Some("acp".into());
+    // An answered refusal: the agent is attached — the landing row names the
+    // refusal instead of the dead-attach "connection failed".
+    app.connection_error = Some("unsupported client".into());
+    app.attach_refused = true;
+    app.session_id = "unavailable".into();
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("initialize refused"), "{text}");
+    assert!(!text.contains("connection failed"), "{text}");
+}
+
+#[test]
 fn attached_landing_does_not_guess_runtime_before_initialize_or_after_failure() {
     let mut app = live_test_app();
     app.cfg.bin = "dsh-acp".into();

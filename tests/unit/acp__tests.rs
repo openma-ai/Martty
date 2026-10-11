@@ -852,6 +852,7 @@ async fn client_compositor_command_survives_a_failed_initialize() {
                 editing_id: None,
                 delete_confirm: false,
                 attach_failed: true,
+                auth_pending: false,
             },
         })
         .expect("queue snapshot while detached");
@@ -861,6 +862,7 @@ async fn client_compositor_command_survives_a_failed_initialize() {
         .expect("queue projection request");
     assert_eq!(method, crate::cordis::QUEUE_UPDATE);
     assert_eq!(params["attachFailed"], true);
+    assert_eq!(params["authPending"], false);
     assert_eq!(params["items"][0]["summary"], "held prompt");
 
     // A prompt in the detached state must fail fast, not park the loop
@@ -1067,16 +1069,17 @@ async fn a_refused_initialize_with_auth_methods_parks_prompts_for_sign_in() {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
 
-    // The refusal surfaces as a failed attach, then sign-in is offered
-    // with the methods the agent declared in its error data.
+    // The refusal surfaces as a refused (still attached) connect, then
+    // sign-in is offered with the methods the agent declared in its
+    // error data.
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut failed = false;
+    let mut refused = false;
     let mut offered = false;
-    while Instant::now() < deadline && !(failed && offered) {
+    while Instant::now() < deadline && !(refused && offered) {
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { error, .. })) => {
-                assert!(error.contains("sign in first"), "unexpected failure: {error}");
-                failed = true;
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionRefused { error, .. })) => {
+                assert!(error.contains("sign in first"), "unexpected refusal: {error}");
+                refused = true;
             }
             Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot))) => {
                 if snapshot.status == AuthStatus::NeedsAuth
@@ -1090,7 +1093,7 @@ async fn a_refused_initialize_with_auth_methods_parks_prompts_for_sign_in() {
             Err(error) => panic!("bus disconnected: {error}"),
         }
     }
-    assert!(failed && offered, "refused initialize must surface the failure and the sign-in methods");
+    assert!(refused && offered, "refused initialize must surface the refusal and the sign-in methods");
 
     // A prompt before sign-in parks instead of touching the wire or
     // erroring like a dead attach.
@@ -1229,10 +1232,10 @@ async fn a_refused_initialize_without_auth_still_attempts_session_new() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        assert!(Instant::now() < deadline, "ConnectionFailed never arrived");
+        assert!(Instant::now() < deadline, "ConnectionRefused never arrived");
         match bus_rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { error, .. })) => {
-                assert!(error.contains("unsupported client"), "unexpected failure: {error}");
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionRefused { error, .. })) => {
+                assert!(error.contains("unsupported client"), "unexpected refusal: {error}");
                 break;
             }
             Ok(_) => {}
@@ -1252,6 +1255,22 @@ async fn a_refused_initialize_without_auth_still_attempts_session_new() {
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
+}
+
+#[test]
+fn a_refusal_message_drops_only_the_appended_stderr_tail() {
+    // The transport appends "Agent stderr:" + a tail onto wire errors; a
+    // refused handshake keeps just its own words.
+    let enriched = AcpError::new(-32603, "unsupported client")
+        .data(json!({ "details": "unsupported client\nAgent stderr:\nlaunch noise" }));
+    assert_eq!(init_refusal_message(&enriched), "unsupported client");
+
+    let plain = AcpError::new(-32603, "unsupported client");
+    assert_eq!(init_refusal_message(&plain), "unsupported client");
+
+    // No tail at all — the message survives verbatim.
+    let no_tail = AcpError::new(-32000, "Authentication required");
+    assert_eq!(init_refusal_message(&no_tail), "Authentication required");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

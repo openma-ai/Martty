@@ -1640,6 +1640,18 @@ fn init_was_answered(err: &AcpError) -> bool {
     true
 }
 
+/// The message of a refusal the agent itself answered. Our transport wraps
+/// agent error replies with an "Agent stderr:" diagnostics tail, but a
+/// refused handshake's own words are the diagnosis — the tail is unrelated
+/// launch noise, so drop it before surfacing the refusal.
+fn init_refusal_message(err: &AcpError) -> String {
+    let message = acp_error_message(err);
+    match message.split_once("\nAgent stderr:") {
+        Some((head, _)) => head.trim_end().to_string(),
+        None => message,
+    }
+}
+
 async fn call_tui_extension(
     cx: &ConnectionTo<Agent>,
     method: &str,
@@ -2279,12 +2291,6 @@ where
                 // channel still carries the local compositor plane, so client
                 // diagnostics such as /status stay reachable. Report the
                 // failure and keep the command loop running without an agent.
-                if let Err(error) = &init {
-                    let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
-                        target: String::new(),
-                        error: acp_error_message(error),
-                    }));
-                }
                 // Loop state initialized up front: when the handshake failed,
                 // everything below stays empty and agent-bound commands simply
                 // error or park exactly like after a `session/new` failure.
@@ -2343,11 +2349,32 @@ where
                                     &bus,
                                     methods.clone(),
                                     selected.as_ref(),
-                                    Some(acp_error_message(err)),
+                                    Some(init_refusal_message(err)),
                                 );
                                 session_auth_pending = true;
                             }
                         }
+                    }
+                    if agent_absent {
+                        // Locally synthesized failure (dead transport, an
+                        // exited child, our own deadline) or an auth
+                        // refusal that declared no methods — no live agent
+                        // can take another command.
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionFailed {
+                            target: String::new(),
+                            error: acp_error_message(err),
+                        }));
+                    } else {
+                        // The agent answered — it is attached, so the
+                        // refused surface keeps the send path open: a queued
+                        // prompt retries `session/new` once it reaches the
+                        // command loop. Emit after `needs-auth` so the App
+                        // has already recorded the auth state when it
+                        // classifies the refusal.
+                        let _ = bus.send(AppEvent::Ctl(CtlEvent::ConnectionRefused {
+                            target: String::new(),
+                            error: init_refusal_message(err),
+                        }));
                     }
                 }
                 let cwd = std::path::PathBuf::from(&cfg.workspace);

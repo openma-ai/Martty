@@ -38,7 +38,13 @@ All notable changes to this project are documented here. The project follows
   and holds prompts until `authenticate` settles, a non-auth refusal lets the
   next prompt attempt `session/new` inline, and only transport/process
   failures (the agent never answered) short-circuit prompts with
-  `agent is not attached`.
+  `agent is not attached`. The refused attach is its own surface — `/status`
+  reports `acp · refused` and the landing row says `initialize refused`; a
+  queued prompt on a non-auth refusal is sent so `session/new` retries
+  (reaching the inline retry from the real queue, not just directly); while
+  sign-in is pending the queue header says "sign-in needed" instead of
+  "attach failed", and the refusal renders once — the needs-auth block no
+  longer duplicates the attach notice.
 
 ### Added
 

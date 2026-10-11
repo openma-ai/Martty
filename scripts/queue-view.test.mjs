@@ -106,6 +106,11 @@ test('Queue view names a failed attach instead of promising send first', () => {
     queueView.dockNodes(makeCurrent({ attachFailed: true }))[0].title,
     'Queue · 1 · attach failed · prompt stays queued',
   )
+  // Sign-in pending on an answered refusal: name the auth hold instead.
+  assert.equal(
+    queueView.dockNodes(makeCurrent({ authPending: true }))[0].title,
+    'Queue · 1 · sign-in needed · prompt stays queued',
+  )
   assert.equal(
     queueView.dockNodes(makeCurrent({ attachFailed: false }))[0].title,
     'Queue · 1 · enter send first · ⌥↑ edit',
