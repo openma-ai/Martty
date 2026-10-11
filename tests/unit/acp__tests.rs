@@ -4938,10 +4938,10 @@ fn structured_auth_failure_opens_owning_connection_and_parks_original_prompt() {
 }
 
 #[test]
-fn structured_auth_failure_names_the_signed_in_method() {
-    // The agent's marttyConnection data carries no selection: the
-    // snapshot names the method the user signed in with — never "agent"
-    // (issue #160).
+fn structured_auth_failure_names_the_failing_provider() {
+    // The refusal names the credential that failed — the provider the
+    // session runs on — never the method the user last signed in with
+    // nor the bare "agent" type (issue #160).
     let selected = AuthMethodInfo {
         id: "api-key:deepseek".into(),
         name: Some("DeepSeek API key".into()),
@@ -4972,7 +4972,7 @@ fn structured_auth_failure_names_the_signed_in_method() {
         &mut parked,
         &tx,
         std::slice::from_ref(&selected),
-        Some(&selected),
+        Some("deepseek/deepseek-v4-pro"),
     );
     let snapshot = rx
         .try_iter()
@@ -4986,7 +4986,7 @@ fn structured_auth_failure_names_the_signed_in_method() {
 }
 
 #[test]
-fn name_needs_auth_prefers_selected_then_advertised_then_nothing() {
+fn name_needs_auth_matches_the_failing_provider() {
     let method = |id: &str, name: &str| AuthMethodInfo {
         id: id.into(),
         name: Some(name.into()),
@@ -5004,35 +5004,52 @@ fn name_needs_auth_prefers_selected_then_advertised_then_nothing() {
         methods: Vec::new(),
         message: None,
     };
-    // The signed-in method wins.
-    let selected = method("sel", "Selected");
-    let mut snap = AuthSnapshot { methods: vec![method("other", "Other")], ..blank() };
-    name_needs_auth(&mut snap, &[], Some(&selected));
-    assert_eq!(snap.method_label(), Some("Selected"));
-    // Then the snapshot's own advertised list.
-    let mut snap = AuthSnapshot { methods: vec![method("first", "First")], ..blank() };
-    name_needs_auth(&mut snap, &[], None);
-    assert_eq!(snap.method_label(), Some("First"));
-    // Then the outer advertised list.
-    let outer = method("outer", "Outer");
+    let deepseek = method("api-key:deepseek", "DeepSeek API key");
+    let openrouter = method("api-key:openrouter", "OpenRouter API key");
+    let methods = vec![deepseek.clone(), openrouter];
+    // The session's model names the failing credential — a last-used
+    // method on another provider is never repeated (issue #160).
+    let mut snap = AuthSnapshot { methods: methods.clone(), ..blank() };
+    name_needs_auth(&mut snap, &methods, Some("deepseek/deepseek-v4-pro"));
+    assert_eq!(snap.method_label(), Some("DeepSeek API key"));
+    // The outer advertised list matches when the snapshot's own lacks it.
     let mut snap = blank();
-    name_needs_auth(&mut snap, std::slice::from_ref(&outer), None);
-    assert_eq!(snap.method_label(), Some("Outer"));
+    name_needs_auth(&mut snap, &methods, Some("openrouter"));
+    assert_eq!(snap.method_label(), Some("OpenRouter API key"));
+    // A config provider like "deepseek-official" still resolves to the
+    // api-key id through its leading hyphen segment.
+    let mut snap = blank();
+    name_needs_auth(&mut snap, &methods, Some("deepseek-official"));
+    assert_eq!(snap.method_label(), Some("DeepSeek API key"));
+    // A lone advertised method is the only credential possible.
+    let login = method("h3:login", "Claude login");
+    let mut snap = AuthSnapshot { methods: vec![login], ..blank() };
+    name_needs_auth(&mut snap, &[], Some("deepseek"));
+    assert_eq!(snap.method_label(), Some("Claude login"));
+    // An unmatched or ambiguous provider stays generic — never a guess.
+    let mut snap = AuthSnapshot { methods: methods.clone(), ..blank() };
+    name_needs_auth(&mut snap, &methods, Some("anthropic"));
+    assert_eq!(snap.method_label(), None);
+    let mut snap = blank();
+    name_needs_auth(&mut snap, &methods, Some("api-key"));
+    assert_eq!(snap.method_label(), None);
     // Nothing to name stays unspecific — never "agent".
     let mut snap = blank();
     name_needs_auth(&mut snap, &[], None);
     assert_eq!(snap.method_label(), None);
     // A method the snapshot already knows is never overwritten.
+    let mut snap = AuthSnapshot { methods: methods.clone(), ..blank() };
     snap.method_id = Some("kept".into());
-    name_needs_auth(&mut snap, std::slice::from_ref(&outer), Some(&selected));
+    name_needs_auth(&mut snap, &methods, Some("deepseek"));
     assert_eq!(snap.method_id.as_deref(), Some("kept"));
     assert_eq!(snap.method_name, None);
 }
 
 #[test]
 fn held_prompt_notice_names_the_method() {
-    // A held prompt's SessionAuth names the method (selected when
-    // signed in, else the first advertised) — never "agent" (#160).
+    // A held prompt's SessionAuth names the credential — the sole
+    // advertised method when the provider cannot resolve — never the
+    // bare "agent" type (issue #160).
     let method = AuthMethodInfo {
         id: "login".into(),
         name: Some("Login".into()),
@@ -5045,7 +5062,7 @@ fn held_prompt_notice_names_the_method() {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     emit_held_prompt(&tx, "s1", std::slice::from_ref(&method), None);
-    emit_held_prompt(&tx, "s1", std::slice::from_ref(&method), Some(&method));
+    emit_held_prompt(&tx, "s1", std::slice::from_ref(&method), Some("deepseek"));
     let mut labels = Vec::new();
     for event in rx.try_iter() {
         match event {
@@ -6002,6 +6019,291 @@ async fn refused_prompts_release_on_auth_skip_and_esc_visibly() {
             "no sessions means nothing to fail"
         );
     }
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+/// A refusal names the credential the session actually runs on — never
+/// the method the user signed in with last (issue #160): signed in with
+/// OpenRouter while the session's model stays DeepSeek, the notice must
+/// say "DeepSeek API key".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_prompt_names_the_failing_provider_not_the_last_sign_in() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateResponse,
+        InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
+        SessionConfigOption, SessionConfigSelectOption,
+    };
+    use std::time::{Duration, Instant};
+
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let agent = Agent
+        .builder()
+        .name("cross-provider-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("cross-provider-mock", "0"))
+                        .auth_methods(vec![
+                            AuthMethod::Agent(AuthMethodAgent::new(
+                                "pi-terminal",
+                                "Log in with pi",
+                            )),
+                            AuthMethod::Agent(AuthMethodAgent::new(
+                                "api-key:deepseek",
+                                "DeepSeek API key",
+                            )),
+                            AuthMethod::Agent(AuthMethodAgent::new(
+                                "api-key:openrouter",
+                                "OpenRouter API key",
+                            )),
+                        ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1")).config_options(vec![
+                        SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "deepseek/deepseek-v4-pro",
+                            vec![
+                                SessionConfigSelectOption::new(
+                                    "deepseek/deepseek-v4-pro",
+                                    "DeepSeek V4 Pro",
+                                ),
+                                SessionConfigSelectOption::new("openrouter/or-x", "OR X"),
+                            ],
+                        ),
+                    ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                responder.respond(AuthenticateResponse::new())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: PromptRequest, responder, _cx| {
+                let text = req
+                    .prompt
+                    .iter()
+                    .find_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let _ = prompt_tx.send(text);
+                responder.respond_with_error(AcpError::new(
+                    -32000,
+                    "Authentication required: provider returned 401",
+                ))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // Sign in with OpenRouter last — the session's model still runs
+    // DeepSeek, so the 401 is DeepSeek's credential.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:openrouter".into(),
+            values: Default::default(),
+        })
+        .expect("authenticate");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut configured = false;
+    while Instant::now() < deadline && !configured {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::Configured =>
+            {
+                configured = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(configured, "openrouter sign-in lands");
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "hi".into() })
+        .expect("prompt");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut named = false;
+    while Instant::now() < deadline && !named {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::NeedsAuth =>
+            {
+                assert_eq!(
+                    snapshot.method_label(),
+                    Some("DeepSeek API key"),
+                    "the failing credential is DeepSeek's, not the last sign-in"
+                );
+                named = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(named, "the refusal names the provider's credential");
+    assert_eq!(
+        prompt_rx.try_recv().expect("the prompt was on the wire").as_str(),
+        "hi"
+    );
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+/// Control-plane ops refused with `auth_required` emit the auth notice on
+/// the provider's credential too — the session's model says DeepSeek, so
+/// the notice names "DeepSeek API key" (#160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_control_ops_name_the_failing_provider() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, InitializeRequest,
+        InitializeResponse, ListSessionsRequest, NewSessionRequest,
+        NewSessionResponse, SessionCapabilities, SessionConfigOption,
+        SessionConfigSelectOption, SessionListCapabilities, SetSessionConfigOptionRequest,
+    };
+    use std::time::{Duration, Instant};
+
+    let agent = Agent
+        .builder()
+        .name("control-refusals-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(
+                            AgentCapabilities::new().session_capabilities(
+                                SessionCapabilities::new().list(SessionListCapabilities::new()),
+                            ),
+                        )
+                        .agent_info(Implementation::new("control-refusals-mock", "0"))
+                        .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new(
+                            "api-key:deepseek",
+                            "DeepSeek API key",
+                        ))]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1")).config_options(vec![
+                        SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "deepseek/deepseek-v4-pro",
+                            vec![SessionConfigSelectOption::new(
+                                "deepseek/deepseek-v4-pro",
+                                "DeepSeek V4 Pro",
+                            )],
+                        ),
+                    ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: SetSessionConfigOptionRequest, responder, _cx| {
+                responder.respond_with_error(AcpError::new(-32000, "Authentication required"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: ListSessionsRequest, responder, _cx| {
+                responder.respond_with_error(AcpError::new(-32000, "Authentication required"))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. })) =
+            bus_rx.recv_timeout(Duration::from_millis(20))
+        {
+            break;
+        }
+    }
+    cmd_tx
+        .send(Cmd::SelectModel {
+            session_id: "s1".into(),
+            provider: None,
+            model: Some("deepseek/deepseek-v4-flash".into()),
+            effort: Some("high".into()),
+        })
+        .expect("select model");
+    cmd_tx
+        .send(Cmd::SetPreset { session_id: "s1".into(), preset: "auto".into() })
+        .expect("set preset");
+    cmd_tx
+        .send(Cmd::SetConfigOption {
+            session_id: "s1".into(),
+            config_id: "mode".into(),
+            value: "plan".into(),
+        })
+        .expect("set config option");
+    cmd_tx
+        .send(Cmd::ListSessions {
+            requester_session_id: "s1".into(),
+            prefix: None,
+            limit: 5,
+        })
+        .expect("list sessions");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut noticed = 0usize;
+    while Instant::now() < deadline && noticed < 5 {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot.status == AuthStatus::NeedsAuth =>
+            {
+                assert_eq!(
+                    snapshot.method_label(),
+                    Some("DeepSeek API key"),
+                    "control refusals name the provider's credential"
+                );
+                noticed += 1;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(noticed, 5, "model, effort, preset, config option, and session list refusals");
 
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;

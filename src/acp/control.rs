@@ -127,7 +127,9 @@ async fn run_control(
     bus: Sender<AppEvent>,
     surface: Arc<Mutex<Surface>>,
     methods: Vec<AuthMethodInfo>,
-    selected: Option<AuthMethodInfo>,
+    // Kept for the enqueue signature: auth notices name the provider's
+    // credential, not the last-used method (issue #160).
+    _selected: Option<AuthMethodInfo>,
     cwd: std::path::PathBuf,
     load_session: bool,
     resume_session: bool,
@@ -221,7 +223,7 @@ async fn run_control(
                         emit_needs_auth_open(
                             &bus,
                             methods.clone(),
-                            selected.as_ref(),
+                            session_provider(&surface, &sid.0).as_deref(),
                             Some(acp_error_message(&err)),
                         );
                     }
@@ -261,7 +263,7 @@ async fn run_control(
                         emit_needs_auth_open(
                             &bus,
                             methods.clone(),
-                            selected.as_ref(),
+                            session_provider(&surface, &sid.0).as_deref(),
                             Some(acp_error_message(&err)),
                         );
                     }
@@ -512,7 +514,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &sid.0).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -564,7 +566,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &sid.0).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -599,7 +601,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &sid.0).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -810,7 +812,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &requester_session_id).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }

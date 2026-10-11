@@ -4603,6 +4603,50 @@ fn auth_retry_does_not_consume_the_followup_fifo_marker() {
 }
 
 #[test]
+fn methodless_auth_notice_borrows_the_terminal_method_identity() {
+    // A terminal sign-in cannot name itself through `authenticate`: the
+    // post-reconnect configured/needs-auth snapshot arrives without a
+    // method, so the identity recorded when its TTY launch started fills
+    // the blank (#160).
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.auth.methods = vec![crate::acp_auth::AuthMethodInfo {
+        id: "pi-terminal".into(),
+        name: Some("Log in with pi".into()),
+        description: None,
+        type_name: "terminal".into(),
+        form: false,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: Some(crate::acp_auth::TerminalAuthLaunch {
+            label: "Log in with pi".into(),
+            command: "openma-pi-acp".into(),
+            args: vec!["--terminal-login".into()],
+            env: Default::default(),
+            cwd: None,
+            method_id: "pi-terminal".into(),
+        }),
+    }];
+    app.auth.method_id = Some("pi-terminal".into());
+    app.auth.method_name = Some("Log in with pi".into());
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::AuthSnapshot {
+            status: crate::acp_auth::AuthStatus::NeedsAuth,
+            method_id: None,
+            method_name: None,
+            methods: Vec::new(),
+            message: Some("authentication required".into()),
+        })),
+        &ctl,
+    );
+    let notice = last_notice_text(&app).unwrap_or_default();
+    assert!(
+        notice.contains("Log in with pi"),
+        "the method-less notice names the terminal method: {notice}"
+    );
+}
+
+#[test]
 fn demo_open_auth_does_not_start_acp_sign_in() {
     let (mut app, ctl, _rx) = test_app();
     app.input.set("draft".into());

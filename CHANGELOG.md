@@ -135,10 +135,13 @@ All notable changes to this project are documented here. The project follows
   advertises methods reports "ready" instead of "credential source not
   reported", and the stale "sign-in needed" notices are hidden once
   sign-in succeeds instead of sitting above the first turn. Snapshots
-  raised by a real `auth_required` reply carrying `marttyConnection`
-  data or by an ACP `logout` also name the method (the signed-in one,
-  else the first advertised) instead of "agent", and the credentials
-  row no longer repeats its own label.
+  raised by a real `auth_required` reply name the credential that
+  failed — the method matching the provider the session's model runs
+  on (or the launch provider before a session exists) — a lone
+  advertised method names itself, and anything else stays generic
+  rather than repeating the method last signed in with. An ACP
+  `logout` names the signed-out credential the same way, and the
+  credentials row no longer repeats its own label.
 
 
 ### Fixed
