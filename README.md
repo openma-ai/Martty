@@ -325,6 +325,19 @@ Add / Install / Connect 本身不自动切换或认证；用户在完成面板�
 Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 turn。不会把旧 Harness 的会话带到新 Harness；
 `dsh --profile martty` 的 Host runtime 仍由该 profile 所有。
 
+### dsh runtime 选择与兼容范围
+
+选择、定位与校验 `@deepseek-ai/dsh` runtime 完全由 dsh-acp 负责；Martty 只做透传与展示。
+内置入口使用 dsh-acp 自带的 bundled runtime——除非：作为 dsh 插件启动（使用启动它的 host dsh），
+或该 Harness 配置显式指定了 dsh 路径（`--dsh-path` / `DSH_PATH`）。隐式发现（`PATH`、当前目录、
+全局 npm）永远不会覆盖 bundled runtime。显式路径与 host dsh 都会做兼容性检查，超出受支持版本
+范围时以清晰的错误拒绝（注明发现的版本、来源与受支持范围）。
+
+本版本支持的 `@deepseek-ai/dsh`：`0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2`
+（与 bundled `@openma/deepseek-harness-acp` 强制校验的范围一致，同时声明在
+`npm/package.json` 的 `dsh.supported`）。`/status` 会显示 ACP agent 实际启动的
+dsh runtime（`- dsh · <版本> via <来源>`）。
+
 运行中的 standalone TUI 也可以直接添加并切换（Registry binary 会先确认安装）：
 
 ```text

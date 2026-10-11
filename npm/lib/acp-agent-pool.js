@@ -123,7 +123,9 @@ export function createAgentPool(initial, { spawnAgent, resolveAgent, diagnosticE
     owner.failed = diagnosticError(error, owner.handle)
     for (const pending of owner.pending.values()) {
       if (pending.reject) pending.reject(owner.failed)
-      else write(response(owner, { error: { code: -32603, message: owner.failed.message } }, pending))
+      // `agentExited` marks the reply as pool-synthesized so the client can
+      // tell a dead child apart from a refusal the agent itself authored.
+      else write(response(owner, { error: { code: -32603, message: owner.failed.message, data: { agentExited: true } } }, pending))
     }
     owner.pending.clear()
   }

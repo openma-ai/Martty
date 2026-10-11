@@ -5,8 +5,56 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The Creator overlay no longer crashes on the bundled DeepSeek Harness
+  (`0.2.0-rc.2`) with `ctx.agentPresets.standingKeyFor is not a function`. It
+  now takes a scoped preset lease via `acquireScope`, which exists on every
+  published `@deepseek-ai/dsh-agent-preset-registry`, and releases it when the
+  overlay is disposed.
+- The Creator overlay now activates on the bundled runtime: the preset roster
+  fills in shortly after the overlay mounts, so `acquireScope` retries briefly
+  on `agent-preset/not-found` (bounded by `scopeWaitMs`) instead of failing the
+  entry on the first attempt.
+- Agent stderr warnings are now visible in the TUI: warning/error lines from
+  the spawned agent (e.g. "1 entry did not activate" and its RemoteError) show
+  as a notice in the input dock, so a failed bundle entry is no longer silent.
+- A failed ACP attach now shows the whole error: the status row keeps only the
+  first line (an embedded newline could never render there), the agent stderr
+  tail renders wrapped in the transcript instead of being hidden under the
+  welcome banner, and `/status` shows the full message in a fenced block.
+- `/status` and other client compositor commands now work after a failed ACP
+  attach: the attach task no longer exits on a refused `initialize`, so
+  diagnostics stay reachable. A prompt submitted in that state is held in the
+  queue, and the queue header/tip says the attach failed instead of promising
+  "send first"; prompts that do dispatch fail fast with
+  `agent is not attached` instead of parking behind the dead peer.
+- `/status` shows the dsh runtime the ACP agent actually booted
+  (`- dsh · <version> via <source>`), reported by dsh-acp through
+  `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the
+  bundled runtime from an explicit or plugin host.
+- An agent that answers `initialize` with a refusal is now treated as
+  attached instead of dead: a refusal declaring auth methods offers sign-in
+  and holds prompts until `authenticate` settles, a non-auth refusal lets the
+  next prompt attempt `session/new` inline, and only transport/process
+  failures (the agent never answered) short-circuit prompts with
+  `agent is not attached`. The refused attach is its own surface — `/status`
+  reports `acp · refused` and the landing row says `initialize refused`; a
+  queued prompt on a non-auth refusal is sent so `session/new` retries
+  (reaching the inline retry from the real queue, not just directly), and
+  the prompt's own Enter releases it — the reattach (initialize, then
+  `session/new`, then `session/prompt`) needs no second keypress; while
+  sign-in is pending the queue header and the submit tip say "sign-in
+  needed" instead of "attach failed", and the refusal renders once — the
+  needs-auth block no longer duplicates the attach notice.
+
 ### Added
 
+- Declare the `@deepseek-ai/dsh` versions this release supports
+  (`0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2`) in `npm/package.json` `dsh.supported`
+  and in the README, matching the range the bundled dsh-acp enforces. dsh
+  runtime selection and compatibility checking remain entirely dsh-acp's
+  job; Martty only displays the result.
 - Check releases in CI before npm publish. A pull request lists pull requests
   merged since the previous tag without failing, and a version bump must keep
   the npm package, lockfile, and Cargo versions together. A `v*` tag must

@@ -15,6 +15,8 @@ function harness(options = {}) {
   const requestedModules = []
   let requestedPreset
   let disposed = false
+  let leaseReleased = false
+  let scopeKey
   let inspected
   let packageSource = {
     pluginId: 'skin-1',
@@ -53,14 +55,14 @@ function harness(options = {}) {
   const overlay = {
     ctx: {
       get(name) {
-        if (name === 'skills') {
+        if (name === 'skills' && options.noSkills !== true) {
           return {
             register(skill) {
               skills.set(skill.name, skill)
             },
           }
         }
-        if (name === 'systemPrompt') {
+        if (name === 'systemPrompt' && options.noSystemPrompt !== true) {
           return {
             section(section) {
               promptSections.push(section)
@@ -90,21 +92,29 @@ function harness(options = {}) {
       return name === 'sessionPersistence' ? persistence : undefined
     },
     agentPresets: {
-      async standingKeyFor(id) {
+      async acquireScope(id) {
         requestedPreset = id
-        return standingKey
+        if (options.lease !== undefined) return options.lease
+        return {
+          key: standingKey,
+          async [Symbol.asyncDispose]() {
+            leaseReleased = true
+          },
+        }
       },
     },
     loader: {
       async import(name) {
         requestedModules.push(name)
         if (name === '@deepseek-ai/dsh-tools') {
+          if (options.toolsModule !== undefined) return options.toolsModule
           return { defineTool: (definition) => definition }
         }
+        if (options.scopeModule !== undefined) return options.scopeModule
         return {
           createScope(parent, key) {
             assert.equal(parent, ctx)
-            assert.equal(key, standingKey)
+            scopeKey = key
             return overlay
           },
         }
@@ -131,7 +141,7 @@ function harness(options = {}) {
     setPackageSource(value) {
       packageSource = value
     },
-    state: () => ({ disposed, inspected, requestedModules, requestedPreset }),
+    state: () => ({ disposed, inspected, leaseReleased, requestedModules, requestedPreset, scopeKey }),
   }
 }
 
@@ -193,8 +203,70 @@ test('unloading the TUI overlay retracts the skill and prompt together', async (
   await fixture.effects[0].cleanup()
 
   assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
   assert.equal(fixture.skills.size, 0)
   assert.equal(fixture.promptSections.length, 0)
+})
+
+test('a failed mount disposes the overlay and releases the preset scope lease', async () => {
+  const fixture = harness({ noSkills: true })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /skills service is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('rejects when the preset registry hands out no usable lease', async () => {
+  const fixture = harness({ lease: null })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /preset scope is unavailable for "cordis"/,
+  )
+  assert.equal(fixture.state().disposed, false)
+  assert.equal(fixture.state().leaseReleased, false)
+})
+
+test('releases the lease when the scope module cannot create the overlay', async () => {
+  const fixture = harness({ scopeModule: {} })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /dsh-scope module is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, false)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('releases the lease and overlay when the tools module is missing defineTool', async () => {
+  const fixture = harness({ toolsModule: {} })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /dsh-tools module is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('releases the lease and overlay when the scoped systemPrompt service is missing', async () => {
+  const fixture = harness({ noSystemPrompt: true })
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx),
+    /systemPrompt service is unavailable/,
+  )
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, true)
+})
+
+test('a lease without asyncDispose still mounts and unloads cleanly', async () => {
+  const fixture = harness({ lease: { key: { preset: 'cordis' } } })
+  await creatorOverlay.apply(fixture.ctx)
+  assert.equal(fixture.skills.has('tui-plugin-development'), true)
+  assert.deepEqual(fixture.state().scopeKey, { preset: 'cordis' })
+
+  await fixture.effects[0].cleanup()
+  assert.equal(fixture.state().disposed, true)
+  assert.equal(fixture.state().leaseReleased, false)
 })
 
 test('rejects an empty preset id without touching the preset registry', async () => {
@@ -318,4 +390,111 @@ test('Creator refuses to persist unvalidated or Host-backed dynamic Packages as 
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('retries acquireScope while preset declarations are still registering', async () => {
+  const fixture = harness()
+  const attempts = []
+  fixture.ctx.agentPresets.acquireScope = async (id) => {
+    attempts.push(id)
+    if (attempts.length < 3) {
+      throw Object.assign(new Error(`Unknown agent preset: ${id}`), {
+        code: 'agent-preset/not-found',
+      })
+    }
+    return { key: { preset: id }, async [Symbol.asyncDispose]() {} }
+  }
+  await creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 })
+  assert.equal(attempts.length, 3)
+  assert.equal(fixture.state().scopeKey.preset, 'cordis')
+})
+
+test('not-found failures without a remote code are retried on their message', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async (id) => {
+    calls += 1
+    if (calls === 1) throw new Error(`Unknown agent preset: ${id}`)
+    return { key: { preset: id }, async [Symbol.asyncDispose]() {} }
+  }
+  await creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 })
+  assert.equal(calls, 2)
+})
+
+test('a not-found preset is retried only until the wait window ends', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    calls += 1
+    throw Object.assign(new Error('Unknown agent preset: ghost'), {
+      code: 'agent-preset/not-found',
+    })
+  }
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { preset: 'ghost', scopeWaitMs: 30, scopePollMs: 5 }),
+    /Unknown agent preset: ghost/,
+  )
+  assert.ok(calls >= 2, `expected retries before the deadline, got ${calls}`)
+})
+
+test('a scopeWaitMs of 0 rejects the first not-found immediately', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    calls += 1
+    throw Object.assign(new Error('Unknown agent preset: cordis'), {
+      code: 'agent-preset/not-found',
+    })
+  }
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopeWaitMs: 0, scopePollMs: 1 }),
+    /Unknown agent preset/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('non-not-found acquireScope failures are never retried', async () => {
+  const fixture = harness()
+  let calls = 0
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    calls += 1
+    throw Object.assign(new Error('preset cordis is broken'), { code: 'agent-preset/invalid' })
+  }
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }),
+    /preset cordis is broken/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('non-Error acquireScope failures are never retried', async () => {
+  const fixture = harness()
+  fixture.ctx.agentPresets.acquireScope = async () => {
+    throw 'registry exploded'
+  }
+  await assert.rejects(creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }), /registry exploded/)
+})
+
+test('a registry without acquireScope reports the scope as unavailable', async () => {
+  const fixture = harness()
+  delete fixture.ctx.agentPresets.acquireScope
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }),
+    /preset scope is unavailable for "cordis"/,
+  )
+})
+
+test('a missing preset registry reports the scope as unavailable', async () => {
+  const fixture = harness()
+  fixture.ctx.agentPresets = undefined
+  await assert.rejects(
+    creatorOverlay.apply(fixture.ctx, { scopePollMs: 1 }),
+    /preset scope is unavailable for "cordis"/,
+  )
+})
+
+test('non-finite scope timing options fall back to the defaults', async () => {
+  const fixture = harness()
+  await creatorOverlay.apply(fixture.ctx, { scopeWaitMs: Number.NaN, scopePollMs: Number.NaN })
+  assert.equal(fixture.state().scopeKey.preset, 'cordis')
 })

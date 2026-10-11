@@ -106,6 +106,9 @@ pub enum CtlEvent {
     Ready { server: String },
     /// Connection/session setup failed, distinct from an individual prompt error.
     ConnectionFailed { target: String, error: String },
+    /// The agent answered `initialize` with a refusal — it is attached, so a
+    /// prompt may still retry `session/new` inline or authenticate first.
+    ConnectionRefused { target: String, error: String },
     /// session/prompt accepted into the durable inbox. `session_id` names
     /// the session the prompt belongs to when the sender knows it — the
     /// App must not settle the viewed tab's state for another session's
@@ -346,6 +349,13 @@ pub struct QueueSnapshot {
     pub selected_id: Option<u64>,
     pub editing_id: Option<u64>,
     pub delete_confirm: bool,
+    /// The attach finished and failed — no session will bind, so the view
+    /// must not promise "enter sends the queue head".
+    pub attach_failed: bool,
+    /// The agent is attached but sign-in must complete before a bind can
+    /// land — the queue head stays put until `/auth` or the sign-in form
+    /// finishes.
+    pub auth_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
