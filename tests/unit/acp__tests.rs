@@ -886,6 +886,100 @@ async fn client_compositor_command_survives_a_failed_initialize() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_after_a_refused_startup_session_new_retries_the_bind() {
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeResponse, NewSessionRequest, NewSessionResponse,
+        PromptResponse, StopReason,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    // Startup `session/new` is refused with a non-auth error: the agent is
+    // still attached, so the next prompt retries the bind inline instead of
+    // failing like `agent_absent` or parking like `session_auth_pending`.
+    let news = Arc::new(AtomicUsize::new(0));
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("retry-bind-agent")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(AgentCapabilities::new())
+                        .agent_info(Implementation::new("retry-bind-agent", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let news = Arc::clone(&news);
+                async move |_req: NewSessionRequest, responder, _cx| {
+                    if news.fetch_add(1, Ordering::SeqCst) == 0 {
+                        responder.respond_with_error(AcpError::new(
+                            -32603,
+                            "startup session/new refused",
+                        ))
+                    } else {
+                        responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                    }
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: PromptRequest, responder, _cx| {
+                let _ = prompt_tx.send(request.session_id.to_string());
+                responder.respond(PromptResponse::new(StopReason::EndTurn))
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(),
+        cordis: "demo".into(),
+        workspace: "/tmp".into(),
+        session_root: "/tmp".into(),
+        provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(),
+        max_tokens: None,
+        base_url: None,
+        api_key: None,
+        additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect(agent, cfg, bus_tx, cmd_rx).await });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < deadline, "startup refusal never surfaced");
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::ConnectionFailed { error, .. })) => {
+                assert!(error.contains("session/new"), "unexpected failure: {error}");
+                break;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => panic!("bus disconnected: {error}"),
+        }
+    }
+
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "hello".into() })
+        .expect("prompt after the refused startup bind");
+    let session = tokio::time::timeout(Duration::from_secs(2), prompt_rx.recv())
+        .await
+        .expect("prompt lands on the wire once the inline session/new retry binds")
+        .expect("prompt request");
+    assert_eq!(session, "s1");
+    assert_eq!(news.load(Ordering::SeqCst), 2, "one startup attempt plus one inline retry");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing() {
     use agent_client_protocol::schema::v1::{
         AgentCapabilities, InitializeResponse, NewSessionResponse,

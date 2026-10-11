@@ -2037,6 +2037,41 @@ fn queue_head_send_after_a_failed_attach_says_the_attach_failed() {
 }
 
 #[test]
+fn queue_head_send_while_still_binding_keeps_the_binding_tip() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    // No connection_error recorded: the attach is still in flight, so the
+    // bind genuinely may land — the tip keeps promising "still binding",
+    // not the failed-attach wording.
+    app.session_bound = false;
+    app.connection_error = None;
+    let id = app.next_prompt_id();
+    app.prompt_queue.push_back(ClientQueuedPrompt {
+        id,
+        blocks: vec![StagedBlock::Text("held prompt".into())],
+    });
+    app.queued = 1;
+    assert!(app.input.is_empty());
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("still binding"), "tip: {tip}");
+    assert!(!tip.contains("attach failed"), "tip: {tip}");
+    assert_eq!(app.queued, 1, "the prompt stays queued");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+        "nothing is sent while the session is unbound"
+    );
+}
+
+#[test]
 fn a_deferred_queue_head_steer_returns_to_the_front() {
     let (mut app, _demo_ctl, _rx) = test_app();
     let (ctl, commands) = crate::controller::tests::test_controller();
