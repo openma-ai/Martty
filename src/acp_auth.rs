@@ -657,22 +657,11 @@ fn terminal_auth_from_method(
             .unwrap_or_else(|| "dsh-acp".into())
     };
     if let Some(block) = terminal_auth_block(method) {
-        // claude-agent-acp alignment: the agent advertises its own login
-        // argv in `_meta["terminal-auth"]` — e.g. pi-acp needs
-        // `node dist/bin.js --terminal-login`, which the client's spawn
-        // argv cannot express (it may be a wrapper script). Running the
-        // advertised command trusts the agent no further than the spawn
-        // command we already exec for it. Without `command`, the client's
-        // configured agent argv + the advertised args apply.
-        let advertised = block
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        let mut args = if advertised.is_some() {
-            Vec::new()
-        } else {
-            agent_argv[1..].to_vec()
-        };
+        // Issue #160: Terminal Auth always spawns the client-configured
+        // agent argv with the method's args/env — never an
+        // agent-supplied `command` (a bare name could resolve to a
+        // missing or stale PATH binary, the #157 failure class).
+        let mut args = agent_argv[1..].to_vec();
         args.extend(string_array(block.get("args")));
         let mut merged = env.clone();
         merged.extend(string_record(block.get("env")));
@@ -683,9 +672,7 @@ fn terminal_auth_from_method(
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&label)
                 .to_string(),
-            command: advertised
-                .map(str::to_string)
-                .unwrap_or_else(agent_command),
+            command: agent_command(),
             args,
             env: merged,
             cwd: Some(cwd.to_string()),
@@ -696,29 +683,20 @@ fn terminal_auth_from_method(
         return None;
     }
     let meta = auth_method_meta(method);
-    let advertised = meta
-        .and_then(|m| m.get("command"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty());
-    let command = advertised.map(str::to_string).unwrap_or_else(agent_command);
     let meta_args = string_array(meta.and_then(|m| m.get("args")));
     let method_args = if !meta_args.is_empty() {
         meta_args
     } else {
         string_array(method.get("args"))
     };
-    let mut args = if advertised.is_some() {
-        Vec::new()
-    } else {
-        agent_argv[1..].to_vec()
-    };
+    let mut args = agent_argv[1..].to_vec();
     args.extend(method_args);
     let mut merged = env.clone();
     merged.extend(string_record(method.get("env")));
     merged.extend(string_record(meta.and_then(|m| m.get("env"))));
     Some(TerminalAuthLaunch {
         label,
-        command,
+        command: agent_command(),
         args,
         env: merged,
         cwd: Some(cwd.to_string()),

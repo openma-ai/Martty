@@ -42,10 +42,11 @@ fn terminal_auth_without_command_keeps_agent_args() {
 }
 
 #[test]
-fn terminal_auth_advertised_command_replaces_the_spawn_argv() {
-    // pi-acp style: the `_meta["terminal-auth"]` block carries the full
-    // login argv — `node dist/bin.js --terminal-login` — which the client's
-    // wrapper spawn argv cannot express (claude-agent-acp alignment).
+fn terminal_auth_advertised_command_is_ignored() {
+    // Issue #160: `_meta["terminal-auth"].command` is never exec'd — the
+    // client-configured agent argv always runs, with the block's args
+    // appended. An absolute path in args (old pi-acp) lands in argv after
+    // the client's own args.
     let methods = parse_auth_methods(
         &json!([{
             "id": "pi-login",
@@ -63,13 +64,13 @@ fn terminal_auth_advertised_command_replaces_the_spawn_argv() {
         &BTreeMap::new(),
     );
     let launch = methods[0].terminal_launch.as_ref().unwrap();
-    assert_eq!(launch.command, "/usr/bin/node");
+    assert_eq!(launch.command, "openma-pi-acp");
     assert_eq!(launch.args, ["/opt/pi-acp/dist/bin.js", "--terminal-login"]);
     assert_eq!(launch.method_id, "pi-login");
 }
 
 #[test]
-fn terminal_type_meta_command_replaces_the_spawn_argv() {
+fn terminal_type_meta_command_is_ignored() {
     let methods = parse_auth_methods(
         &json!([{
             "id": "tty-login",
@@ -81,8 +82,8 @@ fn terminal_type_meta_command_replaces_the_spawn_argv() {
         &BTreeMap::new(),
     );
     let launch = methods[0].terminal_launch.as_ref().unwrap();
-    assert_eq!(launch.command, "/bin/agent-login");
-    assert_eq!(launch.args, ["--go"]);
+    assert_eq!(launch.command, "wrapper-agent");
+    assert_eq!(launch.args, ["--serve", "--go"]);
 }
 
 #[test]
@@ -195,6 +196,22 @@ fn env_var_missing_is_needs_auth_without_authenticate() {
         snap.message.as_deref(),
         Some("missing credential variable: OPENAI_API_KEY.")
     );
+}
+
+#[test]
+fn env_var_items_with_empty_names_are_dropped() {
+    let raw = json!([{
+        "id": "mixed-vars",
+        "type": "env_var",
+        "vars": [
+            { "name": "", "label": "blank" },
+            { "name": "KEPT_KEY", "label": "kept" }
+        ]
+    }]);
+    let methods = parse_auth_methods(&raw, &["fake-agent".into()], "/tmp", &BTreeMap::new());
+    let vars = &methods[0].vars;
+    assert_eq!(vars.len(), 1);
+    assert_eq!(vars[0].name, "KEPT_KEY");
 }
 
 #[test]
@@ -316,11 +333,10 @@ fn terminal_launch_runs_the_client_argv_not_the_agent_meta_command() {
         .terminal_launch
         .as_ref()
         .expect("terminal launch");
-    // The advertised command is the whole argv[0] (claude-agent-acp
-    // alignment): its args run verbatim, never prefixed by the client's
-    // spawn args.
-    assert_eq!(launch.command, "evil-agent");
-    assert_eq!(launch.args, vec!["login", "--fast"]);
+    // The advertised `command` is ignored: the client's argv runs, with
+    // the advertised args appended after the client's own spawn args.
+    assert_eq!(launch.command, "fake-agent");
+    assert_eq!(launch.args, vec!["--verbose", "login", "--fast"]);
     assert_eq!(launch.env.get("EXTRA").map(String::as_str), Some("1"));
 }
 
