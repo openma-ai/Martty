@@ -4,6 +4,7 @@ import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createInterface } from 'node:readline'
 import test from 'node:test'
 import { apply, resolveAgent } from '../npm/lib/acp-client.js'
@@ -136,6 +137,44 @@ test('environment Harness override preserves quoted executable paths and argumen
   } finally {
     if (before === undefined) delete process.env.DSH_TUI_AGENT
     else process.env.DSH_TUI_AGENT = before
+  }
+})
+
+test('resolveStackedAgent falls back to a martty-named profile install', () => {
+  const beforeAgent = process.env.DSH_TUI_AGENT
+  const beforeHome = process.env.DSH_HOME
+  delete process.env.DSH_TUI_AGENT
+  const home = mkdtempSync(path.join(tmpdir(), 'martty-profile-fallback-'))
+  const modules = path.join(home, 'profiles', 'martty', 'node_modules')
+  const bin = path.join(modules, '.bin', 'dsh-acp')
+  const creator = path.join(modules, 'martty', 'creator')
+  try {
+    mkdirSync(path.dirname(bin), { recursive: true })
+    writeFileSync(bin, '#!/bin/sh\n')
+    mkdirSync(creator, { recursive: true })
+    writeFileSync(path.join(creator, 'package.json'), '{}\n')
+    process.env.DSH_HOME = home
+    // An anchor outside any package makes the dependency-stack resolution
+    // throw, exercising the profile fallback — where the `martty` package
+    // name must resolve next to the legacy `@openma/deepseek-harness-tui`.
+    const anchor = pathToFileURL(path.join(home, 'loose', 'agent.js')).href
+    assert.deepEqual(resolveStackedAgent(anchor), {
+      command: bin,
+      args: ['--bundle', creator],
+    })
+    // Without a creator package the profile is skipped; without the
+    // dsh-acp bin the same is true — both end on the bare default.
+    rmSync(path.join(creator, 'package.json'))
+    assert.deepEqual(resolveStackedAgent(anchor), { command: 'dsh-acp', args: [] })
+    writeFileSync(path.join(creator, 'package.json'), '{}\n')
+    rmSync(bin)
+    assert.deepEqual(resolveStackedAgent(anchor), { command: 'dsh-acp', args: [] })
+  } finally {
+    if (beforeAgent === undefined) delete process.env.DSH_TUI_AGENT
+    else process.env.DSH_TUI_AGENT = beforeAgent
+    if (beforeHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = beforeHome
+    rmSync(home, { recursive: true, force: true })
   }
 })
 

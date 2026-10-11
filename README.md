@@ -410,7 +410,37 @@ GitHub Actions 会构建 macOS arm64/x64、Linux arm64/x64 和 Windows x64 原�
 <summary><strong>从旧包名迁移</strong></summary>
 
 旧的 DeepSeek Harness TUI 包名为 `@openma/deepseek-harness-tui`，旧 profile 通常叫
-`tui`。迁移到 Martty：
+`tui`。
+
+如果是全局 npm 安装，直接安装 `martty` 即可——无论旧包处于什么状态
+（0.2.18 时代的 `dsh-tui`/`dsb` bin、0.2.14/0.2.20 占用的 `martty` bin，
+还是 `npm link` 的检出目录），都不需要先删除：
+
+```sh
+npm install --global martty
+```
+
+发布出去的 `martty` 包只声明 `martty-cli`——这个名字不会被任何其他包
+占用，npm 因此永远不可能因 bin 冲突拒绝安装。随后 postinstall 会清理
+确实属于旧包的 `martty`/`dsh-tui`/`dsb` 链接（第三方 `dsh-tui` 保持原样），
+自行创建 `martty` 命令，并摘除旧包清单里的 bin 声明，使之后执行
+`npm rm -g @openma/deepseek-harness-tui` 不会误删新的 `martty`。删除旧包
+只是可选的收尾；旧包还在时 `martty` 每次启动都会提示——交互终端中提示
+会延迟到进程退出时打印，避免被界面覆盖。本仓库的源码包名
+本身就是 `martty`，因此 `npm link` 的检出目录与正式包对 npm 来说是同一个包，
+两个方向都能干净替换、不会冲突。
+
+注意事项：
+
+- `npm install --global --ignore-scripts martty` 会跳过 postinstall——
+  跑一次 `martty-cli`（或 `npx martty`），首次启动会自动完成迁移：清理
+  旧链接、创建 `martty`、摘除旧包 bin 声明。当某个不相干工具占用了
+  `martty` 时，`martty-cli` 也是本包自己的命令名。
+- `npm rm -g martty` 只会移除 npm 声明的 `martty-cli` 链接；留下的
+  `martty` 是一个自清理的 shim 而不是死链接——下次运行它时会提示重装
+  命令并自行删除，不留残留。
+
+在 `dsh` profile 内迁移：
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
@@ -418,6 +448,8 @@ dsh plugin --profile martty add martty@latest
 ```
 
 旧配置和会话数据会在首次启动时复制到 Martty 路径，不会删除原数据。
+`martty` 包不再提供 `dsh-tui` 命令（该名字同时与旧包和第三方 `dsh-tui` 包
+冲突）；需要的话可用 `alias dsh-tui=martty` 恢复。
 
 </details>
 

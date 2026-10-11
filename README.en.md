@@ -43,9 +43,11 @@ and iterate on its own terminal capabilities.
 
 > **Rename note:** the project and recommended npm package have moved from
 > DeepSeek Harness TUI / `@openma/deepseek-harness-tui` to **Martty** / `martty`.
-> This is a brand and package-name migration, not a runtime rewrite: `dsh-tui`,
-> configuration, and session data remain compatible. The production
+> This is a brand and package-name migration, not a runtime rewrite:
+> configuration and session data remain compatible. The production
 > profile is now named `martty`; the legacy `tui` profile remains compatible.
+> The `dsh-tui` command is no longer installed by the `martty` package — see
+> [Migrating from DeepSeek Harness TUI / the legacy package name](#migrating-from-deepseek-harness-tui--the-legacy-package-name).
 
 ## Quick start
 
@@ -76,8 +78,43 @@ versions, so existing installs do not need to migrate immediately.
 The project is now named **Martty**, and `martty` is the recommended package
 name. Starting with `0.2.13`, `martty`
 and `@openma/deepseek-harness-tui` are published by the same CI run with the
-same version and artifacts; the scoped name remains as a compatibility alias.
-To migrate both the legacy package name and profile:
+same version and artifacts; the scoped name is deprecated.
+
+With a **global npm install**, just install `martty` — no removal needed
+first, whatever state the legacy package is in (0.2.18-era `dsh-tui`/`dsb`
+bins, a `martty`-owning 0.2.14/0.2.20 release, or an `npm link`ed checkout):
+
+```sh
+npm install --global martty
+```
+
+The published `martty` package declares only `martty-cli` — a name nothing
+else owns — so npm can never refuse the install over a bin collision. A
+postinstall step then retires the stale `martty`/`dsh-tui`/`dsb` links that
+verifiably belonged to the legacy package (a third-party `dsh-tui` is left
+untouched), creates the `martty` command itself, and detaches the legacy
+package's bin declarations so `npm rm -g @openma/deepseek-harness-tui`
+afterwards leaves `martty` working. Removing the old package afterwards is
+optional cleanup; `martty` warns at launch while it remains — on an
+interactive terminal the notice is deferred to process exit so the TUI
+cannot paint over it. The source
+package in this repository is itself named `martty`, so an `npm link`ed
+checkout and the published package are the same package to npm — each
+replaces the other cleanly in either order.
+
+Caveats:
+
+- `npm install --global --ignore-scripts martty` skips the postinstall —
+  run `martty-cli` once (or `npx martty`) and the first launch finishes the
+  migration: it retires the stale legacy links, creates `martty`, and
+  detaches the legacy `bin` declarations. `martty-cli` is also the command
+  to use when an unrelated tool owns a `martty` bin.
+- `npm rm -g martty` removes only the declared `martty-cli` link. The
+  `martty` command left behind is a small shim, not a dead symlink: the
+  next `martty` invocation prints the reinstall hint and removes itself,
+  so an uninstall converges to a clean state on first touch.
+
+Inside a `dsh` profile, migrate the package name and profile together:
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
@@ -85,8 +122,10 @@ dsh plugin --profile martty add martty@latest
 ```
 
 Migration changes the recommended profile from `tui` to `martty`, but requires
-no config or session-data migration. `dsh-tui` remains a compatibility
-commands, and the legacy package and profile continue to work.
+no config or session-data migration, and the legacy profile continues to
+work. The `martty` package no longer installs a `dsh-tui` command: the name
+collided with both the legacy package and an unrelated `dsh-tui` package on
+npm. `alias dsh-tui=martty` restores it.
 
 An install guide for AI agents: [docs/agent-setup.md](docs/agent-setup.md)
 
@@ -291,7 +330,8 @@ martty --demo
 ```
 
 You can also run `npx --yes martty --demo`. `martty` is the primary command;
-`dsh-tui` remains a compatibility alias.
+the legacy `dsh-tui` command is no longer installed (`alias dsh-tui=martty`
+restores it).
 
 ## Highlights
 
@@ -407,7 +447,7 @@ registry, `tui-cordis-client-runner` serves Client inspect/run requests from
 `dsh-tool-cordis`, `acp-client` attaches the Host's standard stdin/stdout, and
 `dsh-tui-shell` starts the Rust painter and multiplexes messages. The agent (default
 Harness) stays on the Host tree; the two Cordis trees only speak ACP. Standalone
-`dsh-tui` instead spawns or attaches the configured ACP agent. The Rust painter
+`martty` instead spawns or attaches the configured ACP agent. The Rust painter
 is not a third Cordis tree: it owns the TTY, input, and rendering only.
 
 The two Cordis trees do not synchronize plugin ids, `inject`, or fibers.

@@ -79,6 +79,30 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Install `martty` globally alongside or after the legacy
+  `@openma/deepseek-harness-tui` package (#156) — in every state it can be
+  in. The `martty` package (and the source `npm/package.json`, so `npm
+  link`ed checkouts link as the same package and replace — or get replaced
+  by — an installed `martty` in either order) declares only `martty-cli`, a
+  bin name nothing else owns, so `npm install --global martty` can never
+  fail with `EEXIST` (npm links bins before any lifecycle script, which
+  also made every `martty`-owning legacy release — 0.2.14/0.2.20,
+  `npm link`ed legacy checkouts — unblockable). A `postinstall` migration
+  step then retires the legacy package's stale `martty`/`dsh-tui`/`dsb`
+  links (third-party `dsh-tui` stays untouched), creates the `martty`
+  command itself — a self-cleaning shim that, after `npm rm -g martty`,
+  prints the reinstall hint once and removes itself instead of leaving a
+  dead link — and detaches the legacy package's `bin` declarations so a
+  later `npm rm -g @openma/deepseek-harness-tui` cannot take `martty` down
+  with it. `martty` warns at launch while the legacy package remains —
+  deferred to process exit on interactive terminals so the TUI cannot
+  paint over it; with `--ignore-scripts`, the first `martty-cli` (or
+  `npx martty`) launch runs the whole converge — retiring stale links,
+  recreating `martty`, and sanitizing the legacy manifest.
+- Quitting the TUI no longer loses the `session <id>` resume line: the
+  post-quit TTY restore now leaves the alt screen with `?1047l` instead of
+  re-emitting `?1049l`, whose extra cursor restore overwrote whatever the
+  painter had just printed to the terminal.
 - Keep each session's own model and thinking effort. Pi writes
   `session/set_config_option` into its global defaults, so the connection pool
   now records every session's config options and re-asserts them, in order,

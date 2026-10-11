@@ -130,7 +130,7 @@ function writeWorkspaceOverride(home, packages) {
   const localDependencies = localDependencyOverrides()
   const overrides = [
     ['@openma/deepseek-harness-acp', pathToFileURL(packages.acp).href],
-    ['@openma/deepseek-harness-tui', pathToFileURL(packages.tui).href],
+    ['martty', pathToFileURL(packages.tui).href],
   ]
   writeFileSync(
     path.join(dir, 'pnpm-workspace.yaml'),
@@ -214,14 +214,14 @@ function manifest(home) {
 function assertSingleTuiBundle(home) {
   const bundles = manifest(home).dsh.profile.bundles
   assert.equal(
-    bundles.filter((name) => name === '@openma/deepseek-harness-tui').length,
+    bundles.filter((name) => name === 'martty').length,
     1,
   )
 }
 
 function assertPackedTuiInstalled(home) {
   const installed = path.join(
-    profileDir(home), 'node_modules', '@openma', 'deepseek-harness-tui', 'lib', 'acp-host.js',
+    profileDir(home), 'node_modules', 'martty', 'lib', 'acp-host.js',
   )
   assert.equal(
     readFileSync(installed, 'utf8'),

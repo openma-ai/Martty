@@ -72,8 +72,11 @@ export function restoreHostTty() {
     }
   }
   if (process.stdout.isTTY) {
+    // Leave the alt screen with ?1047l, not ?1049l: ?1049l also restores the
+    // cursor saved at ?1049h, which a second emit on the main screen would
+    // move back over the `session <id>` line the painter just printed.
     process.stdout.write(
-      '\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l',
+      '\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1047l',
     )
   }
 }
