@@ -220,3 +220,32 @@ test('fails when rewriting changes the alias version', (t) => {
   assert.equal(result.status, 1)
   assert.match(result.stderr, /alias version 1\.2\.3-martty does not match source 1\.2\.3-@openma\/deepseek-harness-tui/)
 })
+
+test('the shipped cordis.patch.yml inserts resolve against the package name', () => {
+  // Regression for the post-rename profile smoke failure: every insert must
+  // name an export of the package that carries the patch, or the profile
+  // cannot import them.
+  for (const packageRoot of [
+    path.resolve(import.meta.dirname, '../npm'),
+    path.resolve(import.meta.dirname, '../npm/creator'),
+  ]) {
+    const packageJson = JSON.parse(
+      readFileSync(path.join(packageRoot, 'package.json'), 'utf8'),
+    )
+    const patch = readFileSync(path.join(packageRoot, 'cordis.patch.yml'), 'utf8')
+    const insertNames = [...patch.matchAll(/^\s+name:\s*'?([^\s']+)'?\s*$/gm)]
+      .map((match) => match[1])
+    assert.ok(insertNames.length > 0, `${packageRoot}/cordis.patch.yml has no insert names`)
+    for (const specifier of insertNames) {
+      const segments = specifier.split('/')
+      const pkg = specifier.startsWith('@')
+        ? segments.slice(0, 2).join('/')
+        : segments[0]
+      assert.equal(
+        pkg,
+        packageJson.name,
+        `${packageRoot}/cordis.patch.yml inserts ${specifier} but the package is named ${packageJson.name}`,
+      )
+    }
+  }
+})

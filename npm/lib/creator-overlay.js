@@ -278,7 +278,7 @@ export async function apply(ctx, config = {}) {
     skills.register({
       name: SKILL_NAME,
       description: skillDescription,
-      source: '@openma/deepseek-harness-tui/creator-overlay',
+      source: 'martty/creator-overlay',
       content: skillContent,
       invocation: { modelInvocable: true, userInvocable: true },
     })

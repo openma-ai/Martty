@@ -169,7 +169,7 @@ test('adds the TUI companion skill only to the requested preset scope', async ()
 
   const skill = fixture.skills.get('tui-plugin-development')
   assert.equal(fixture.state().requestedPreset, 'cordis')
-  assert.equal(skill?.source, '@openma/deepseek-harness-tui/creator-overlay')
+  assert.equal(skill?.source, 'martty/creator-overlay')
   assert.equal(skill?.invocation.modelInvocable, true)
   assert.equal(skill?.invocation.userInvocable, true)
   assert.match(skill?.description ?? '', /companion/i)
