@@ -2094,16 +2094,9 @@ fn a_refused_attach_sends_the_queue_head_for_a_bind_retry() {
     assert_eq!(app.state, RunState::Idle);
 
     app.send_agent_text("hello".into(), &ctl);
-    assert_eq!(app.queued, 1, "the prompt queues while unbound");
 
-    app.handle(
-        AppEvent::Term(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        ))),
-        &ctl,
-    );
-
+    // The prompt's own submit releases the queue head on a refused attach —
+    // no second Enter on the empty composer (round-5 real-TUI check).
     match commands.recv_timeout(std::time::Duration::from_millis(300)) {
         Ok(Cmd::Prompt { text, .. }) => assert_eq!(text, "hello"),
         other => {
@@ -2111,6 +2104,69 @@ fn a_refused_attach_sends_the_queue_head_for_a_bind_retry() {
         }
     }
     assert_eq!(app.queued, 0, "the prompt left the queue");
+}
+
+#[test]
+fn a_typed_prompt_releases_the_retry_on_a_refused_attach() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "unsupported client".into(),
+        }),
+        &ctl,
+    );
+    // The real input path: type into the composer and submit with Enter —
+    // the prompt must reach the agent without another keypress.
+    for ch in "hi".chars() {
+        app.handle(
+            AppEvent::Term(Event::Key(KeyEvent::new(
+                KeyCode::Char(ch),
+                KeyModifiers::NONE,
+            ))),
+            &ctl,
+        );
+    }
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        &ctl,
+    );
+    match commands.recv_timeout(std::time::Duration::from_millis(300)) {
+        Ok(Cmd::Prompt { text, .. }) => assert_eq!(text, "hi"),
+        other => panic!("a typed prompt must dispatch on its own Enter: {other:?}"),
+    }
+    assert_eq!(app.queued, 0, "nothing stays queued on a refused attach");
+}
+
+#[test]
+fn a_second_prompt_stays_queued_while_the_refused_retry_is_in_flight() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.handle(
+        AppEvent::Ctl(CtlEvent::ConnectionRefused {
+            target: "acp".into(),
+            error: "unsupported client".into(),
+        }),
+        &ctl,
+    );
+    app.send_agent_text("first".into(), &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_millis(300)),
+        Ok(Cmd::Prompt { .. })
+    ));
+    // The bind retry is in flight (prompt_pending): the next prompt must not
+    // dispatch a steer to a session that does not exist yet — it queues for
+    // the SessionBound flush instead.
+    app.send_agent_text("second".into(), &ctl);
+    assert_eq!(app.queued, 1, "the second prompt waits for the bind");
+    assert!(
+        commands.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+        "no steer may leave while the retry is unbound"
+    );
 }
 
 #[test]
@@ -2163,6 +2219,14 @@ fn queue_head_send_while_sign_in_is_pending_keeps_the_sign_in_tip() {
         "nothing is sent while sign-in is pending"
     );
 
+    // A prompt submitted while sign-in is pending also names the hold — the
+    // generic "empty enter sends first" tip would promise a send that the
+    // gate still declines.
+    app.send_agent_text("typed".into(), &ctl);
+    let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
+    assert!(tip.contains("sign-in needed"), "tip: {tip}");
+    assert_eq!(app.queued, 2, "the typed prompt queues behind the held one");
+
     // Signing-in and a failed sign-in hold the head the same way — the
     // queue only opens once authentication has a route forward.
     for status in [
@@ -2179,7 +2243,7 @@ fn queue_head_send_while_sign_in_is_pending_keeps_the_sign_in_tip() {
         );
         let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
         assert!(tip.contains("sign-in needed"), "tip for {status:?}: {tip}");
-        assert_eq!(app.queued, 1, "the prompt stays queued for {status:?}");
+        assert_eq!(app.queued, 2, "the prompts stay queued for {status:?}");
     }
     assert!(
         commands.recv_timeout(std::time::Duration::from_millis(300)).is_err(),

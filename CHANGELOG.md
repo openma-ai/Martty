@@ -41,10 +41,12 @@ All notable changes to this project are documented here. The project follows
   `agent is not attached`. The refused attach is its own surface — `/status`
   reports `acp · refused` and the landing row says `initialize refused`; a
   queued prompt on a non-auth refusal is sent so `session/new` retries
-  (reaching the inline retry from the real queue, not just directly); while
-  sign-in is pending the queue header says "sign-in needed" instead of
-  "attach failed", and the refusal renders once — the needs-auth block no
-  longer duplicates the attach notice.
+  (reaching the inline retry from the real queue, not just directly), and
+  the prompt's own Enter releases it — the reattach (initialize, then
+  `session/new`, then `session/prompt`) needs no second keypress; while
+  sign-in is pending the queue header and the submit tip say "sign-in
+  needed" instead of "attach failed", and the refusal renders once — the
+  needs-auth block no longer duplicates the attach notice.
 
 ### Added
 

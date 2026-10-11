@@ -9606,10 +9606,29 @@ impl App {
                 blocks: vec![StagedBlock::Text(text.clone())],
             });
             self.queued += 1;
-            self.show_tip(self.locale.tr(
-                "queued · empty enter sends first · alt+↑ edit",
-                "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
-            ));
+            // A refused attach can reattach inline: the prompt's own Enter
+            // releases the queue head so `session/new` retries without a
+            // second keypress. Sign-in pending, a dead attach, and a retry
+            // already in flight keep the queue.
+            if self.attach_refused
+                && !self.queue_signin_pending()
+                && !self.prompt_pending
+                && self.state != RunState::Running
+            {
+                self.send_queue_head_now(ctl);
+            } else {
+                self.show_tip(if self.queue_signin_pending() {
+                    self.locale.tr(
+                        "sign-in needed · prompt stays queued — /auth to retry",
+                        "需要登录 · 消息保留在队列里 —— /auth 重试",
+                    )
+                } else {
+                    self.locale.tr(
+                        "queued · empty enter sends first · alt+↑ edit",
+                        "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
+                    )
+                });
+            }
         } else {
             self.transcript.push_user(text.clone(), false);
             self.prompt_pending = true;
