@@ -626,6 +626,11 @@ fn controller_loop(
                     "session/set_config_option needs a live ACP connection".into(),
                 )));
             }
+            Cmd::Logout | Cmd::AgentReconnect { .. } => {
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
+                    "ACP logout/reconnect is only available on a live ACP connection".into(),
+                )));
+            }
             Cmd::NewSession { .. }
             | Cmd::ForkSession { .. }
             | Cmd::ListSessions { .. }
@@ -635,9 +640,9 @@ fn controller_loop(
                         .into(),
                 )));
             }
-            Cmd::ForgetSession { .. } | Cmd::CloseSession { .. } => {
+            Cmd::ForgetSession { .. } | Cmd::CloseSession { .. } | Cmd::AuthSkipped { .. } => {
                 // Sessions only exist on the ACP transport; the legacy/demo
-                // controller owns nothing to forget or close.
+                // controller owns nothing to forget, close, or release.
             }
             Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } | Cmd::ActiveSession { .. } => {
                 // The legacy/demo controller has no local Cordis compositor.

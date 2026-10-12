@@ -80,6 +80,21 @@ pub struct AuthSnapshot {
 }
 
 impl AuthSnapshot {
+    /// The selected method's display name: its recorded name, else the
+    /// advertised method matching `method_id`, else the bare id — never
+    /// the method's type (issue #160).
+    pub fn method_label(&self) -> Option<&str> {
+        if let Some(name) = self.method_name.as_deref() {
+            return Some(name);
+        }
+        let id = self.method_id.as_deref()?;
+        self.methods
+            .iter()
+            .find(|method| method.id == id)
+            .and_then(|method| method.name.as_deref())
+            .or(Some(id))
+    }
+
     pub fn none() -> Self {
         Self {
             status: AuthStatus::None,
@@ -173,15 +188,8 @@ pub fn unsupported_auth_method_types(auth_methods: &Value) -> Vec<String> {
     out
 }
 
-pub fn select_auth_method<'a>(
-    methods: &'a [AuthMethodInfo],
-    method_id: Option<&str>,
-) -> Option<&'a AuthMethodInfo> {
-    match method_id {
-        Some(id) if !id.is_empty() => methods.iter().find(|m| m.id == id),
-        _ => methods.first(),
-    }
-}
+// Deliberately no `select first method` fallback: issue #160 requires the
+// user to pick a method explicitly, so a request always names its method.
 
 pub fn snapshot_from_methods(
     methods: Vec<AuthMethodInfo>,
@@ -221,9 +229,10 @@ pub fn snapshot_from_methods(
             return needs_auth_snapshot(methods, Some(&method), Some(message));
         }
     }
-    if method.form {
-        return needs_auth_snapshot(methods, Some(&method), None);
-    }
+    // A form-capable or terminal-first method may still have persisted
+    // credentials, so guessing "needs sign-in" here would flash the picker
+    // on every signed-in startup: only a real auth_required reply proves
+    // it (issue #160). Missing env vars above are the one local proof.
     AuthSnapshot {
         status: AuthStatus::Unknown,
         method_id: None,
@@ -305,26 +314,6 @@ pub fn authenticate_meta_from_method(
     Some(meta)
 }
 
-pub fn values_from_auth_arg(method: &AuthMethodInfo, arg: &str) -> BTreeMap<String, String> {
-    let mut values = BTreeMap::new();
-    let arg = arg.trim();
-    if arg.is_empty() {
-        return values;
-    }
-    if method.vars.iter().any(|v| v.name == "baseUrl") {
-        let mut parts = arg.splitn(2, char::is_whitespace);
-        if let Some(url) = parts.next() {
-            values.insert("baseUrl".into(), url.to_string());
-        }
-        if let Some(key) = parts.next().map(str::trim).filter(|s| !s.is_empty()) {
-            values.insert("api-key".into(), key.to_string());
-        }
-        return values;
-    }
-    values.insert("api-key".into(), arg.to_string());
-    values
-}
-
 pub fn is_auth_required_error(err: &AcpError) -> bool {
     if err.code == ErrorCode::AuthRequired || i32::from(err.code) == ACP_AUTH_REQUIRED_CODE {
         return true;
@@ -334,7 +323,9 @@ pub fn is_auth_required_error(err: &AcpError) -> bool {
     {
         return true;
     }
-    is_auth_failure_message(&acp_error_message(err))
+    // A spec-conforming agent reports auth_required as -32000; matching
+    // free-text error messages is deliberately not a signal (issue #160).
+    false
 }
 
 pub fn acp_error_message(err: &AcpError) -> String {
@@ -353,24 +344,63 @@ pub fn acp_error_message(err: &AcpError) -> String {
     err.message.clone()
 }
 
-pub fn is_auth_failure_message(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("authentication required")
-        || lower.contains("authentication fails")
-        || lower.contains("invalid api key")
-        || (lower.contains("api key") && lower.contains("invalid"))
-}
-
 pub fn process_env() -> BTreeMap<String, String> {
     std::env::vars().collect()
+}
+
+#[cfg(unix)]
+fn command_on_path(command: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(command))
+            .find(|candidate| {
+                candidate
+                    .metadata()
+                    .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            })
+    })
 }
 
 pub fn run_terminal_auth(
     launch: &TerminalAuthLaunch,
     locale: crate::locale::Locale,
 ) -> Result<(), String> {
-    let mut cmd = std::process::Command::new(&launch.command);
-    cmd.args(&launch.args);
+    // The unix child runs through `sh`, which would report a missing
+    // binary as a plain exit status — keep the spawn error explicit.
+    #[cfg(unix)]
+    {
+        let runnable = if launch.command.contains('/') {
+            std::path::Path::new(&launch.command).is_file()
+        } else {
+            command_on_path(&launch.command).is_some()
+        };
+        if !runnable {
+            return Err(locale.trf(
+                "could not start {}: not found",
+                "无法启动 {}：未找到",
+                &[launch.label.clone()],
+            ));
+        }
+    }
+    #[cfg(unix)]
+    let mut cmd = {
+        // Ctrl-C on the lent-out TTY must kill the login flow, not Martty:
+        // the parent ignores SIGINT for the duration and the login runs
+        // through a tiny sh wrapper that restores the default disposition
+        // (ignored signals survive exec) before exec'ing the real command.
+        let mut wrapped = std::process::Command::new("sh");
+        wrapped.arg("-c").arg("trap - INT; exec \"$@\"").arg("sh");
+        wrapped.arg(&launch.command).args(&launch.args);
+        wrapped
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut direct = std::process::Command::new(&launch.command);
+        direct.args(&launch.args);
+        direct
+    };
     if let Some(cwd) = &launch.cwd {
         cmd.current_dir(cwd);
     }
@@ -380,7 +410,14 @@ pub fn run_terminal_auth(
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    match cmd.status() {
+    #[cfg(unix)]
+    let held_sigint = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    let status = cmd.status();
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, held_sigint);
+    }
+    match status {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => Err(locale.trf(
             "{} exited {}",
@@ -402,16 +439,16 @@ pub fn run_terminal_auth(
 }
 
 fn needs_auth_notice(snapshot: &AuthSnapshot, locale: crate::locale::Locale) -> String {
-    let name = snapshot
-        .method_name
-        .as_deref()
-        .or(snapshot.method_id.as_deref())
-        .unwrap_or("agent");
     let method = snapshot
         .method_id
         .as_ref()
         .and_then(|id| snapshot.methods.iter().find(|m| m.id == *id));
-    let mut lines = vec![locale.trf("sign-in needed · {}", "需要登录 · {}", &[name.into()])];
+    // No known method is no method's name — never the type word "agent"
+    // (issue #160).
+    let mut lines = vec![match snapshot.method_label() {
+        Some(name) => locale.trf("sign-in needed · {}", "需要登录 · {}", &[name.into()]),
+        None => locale.tr("sign-in needed", "需要登录").into(),
+    }];
     if let Some(message) = &snapshot.message {
         if !message.is_empty() {
             lines.push(message.clone());
@@ -425,18 +462,18 @@ fn needs_auth_notice(snapshot: &AuthSnapshot, locale: crate::locale::Locale) -> 
         }
         if method.form {
             lines.push(locale.tr(
-                "  /auth <api-key>  submits through ACP authenticate (martty does not keep it)",
-                "  /auth <api-key>  通过 ACP authenticate 提交（martty 不保存密钥）",
+                "  pick it in the auth picker — a masked field submits through ACP authenticate (martty does not keep it)",
+                "  在登录选择器中选择该项 —— 掩码输入通过 ACP authenticate 提交（martty 不保存密钥）",
             ).into());
         } else if method.terminal_launch.is_some() {
             lines.push(locale.tr(
-                "  /auth  runs the agent's terminal login, then ACP authenticate",
-                "  /auth  运行 Agent 的终端登录，然后 ACP authenticate",
+                "  pick it in the auth picker to run terminal sign-in, then Martty reconnects",
+                "  在登录选择器中选择该项进行终端登录，完成后 Martty 自动重连",
             ).into());
         } else {
             lines.push(locale.tr(
-                "  /auth  retries ACP authenticate after out-of-band login",
-                "  /auth  在外部登录后重试 ACP authenticate",
+                "  pick it in the auth picker to retry ACP authenticate",
+                "  在登录选择器中选择该项重试 ACP authenticate",
             ).into());
         }
         if let Some(link) = &method.link {
@@ -613,29 +650,19 @@ fn terminal_auth_from_method(
     env: &BTreeMap<String, String>,
 ) -> Option<TerminalAuthLaunch> {
     let label = auth_method_name(method).unwrap_or_else(|| "Login".into());
-    let agent_command = agent_argv
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "dsh-acp".into());
+    let agent_command = || {
+        agent_argv
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "dsh-acp".into())
+    };
     if let Some(block) = terminal_auth_block(method) {
-        let command = block
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| agent_command.clone());
-        let mut args = string_array(block.get("args"));
-        if block
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .is_none()
-            && agent_argv.len() > 1
-        {
-            let mut prefixed = agent_argv[1..].to_vec();
-            prefixed.extend(args);
-            args = prefixed;
-        }
+        // Issue #160: Terminal Auth always spawns the client-configured
+        // agent argv with the method's args/env — never an
+        // agent-supplied `command` (a bare name could resolve to a
+        // missing or stale PATH binary, the #157 failure class).
+        let mut args = agent_argv[1..].to_vec();
+        args.extend(string_array(block.get("args")));
         let mut merged = env.clone();
         merged.extend(string_record(block.get("env")));
         return Some(TerminalAuthLaunch {
@@ -645,7 +672,7 @@ fn terminal_auth_from_method(
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&label)
                 .to_string(),
-            command,
+            command: agent_command(),
             args,
             env: merged,
             cwd: Some(cwd.to_string()),
@@ -656,24 +683,20 @@ fn terminal_auth_from_method(
         return None;
     }
     let meta = auth_method_meta(method);
-    let command = meta
-        .and_then(|m| m.get("command"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or(agent_command);
     let meta_args = string_array(meta.and_then(|m| m.get("args")));
-    let args = if !meta_args.is_empty() {
+    let method_args = if !meta_args.is_empty() {
         meta_args
     } else {
         string_array(method.get("args"))
     };
+    let mut args = agent_argv[1..].to_vec();
+    args.extend(method_args);
     let mut merged = env.clone();
     merged.extend(string_record(method.get("env")));
     merged.extend(string_record(meta.and_then(|m| m.get("env"))));
     Some(TerminalAuthLaunch {
         label,
-        command,
+        command: agent_command(),
         args,
         env: merged,
         cwd: Some(cwd.to_string()),

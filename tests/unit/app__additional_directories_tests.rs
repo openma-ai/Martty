@@ -56,6 +56,7 @@ fn advertised_directories_show_on_the_tab_and_in_status() {
             fork_session: false,
             close_session: false,
             additional_directories: true,
+            auth_logout: false,
         }),
         &ctl,
     );
@@ -87,6 +88,7 @@ fn missing_capability_explains_that_add_dir_was_not_sent() {
             fork_session: false,
             close_session: false,
             additional_directories: false,
+            auth_logout: false,
         }),
         &ctl,
     );

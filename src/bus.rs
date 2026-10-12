@@ -187,7 +187,7 @@ pub enum CtlEvent {
     /// ACP initialize / authenticate status (Backchat probe equivalent).
     Auth(crate::acp_auth::AuthSnapshot),
     SessionAuth { session_id: String, snapshot: crate::acp_auth::AuthSnapshot, open: bool },
-    /// Open the client `/auth` surface (method picker or the one method).
+    /// Open the auth surface — the agent method picker (issue #160).
     OpenAuth,
     /// Agent-advertised session lifecycle capabilities.
     AgentCaps {
@@ -200,6 +200,9 @@ pub enum CtlEvent {
         close_session: bool,
         /// `sessionCapabilities.additionalDirectories` was an object (`{}`).
         additional_directories: bool,
+        /// `agentCapabilities.auth.logout` was an object (`{}`): the auth
+        /// picker may offer logout/switch (issue #160).
+        auth_logout: bool,
     },
     /// `session/new`, `session/resume`, or `session/load` resolved; the UI must use this id.
     SessionBound {
@@ -500,12 +503,27 @@ pub enum Cmd {
         config_id: String,
         value: String,
     },
-    /// Backchat-style `authenticate`: optional in-app `_meta` values after
-    /// `/auth`, or a retry after Terminal Auth / out-of-band login.
+    /// Backchat-style `authenticate`: in-app `_meta` values from the auth
+    /// picker's secret/gateway form, or a retry after out-of-band login.
     Authenticate {
         method_id: String,
         values: std::collections::BTreeMap<String, String>,
     },
+    /// ACP `logout` (v2 `auth/logout`): offered only when the agent declared
+    /// `agentCapabilities.auth.logout`; the picker reopens on success.
+    Logout,
+    /// The auth picker was dismissed without choosing a method. Prompts
+    /// parked on that session for a post-sign-in retry can never run now —
+    /// they are dropped visibly so the session cannot stall behind a picker
+    /// the user already closed (issue #160).
+    AuthSkipped { session_id: String },
+    /// Terminal sign-in finished on the TTY (exit 0): drop the current
+    /// transport, respawn the configured agent, and re-run `initialize`.
+    /// Never implies `authenticate` — terminal methods must not be sent to
+    /// `authenticate` (issue #160). `method_id` names the method the user
+    /// launched so the post-reconnect snapshot can credit it instead of the
+    /// advertised first method (issue #160).
+    AgentReconnect { method_id: Option<String> },
     /// Live ACP `/new` → `session/new` (cwd = workspace).
     NewSession { requester: Option<String>, retry_auth: Option<String> },
     /// Live ACP `/fork` → `session/fork` of `source_session_id`.

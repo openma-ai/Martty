@@ -666,6 +666,12 @@ fn main() -> Result<()> {
                 let result = crate::acp_auth::run_terminal_auth(&launch, app.locale);
                 enter_tui()?;
                 input_gate.unpark();
+                // The alternate screen was left and re-entered: ratatui's
+                // diff buffers still describe the pre-suspend frame, so a
+                // plain draw skips cells the child overwrote — composer
+                // borders and glyphs go missing (#160). Clearing forces
+                // the next draw to paint the whole frame.
+                terminal.clear()?;
                 app.needs_redraw = true;
                 frames.immediate = true;
                 while let Ok(ev) = bus_rx.try_recv() {
@@ -673,15 +679,7 @@ fn main() -> Result<()> {
                         app.handle(ev, &controller);
                     }
                 }
-                match result {
-                    Ok(()) => controller.send(Cmd::Authenticate {
-                        method_id: launch.method_id,
-                        values: Default::default(),
-                    }),
-                    Err(err) => app
-                        .transcript
-                        .push_notice(crate::transcript::NoticeLevel::Error, err),
-                }
+                app.finish_terminal_auth(result, &controller);
             }
             if app.quit {
                 break;

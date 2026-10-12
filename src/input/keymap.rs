@@ -18,6 +18,9 @@ pub enum Action {
     CtrlC,
     Quit,
     ClearScrollback,
+    /// Open the auth method picker (sign-in / logout) — issue #160 moved
+    /// all auth UI off the composer; there is no client auth command.
+    OpenAuth,
     ToggleTheme,
     ToggleExpandAll,
     SendNow,
@@ -119,7 +122,14 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('c') if ctrl => CtrlC,
         KeyCode::Char('x') if ctrl => CutSelection,
         KeyCode::Char('q') if ctrl => Quit,
+        // ctrl+shift+l before the plain ctrl arm: the auth picker is a
+        // deliberate chord, while legacy terminals that collapse shift
+        // still get clear-scrollback, not a surprise modal. ctrl+g is the
+        // always-delivered fallback (tmux and most legacy terminals send
+        // ctrl+shift+l as plain ctrl+l).
+        KeyCode::Char('l') if ctrl && shift => OpenAuth,
         KeyCode::Char('l') if ctrl => ClearScrollback,
+        KeyCode::Char('g') if ctrl => OpenAuth,
         KeyCode::Char('t') if ctrl => ToggleTheme,
         // ^o (not ^e): ghostty/iterm send ^e for ⌘→, and "explode the
         // transcript" on ⌘→ was evil.
@@ -857,6 +867,19 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_en: "cycle agent preset",
         desc_zh: "切换 Agent 预设",
         probes: &[p(KeyCode::Char('a'), CTRL_SHIFT, false)],
+    },
+    KeyRow {
+        action: OpenAuth,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+g", "ctrl+shift+l"],
+        chords_other: &["ctrl+g", "ctrl+shift+l"],
+        ctx: CtxNote::Always,
+        desc_en: "auth picker · sign in / log out",
+        desc_zh: "登录选择器 · 登录 / 登出",
+        probes: &[
+            p(KeyCode::Char('l'), CTRL_SHIFT, false),
+            p(KeyCode::Char('g'), CTRL, false),
+        ],
     },
     KeyRow {
         action: CyclePermission,

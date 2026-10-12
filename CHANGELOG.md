@@ -124,6 +124,79 @@ All notable changes to this project are documented here. The project follows
   `edit queue`, and the slash/shell/modal hints are no longer advertised
   there. The bindings themselves are unchanged and remain listed in
   `/keys` (#148).
+- Rework ACP auth around the agent's `initialize.authMethods` and the ACP
+  `logout` method (issue #160). **Behaviour change:** the client-side
+  `/auth` command is removed — Martty has no client auth slash commands;
+  every slash command is the agent's and passes through exactly as
+  advertised in `availableCommands`. Authentication happens in the auth
+  picker, opened on a `-32000` auth-required reply or with `ctrl+shift+l`.
+  Each api-key method gets its own masked secret field (never sent to a
+  different method), gateway methods collect base URL + key + optional
+  provider name, env-var methods are reported rather than started, and
+  terminal methods run a spec-compliant Terminal Auth: the TUI leaves the
+  screen, runs the client's configured agent argv plus the method's
+  advertised `_meta["terminal-auth"]` (or top-level) args/env — never an
+  agent-supplied `command`, which could resolve to a missing or stale
+  PATH binary — and on exit 0 respawns the agent and re-runs
+  `initialize` —
+  terminal methods are never sent to `authenticate`. When the agent
+  declares `agentCapabilities.auth.logout`, the picker gains a
+  "Log out / switch method" row that calls the ACP `logout` method and
+  re-opens the picker; agents that do not declare it get no logout row.
+  URL-mode elicitations are now declared and rendered inline (the link is
+  shown, not opened, so it is safe on headless/SSH sessions). Auth and
+  reconnect failures are visible notices — nothing typed while signed
+  out is silently queued or sent as a substitute credential.
+- Slash input that names no client command passes through to the agent
+  instead of a client-side "unknown command" warning, so a typed `/login`
+  reaches `session/prompt` and the agent's auth-required reply opens the
+  picker. `ctrl+g` opens the auth picker everywhere `ctrl+shift+l`
+  collapses to plain `ctrl+l` (tmux, legacy terminals); `ctrl+shift+l`
+  still works. The TUI
+  fully repaints when a Terminal Auth subprocess returns, and Ctrl-C
+  during Terminal Auth cancels the login flow instead of quitting Martty.
+  A prompt parked by an auth-required reply is retried once after
+  sign-in and, if refused again, is discarded with a visible notice
+  instead of stalling the session queue; a successful Terminal Auth
+  credits the launched method by name in the credentials line.
+  Closing the auth picker reports the skip so prompts held for a
+  post-sign-in retry are dropped visibly instead of pinning the
+  session; a prompt queued while sign-in is unresolved says "input is
+  held until you sign in" rather than spinning on "contacting
+  runtime", and Esc with no live turn still resolves queued and held
+  prompts (the wire shows `session/cancel` and the drained sends).
+  A typed `/login` or `/logout` is an ordinary prompt — it ships to
+  the agent verbatim (the agent answers plainly, per the
+  claude-agent-acp convention) and the picker still opens only on a
+  real `auth_required` reply. Long auth-method names are ellipsized
+  inside the picker's label column instead of overflowing into the
+  type column. The picker no longer flashes on a signed-in startup —
+  a form-capable or terminal-first method set is only a guess until a
+  real `auth_required` reply proves sign-in is needed, so startup emits
+  no `NeedsAuth` snapshot and never opens the picker on its own. While
+  the auth picker is open, printable keys keep reaching the composer and
+  Enter on a non-empty composer submits the typed prompt — composer text
+  can no longer be swallowed into a credential field (the api-key form
+  still opens only on an explicit empty-composer Enter). "Sign-in
+  needed" notices resolve the advertised method's display name from its
+  id instead of falling back to a bare "agent", a configured agent that
+  advertises methods reports "ready" instead of "credential source not
+  reported", and the stale "sign-in needed" notices are hidden once
+  sign-in succeeds instead of sitting above the first turn. Snapshots
+  raised by a real `auth_required` reply name the credential that
+  failed — the method matching the provider the session's model runs
+  on (or the launch provider before a session exists) — a lone
+  advertised method names itself, and anything else stays generic
+  rather than repeating the method last signed in with. An ACP
+  `logout` names the signed-out credential the same way, and the
+  credentials row no longer repeats its own label. Signing into a
+  different account while the bound session's provider is dead now
+  completes end to end: when the agent's own credential report no
+  longer lists the session's provider, the session is rebound so the
+  agent picks a workable model, and prompts held behind sign-in ride
+  along to the replacement session instead of being refused into a
+  discard on the old provider (issue #160).
+
 
 ### Fixed
 

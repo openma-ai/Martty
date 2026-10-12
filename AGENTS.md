@@ -28,5 +28,5 @@ Read [docs/architecture.md](docs/architecture.md) and [docs/plugins.md](docs/plu
 - The first shell slot proof is `chrome.right`: plugins inject `tuiSlots` and contribute validated `TuiNode` trees. Conversation timeline slots remain later work.
 - Do not give plugins the TTY, kitty, raw mode, or global terminal size.
 - Transcript paint comes from ACP `session/update`. Do not drive chrome or palette from `session/update`. Do not put TUI chrome in ACP `_meta`.
-- ACP auth follows Backchat: read `initialize.authMethods`, submit in-app forms through `authenticate` `_meta`, run Terminal Auth (`_meta["terminal-auth"]`) on the TTY, then `authenticate` to re-check. `/login` stays the agent's slash when advertised. Phase 1 demo is `--demo-skin` (`ember`).
+- ACP auth is picker-driven off `initialize.authMethods` (issue #160): api-key/gateway forms submit through `authenticate` `_meta`; terminal methods run the client-configured agent command on the TTY then reconnect + re-initialize (never `authenticate`); `logout` is offered only when the agent declares `agentCapabilities.auth.logout`. Martty registers no client auth slash command — every advertised slash passes through to the agent unchanged. Phase 1 demo is `--demo-skin` (`ember`).
 - Token names, kinds, and slot names are append-only; field meaning changes bump `protocol`.

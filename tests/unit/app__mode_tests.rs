@@ -1704,6 +1704,7 @@ fn agent_caps_gate_resume_to_session_list() {
             fork_session: false,
             close_session: false,
             additional_directories: false,
+            auth_logout: false,
         }),
         &ctl,
     );
@@ -1731,6 +1732,7 @@ fn resume_capability_can_restore_an_exact_id_without_load_or_list() {
             fork_session: false,
             close_session: false,
             additional_directories: false,
+            auth_logout: false,
         }),
         &ctl,
     );
@@ -4780,7 +4782,7 @@ fn login_is_not_a_tui_builtin_so_the_agent_slash_ships() {
 }
 
 #[test]
-fn auth_slash_queues_terminal_launch_like_backchat_sign_in() {
+fn auth_picker_terminal_row_queues_the_tui_launch() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;
     let methods = crate::acp_auth::parse_auth_methods(
@@ -4794,7 +4796,8 @@ fn auth_slash_queues_terminal_launch_like_backchat_sign_in() {
         &Default::default(),
     );
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
-    app.run_slash("auth", "", &ctl);
+    app.open_auth_picker();
+    app.start_auth("terminal-login", &ctl);
     let launch = app.take_terminal_auth().expect("terminal auth");
     assert_eq!(launch.command, "dsh-acp");
     assert_eq!(launch.args, ["login"]);
@@ -4810,12 +4813,12 @@ fn agent_auth_reports_in_progress_before_the_agent_replies() {
         &["antigravity-acp".into()], "/tmp", &Default::default(),
     );
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
-    app.run_slash("auth", "", &ctl);
+    app.start_auth("oauth-personal", &ctl);
     assert_eq!(format!("{:?}", app.auth.status), "SigningIn");
     assert_eq!(app.auth.method_id.as_deref(), Some("oauth-personal"));
     assert!(!app.prompt_pending, "authentication is not a model prompt");
     assert!(app.show_banner, "sign-in stays on the landing page");
-    app.run_slash("auth", "", &ctl);
+    app.start_auth("oauth-personal", &ctl);
     assert!(app.tip.as_ref().is_some_and(|(text, _)| text.contains("still pending")));
 }
 
@@ -4835,8 +4838,8 @@ fn auth_failure_is_visible_on_landing_and_retry_clears_it() {
     let view = app.view_overlay.as_ref().expect("visible failure dialog, not hidden transcript");
     assert_eq!(view.id, "builtin.auth.failure");
     assert!(matches!(&view.nodes[0], crate::slots::TuiNode::Markdown { text, .. }
-        if text.contains("Account is not eligible") && text.contains("/auth")));
-    app.run_slash("auth", "", &ctl);
+        if text.contains("Account is not eligible") && text.contains("ctrl+g")));
+    app.start_auth("oauth-personal", &ctl);
     assert!(app.view_overlay.is_none());
     assert_eq!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn);
     assert!(app.auth.message.is_none());
@@ -4848,12 +4851,12 @@ fn auth_failure_is_visible_on_landing_and_retry_clears_it() {
 #[test]
 fn auth_in_demo_does_not_leave_the_tui() {
     let (mut app, ctl, _rx) = test_app();
-    app.run_slash("auth", "", &ctl);
+    app.start_auth("oauth-personal", &ctl);
     assert!(app.take_terminal_auth().is_none());
 }
 
 #[test]
-fn logout_is_hidden_from_the_slash_menu() {
+fn agent_slash_commands_pass_through_unfiltered() {
     let (mut app, _ctl, _rx) = test_app();
     app.skills = vec![
         crate::bus::SkillInfo {
@@ -4878,13 +4881,16 @@ fn logout_is_hidden_from_the_slash_menu() {
         .filter(|e| e.skill)
         .map(|e| e.name.as_str())
         .collect();
-    assert_eq!(names, ["login"]);
+    // Every advertised command is listed — issue #160 removes the special
+    // logout filter; auth commands are never client-side filtered.
+    assert_eq!(names, ["login", "logout"]);
     assert!(!SLASH_COMMANDS.iter().any(|c| c.name == "logout"));
+    assert!(!SLASH_COMMANDS.iter().any(|c| c.name == "auth"));
 }
 
 #[test]
 fn empty_auth_with_several_methods_opens_the_picker() {
-    let (mut app, ctl, _rx) = test_app();
+    let (mut app, _ctl, _rx) = test_app();
     app.demo = false;
     let methods = crate::acp_auth::parse_auth_methods(
         &serde_json::json!([
@@ -4904,7 +4910,7 @@ fn empty_auth_with_several_methods_opens_the_picker() {
         &Default::default(),
     );
     app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
-    app.run_slash("auth", "", &ctl);
+    app.open_auth_surface();
     let picker = app.picker.as_ref().expect("auth picker");
     assert!(matches!(picker.kind, PickerKind::Auth));
     assert_eq!(picker.items.len(), 2);
@@ -4952,8 +4958,83 @@ fn open_auth_preserves_draft_and_pending_fifo() {
         Some(PickerKind::Auth)
     ));
     let tip = app.tip.as_ref().map(|(t, _)| t.as_str()).unwrap_or("");
-    assert!(tip.contains("/auth"), "tip: {tip}");
-    assert!(!tip.contains("/login"), "tip: {tip}");
+    assert!(tip.contains("ctrl+g"), "tip: {tip}");
+}
+
+#[test]
+fn esc_on_the_auth_picker_discards_signin_held_prompts() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    // A refused session/new left the app needing sign-in with no bound
+    // session: the typed /login sits in the client queue, never reaching
+    // acp. Esc on the picker must discard it so the user can carry on
+    // (issue #160).
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key", "name": "API key", "_meta": { "api-key": {} } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.session_bound = false;
+    app.send_agent_text("/login".into(), &ctl);
+    assert_eq!(app.prompt_queue.len(), 1, "the prompt is held for sign-in");
+    assert!(app.queue_signin_pending());
+    app.open_auth_surface();
+    assert!(matches!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Auth)));
+
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+        &ctl,
+    );
+
+    assert!(app.picker.is_none(), "Esc closed the picker");
+    assert!(app.prompt_queue.is_empty(), "the held prompt was discarded");
+    assert_eq!(app.queued, 0);
+    match commands.recv_timeout(std::time::Duration::from_millis(300)) {
+        Ok(Cmd::AuthSkipped { .. }) => {}
+        other => panic!("Esc must still skip sign-in agent-side: {other:?}"),
+    }
+    assert!(
+        app.transcript.cells.iter().any(|cell| matches!(
+            &cell.kind,
+            crate::transcript::CellKind::Notice { text, .. }
+                if text.contains("discarded 1 held prompt")
+        )),
+        "the discard is visible in the transcript"
+    );
+
+    // Esc with nothing held just closes the picker — sign-in is still
+    // skipped agent-side, but no discard is reported (issue #160).
+    app.open_auth_surface();
+    assert!(matches!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Auth)));
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+        &ctl,
+    );
+    assert!(app.picker.is_none(), "Esc closed the picker again");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut skipped = false;
+    while !skipped && std::time::Instant::now() < deadline {
+        match commands.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(Cmd::AuthSkipped { .. }) => skipped = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("commands channel: {err}"),
+        }
+    }
+    assert!(skipped, "Esc still skips sign-in agent-side");
+    assert!(
+        app.transcript.cells.iter().filter(|cell| matches!(
+            &cell.kind,
+            crate::transcript::CellKind::Notice { text, .. }
+                if text.contains("held prompt")
+        )).count() == 1,
+        "no second discard notice when nothing was held"
+    );
 }
 
 #[test]
@@ -4986,6 +5067,50 @@ fn auth_retry_does_not_consume_the_followup_fifo_marker() {
         "the retry belongs to the original active prompt, not the FIFO"
     );
     assert_eq!(app.prompt_queue.len(), 1);
+}
+
+#[test]
+fn methodless_auth_notice_borrows_the_terminal_method_identity() {
+    // A terminal sign-in cannot name itself through `authenticate`: the
+    // post-reconnect configured/needs-auth snapshot arrives without a
+    // method, so the identity recorded when its TTY launch started fills
+    // the blank (#160).
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.auth.methods = vec![crate::acp_auth::AuthMethodInfo {
+        id: "pi-terminal".into(),
+        name: Some("Log in with pi".into()),
+        description: None,
+        type_name: "terminal".into(),
+        form: false,
+        vars: Vec::new(),
+        link: None,
+        terminal_launch: Some(crate::acp_auth::TerminalAuthLaunch {
+            label: "Log in with pi".into(),
+            command: "openma-pi-acp".into(),
+            args: vec!["--terminal-login".into()],
+            env: Default::default(),
+            cwd: None,
+            method_id: "pi-terminal".into(),
+        }),
+    }];
+    app.auth.method_id = Some("pi-terminal".into());
+    app.auth.method_name = Some("Log in with pi".into());
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::AuthSnapshot {
+            status: crate::acp_auth::AuthStatus::NeedsAuth,
+            method_id: None,
+            method_name: None,
+            methods: Vec::new(),
+            message: Some("authentication required".into()),
+        })),
+        &ctl,
+    );
+    let notice = last_notice_text(&app).unwrap_or_default();
+    assert!(
+        notice.contains("Log in with pi"),
+        "the method-less notice names the terminal method: {notice}"
+    );
 }
 
 #[test]
@@ -5203,13 +5328,14 @@ fn acp_elicitation_form_opens_and_returns_the_selected_value() {
         AppEvent::ElicitationAsk {
             session_id: Some("dsh-test".into()),
             form: ElicitationForm {
-                message: "The agent needs your input.".into(),
+            url: None,                message: "The agent needs your input.".into(),
                 fields: vec![ElicitationField {
                     name: "question_0".into(),
                     custom_name: None,
                     title: "Target".into(),
                     description: Some("Where should this run?".into()),
                     required: true,
+                    secret: false,
                     kind: ElicitationFieldKind::Single {
                         options: vec![
                             ElicitationOption {
@@ -5678,4 +5804,840 @@ fn first_reply_renders_below_the_prompt_after_out_of_turn_startup_context() {
         );
         assert!(!frame.contains("index.ts▍"), "caret left on the context:\n{frame}");
     }
+}
+
+fn auth_methods_fixture() -> Vec<crate::acp_auth::AuthMethodInfo> {
+    crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            {
+                "id": "oauth-personal",
+                "name": "Google account"
+            },
+            {
+                "id": "api-key:deepseek",
+                "name": "DeepSeek API key",
+                "_meta": { "api-key": { "variables": [
+                    { "name": "api-key", "label": "API key", "secret": true }
+                ] } }
+            },
+            {
+                "id": "env-var",
+                "name": "Env var",
+                "type": "env_var",
+                "vars": [{ "name": "AGENT_TOKEN" }]
+            }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    )
+}
+
+fn last_notice_text(app: &App) -> Option<&str> {
+    app.transcript.cells.iter().rev().find_map(|cell| {
+        if let crate::transcript::CellKind::Notice { text, .. } = &cell.kind {
+            Some(text.as_str())
+        } else {
+            None
+        }
+    })
+}
+
+#[test]
+fn logout_row_is_listed_only_when_the_agent_declares_it() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.agent_auth_logout = false;
+    app.open_auth_picker();
+    let items = &app.picker.as_ref().expect("picker").items;
+    assert_eq!(items.len(), 3);
+    assert!(!items.iter().any(|item| item.id == "martty:logout"));
+
+    app.agent_auth_logout = true;
+    app.open_auth_picker();
+    let items = &app.picker.as_ref().expect("picker").items;
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[3].id, "martty:logout");
+    assert_eq!(items[3].meta, "logout");
+}
+
+#[test]
+fn logout_row_without_capability_warns_instead_of_sending() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.agent_auth_logout = false;
+    app.start_auth("martty:logout", &ctl);
+    assert!(
+        last_notice_text(&app).is_some_and(|text| text.contains("auth.logout")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+}
+
+#[test]
+fn logout_row_with_capability_sends_acp_logout() {
+    let (mut app, ctl, rx) = test_app();
+    app.demo = false;
+    app.agent_auth_logout = true;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::configured_snapshot(methods.clone(), methods.first());
+    app.start_auth("martty:logout", &ctl);
+    assert_eq!(format!("{:?}", app.auth.status), "SigningIn");
+    // The demo controller's arm marks Logout a live-connection op.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(message))) => {
+                assert!(message.contains("live ACP"), "{message}");
+                break;
+            }
+            Ok(_) => {}
+            Err(_) if std::time::Instant::now() < deadline => std::thread::yield_now(),
+            Err(_) => panic!("no TuiOpFailed for the demo Logout"),
+        }
+    }
+}
+
+#[test]
+fn env_var_auth_method_cannot_start_sign_in() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("env-var", &ctl);
+    assert!(
+        last_notice_text(&app).is_some_and(|text| text.contains("AGENT_TOKEN")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+    assert!(!matches!(
+        format!("{:?}", app.auth.status).as_str(),
+        "SigningIn"
+    ));
+}
+
+#[test]
+fn unknown_auth_method_warns_instead_of_falling_back() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("ghost-method", &ctl);
+    assert!(
+        last_notice_text(&app).is_some_and(|text| text.contains("ghost-method")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+}
+
+#[test]
+fn api_key_method_opens_a_masked_form_that_submits_by_name() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("api-key:deepseek", &ctl);
+    let form = &app.auth_form.as_ref().expect("auth form").form;
+    assert_eq!(form.fields.len(), 1);
+    assert_eq!(form.fields[0].field.name, "api-key");
+    assert!(form.fields[0].field.secret, "the api key field is masked");
+
+    // Type a key and submit — the secret only leaves via Cmd::Authenticate
+    // for exactly this method.
+    for ch in "sk-live-123".chars() {
+        app.handle_auth_form_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &ctl,
+        );
+    }
+    app.handle_auth_form_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &ctl,
+    );
+    assert!(app.auth_form.is_none());
+    assert_eq!(format!("{:?}", app.auth.status), "SigningIn");
+    assert_eq!(app.auth.method_id.as_deref(), Some("api-key:deepseek"));
+}
+
+#[test]
+fn auth_form_esc_returns_to_the_picker() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("api-key:deepseek", &ctl);
+    assert!(app.auth_form.is_some());
+    app.handle_auth_form_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &ctl,
+    );
+    assert!(app.auth_form.is_none());
+    assert!(matches!(
+        app.picker.as_ref().map(|picker| picker.kind),
+        Some(PickerKind::Auth)
+    ));
+}
+
+#[test]
+fn ctrl_shift_l_opens_the_auth_picker() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.dispatch(crate::input::keymap::Action::OpenAuth, &ctl);
+    assert!(matches!(
+        app.picker.as_ref().map(|picker| picker.kind),
+        Some(PickerKind::Auth)
+    ));
+}
+
+#[test]
+fn take_terminal_auth_closes_the_picker() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([{
+            "id": "tui-login",
+            "name": "Terminal",
+            "_meta": { "terminal-auth": { "args": ["login"], "env": {} } }
+        }]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.open_auth_picker();
+    app.start_auth("tui-login", &ctl);
+    assert!(app.pending_terminal_auth.is_some());
+    assert!(app.take_terminal_auth().is_some());
+    assert!(app.picker.is_none(), "the picker is answered by the launch");
+    // The status line can name the method whose terminal flow ran instead
+    // of "credential source not reported" (#160).
+    assert_eq!(app.auth.method_id.as_deref(), Some("tui-login"));
+    assert_eq!(app.auth.method_name.as_deref(), Some("Terminal"));
+}
+
+#[test]
+fn terminal_auth_success_reconnects_the_agent() {
+    let (mut app, ctl, rx) = test_app();
+    app.demo = false;
+    app.finish_terminal_auth(Ok(()), &ctl);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(_))) => break,
+            Ok(_) => {}
+            Err(_) if std::time::Instant::now() < deadline => std::thread::yield_now(),
+            Err(_) => panic!("expected a control reply for AgentReconnect"),
+        }
+    }
+}
+
+#[test]
+fn terminal_auth_failure_surfaces_the_error_and_reopens() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.finish_terminal_auth(Err("login helper exited with code 1".into()), &ctl);
+    assert!(
+        last_notice_text(&app)
+            .is_some_and(|text| text.contains("login helper exited with code 1")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+    assert!(matches!(
+        app.picker.as_ref().map(|picker| picker.kind),
+        Some(PickerKind::Auth)
+    ));
+}
+
+#[test]
+fn auth_values_from_reply_drops_non_string_variants() {
+    use std::collections::BTreeMap;
+    let values: BTreeMap<String, crate::elicitation::ElicitationValue> = [
+        ("api-key".into(), crate::elicitation::ElicitationValue::String("sk".into())),
+        ("flag".into(), crate::elicitation::ElicitationValue::Boolean(true)),
+        ("num".into(), crate::elicitation::ElicitationValue::Integer(7)),
+    ]
+    .into_iter()
+    .collect();
+    let out = auth_values_from_reply(values);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out.get("api-key").map(String::as_str), Some("sk"));
+}
+
+#[test]
+fn start_auth_with_no_methods_reports_the_agent_did_not_advertise() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.auth = crate::acp_auth::needs_auth_snapshot(Vec::new(), None, None);
+    app.start_auth("anything", &ctl);
+    assert!(
+        last_notice_text(&app)
+            .is_some_and(|text| text.contains("did not advertise auth methods")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+}
+
+#[test]
+fn submit_auth_values_for_an_unknown_method_warns() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.submit_auth_values("ghost", std::collections::BTreeMap::new(), &ctl);
+    assert!(
+        last_notice_text(&app).is_some_and(|text| text.contains("ghost")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+    assert!(!matches!(format!("{:?}", app.auth.status).as_str(), "SigningIn"));
+}
+
+#[test]
+fn auth_form_keys_route_through_handle() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("api-key:deepseek", &ctl);
+    assert!(app.auth_form.is_some());
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+        &ctl,
+    );
+    assert!(app.auth_form.is_none());
+    assert!(matches!(
+        app.picker.as_ref().map(|picker| picker.kind),
+        Some(PickerKind::Auth)
+    ));
+}
+
+#[test]
+fn help_overlay_documents_the_auth_picker_shortcut() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.push_help();
+    let view = app.view_overlay.as_ref().expect("help overlay");
+    let text = view
+        .nodes
+        .iter()
+        .find_map(|node| match node {
+            crate::slots::TuiNode::Markdown { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("markdown help");
+    assert!(text.contains("ctrl+shift+l"), "{text}");
+    assert!(text.contains("auth picker"), "{text}");
+}
+
+#[test]
+fn session_info_line_reflects_needs_auth_and_failed() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    let overlay_text = |app: &App| -> String {
+        app.view_overlay
+            .as_ref()
+            .and_then(|view| {
+                view.nodes.iter().find_map(|node| match node {
+                    crate::slots::TuiNode::Markdown { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default()
+    };
+    app.auth = crate::acp_auth::needs_auth_snapshot(
+        methods.clone(),
+        methods.first(),
+        Some("needs it".into()),
+    );
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("ctrl+g"), "{text}");
+    app.auth.status = crate::acp_auth::AuthStatus::SigningIn;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("signing in"), "{text}");
+    app.auth.status = crate::acp_auth::AuthStatus::Failed;
+    app.auth.message = Some("denied".into());
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("sign-in failed") && text.contains("denied"), "{text}");
+    // A failure with no message falls back to the generic reason (issue
+    // #160).
+    app.auth.message = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("ACP authenticate failed"), "{text}");
+    // Unnamed-method NeedsAuth stays unspecific — never the type word
+    // "agent" (issue #160).
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), None, None);
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("sign-in needed · ctrl+g"), "{text}");
+    assert!(!text.contains("sign-in needed · agent"), "{text}");
+    // A method id with no display name still names the method.
+    app.auth.method_id = Some("api-key".into());
+    app.auth.method_name = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("api-key"), "{text}");
+    // Configured with an advertised method set but an unknown source no
+    // longer claims "not reported" — the agent did report its providers —
+    // and the row does not repeat its "credentials" label (issue #160).
+    app.auth.status = crate::acp_auth::AuthStatus::Configured;
+    app.auth.method_id = None;
+    app.auth.method_name = None;
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("credentials · ready") && !text.contains("credentials ready") && !text.contains("not reported"), "{text}");
+    // With nothing advertised at all, the source is genuinely not reported.
+    app.auth.methods = Vec::new();
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("credential source not reported"), "{text}");
+    // A named method is credited by name.
+    app.auth.method_name = Some("gateway".into());
+    app.push_session_info();
+    let text = overlay_text(&app);
+    assert!(text.contains("credentials · ready · gateway"), "{text}");
+}
+
+#[test]
+fn help_overlay_documents_the_auth_picker_in_chinese_too() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.locale = crate::locale::Locale::Zh;
+    app.push_help();
+    let text = app
+        .view_overlay
+        .as_ref()
+        .and_then(|view| {
+            view.nodes.iter().find_map(|node| match node {
+                crate::slots::TuiNode::Markdown { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+        })
+        .expect("markdown help");
+    assert!(text.contains("ctrl+shift+l"), "{text}");
+}
+
+#[test]
+fn unclaimed_slash_input_passes_through_to_the_agent() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.session_bound = true;
+    app.run_slash("ghost", "arg", &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "/ghost arg"
+    ));
+    // A harness-native /login rides the same transport: the agent's
+    // auth_required reply is what opens the picker (#160).
+    app.prompt_pending = false;
+    app.state = RunState::Idle;
+    app.run_slash("login", "", &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "/login"
+    ));
+    assert!(
+        last_notice_text(&app).is_none_or(|text| !text.contains("unknown command")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+}
+
+#[test]
+fn env_var_method_without_vars_reports_it_cannot_start() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([{
+            "id": "env-only",
+            "name": "Env",
+            "type": "env_var"
+        }]),
+        &["fake-agent".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("env-only", &ctl);
+    assert!(
+        last_notice_text(&app).is_some_and(|text| text.contains("credential variables")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+}
+
+#[test]
+fn configured_snapshot_closes_the_auth_picker() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.handle(AppEvent::Ctl(CtlEvent::OpenAuth), &ctl);
+    assert!(matches!(
+        app.picker.as_ref().map(|p| p.kind),
+        Some(PickerKind::Auth)
+    ));
+    let snapshot =
+        crate::acp_auth::configured_snapshot(methods.clone(), methods.first());
+    app.handle(AppEvent::Ctl(CtlEvent::Auth(snapshot)), &ctl);
+    assert!(
+        !matches!(
+            app.picker.as_ref().map(|p| p.kind),
+            Some(PickerKind::Auth)
+        ),
+        "auth picker closes once sign-in is configured"
+    );
+}
+
+#[test]
+fn cordis_approval_alt_digit_short_circuit() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.pending_cordis_approvals.push(crate::bus::PendingCordisApproval {
+        request_id: "r1".into(),
+        agent_id: "a".into(),
+        plugin_id: "p".into(),
+        package_id: "pkg".into(),
+        mode: "m".into(),
+        name: "n".into(),
+        purpose: "x".into(),
+    });
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(
+            KeyCode::Char('1'),
+            KeyModifiers::ALT,
+        ))),
+        &ctl,
+    );
+    assert_eq!(app.pending_cordis_approvals.len(), 1);
+}
+
+#[test]
+fn unclaimed_slash_input_passes_through_in_chinese_too() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.locale = crate::locale::Locale::Zh;
+    app.session_bound = true;
+    app.run_slash("ghost", "arg", &ctl);
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::Prompt { text, .. }) if text == "/ghost arg"
+    ));
+}
+
+/// With vim on, an open slash-completion keeps the key — the vim arm's
+/// `!slash_completion_open()` guard is what skips vim, not the input.
+#[test]
+fn vim_mode_defers_to_an_open_slash_completion() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.run_slash("vim", "on", &ctl);
+    assert!(app.vim.is_active());
+    app.input.set("/h".into());
+    assert!(app.slash_completion_open(), "slash completion is open");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "/hx", "completion-owned typing still lands");
+}
+
+/// Vim on with an open queue edit skips vim — the queue editor owns the
+/// key at that modal level.
+#[test]
+fn vim_mode_defers_to_an_open_queue_edit() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.run_slash("vim", "on", &ctl);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.vim.mode, crate::input::VimMode::Normal);
+    app.input.set("keep".into());
+    app.queue_edit = Some(crate::app::QueueEditState {
+        prompt_id: 1,
+        delete_confirm: false,
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &ctl);
+    // Vim was skipped — the queue editor let the key type through.
+    assert_eq!(app.input.buf(), "keepx", "vim never saw the key");
+}
+
+#[test]
+fn esc_on_the_auth_picker_reports_auth_skipped() {
+    // Closing the auth picker declines sign-in for now: acp must hear about
+    // it so prompts held for a post-sign-in retry are dropped instead of
+    // stalling the session behind a dismissed picker (issue #160).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([{ "id": "oauth-personal", "name": "Google" }]),
+        &["antigravity-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.open_auth_picker();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(app.picker.is_none());
+    let command = commands
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("closing the auth picker reports the skip");
+    assert!(matches!(
+        command,
+        Cmd::AuthSkipped { session_id } if session_id == "dsh-test"
+    ));
+}
+
+#[test]
+fn esc_on_other_pickers_reports_nothing() {
+    use crate::app::{Picker, PickerItem};
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Theme,
+        title: " theme ".into(),
+        sel: 0,
+        items: vec![PickerItem {
+            id: "default".into(),
+            label: "default".into(),
+            meta: "theme".into(),
+            provider: None,
+        }],
+    });
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &ctl);
+    assert!(app.picker.is_none());
+    assert!(
+        commands
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err(),
+        "a non-auth picker close sends no auth command"
+    );
+}
+
+#[test]
+fn auth_picker_keeps_composer_typing_and_enter_submits_the_prompt() {
+    // A picker that opens on its own must not swallow keystrokes into a
+    // credential field: printable keys reach the composer, and Enter on a
+    // non-empty composer submits the prompt — never Cmd::Authenticate
+    // (issue #160 blocker).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.open_auth_picker();
+    for ch in "hello there".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &ctl);
+    }
+    assert_eq!(
+        app.input.buf(),
+        "hello there",
+        "printable keys reach the composer, not a credential field"
+    );
+    // Backspace edits the composer; a control-chord still does not type.
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hello ther");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hello ther");
+    app.handle_key(
+        KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT),
+        &ctl,
+    );
+    assert_eq!(app.input.buf(), "hello therE");
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &ctl);
+    assert_eq!(app.input.buf(), "hello ther");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(app.picker.is_none());
+    let mut saw_prompt = false;
+    for command in commands.try_iter() {
+        assert!(
+            !matches!(command, Cmd::Authenticate { .. }),
+            "composer text must never be submitted as a credential"
+        );
+        if matches!(command, Cmd::Prompt { ref text, .. } if text == "hello ther") {
+            saw_prompt = true;
+        }
+    }
+    assert!(saw_prompt, "the typed prompt is submitted, not dropped");
+
+    // The credential form needs explicit intent: an empty composer makes
+    // Enter select the highlighted method instead of submitting text.
+    app.open_auth_picker();
+    assert!(app.input.is_empty());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &ctl);
+    assert!(
+        app.auth_form.is_some(),
+        "an empty-composer Enter on an api-key method opens its form"
+    );
+}
+
+#[test]
+fn sign_in_hides_stale_sign_in_notices() {
+    // Notices pushed while sign-in was pending must not sit above the
+    // first turn once the agent confirms credentials (issue #160).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::needs_auth_snapshot(
+            methods.clone(),
+            methods.first(),
+            None,
+        ))),
+        &ctl,
+    );
+    let notice_count = app
+        .transcript
+        .cells
+        .iter()
+        .filter(|cell| {
+            !cell.hidden
+                && matches!(cell.kind, crate::transcript::CellKind::Notice { .. })
+        })
+        .count();
+    assert_eq!(notice_count, 1, "the needs-auth notice is visible");
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::configured_snapshot(
+            methods,
+            None,
+        ))),
+        &ctl,
+    );
+    let notice_count = app
+        .transcript
+        .cells
+        .iter()
+        .filter(|cell| {
+            !cell.hidden
+                && matches!(cell.kind, crate::transcript::CellKind::Notice { .. })
+        })
+        .count();
+    assert_eq!(
+        notice_count, 0,
+        "a successful sign-in hides the stale needs-auth notice"
+    );
+}
+
+#[test]
+fn session_auth_for_a_parked_session_updates_its_stored_snapshot() {
+    let (mut app, ctl, _rx) = test_app();
+    app.demo = false;
+    app.startup_bound = true;
+    app.open_new_session("s-parked".into(), true);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionConnection {
+        session_id: "s-parked".into(),
+        connection: crate::bus::SessionConnection {
+            server: Some("beta".into()),
+            auth: crate::acp_auth::AuthSnapshot::none(),
+            load_session: false,
+            list_session: true,
+            resume_session: true,
+            fork_session: false,
+            close_session: false,
+            additional_directories: false,
+        },
+    }), &ctl);
+    app.open_new_session("s-live".into(), true);
+    let pidx = app
+        .parked
+        .iter()
+        .position(|slot| slot.id == "s-parked")
+        .expect("first session parked by the second bind");
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-parked".into(),
+        snapshot: crate::acp_auth::needs_auth_snapshot(
+            Vec::new(), None, Some("sign in".into())),
+        open: true,
+    }), &ctl);
+    let stored = app.parked[pidx].connection.as_ref().map(|c| &c.auth);
+    assert!(
+        matches!(stored.map(|a| &a.status), Some(crate::acp_auth::AuthStatus::NeedsAuth)),
+        "SessionAuth for a parked session refreshes its stored snapshot"
+    );
+
+    // A parked slot with no connection recorded simply has nothing to update.
+    app.open_new_session("s-bare".into(), true);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-bare".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: false,
+    }), &ctl);
+    app.open_new_session("s-live2".into(), true);
+    let bidx = app
+        .parked
+        .iter()
+        .position(|slot| slot.id == "s-bare")
+        .expect("s-bare parked");
+    app.parked[bidx].connection = None;
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-bare".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: false,
+    }), &ctl);
+    assert!(app.parked[bidx].connection.is_none());
+
+    // An auth event for a session that exists nowhere is ignored outright.
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-ghost".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: true,
+    }), &ctl);
+
+    // The live session keeps routing the snapshot normally: open:false just
+    // refreshes auth state, open:true also surfaces the picker.
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-live2".into(),
+        snapshot: crate::acp_auth::AuthSnapshot::none(),
+        open: false,
+    }), &ctl);
+    app.handle(AppEvent::Ctl(CtlEvent::SessionAuth {
+        session_id: "s-live2".into(),
+        snapshot: crate::acp_auth::needs_auth_snapshot(
+            Vec::new(), None, Some("sign in".into())),
+        open: true,
+    }), &ctl);
 }

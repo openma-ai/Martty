@@ -527,6 +527,44 @@ fn welcome_auth_unknown_source_does_not_claim_authenticate() {
 }
 
 #[test]
+fn welcome_auth_with_methods_reports_ready_not_unreported() {
+    // An agent that advertised auth methods did report its providers, so
+    // a configured status without a named method reads "ready", not
+    // "credential source not reported" — and the "credentials" label is
+    // not repeated in the value (issue #160).
+    let mut app = live_test_app();
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::configured_snapshot(methods, None);
+    let lines = welcome_info_lines(&app);
+    // The credentials row's value is "ready" — the label is not repeated.
+    let row = lines
+        .iter()
+        .find(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.contains("credentials"))
+        })
+        .expect("credentials row");
+    let value = row
+        .spans
+        .last()
+        .map(|span| span.content.as_ref())
+        .unwrap_or_default();
+    assert_eq!(value, "ready");
+    let text = lines.iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(!text.contains("not reported"), "{text}");
+}
+
+#[test]
 fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     let flat = |lines: Vec<Line>| lines.iter().flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref()).collect::<Vec<_>>().join("\n");
@@ -539,7 +577,7 @@ fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     app.auth.status = crate::acp_auth::AuthStatus::Failed;
     let failed = flat(welcome_info_lines(&app));
     assert!(failed.contains("sign-in failed"), "{failed}");
-    assert!(failed.contains("/auth"), "{failed}");
+    assert!(failed.contains("ctrl+g"), "{failed}");
     assert!(!failed.contains("host dsh"), "{failed}");
 }
 
@@ -1377,7 +1415,7 @@ fn elicitation_wait_uses_the_state_line_without_claiming_the_agent_is_working() 
     app.state = RunState::Running;
     app.elicitation_ask = Some(ElicitationAskOverlay {
         form: ElicitationFormState::new(ElicitationForm {
-            message: "The agent needs your input.".into(),
+            url: None,            message: "The agent needs your input.".into(),
             fields: Vec::new(),
         }),
         scroll: 0,
@@ -1501,13 +1539,14 @@ fn caret_cell_follows_wrapped_rows_and_hides_with_the_caret() {
     app.input.set("draft".into());
     app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
         form: crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
-            message: "m".into(),
+            url: None,            message: "m".into(),
             fields: vec![crate::elicitation::ElicitationField {
                 name: "f".into(),
                 custom_name: None,
                 title: "t".into(),
                 description: None,
                 required: true,
+                secret: false,
                 kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
             }],
         }),
@@ -2762,13 +2801,14 @@ fn elicitation_overlay_renders_a_real_question_form() {
     app.show_banner = false;
     app.elicitation_ask = Some(ElicitationAskOverlay {
         form: ElicitationFormState::new(ElicitationForm {
-            message: "The agent needs your input.".into(),
+            url: None,            message: "The agent needs your input.".into(),
             fields: vec![ElicitationField {
                 name: "question_0".into(),
                 custom_name: Some("question_0_custom".into()),
                 title: "Target".into(),
                 description: Some("Where should this run?".into()),
                 required: true,
+                secret: false,
                 kind: ElicitationFieldKind::Single {
                     options: vec![
                         ElicitationOption {
@@ -2817,13 +2857,14 @@ fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
     app.show_banner = false;
     app.input.insert_str("composer draft");
     let mut form = ElicitationFormState::new(ElicitationForm {
-        message: "The agent needs your input.".into(),
+            url: None,        message: "The agent needs your input.".into(),
         fields: vec![ElicitationField {
             name: "answer".into(),
             custom_name: None,
             title: "Answer".into(),
             description: None,
             required: true,
+            secret: false,
             kind: ElicitationFieldKind::Text { default: None },
         }],
     });
@@ -4045,4 +4086,215 @@ fn ansi_color_disabled_matches_crossterm_semantics() {
         Some(v) => std::env::set_var("NO_COLOR", v),
         None => std::env::remove_var("NO_COLOR"),
     }
+}
+
+fn url_or_secret_form(url: Option<String>, secret_value: Option<&str>) -> crate::elicitation::ElicitationFormState {
+    let fields = match secret_value {
+        Some(_) => vec![crate::elicitation::ElicitationField {
+            name: "api-key".into(),
+            custom_name: None,
+            title: "API key".into(),
+            description: None,
+            required: true,
+            secret: true,
+            kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
+        }],
+        None => Vec::new(),
+    };
+    let mut form = crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
+        message: "sign in".into(),
+        url,
+        fields,
+    });
+    if let (Some(value), Some(field)) = (secret_value, form.fields.first_mut()) {
+        field.input.buf = value.to_string();
+    }
+    form
+}
+
+#[test]
+fn auth_form_masks_secret_values_as_bullets() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.auth_form = Some(crate::app::AuthFormOverlay {
+        method_id: "api-key:deepseek".into(),
+        form: url_or_secret_form(None, Some("sk-live-secret")),
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(!text.contains("sk-live-secret"), "secret leaked: {text}");
+    assert!(text.contains('•'), "masked bullets rendered: {text}");
+}
+
+#[test]
+fn url_elicitation_renders_the_link_fieldlessly() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form: url_or_secret_form(Some("https://auth.example/login".into()), None),
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(
+        text.contains("https://auth.example/login"),
+        "url rendered: {text}"
+    );
+}
+
+#[test]
+fn fieldless_form_without_url_renders_confirm_hint() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    let form = url_or_secret_form(None, None);
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(text.contains("enter confirm"), "{text}");
+}
+
+#[test]
+fn welcome_needs_auth_line_in_english_and_chinese() {
+    let flat = |lines: Vec<Line>| -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = live_test_app();
+    app.auth = crate::acp_auth::needs_auth_snapshot(
+        Vec::new(),
+        None,
+        Some("token missing".into()),
+    );
+    let en = flat(welcome_info_lines(&app));
+    assert!(en.contains("sign-in needed"), "{en}");
+    assert!(en.contains("ctrl+g"), "{en}");
+    // No known method stays unspecific — never the type word (issue #160).
+    assert!(!en.contains("agent"), "{en}");
+    // A named method appears in place of the old "agent" fallback.
+    app.auth.method_name = Some("DeepSeek API key".into());
+    let named = flat(welcome_info_lines(&app));
+    assert!(named.contains("sign-in needed · DeepSeek API key"), "{named}");
+    app.locale = crate::locale::Locale::Zh;
+    let zh = flat(welcome_info_lines(&app));
+    assert!(zh.contains("需要登录"), "{zh}");
+}
+
+#[test]
+fn fielded_form_renders_the_error_line() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    let mut form = url_or_secret_form(None, Some("api-key"));
+    form.error = Some("too short".into());
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(text.contains("too short"), "{text}");
+}
+
+#[test]
+fn auth_picker_clamps_long_labels_before_the_meta_column() {
+    // pi-acp advertises ~40-char method names; they must ellipsize instead
+    // of overflowing into the type column (issue #160).
+    use crate::app::{Picker, PickerItem, PickerKind, PICKER_LABEL_COL};
+    let mut app = test_app();
+    app.show_banner = false;
+    // Theme is a kind that can mark a current entry: item `a` exercises the
+    // `✓` row (clamp to COL-3), item `b` the plain row (clamp to COL-1).
+    app.active_palette_id = "a".into();
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Theme,
+        title: " sign in ".into(),
+        sel: 0,
+        items: vec![
+            PickerItem {
+                id: "a".into(),
+                label: "Sign in with a very long provider name that overflows".into(),
+                meta: "agent".into(),
+                provider: None,
+            },
+            PickerItem {
+                id: "b".into(),
+                label: "Another long method name that also overflows here".into(),
+                meta: "agent".into(),
+                provider: None,
+            },
+        ],
+    });
+    let frame = dump_frame(&mut app, 100, 30);
+    for line in frame.lines().filter(|l| l.contains('…') && l.contains("agent")) {
+        // The picker floats inside the frame — measure the meta column
+        // relative to the row's own leading marker.
+        let start = line.find('▸').or_else(|| line.find('│')).unwrap_or(0);
+        let meta_col = line[start..]
+            .find("agent")
+            .map(|index| line[start..start + index].chars().count())
+            .expect("meta column still rendered");
+        assert!(
+            meta_col <= 2 + PICKER_LABEL_COL + 2,
+            "label overflowed the {PICKER_LABEL_COL}-char column: {line}"
+        );
+    }
+    assert!(frame.contains('…'), "long labels ellipsize:\n{frame}");
 }
