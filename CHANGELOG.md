@@ -189,7 +189,13 @@ All notable changes to this project are documented here. The project follows
   advertised method names itself, and anything else stays generic
   rather than repeating the method last signed in with. An ACP
   `logout` names the signed-out credential the same way, and the
-  credentials row no longer repeats its own label.
+  credentials row no longer repeats its own label. Signing into a
+  different account while the bound session's provider is dead now
+  completes end to end: when the agent's own credential report no
+  longer lists the session's provider, the session is rebound so the
+  agent picks a workable model, and prompts held behind sign-in ride
+  along to the replacement session instead of being refused into a
+  discard on the old provider (issue #160).
 
 
 ### Fixed

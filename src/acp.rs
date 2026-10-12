@@ -3696,6 +3696,14 @@ where
                                         bind_session(&mut sessions, &mut current, &mut pending, sid.clone());
                                         session_auth_pending = false;
                                         if let Some(previous_id) = requester {
+                                            // Held prompts on the session this
+                                            // bind replaces ride along to the
+                                            // new one (issue #160).
+                                            for prompt in parked.iter_mut() {
+                                                if prompt.session.as_deref() == Some(previous_id.as_str()) {
+                                                    prompt.session = Some(sid.to_string());
+                                                }
+                                            }
                                             let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionBoundTo {
                                                 previous_id, session_id: sid.to_string(), notice,
                                             }));
@@ -3804,6 +3812,29 @@ where
                                             providers
                                         };
                                         let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(signed_in_notice(retried, &held))));
+                                        // Switching accounts: the agent's
+                                        // credential report no longer lists
+                                        // the bound session's provider — it
+                                        // can never serve again — so rebind
+                                        // it; the agent picks the model and
+                                        // parked prompts follow the new
+                                        // session (issue #160).
+                                        let dead_provider = {
+                                            let guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                            match (guard.authenticated_providers.as_ref(), current.as_ref()) {
+                                                (Some(set), Some(cur)) => {
+                                                    let provider = guard.session(&cur.0).model_current.as_deref().map(provider_head);
+                                                    provider.is_some() && !set.iter().any(|(id, _)| Some(id.as_str()) == provider)
+                                                }
+                                                _ => false,
+                                            }
+                                        };
+                                        if let (true, Some(cur)) = (dead_provider, current.as_ref()) {
+                                            controls.enqueue(Cmd::NewSession { requester: Some(cur.0.to_string()), retry_auth: Some(method.id.clone()) },
+                                                &cx, &bus, &surface, &methods, &selected, &cwd,
+                                                load_session, resume_session, list_session,
+                                                additional_directories, &cfg.additional_directories, &control_done_tx);
+                                        }
                                     }
                                     Err(err) => {
                                         selected = Some(method.clone());
