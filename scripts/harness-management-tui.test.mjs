@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import test from 'node:test'
 import { createHarnessDiscoveryScenario } from './harness-discovery-scenario.mjs'
-import { discoverHarnessCandidates, upsertHarness } from '../npm/lib/harnesses.js'
+import { discoverHarnessCandidates, savedHarnesses, upsertHarness } from '../npm/lib/harnesses.js'
 
 test('CLI terminal removal defaults to no, handles Ctrl-C, and deletes only after yes', { skip: process.platform === 'win32' }, t => {
   const scenario = createHarnessDiscoveryScenario()
@@ -20,8 +20,13 @@ for answer, code in [('n', 0), ('interrupt', 130), ('y', 0)]:
         else: c.sendline(answer)
         c.expect(pexpect.EOF); c.close()
         assert c.exitstatus == code, (c.exitstatus, c.before)
-        with open(sys.argv[3]) as f: settings = json.load(f)
-        assert bool(settings['harnesses']) == (answer != 'y'), settings
+        # Custom definitions live in shared config.toml [[agents]] rows; a
+        # cancelled removal writes nothing, so the id still sits in whichever
+        # file last held it.
+        config_path = os.path.join(os.path.dirname(sys.argv[3]), 'config.toml')
+        stored = open(config_path).read() if os.path.exists(config_path) else ''
+        stored += open(sys.argv[3]).read()
+        assert ('fixture-initial' in stored) == (answer != 'y'), stored
     finally:
         if c.isalive(): c.close(force=True)
 `
@@ -97,7 +102,7 @@ finally:
   assert.equal(run.status, 0, `${run.error ?? ''}\n${run.stdout?.slice(-16000)}\n${run.stderr}`)
   assert.ok(!existsSync(managed.resolvedCommand ?? managed.command))
   const settings = JSON.parse(readFileSync(scenario.settingsPath))
-  assert.ok(!settings.harnesses.some(entry => entry.id === managed.id))
+  assert.ok(!savedHarnesses(scenario.settingsPath).some(entry => entry.id === managed.id))
   assert.equal(settings.defaultHarness, 'fixture-initial')
   const events = readFileSync(scenario.eventsPath, 'utf8').trim().split('\n').map(JSON.parse)
   assert.equal(events.filter(event => event.role === 'failure' && event.method === 'session/new').length, 2)

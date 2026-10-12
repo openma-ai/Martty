@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- Custom ACP agent definitions now live in `~/.oma/config.toml` `[[agents]]`
+  rows (`command_override`/`args_override`/`label_override`/`enabled`/`env`),
+  the same store Backchat uses, via `@openma/common`
+  (`acp-harnesses/custom-agents`). Existing `settings.json` `harnesses[]`
+  entries migrate into config.toml on first write and the legacy key is
+  stripped; package version pins inside `args` (e.g. `@openma/pi-acp@beta`)
+  are kept exactly as written instead of being rewritten to `@latest`.
+
 ### Fixed
 
 - The Creator overlay no longer crashes on the bundled DeepSeek Harness
