@@ -1095,6 +1095,43 @@ fn session_provider(surface: &Arc<Mutex<Surface>>, session_id: &str) -> Option<S
     guard.session(session_id).model_current.clone()
 }
 
+/// Held prompts on a session this bind replaces ride along to the new
+/// session id; entries owned by other sessions stay put (issue #160).
+fn retarget_parked(parked: &mut VecDeque<ParkedPrompt>, previous_id: &str, sid: &str) {
+    for prompt in parked.iter_mut() {
+        if prompt.session.as_deref() == Some(previous_id) {
+            prompt.session = Some(sid.to_string());
+        }
+    }
+}
+
+/// Switching accounts can leave the bound session on a credential the agent
+/// no longer reports: the provider of `current` is missing from the reported
+/// set only when the agent reports at all (issue #160).
+fn dead_provider(surface: &Arc<Mutex<Surface>>, current: &Option<SessionId>) -> bool {
+    let guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+    match (guard.authenticated_providers.as_ref(), current.as_ref()) {
+        (Some(set), Some(cur)) => {
+            let provider = guard.session(&cur.0).model_current.as_deref().map(provider_head);
+            provider.is_some() && !set.iter().any(|(id, _)| Some(id.as_str()) == provider)
+        }
+        _ => false,
+    }
+}
+
+/// A success proves its provider is credentialed — credit it into the
+/// reported set so same-provider held prompts can release (issue #160).
+fn credit_authenticated_provider(surface: &Arc<Mutex<Surface>>, provider: &str) {
+    let mut guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(set) = guard.authenticated_providers.as_mut() else {
+        return;
+    };
+    let provider = provider_head(provider).to_string();
+    if set.iter().all(|(id, _)| id != &provider) {
+        set.push((provider.clone(), provider));
+    }
+}
+
 /// Whether a parked prompt may go back on the wire. Once the agent has
 /// reported its credentialed providers (`_auth/status_update`), a held
 /// prompt releases only when the session's model provider is covered —
@@ -1633,9 +1670,6 @@ fn prompt_content_blocks(
                         Some(p) => p,
                         None => std::path::PathBuf::from(spill_image(&image, i)?),
                     };
-                    if !abs.is_absolute() {
-                        return Err(format!("cannot form file uri for {}", image.name));
-                    }
                     out.push(ContentBlock::ResourceLink(
                         ResourceLink::new(image.name.clone(), unix_file_uri(&abs))
                             .mime_type(image.media_type.clone()),
@@ -3699,11 +3733,7 @@ where
                                             // Held prompts on the session this
                                             // bind replaces ride along to the
                                             // new one (issue #160).
-                                            for prompt in parked.iter_mut() {
-                                                if prompt.session.as_deref() == Some(previous_id.as_str()) {
-                                                    prompt.session = Some(sid.to_string());
-                                                }
-                                            }
+                                            retarget_parked(&mut parked, &previous_id, &sid.0);
                                             let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionBoundTo {
                                                 previous_id, session_id: sid.to_string(), notice,
                                             }));
@@ -3819,16 +3849,7 @@ where
                                         // it; the agent picks the model and
                                         // parked prompts follow the new
                                         // session (issue #160).
-                                        let dead_provider = {
-                                            let guard = surface.lock().unwrap_or_else(|e| e.into_inner());
-                                            match (guard.authenticated_providers.as_ref(), current.as_ref()) {
-                                                (Some(set), Some(cur)) => {
-                                                    let provider = guard.session(&cur.0).model_current.as_deref().map(provider_head);
-                                                    provider.is_some() && !set.iter().any(|(id, _)| Some(id.as_str()) == provider)
-                                                }
-                                                _ => false,
-                                            }
-                                        };
+                                        let dead_provider = dead_provider(&surface, &current);
                                         if let (true, Some(cur)) = (dead_provider, current.as_ref()) {
                                             controls.enqueue(Cmd::NewSession { requester: Some(cur.0.to_string()), retry_auth: Some(method.id.clone()) },
                                                 &cx, &bus, &surface, &methods, &selected, &cwd,
@@ -4001,15 +4022,7 @@ where
                                     // status-reporting agent's held prompts
                                     // can release.
                                     if let Some(provider) = provider.as_deref() {
-                                        let mut guard = surface
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(set) = guard.authenticated_providers.as_mut() {
-                                            let provider = provider_head(provider).to_string();
-                                            if !set.iter().any(|(id, _)| id == &provider) {
-                                                set.push((provider.clone(), provider));
-                                            }
-                                        }
+                                        credit_authenticated_provider(&surface, provider);
                                     }
                                     // A success releases stalls only for
                                     // sessions on the same connection.

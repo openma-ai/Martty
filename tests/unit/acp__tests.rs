@@ -8432,3 +8432,686 @@ async fn signing_into_another_account_rebinds_the_dead_session() {
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signing_in_without_any_credential_report_does_not_rebind() {
+    // An agent that never reports its credential set leaves the guess
+    // unknowable — a sign-in must not rebind the session: the held prompt
+    // releases on the same session once the credential lands (issue #160).
+    use agent_client_protocol::schema::v1::{
+        InitializeResponse, NewSessionResponse, PromptResponse, SessionConfigOption,
+        SessionConfigSelectOption, StopReason,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let auth_methods_init = json!([
+        {"id": "api-key:deepseek", "name": "DeepSeek API key", "type": "api-key"},
+        {"id": "api-key:openrouter", "name": "OpenRouter API key", "type": "api-key"}
+    ]);
+    let refused = Arc::new(AtomicUsize::new(0));
+    let refused_once = refused.clone();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("no-report-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(serde_json::from_value::<InitializeResponse>(json!({
+                    "protocolVersion": init.protocol_version,
+                    "agentInfo": {"name": "no-report-mock", "version": "0"},
+                    "agentCapabilities": {"auth": {"logout": {}}},
+                    "authMethods": auth_methods_init
+                }))
+                .expect("init response"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_new: NewSessionRequest, responder, _cx| {
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new("s1")).config_options(vec![
+                        SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "deepseek/deepseek-v4-pro".to_string(),
+                            vec![SessionConfigSelectOption::new(
+                                "deepseek/deepseek-v4-pro",
+                                "deepseek",
+                            )],
+                        ),
+                    ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                responder.respond(serde_json::from_value(json!({})).unwrap())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |prompt: PromptRequest, responder, _cx| {
+                if refused_once.fetch_add(1, Ordering::SeqCst) == 0 {
+                    responder.respond_with_error(
+                        AcpError::new(-32000, "auth required").data(json!({
+                            "marttyConnection": {"id": "h1", "authMethods": []}
+                        })),
+                    )
+                } else {
+                    let _ = prompt_tx.send(prompt.session_id.0.to_string());
+                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut bound = false;
+    while Instant::now() < deadline && !bound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) => bound = session_id == "s1",
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(bound, "s1 bound");
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "held".into() })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut auth_open = false;
+    while Instant::now() < deadline && !auth_open {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, open, .. })) => {
+                auth_open = session_id == "s1" && open;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => auth_open = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(auth_open, "the refusal parked and opened the picker");
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:deepseek".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk".into())]),
+        })
+        .unwrap();
+    // No rebind may fire without a report: any SessionBoundTo fails.
+    let landed = tokio::time::timeout(Duration::from_secs(4), prompt_rx.recv())
+        .await
+        .expect("the held prompt completed")
+        .expect("prompt channel open");
+    assert_eq!(landed, "s1", "the held prompt ran on the same session");
+    let deadline = Instant::now() + Duration::from_millis(400);
+    let mut rebound = false;
+    while Instant::now() < deadline {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBoundTo { .. })) => rebound = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(!rebound, "no report — no rebind");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_success_credits_an_unreported_provider() {
+    // The agent's credential report lags reality: a session can succeed on
+    // a provider the report never listed. The success credits that provider
+    // into the reported set so same-provider held prompts can release
+    // (issue #160). The same drive covers the rebind retarget's
+    // non-matching arm: a parked prompt owned by another session is left
+    // alone when the current session rebinds.
+    use agent_client_protocol::schema::v1::{
+        InitializeResponse, NewSessionResponse, PromptResponse, SessionConfigOption,
+        SessionConfigSelectOption, StopReason,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let auth_methods_init = json!([
+        {"id": "api-key:deepseek", "name": "DeepSeek API key", "type": "api-key"},
+        {"id": "api-key:pistub", "name": "Pi stub API key", "type": "api-key"},
+        {"id": "api-key:openrouter", "name": "OpenRouter API key", "type": "api-key"}
+    ]);
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let sessions_created = Arc::new(AtomicUsize::new(0));
+    let sessions_new = sessions_created.clone();
+    let agent = Agent
+        .builder()
+        .name("credit-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(serde_json::from_value::<InitializeResponse>(json!({
+                    "protocolVersion": init.protocol_version,
+                    "agentInfo": {"name": "credit-mock", "version": "0"},
+                    "agentCapabilities": {"auth": {"logout": {}}},
+                    "authMethods": auth_methods_init
+                }))
+                .expect("init response"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_new: NewSessionRequest, responder, cx| {
+                // Only "pistub" is ever reported — every session provider is
+                // missing from the report.
+                let _ = cx.send_notification(UntypedMessage::new(
+                    "_auth/status_update",
+                    json!({"authStatus": {"kind": "authenticated", "label": "credentials",
+                        "providers": [{"providerId": "pistub", "name": "Pi stub", "kind": "api-key"}]}}),
+                ).expect("status update"));
+                let ordinal = sessions_new.fetch_add(1, Ordering::SeqCst);
+                let (id, model) = match ordinal {
+                    0 => ("s1", "deepseek/deepseek-v4-pro"),
+                    1 => ("s5", "deepseek/deepseek-v4-pro"),
+                    2 => ("s3", "openrouter/kimi-k2"),
+                    _ => ("s4", "openrouter/kimi-k2"),
+                };
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new(id)).config_options(vec![
+                        SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            model.to_string(),
+                            vec![
+                                SessionConfigSelectOption::new("deepseek/deepseek-v4-pro", "deepseek"),
+                                SessionConfigSelectOption::new("openrouter/kimi-k2", "kimi"),
+                            ],
+                        ),
+                    ]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, cx| {
+                // Signing in does not change what this agent reports.
+                let _ = cx.send_notification(UntypedMessage::new(
+                    "_auth/status_update",
+                    json!({"authStatus": {"kind": "authenticated", "label": "credentials",
+                        "providers": [{"providerId": "pistub", "name": "Pi stub", "kind": "api-key"}]}}),
+                ).expect("status update"));
+                responder.respond(serde_json::from_value(json!({})).unwrap())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |prompt: PromptRequest, responder, _cx| {
+                if &*prompt.session_id.0 == "s3" {
+                    responder.respond_with_error(
+                        AcpError::new(-32000, "auth required").data(json!({
+                            "marttyConnection": {"id": "h1", "authMethods": []}
+                        })),
+                    )
+                } else {
+                    // Slow the wins so a queued follow-up sits behind the
+                    // in-flight one when the next drain runs.
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let _ = prompt_tx.send(prompt.session_id.0.to_string());
+                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    let wait_bound = |bus_rx: &std::sync::mpsc::Receiver<AppEvent>, want: &str| {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            match bus_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. }))
+                | Ok(AppEvent::Ctl(CtlEvent::SessionBoundTo { session_id, .. }))
+                    if session_id == want =>
+                {
+                    return true;
+                }
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(err) => panic!("{err}"),
+            }
+        }
+        false
+    };
+    assert!(wait_bound(&bus_rx, "s1"), "s1 bound");
+    for want in ["s5", "s3"] {
+        cmd_tx
+            .send(Cmd::NewSession { requester: None, retry_auth: None })
+            .unwrap();
+        assert!(wait_bound(&bus_rx, want), "{want} bound");
+    }
+    // Two wins in flight (plus one queued behind s1) before anything parks.
+    for (session, text) in [("s1", "win a"), ("s1", "win b"), ("s5", "win c")] {
+        cmd_tx
+            .send(Cmd::Prompt { session_id: session.into(), text: text.into() })
+            .unwrap();
+    }
+    // s3's prompt is refused and parks while the wins are still running.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s3".into(), text: "hold on s3".into() })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut auth_open = false;
+    while Instant::now() < deadline && !auth_open {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionAuth { open, .. })) => auth_open = open,
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => auth_open = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(auth_open, "s3's refusal parked");
+    // The wins land while s3's prompt is held: the first success pushes
+    // deepseek into the reported set, the rest find it already there.
+    let mut landed: std::collections::BTreeMap<String, usize> = Default::default();
+    for _ in 0..2 {
+        let session = tokio::time::timeout(Duration::from_secs(5), prompt_rx.recv())
+            .await
+            .expect("a win completed")
+            .expect("prompt channel open");
+        *landed.entry(session).or_default() += 1;
+    }
+    assert_eq!(landed.get("s1"), Some(&1));
+    assert_eq!(landed.get("s5"), Some(&1));
+    // A parked prompt on s5 survives the next rebind untouched.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s5".into(), text: "hold on s5".into() })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    // The current session is s3 (openrouter); the report never lists it —
+    // sign-in rebinds it, and only s3's parked prompt rides along.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:pistub".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk".into())]),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut rebound = false;
+    while Instant::now() < deadline && !rebound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBoundTo { previous_id, session_id, .. })) => {
+                rebound = previous_id == "s3" && session_id == "s4";
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(rebound, "s3 rebound to s4");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[test]
+fn retarget_parked_moves_only_prompts_on_the_previous_session() {
+    // The non-matching arm: a parked prompt owned by another session (or by
+    // no session) is left alone when the current session rebinds (#160).
+    let mut parked: VecDeque<ParkedPrompt> = VecDeque::from([
+        ParkedPrompt { session: Some("s3".into()), kind: ParkedPromptKind::Text("a".into()) },
+        ParkedPrompt { session: Some("s5".into()), kind: ParkedPromptKind::Text("b".into()) },
+        ParkedPrompt { session: None, kind: ParkedPromptKind::Text("c".into()) },
+    ]);
+    retarget_parked(&mut parked, "s3", "s4");
+    let sessions: Vec<Option<String>> = parked.iter().map(|p| p.session.clone()).collect();
+    assert_eq!(sessions, vec![Some("s4".to_string()), Some("s5".to_string()), None]);
+}
+
+#[test]
+fn dead_provider_only_fires_when_the_reported_set_drops_the_bound_provider() {
+    // No report: nothing is provable, never rebind.
+    let surface = Arc::new(Mutex::new(Surface::default()));
+    let doomed = surface.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _hold = doomed.lock().unwrap();
+        panic!("poison the surface lock on purpose");
+    }));
+    assert!(!dead_provider(&surface, &None));
+    assert!(!dead_provider(&surface, &Some(SessionId::new("s1"))));
+    // A report with no bound session: still nothing to rebind.
+    {
+        let mut guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+        guard.authenticated_providers = Some(vec![("pistub".into(), "Pi stub".into())]);
+    }
+    assert!(!dead_provider(&surface, &None));
+    // Bound session on a still-reported provider: no rebind.
+    {
+        let mut guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+        guard.sessions.insert("s1".into(), SessionSurface {
+            model_current: Some("pistub/glm".into()), ..Default::default()
+        });
+        guard.sessions.insert("s3".into(), SessionSurface {
+            model_current: Some("openrouter/kimi".into()), ..Default::default()
+        });
+        guard.sessions.insert("s9".into(), SessionSurface::default());
+    }
+    assert!(!dead_provider(&surface, &Some(SessionId::new("s1"))));
+    // Provider absent from the report: the credential is dead — rebind.
+    assert!(dead_provider(&surface, &Some(SessionId::new("s3"))));
+    // A bound session that never named a provider can't be proven dead.
+    assert!(!dead_provider(&surface, &Some(SessionId::new("s9"))));
+}
+
+#[test]
+fn credit_authenticated_provider_marks_only_unseen_providers() {
+    let surface = Arc::new(Mutex::new(Surface::default()));
+    // Poison the lock on purpose: the helper must recover rather than crash.
+    let doomed = surface.clone();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _hold = doomed.lock().unwrap();
+        panic!("poison the surface lock on purpose");
+    }));
+    // No reported set yet: nothing to credit into.
+    credit_authenticated_provider(&surface, "deepseek/deepseek-v4-pro");
+    assert!(surface.lock().unwrap_or_else(|e| e.into_inner())
+        .authenticated_providers.is_none());
+    // A report exists: an unseen provider is credited once, then skipped.
+    {
+        let mut guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+        guard.authenticated_providers = Some(vec![("pistub".into(), "Pi stub".into())]);
+    }
+    credit_authenticated_provider(&surface, "deepseek/deepseek-v4-pro");
+    credit_authenticated_provider(&surface, "deepseek/other-model");
+    let set = surface.lock().unwrap_or_else(|e| e.into_inner())
+        .authenticated_providers.clone().unwrap();
+    assert_eq!(set.len(), 2);
+    assert_eq!(set[1].0, "deepseek");
+}
+
+#[test]
+fn ensure_agent_cordis_gates_on_the_advertised_protocol() {
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let surface = Arc::new(Mutex::new(Surface::default()));
+    {
+        let mut guard = surface.lock().unwrap();
+        guard.active_session = Some("s1".into());
+        guard.sessions.insert("s1".into(), SessionSurface {
+            connection: Some(json!({"agentCapabilities":
+                {"_meta": {"dsh": {"cordis": {"protocol": crate::cordis::PROTOCOL}}}}})),
+            ..Default::default()
+        });
+    }
+    assert!(ensure_agent_cordis(&surface, &bus_tx), "cordis advertised");
+    {
+        let mut guard = surface.lock().unwrap();
+        guard.sessions.insert("s1".into(), SessionSurface {
+            connection: Some(json!({"agentCapabilities": {}})),
+            ..Default::default()
+        });
+    }
+    assert!(!ensure_agent_cordis(&surface, &bus_tx), "cordis not advertised");
+    let failed = bus_rx
+        .try_iter()
+        .any(|event| matches!(event, AppEvent::Ctl(CtlEvent::TuiOpFailed(_))));
+    assert!(failed, "a refusal surfaces instead of hanging");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edge_paths_combined() {
+    // One drive for the small uncovered edges inside `connect`: the
+    // session/update configOptions arm, a steer that resolves to no session,
+    // an interrupted turn that finishes with an error, and the static-plugin
+    // extension call (#160 sweep).
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, InitializeResponse, NewSessionResponse, PromptResponse,
+        SetSessionConfigOptionRequest, StopReason,
+    };
+    use std::time::{Duration, Instant};
+
+    // `AtomicUsize` (not thread_local): the agent handlers run on whichever
+    // tokio worker picks up the request.
+    let session_new_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let session_new_seen = std::sync::Arc::clone(&session_new_count);
+    let agent = Agent
+        .builder()
+        .name("edge-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(serde_json::from_value::<InitializeResponse>(json!({
+                    "protocolVersion": init.protocol_version,
+                    "agentInfo": {"name": "edge-mock", "version": "0"},
+                    "agentCapabilities": {
+                        "auth": {"logout": {}},
+                        "_meta": {"dsh": {"cordis": {"protocol": crate::cordis::PROTOCOL}}}
+                    },
+                    "authMethods": [
+                        {"id": "api-key:deepseek", "name": "DeepSeek API key", "type": "api-key"}
+                    ]
+                }))
+                .expect("init response"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                responder.respond(serde_json::from_value(json!({})).unwrap())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_new: NewSessionRequest, responder, cx| {
+                // The first session/new refuses auth: prompts park on the
+                // auth gate and a session-named steer resolves to nothing.
+                if session_new_seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    return responder.respond_with_error(
+                        AcpError::new(-32000, "auth required").data(json!({
+                            "marttyConnection": {"id": "h1", "authMethods": []}
+                        })),
+                    );
+                }
+                // configOptions lands on the bound session; an
+                // availableCommands update with the snake_case session key
+                // covers the skills arm + the session_id fallback.
+                let _ = cx.send_notification(UntypedMessage::new(
+                    "session/update",
+                    json!({"sessionId": "s1", "update": {
+                        "sessionUpdate": "config_option_update",
+                        "configOptions": [{"id": "model",
+                            "currentValue": "openrouter/kimi-k2"}]}}),
+                ).expect("session/update notification"));
+                let _ = cx.send_notification(UntypedMessage::new(
+                    "session/update",
+                    json!({"session_id": "s1", "update": {
+                        "sessionUpdate": "available_commands_update",
+                        "availableCommands": [{"name": "go",
+                            "description": "go somewhere"}]}}),
+                ).expect("available_commands notification"));
+                // A status_update with mixed key spellings covers the
+                // provider_id / missing-name fallbacks and the arm's return.
+                let _ = cx.send_notification(UntypedMessage::new(
+                    "_auth/status_update",
+                    json!({"authStatus": {"providers": [
+                        {"providerId": "deepseek"},
+                        {"provider_id": "openrouter", "name": "OpenRouter"}]}}),
+                ).expect("status_update notification"));
+                let cx_config = cx;
+                tokio::spawn(async move {
+                    let _ = cx_config
+                        .send_request(UntypedMessage::new(
+                            crate::cordis::SESSION_CONFIG_SET,
+                            json!({"protocol": crate::cordis::PROTOCOL,
+                                "sessionId": "s1", "configId": "model",
+                                "value": "openrouter/kimi-k2"}),
+                        ).expect("session-config/set request"))
+                        .block_task()
+                        .await;
+                });
+                responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_prompt: PromptRequest, responder, _cx| {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                responder.respond_with_error(AcpError::new(-32603, "turn blew up"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: SetSessionConfigOptionRequest, responder, _cx| {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                responder.respond_with_error(AcpError::new(-32603, "config refused"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: UntypedMessage, responder, _cx| {
+                if request.method() == crate::cordis::STATIC_PLUGINS_LIST {
+                    responder.respond(json!({ "entries": [] }))
+                } else {
+                    responder.respond(json!({}))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // A prompt sent while the startup session/new refuses auth parks on the
+    // auth gate; a steer naming a session while `sessions` is still empty
+    // then reaches the resolver and defers, not errors.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: String::new(), text: "early".into() })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    cmd_tx
+        .send(Cmd::SteerImages { session_id: "ghost".into(), message_id: 7, blocks: Vec::new() })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut deferred = false;
+    while Instant::now() < deadline && !deferred {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SteerSettled { message_id: 7, deferred: true })) => {
+                deferred = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(deferred, "a pre-session steer defers");
+
+    // session/update carrying configOptions lands on the bound session.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:deepseek".into(),
+            values: std::collections::BTreeMap::from([("api-key".into(), "sk".into())]),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut bound = false;
+    while Instant::now() < deadline && !bound {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) => {
+                bound = session_id == "s1";
+            }
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(m))) => eprintln!("EV fail {m}"),
+            Ok(AppEvent::Ctl(CtlEvent::Error(m))) => eprintln!("EV err {m}"),
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(bound, "s1 bound");
+
+    // PromptImages arriving while a config operation holds the lane queue
+    // instead of dispatching (the `controls.busy` arm of the inflight check).
+    cmd_tx
+        .send(Cmd::SetConfigOption {
+            session_id: "s1".into(),
+            config_id: "model".into(),
+            value: "x".into(),
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(80));
+    cmd_tx
+        .send(Cmd::PromptImages { session_id: "s1".into(), blocks: Vec::new() })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut op_failed = false;
+    while Instant::now() < deadline && !op_failed {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionOpFailed { .. })) => op_failed = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(op_failed, "the refused config change surfaced");
+
+    // An interrupted turn that then fails reports the interruption.
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "boom".into() })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    cmd_tx
+        .send(Cmd::Interrupt { session_id: "s1".into() })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut interrupted = false;
+    while Instant::now() < deadline && !interrupted {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Interrupted { session_id })) => {
+                interrupted = session_id == "s1";
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(interrupted, "the interrupted turn surfaced");
+
+    // The static-plugin extension call round-trips.
+    cmd_tx.send(Cmd::FetchStaticPlugins).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut listed = false;
+    while Instant::now() < deadline && !listed {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::StaticPlugins { .. })) => listed = true,
+            Ok(AppEvent::Ctl(CtlEvent::TuiOpFailed(m))) => eprintln!("EV fail {m}"),
+            Ok(AppEvent::Ctl(CtlEvent::Error(m))) => eprintln!("EV err {m}"),
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(listed, "static plugins returned");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
