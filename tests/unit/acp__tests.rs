@@ -7771,3 +7771,479 @@ async fn held_prompt_waits_for_the_sessions_own_credential() {
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;
 }
+
+/// Without a bound session on the parked prompt, the release gate reads
+/// the current session's provider; no resolvable provider stays
+/// optimistic (issue #160).
+#[test]
+fn release_ready_uses_the_current_sessions_provider_for_anonymous_parks() {
+    let mut surface = Surface::default();
+    surface.authenticated_providers =
+        Some(vec![("openrouter".to_string(), "OpenRouter".to_string())]);
+    let current = Some(SessionId::new("s1"));
+    surface.session_mut(Some("s1")).model_current = Some("deepseek/deepseek-v4-pro".into());
+    assert!(
+        !release_ready(&surface, None, &current),
+        "anonymous park on an uncovered provider stays held"
+    );
+    surface.session_mut(Some("s1")).model_current = Some("openrouter/kimi-k2".into());
+    assert!(release_ready(&surface, None, &current), "covered provider releases");
+    assert!(
+        release_ready(&surface, None, &None),
+        "no session at all releases optimistically"
+    );
+    surface.authenticated_providers = None;
+    assert!(
+        release_ready(&surface, Some("s1"), &current),
+        "a non-reporting agent releases optimistically"
+    );
+}
+
+/// A prompt success credits its provider so prompts parked on it can
+/// release before the agent's next status update lands; a status update
+/// with no `providers` list is ignored; a logout with nothing left falls
+/// back to the re-pick message (issue #160).
+/// On an agent that never reports its credential set, success still
+/// releases stalls optimistically — the seed block degrades cleanly
+/// when there is no provider set or no session provider (issue #160).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_success_without_a_reported_credential_set_stays_optimistic() {
+    use agent_client_protocol::schema::v1::{
+        InitializeResponse, NewSessionResponse, PromptResponse, SessionConfigOption,
+        SessionConfigSelectOption, StopReason,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let auth_methods_init = json!([
+        {"id": "api-key:deepseek", "name": "DeepSeek API key", "type": "api-key"},
+        {"id": "legacy", "type": "api-key"}
+    ]);
+    let sessions_created = Arc::new(AtomicUsize::new(0));
+    let sessions_new = sessions_created.clone();
+    let s2_refused = Arc::new(AtomicUsize::new(0));
+    let s2_once = s2_refused.clone();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("no-report-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(serde_json::from_value::<InitializeResponse>(json!({
+                    "protocolVersion": init.protocol_version,
+                    "agentInfo": {"name": "no-report-mock", "version": "0"},
+                    "agentCapabilities": {"auth": {"logout": {}}},
+                    "authMethods": auth_methods_init
+                }))
+                .expect("init response"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_new: NewSessionRequest, responder, _cx| {
+                let ordinal = sessions_new.fetch_add(1, Ordering::SeqCst);
+                match ordinal {
+                    // The connect-time prompt session is ordinal 0.
+                    1 => responder.respond(NewSessionResponse::new(SessionId::new("s1"))
+                        .config_options(vec![SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "openrouter/kimi-k2",
+                            vec![SessionConfigSelectOption::new("openrouter/kimi-k2", "kimi")],
+                        )])),
+                    2 => responder.respond(NewSessionResponse::new(SessionId::new("s2"))
+                        .config_options(vec![SessionConfigOption::select(
+                            "model",
+                            "Model",
+                            "deepseek/deepseek-v4-pro",
+                            vec![SessionConfigSelectOption::new("deepseek/deepseek-v4-pro", "ds")],
+                        )])),
+                    3 => responder.respond(NewSessionResponse::new(SessionId::new("s3"))),
+                    4 => responder.respond_with_error(AcpError::new(-32603, "boom")
+                        .data(json!({"marttyConnection": {"id": "h1", "authMethods": []}}))),
+                    5 => responder.respond_with_error(AcpError::new(-32000, "auth required")
+                        .data(json!({"marttyConnection": {"id": "h1", "authMethods": []}}))),
+                    6 => responder.respond_with_error(AcpError::new(-32603, "boom no data")),
+                    _ => responder.respond_with_error(AcpError::new(-32000, "auth required no data")),
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, _cx| {
+                responder.respond(serde_json::from_value(json!({})).unwrap())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |prompt: PromptRequest, responder, _cx| {
+                if &*prompt.session_id.0 == "s2"
+                    && s2_once.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    responder.respond_with_error(
+                        AcpError::new(-32000, "auth required").data(json!({
+                            "marttyConnection": {"id": "h1", "authMethods": []}
+                        })),
+                    )
+                } else {
+                    // Hold successes long enough for s2's refusal to park.
+                    tokio::time::sleep(Duration::from_millis(2500)).await;
+                    let _ = prompt_tx.send(());
+                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // Each NewSession waits for its own bind — the runner serializes
+    // session creation.
+    for want in 1..=3usize {
+        cmd_tx
+            .send(Cmd::NewSession { requester: None, retry_auth: None })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(Instant::now() < deadline, "session #{want} bound");
+            match bus_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(AppEvent::Ctl(CtlEvent::SessionBound { .. }))
+                | Ok(AppEvent::Ctl(CtlEvent::SessionBoundTo { .. })) => break,
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(err) => panic!("{err}"),
+            }
+        }
+    }
+
+
+    // session/new refusals reach the requester: a plain failure emits
+    // the connection snapshot without an auth turn, an auth-shaped one
+    // re-opens the picker for that session.
+    for want in ["boom", "auth required", "boom no data", "auth required no data"] {
+        cmd_tx
+            .send(Cmd::NewSession { requester: Some("s2".into()), retry_auth: None })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut failed = false;
+        while Instant::now() < deadline && !failed {
+            match bus_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(AppEvent::Ctl(CtlEvent::BindFailedTo { previous_id, message })) => {
+                    failed = previous_id == "s2" && message.contains(want);
+                }
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(err) => panic!("{err}"),
+            }
+        }
+        assert!(failed, "requester sees the {want} refusal");
+    }
+
+    // s3 (no model, so no provider) goes in flight first; s2's refusal
+    // parks while it is in flight. s1's finish lands with a held prompt
+    // and no reported credential set — the optimistic path (no set to
+    // seed) stays intact.
+    for sid in ["s3", "s1", "s2"] {
+        cmd_tx
+            .send(Cmd::Prompt {
+                session_id: sid.into(),
+                text: format!("{sid} prompt"),
+            })
+            .unwrap();
+    }
+    // Confirm s2's refusal actually parked before the successes land —
+    // the refusal re-opens the picker for its session.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut auth_open = false;
+    while Instant::now() < deadline && !auth_open {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionAuth { session_id, open, .. })) => {
+                auth_open = session_id == "s2" && open;
+            }
+            Ok(AppEvent::Ctl(CtlEvent::OpenAuth)) => auth_open = true,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(auth_open, "s2's refusal parked and re-opened the picker");
+    tokio::time::timeout(Duration::from_secs(4), prompt_rx.recv())
+        .await
+        .expect("a prompt completed")
+        .expect("prompt channel open");
+    tokio::time::timeout(Duration::from_secs(4), prompt_rx.recv())
+        .await
+        .expect("a second prompt completed")
+        .expect("prompt channel open");
+
+    // A bare authenticate on a non-reporting agent resolves the same
+    // way — the credential-set bookkeeping stays absent.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:deepseek".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk".into())]),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "legacy".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk".into())]),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_success_credits_its_provider_while_others_wait() {
+    use agent_client_protocol::schema::v1::{
+        InitializeResponse, NewSessionResponse, PromptResponse, SessionConfigOption,
+        SessionConfigSelectOption, SetSessionConfigOptionResponse, StopReason,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn status_update(providers: &[(&str, &str)]) -> UntypedMessage {
+        UntypedMessage::new(
+            "_auth/status_update",
+            json!({"authStatus": {
+                "kind": "authenticated", "label": "credentials",
+                "providers": providers.iter().map(|(id, name)| {
+                    json!({"providerId": id, "name": name, "kind": "api-key"})
+                }).collect::<Vec<_>>()
+            }}),
+        )
+        .expect("status update")
+    }
+    fn model_option(current: &str) -> SessionConfigOption {
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            current.to_string(),
+            vec![
+                SessionConfigSelectOption::new("deepseek/deepseek-v4-pro", "deepseek"),
+                SessionConfigSelectOption::new("openrouter/kimi-k2", "kimi"),
+            ],
+        )
+    }
+
+    let auth_methods_init = json!([
+        {"id": "api-key:deepseek", "name": "DeepSeek API key", "type": "api-key"},
+        {"id": "api-key:openrouter", "name": "OpenRouter API key", "type": "api-key"},
+        {"id": "legacy", "name": "Legacy key", "type": "api-key"}
+    ]);
+    let sessions_created = Arc::new(AtomicUsize::new(0));
+    let sessions_new = sessions_created.clone();
+    let s2_refused = Arc::new(AtomicUsize::new(0));
+    let s2_once = s2_refused.clone();
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent
+        .builder()
+        .name("seed-provider-mock")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(serde_json::from_value::<InitializeResponse>(json!({
+                    "protocolVersion": init.protocol_version,
+                    "agentInfo": {"name": "seed-provider-mock", "version": "0"},
+                    "agentCapabilities": {"auth": {"logout": {}}},
+                    "authMethods": auth_methods_init
+                }))
+                .expect("init response"))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_new: NewSessionRequest, responder, cx| {
+                let _ = cx.send_notification(UntypedMessage::new(
+                    "_auth/status_update",
+                    json!({"authStatus": {"kind": "none", "label": "Not logged in"}}),
+                ).expect("empty status update"));
+                let _ = cx.send_notification(status_update(&[("pistub", "Pi stub")]));
+                let ordinal = sessions_new.fetch_add(1, Ordering::SeqCst);
+                let (id, model) = if ordinal == 0 {
+                    ("s1", "openrouter/kimi-k2")
+                } else {
+                    ("s2", "deepseek/deepseek-v4-pro")
+                };
+                responder.respond(
+                    NewSessionResponse::new(SessionId::new(id))
+                        .config_options(vec![model_option(model)]),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: AuthenticateRequest, responder, cx| {
+                let _ = cx.send_notification(status_update(&[("pistub", "Pi stub")]));
+                responder.respond(serde_json::from_value(json!({})).unwrap())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: LogoutRequest, responder, cx| {
+                let _ = cx.send_notification(status_update(&[]));
+                responder.respond(serde_json::from_value(json!({})).unwrap())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: SetSessionConfigOptionRequest, responder, _cx| {
+                responder.respond(SetSessionConfigOptionResponse::new(vec![
+                    model_option("openrouter/kimi-k2"),
+                ]))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |prompt: PromptRequest, responder, _cx| {
+                if &*prompt.session_id.0 == "s2"
+                    && s2_once.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    responder.respond_with_error(
+                        AcpError::new(-32000, "auth required").data(json!({
+                            "marttyConnection": {"id": "h1", "authMethods": []}
+                        })),
+                    )
+                } else {
+                    // Let the s2 refusal park first so this success lands
+                    // with a held prompt still waiting.
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    let _ = prompt_tx.send(());
+                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                }
+            },
+            on_receive_request!(),
+        );
+    let cfg = RuntimeConfig {
+        bin: "demo".into(), cordis: "demo".into(), workspace: "/tmp".into(),
+        session_root: "/tmp".into(), provider: "deepseek-official".into(),
+        model: "deepseek-flash".into(), max_tokens: None, base_url: None,
+        api_key: None, additional_directories: Vec::new(),
+    };
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+
+    // s1 binds on openrouter; s2 binds on deepseek.
+    cmd_tx
+        .send(Cmd::NewSession { requester: None, retry_auth: None })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut bound = std::collections::BTreeSet::new();
+    while Instant::now() < deadline && bound.len() < 2 {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::SessionBound { session_id, .. })) => {
+                bound.insert(session_id);
+                if bound.len() == 1 {
+                    cmd_tx
+                        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None })
+                        .unwrap();
+                }
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert_eq!(bound.len(), 2, "both sessions bound");
+
+    // s1's prompt goes in flight first; s2's is refused behind it and
+    // parks. When s1's finish lands, s2's entry is still parked — the
+    // success credits s1's provider on the spot so held prompts can
+    // release on it later without waiting for the next status update
+    // (issue #160).
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s1".into(), text: "s1 prompt".into() })
+        .unwrap();
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s2".into(), text: "s2 prompt".into() })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), prompt_rx.recv())
+        .await
+        .expect("s1 prompt completed")
+        .expect("prompt channel open");
+
+    // Authenticating a method with no provider id leaves the set alone.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "legacy".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk-lg".into())]),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Re-signing in to an already-credited provider is a no-op seed;
+    // signing in to the held prompt's provider releases it directly.
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:openrouter".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk-or".into())]),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    cmd_tx
+        .send(Cmd::Authenticate {
+            method_id: "api-key:deepseek".into(),
+            values: std::collections::BTreeMap::from([("key".into(), "sk-ds".into())]),
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), prompt_rx.recv())
+        .await
+        .expect("s2 released on its own credential")
+        .expect("prompt channel open");
+
+    // A prompt on a session whose control op is in flight joins its
+    // queue rather than jumping the wire.
+    cmd_tx
+        .send(Cmd::SelectModel {
+            session_id: "s2".into(),
+            provider: None,
+            model: Some("openrouter/kimi-k2".into()),
+            effort: None,
+        })
+        .unwrap();
+    cmd_tx
+        .send(Cmd::Prompt { session_id: "s2".into(), text: "busy-queued".into() })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), prompt_rx.recv())
+        .await
+        .expect("queued prompt sent after the control op")
+        .expect("prompt channel open");
+
+    // A logout that leaves nothing credentialed asks for a method again.
+    cmd_tx.send(Cmd::Logout).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut re_pick = false;
+    while Instant::now() < deadline && !re_pick {
+        match bus_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppEvent::Ctl(CtlEvent::Auth(snapshot)))
+                if snapshot
+                    .message
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("pick a method") =>
+            {
+                re_pick = true;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("{err}"),
+        }
+    }
+    assert!(re_pick, "empty credential set asks for a method again");
+
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}

@@ -2230,9 +2230,10 @@ where
                                 .collect()
                         });
                     if let Some(providers) = providers {
-                        if let Ok(mut surface) = surface_u.lock() {
-                            surface.authenticated_providers = Some(providers);
-                        }
+                        surface_u
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .authenticated_providers = Some(providers);
                     }
                     return Ok(Handled::Yes);
                 }
@@ -3773,7 +3774,10 @@ where
                                         // the update yet — credit the method that just
                                         // signed in so prompts parked on its provider
                                         // can release.
-                                        if let Ok(mut guard) = surface.lock() {
+                                        {
+                                            let mut guard = surface
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner());
                                             if let (Some(set), Some(provider)) = (
                                                 guard.authenticated_providers.as_mut(),
                                                 method_provider_id(&method).map(str::to_string),
@@ -3965,7 +3969,10 @@ where
                                     // credentialed — credit it so a
                                     // status-reporting agent's held prompts
                                     // can release.
-                                    if let (Ok(mut guard), Some(provider)) = (surface.lock(), provider.as_deref()) {
+                                    if let Some(provider) = provider.as_deref() {
+                                        let mut guard = surface
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
                                         if let Some(set) = guard.authenticated_providers.as_mut() {
                                             let provider = provider_head(provider).to_string();
                                             if !set.iter().any(|(id, _)| id == &provider) {
