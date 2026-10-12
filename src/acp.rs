@@ -100,6 +100,10 @@ struct Surface {
     cordis: bool,
     /// How this agent takes a message into its active turn (Send Now).
     steer_route: SteerRoute,
+    /// Providers the agent reports as credentialed via `_auth/status_update`
+    /// (`providerId`, display name). `None` until the agent first reports —
+    /// releases stay optimistic for agents that never send it (issue #160).
+    authenticated_providers: Option<Vec<(String, String)>>,
 }
 
 impl Surface {
@@ -716,20 +720,26 @@ fn requeue_connection_prompts(
         owner.is_none() || prompt.session.as_deref()
             .is_some_and(|id| connection_id(surface, id).as_deref() == owner)
     });
-    let retried = requeue_parked_prompts(sessions, current, &mut ready);
+    let retried = requeue_parked_prompts(sessions, current, &mut ready, surface);
     *parked = waiting;
     parked.extend(ready);
     retried
 }
 
-/// The authenticate success line: a bare `signed in`, or the count of
-/// prompts the sign-in just released (issue #160).
-fn signed_in_notice(retried: usize) -> String {
-    if retried > 0 {
+/// The authenticate success line: a bare `signed in`, the count of
+/// prompts the sign-in just released, and — when the sign-in covered a
+/// different account — the providers held prompts still wait for
+/// (issue #160).
+fn signed_in_notice(retried: usize, held: &[String]) -> String {
+    let mut line = if retried > 0 {
         format!("signed in — retried {retried} parked prompt{s}", s = if retried == 1 { "" } else { "s" })
     } else {
         "signed in".into()
+    };
+    if !held.is_empty() {
+        line += &format!(" · held prompt still waits for {}", held.join(", "));
     }
+    line
 }
 
 fn emit_method_auth(bus: &Sender<AppEvent>, surface: &Arc<Mutex<Surface>>, snapshot: AuthSnapshot) {
@@ -760,10 +770,24 @@ fn drain_ready_sessions(
     bus: &Sender<AppEvent>,
     parked: &mut VecDeque<ParkedPrompt>,
     surface: &Arc<Mutex<Surface>>,
+    current: &Option<SessionId>,
     workspace: &str,
     next_gen: &mut u64,
     done: &tokio::sync::mpsc::UnboundedSender<PromptFinish>,
 ) {
+    // A provider that became credentialed since the prompt parked (a
+    // later sign-in on another account, or a model switch onto a signed-in
+    // provider) releases its stall without an explicit retry. Only agents
+    // that report credentialed providers (`_auth/status_update`) can prove
+    // that — for the rest, releases stay driven by sign-in/success exactly
+    // as before (issue #160).
+    let reports_providers = surface
+        .lock()
+        .map(|guard| guard.authenticated_providers.is_some())
+        .unwrap_or(false);
+    if reports_providers && !parked.is_empty() {
+        requeue_parked_prompts(sessions, current, parked, surface);
+    }
     // A credential stall applies only to sessions owned by that connection.
     let keys: Vec<String> = sessions.keys().cloned().collect();
     for key in keys {
@@ -804,10 +828,18 @@ fn requeue_parked_prompts(
     sessions: &mut HashMap<String, SessionHandle>,
     current: &Option<SessionId>,
     parked: &mut VecDeque<ParkedPrompt>,
+    surface: &Arc<Mutex<Surface>>,
 ) -> usize {
     let mut retried = 0;
     let mut still_parked: VecDeque<ParkedPrompt> = VecDeque::new();
     while let Some(p) = parked.pop_front() {
+        {
+            let guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+            if !release_ready(&guard, p.session.as_deref(), current) {
+                still_parked.push_back(p);
+                continue;
+            }
+        }
         let target = match p.session {
             Some(sid) if sessions.contains_key(&sid) => Some(sid),
             Some(_) => None, // closed while stalled — drop
@@ -1061,6 +1093,32 @@ fn name_needs_auth(
 fn session_provider(surface: &Arc<Mutex<Surface>>, session_id: &str) -> Option<String> {
     let guard = surface.lock().unwrap_or_else(|e| e.into_inner());
     guard.session(session_id).model_current.clone()
+}
+
+/// Whether a parked prompt may go back on the wire. Once the agent has
+/// reported its credentialed providers (`_auth/status_update`), a held
+/// prompt releases only when the session's model provider is covered —
+/// signing into a different account must not burn it on a refusal that
+/// cannot succeed (issue #160). Without a report — or a session naming no
+/// provider — the release stays optimistic, as before.
+fn release_ready(
+    surface: &Surface,
+    session_id: Option<&str>,
+    current: &Option<SessionId>,
+) -> bool {
+    let Some(set) = &surface.authenticated_providers else {
+        return true;
+    };
+    let provider = match session_id {
+        Some(id) => surface.session(id).model_current.as_deref().map(provider_head),
+        None => current
+            .as_ref()
+            .and_then(|id| surface.session(&id.0).model_current.as_deref().map(provider_head)),
+    };
+    match provider {
+        Some(provider) => set.iter().any(|(id, _)| id == provider),
+        None => true,
+    }
 }
 
 /// The provider whose credential is in play: the session's current model
@@ -2148,6 +2206,36 @@ where
         )
         .on_receive_notification(
             async move |msg: UntypedMessage, cx| {
+                // `_auth/status_update` reports the agent's credentialed
+                // providers — the credential truth the held-prompt gate and
+                // the post-logout notice read (issue #160).
+                if msg.method() == "_auth/status_update" {
+                    let providers = msg
+                        .params()
+                        .pointer("/authStatus/providers")
+                        .and_then(Value::as_array)
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(|entry| {
+                                    let id = entry
+                                        .get("providerId")
+                                        .or_else(|| entry.get("provider_id"))
+                                        .and_then(Value::as_str)?;
+                                    let name = entry
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or(id);
+                                    Some((id.to_string(), name.to_string()))
+                                })
+                                .collect()
+                        });
+                    if let Some(providers) = providers {
+                        if let Ok(mut surface) = surface_u.lock() {
+                            surface.authenticated_providers = Some(providers);
+                        }
+                    }
+                    return Ok(Handled::Yes);
+                }
                 if matches!(
                     msg.method(),
                     crate::cordis::THEME_UPDATE
@@ -3582,6 +3670,7 @@ where
                                 &bus,
                                 &mut parked,
                                 &surface,
+                                &current,
                                 &cfg.workspace,
                                 &mut prompt_gen,
                                 &prompt_done_tx,
@@ -3680,8 +3769,37 @@ where
                                                 session_connection_snapshot(connection).auth.methods.iter().any(|known| known.id == method.id))
                                                 .and_then(|connection| connection.get("id")).and_then(Value::as_str).map(str::to_string)
                                         };
+                                        // A status-reporting agent may not have emitted
+                                        // the update yet — credit the method that just
+                                        // signed in so prompts parked on its provider
+                                        // can release.
+                                        if let Ok(mut guard) = surface.lock() {
+                                            if let (Some(set), Some(provider)) = (
+                                                guard.authenticated_providers.as_mut(),
+                                                method_provider_id(&method).map(str::to_string),
+                                            ) {
+                                                if !set.iter().any(|(id, _)| id == &provider) {
+                                                    set.push((provider, method.name.clone().unwrap_or_else(|| method.id.clone())));
+                                                }
+                                            }
+                                        }
                                         let retried = requeue_connection_prompts(&mut sessions, &current, &mut parked, &surface, owner.as_deref());
-                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(signed_in_notice(retried))));
+                                        // Prompts parked on a provider this sign-in did
+                                        // not cover stay held — they wait for the
+                                        // session's own credential (issue #160).
+                                        let held: Vec<String> = {
+                                            let guard = surface.lock().unwrap_or_else(|e| e.into_inner());
+                                            let mut providers: Vec<String> = parked.iter()
+                                                .filter(|prompt| !release_ready(&guard, prompt.session.as_deref(), &current))
+                                                .filter_map(|prompt| prompt.session.as_deref()
+                                                    .and_then(|id| guard.session(id).model_current.as_deref())
+                                                    .map(provider_head).map(str::to_string))
+                                                .collect();
+                                            providers.sort();
+                                            providers.dedup();
+                                            providers
+                                        };
+                                        let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpDone(signed_in_notice(retried, &held))));
                                     }
                                     Err(err) => {
                                         selected = Some(method.clone());
@@ -3703,6 +3821,25 @@ where
                                             method_provider_id(method)
                                                 == scoped.map(String::as_str)
                                         });
+                                        // A scoped logout can leave other
+                                        // credentials active — name the ones
+                                        // the agent reports still signed in.
+                                        let remaining: Vec<String> = surface.lock()
+                                            .map(|guard| {
+                                                guard
+                                                    .authenticated_providers
+                                                    .as_deref()
+                                                    .unwrap_or(&[])
+                                                    .iter()
+                                                    .map(|(_, name)| name.clone())
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+                                        let message = if remaining.is_empty() {
+                                            "signed out — pick a method to sign in again".to_string()
+                                        } else {
+                                            format!("signed out — still signed in: {}", remaining.join(", "))
+                                        };
                                         emit_method_auth(&bus, &surface, needs_auth_snapshot(
                                             methods.clone(),
                                             // The sign-in disambiguates
@@ -3713,7 +3850,7 @@ where
                                                 .or_else(|| scoped
                                                     .and_then(|p| method_for_provider(&methods, p)))
                                                 .or_else(|| sole_method(&methods)),
-                                            Some("signed out — pick a method to sign in again".into()),
+                                            Some(message),
                                         ));
                                         // The picker reopens so the user can
                                         // switch to another method/account.
@@ -3730,7 +3867,7 @@ where
                             // This arm is select-guarded on `active_plugin_operation`
                             // being none, so draining is unconditional here.
                             drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
-                                &surface, &cfg.workspace, &mut prompt_gen, &prompt_done_tx);
+                                &surface, &current, &cfg.workspace, &mut prompt_gen, &prompt_done_tx);
                         }
                         steer = steer_done_rx.recv() => {
                             if let Some(SteerFinish { session_id, message_id, deferred }) = steer {
@@ -3764,6 +3901,7 @@ where
                                 &bus,
                                 &mut parked,
                                 &surface,
+                                &current,
                                 &cfg.workspace,
                                 &mut prompt_gen,
                                 &prompt_done_tx,
@@ -3823,6 +3961,18 @@ where
                                     provider.as_deref(),
                                 );
                                 if ok && !parked.is_empty() {
+                                    // A success proves its provider is
+                                    // credentialed — credit it so a
+                                    // status-reporting agent's held prompts
+                                    // can release.
+                                    if let (Ok(mut guard), Some(provider)) = (surface.lock(), provider.as_deref()) {
+                                        if let Some(set) = guard.authenticated_providers.as_mut() {
+                                            let provider = provider_head(provider).to_string();
+                                            if !set.iter().any(|(id, _)| id == &provider) {
+                                                set.push((provider.clone(), provider));
+                                            }
+                                        }
+                                    }
                                     // A success releases stalls only for
                                     // sessions on the same connection.
                                     requeue_connection_prompts(
@@ -3849,6 +3999,7 @@ where
                                     &bus,
                                     &mut parked,
                                     &surface,
+                                    &current,
                                     &cfg.workspace,
                                     &mut prompt_gen,
                                     &prompt_done_tx,
@@ -3867,7 +4018,7 @@ where
                     }
                     if active_plugin_operation.is_none() {
                         drain_ready_sessions(&controls, &mut sessions, &cx, &bus, &mut parked,
-                            &surface, &cfg.workspace,
+                            &surface, &current, &cfg.workspace,
                             &mut prompt_gen, &prompt_done_tx);
                     }
                 }
