@@ -34,6 +34,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }
 
+# Full DWARF for dev/test binaries exceeds the linker's 4 GiB .debug_info
+# relocation limit (rust-lld R_X86_64_32 out of range) on this dependency
+# tree; line tables keep file:line info for panics and backtraces. `test`
+# and `devlocal` inherit `dev`, so they get the same setting.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 lto = true
 strip = true
