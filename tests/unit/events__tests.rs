@@ -1264,3 +1264,238 @@ fn text_chunks_do_not_merge_across_subagents() {
     coalesce_session_updates(&mut events);
     assert_eq!(events.len(), 2, "chunks for distinct subagents stay separate");
 }
+
+#[test]
+fn pi_auto_retry_events_become_structured_retry_events() {
+    let started = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {
+                    "event": "auto_retry", "phase": "start",
+                    "attempt": 2, "maxAttempts": 3, "delayMs": 2500,
+                    "error": "429 too many requests",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        started,
+        vec![UiEvent::RetryStatus {
+            session: "s".into(),
+            attempt: 2,
+            max_attempts: 3,
+            delay_ms: 2500,
+            error: Some("429 too many requests".into()),
+        }]
+    );
+
+    let failed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {
+                    "event": "auto_retry", "phase": "end",
+                    "success": false, "attempt": 3, "error": "quota exhausted",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        failed,
+        vec![UiEvent::RetryFinished {
+            session: "s".into(),
+            attempt: 3,
+            success: false,
+            error: Some("quota exhausted".into()),
+        }]
+    );
+
+    let recovered = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "end", "success": true, "attempt": 2}},
+            },
+        }),
+    );
+    assert_eq!(
+        recovered,
+        vec![UiEvent::RetryFinished {
+            session: "s".into(),
+            attempt: 2,
+            success: true,
+            error: None,
+        }]
+    );
+}
+
+#[test]
+fn pi_failed_turn_surfaces_the_upstream_reason_and_retry_text_stays_out() {
+    let failed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": ""},
+                "_meta": {"pi": {
+                    "event": "assistant_message", "stopReason": "error",
+                    "error": "429 rate limit exceeded (scheduling capacity exhausted)",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        failed,
+        vec![UiEvent::SessionNotice {
+            session: "s".into(),
+            severity: "error".into(),
+            title: "upstream error".into(),
+            details: Some("429 rate limit exceeded (scheduling capacity exhausted)".into()),
+        }]
+    );
+
+    // The marked retry chunk folds into the structured RetryStatus event
+    // instead of streaming raw text onto the message line.
+    let chunk = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": " Retrying (attempt 1/3, waiting 2s): 429 "},
+                "_meta": {"pi": {"notice": "auto_retry"}},
+            },
+        }),
+    );
+    assert!(chunk.is_empty());
+
+    // Unmarked chunks and non-error assistant meta still flow normally.
+    let plain = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "hello"},
+                "_meta": {"pi": {"event": "assistant_message", "stopReason": "end_turn"}},
+            },
+        }),
+    );
+    assert_eq!(
+        plain,
+        vec![UiEvent::TextDelta { session: "s".into(), text: "hello".into() }]
+    );
+}
+
+#[test]
+fn pi_unknown_meta_events_emit_nothing() {
+    // A `_meta.pi` event the client does not model must not render.
+    for event in ["futures_event", "auto_retry", "unknown_future_thing"] {
+        let parsed = parse_notification(
+            "session/update",
+            &json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": ""},
+                    "_meta": {"pi": {"event": event}},
+                },
+            }),
+        );
+        assert!(parsed.is_empty(), "{event} leaked: {parsed:?}");
+    }
+}
+
+#[test]
+fn pi_auto_retry_snake_case_and_absent_fields_parse() {
+    // pi may spell the counters snake_case; blanks and missing fields parse
+    // to explicit defaults instead of leaking `null` into the status line.
+    let started = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {
+                    "event": "auto_retry", "phase": "start",
+                    "attempt": 1, "max_attempts": 4, "delay_ms": 1500,
+                    "error": "   ",
+                }},
+            },
+        }),
+    );
+    assert_eq!(
+        started,
+        vec![UiEvent::RetryStatus {
+            session: "s".into(),
+            attempt: 1,
+            max_attempts: 4,
+            delay_ms: 1500,
+            error: None,
+        }]
+    );
+
+    let minimal = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "start", "attempt": 5}},
+            },
+        }),
+    );
+    assert_eq!(
+        minimal,
+        vec![UiEvent::RetryStatus {
+            session: "s".into(),
+            attempt: 5,
+            max_attempts: 0,
+            delay_ms: 0,
+            error: None,
+        }]
+    );
+
+    let ended = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "end", "attempt": 4, "error": ""}},
+            },
+        }),
+    );
+    assert_eq!(
+        ended,
+        vec![UiEvent::RetryFinished {
+            session: "s".into(),
+            attempt: 4,
+            success: false,
+            error: None,
+        }]
+    );
+}
+
+#[test]
+fn pi_auto_retry_unknown_phase_emits_nothing() {
+    let parsed = parse_notification(
+        "session/update",
+        &json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"pi": {"event": "auto_retry", "phase": "paused", "attempt": 1}},
+            },
+        }),
+    );
+    assert!(parsed.is_empty(), "unknown phase leaked: {parsed:?}");
+}

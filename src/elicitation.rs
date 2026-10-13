@@ -12,6 +12,9 @@ use crate::input::editor::Input;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElicitationForm {
     pub message: String,
+    /// ACP URL-mode elicitation: a link the user opens manually. `None` for
+    /// ordinary form requests (issue #160).
+    pub url: Option<String>,
     pub fields: Vec<ElicitationField>,
 }
 
@@ -22,6 +25,9 @@ pub struct ElicitationField {
     pub title: String,
     pub description: Option<String>,
     pub required: bool,
+    /// Masked input: the value echoes as bullets. Only the auth picker sets
+    /// this — form elicitation must never ask for secrets (ACP spec).
+    pub secret: bool,
     pub kind: ElicitationFieldKind,
 }
 
@@ -90,6 +96,8 @@ pub struct ElicitationFieldState {
 
 pub struct ElicitationFormState {
     pub message: String,
+    /// URL-mode elicitation: the link to display (issue #160).
+    pub url: Option<String>,
     pub index: usize,
     pub fields: Vec<ElicitationFieldState>,
     pub error: Option<String>,
@@ -168,6 +176,7 @@ impl ElicitationFormState {
             .collect();
         Self {
             message: form.message,
+            url: form.url,
             index: 0,
             fields,
             error: None,
@@ -428,6 +437,23 @@ impl ElicitationFormState {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ElicitationReply> {
+        if self.fields.is_empty() {
+            // A fieldless request (URL elicitation) has nothing to validate:
+            // Enter accepts, Esc/ctrl+c cancels; all other keys are inert.
+            return match key.code {
+                KeyCode::Enter => Some(ElicitationReply::Accepted(BTreeMap::new())),
+                KeyCode::Esc => Some(ElicitationReply::Cancelled),
+                KeyCode::Char('c')
+                    if key
+                        .modifiers
+                        .contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                {
+                    Some(ElicitationReply::Cancelled)
+                }
+                _ => None,
+            };
+        }
         if key.code == KeyCode::Esc
             || (key.code == KeyCode::Char('c')
                 && key
@@ -619,8 +645,17 @@ fn multi_options(items: &MultiSelectItems) -> Result<Vec<ElicitationOption>, Str
 }
 
 pub fn form_from_request(request: &CreateElicitationRequest) -> Result<ElicitationForm, String> {
+    // URL mode: there is nothing to fill in — the overlay shows the link so
+    // the user opens it manually (headless/SSH safe), then confirms (#160).
+    if let ElicitationMode::Url(mode) = &request.mode {
+        return Ok(ElicitationForm {
+            message: request.message.clone(),
+            url: Some(mode.url.clone()),
+            fields: Vec::new(),
+        });
+    }
     let ElicitationMode::Form(mode) = &request.mode else {
-        return Err("only form elicitation is supported".into());
+        return Err("only form and url elicitation are supported".into());
     };
     let required: BTreeSet<&str> = mode
         .requested_schema
@@ -745,6 +780,9 @@ pub fn form_from_request(request: &CreateElicitationRequest) -> Result<Elicitati
             title,
             description,
             required: required.contains(name.as_str()),
+            // Form elicitation must never ask for secrets (ACP spec); only
+            // the auth picker's credential form masks input (issue #160).
+            secret: false,
             kind,
         });
     }
@@ -752,6 +790,7 @@ pub fn form_from_request(request: &CreateElicitationRequest) -> Result<Elicitati
         return Err("elicitation form has no supported fields".into());
     }
     Ok(ElicitationForm {
+        url: None,
         message: request.message.clone(),
         fields,
     })

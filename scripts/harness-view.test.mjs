@@ -409,6 +409,48 @@ test('/harness find explains a missing package runner without saving or switchin
   }
 })
 
+test('/harness find lists Martty\'s pi-acp by its id with its repository visible', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-pi-acp-view-'))
+  const settingsPath = path.join(root, 'settings.json')
+  const bin = path.join(root, 'bin')
+  try {
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(bin)
+    // An unrelated local pi-acp (the official registry's unprefixed package)
+    // can sit next to Martty's own @openma/pi-acp entry; the repository URL
+    // is how users tell them apart.
+    const localPi = path.join(bin, 'pi-acp')
+    writeFileSync(localPi, '#!/bin/sh\n')
+    chmodSync(localPi, 0o755)
+    const ctx = makeCtx()
+    harnessView.apply(ctx, {
+      settingsPath,
+      pathValue: bin,
+      registry: [{
+        id: 'pi-acp',
+        label: 'pi-acp',
+        version: 'latest',
+        repository: 'https://github.com/openma-ai/pi-acp',
+        distributions: [{ type: 'npx', command: 'npx', args: ['@openma/pi-acp@latest'], env: {} }],
+      }],
+      defaults: [],
+    })
+
+    await ctx.tuiCommands.dispatch({ protocol: 0, name: 'harness', args: 'find pi' })
+    await waitForCatalog(ctx)
+    const piOptions = ctx.tuiOverlay.active().options.filter((option) => option.label === 'pi-acp')
+    assert.equal(piOptions.length, 2, 'Martty\'s and the unrelated local pi-acp both appear')
+    const ours = piOptions.find((option) => option.value === 'pi-acp')
+    const local = piOptions.find((option) => option.value === 'path-pi-acp')
+    assert.match(ours.description, /needs npx/)
+    assert.match(ours.description, /https:\/\/github\.com\/openma-ai\/pi-acp/)
+    assert.match(local.description, /found locally/)
+    assert.ok(!local.description.includes('openma-ai'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('/harness find gives legacy binary Harnesses installation guidance and a recheck action', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-harness-find-binary-view-'))
   const settingsPath = path.join(root, 'settings.json')

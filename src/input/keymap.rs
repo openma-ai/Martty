@@ -18,6 +18,9 @@ pub enum Action {
     CtrlC,
     Quit,
     ClearScrollback,
+    /// Open the auth method picker (sign-in / logout) — issue #160 moved
+    /// all auth UI off the composer; there is no client auth command.
+    OpenAuth,
     ToggleTheme,
     ToggleExpandAll,
     SendNow,
@@ -26,6 +29,11 @@ pub enum Action {
     ModelPicker,
     CycleAgent,
     CyclePermission,
+    /// Grow the composer well one row (ctrl+↑, issue #147).
+    ComposerGrow,
+    /// Shrink the composer well one row; on the floor releases the pin
+    /// back to the auto height (ctrl+↓).
+    ComposerShrink,
     TabComplete,
     HistoryPrev,
     HistoryNext,
@@ -69,6 +77,8 @@ pub enum Action {
     CopySelection,
     /// Cut the keyboard selection (clipboard + yank + delete).
     CutSelection,
+    /// Close the current session tab (issue #146).
+    CloseSession,
 }
 
 /// The composer facts the mapping depends on (dual-use keys: `home`/`^u`
@@ -112,7 +122,14 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Char('c') if ctrl => CtrlC,
         KeyCode::Char('x') if ctrl => CutSelection,
         KeyCode::Char('q') if ctrl => Quit,
+        // ctrl+shift+l before the plain ctrl arm: the auth picker is a
+        // deliberate chord, while legacy terminals that collapse shift
+        // still get clear-scrollback, not a surprise modal. ctrl+g is the
+        // always-delivered fallback (tmux and most legacy terminals send
+        // ctrl+shift+l as plain ctrl+l).
+        KeyCode::Char('l') if ctrl && shift => OpenAuth,
         KeyCode::Char('l') if ctrl => ClearScrollback,
+        KeyCode::Char('g') if ctrl => OpenAuth,
         KeyCode::Char('t') if ctrl => ToggleTheme,
         // ^o (not ^e): ghostty/iterm send ^e for ⌘→, and "explode the
         // transcript" on ⌘→ was evil.
@@ -143,6 +160,11 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         // readline kill-to-line-end behavior.
         KeyCode::Char('k') if ctrl && shift => KillLine,
         KeyCode::Char('k') if ctrl => KillToEnd,
+        // ctrl+shift+w (⌘w on macOS) closes the session tab; legacy
+        // terminals collapse the chord to ^w, which safely degrades to
+        // delete-word-back.
+        KeyCode::Char('w') if sup => CloseSession,
+        KeyCode::Char('w') if ctrl && shift => CloseSession,
         KeyCode::Char('w') if ctrl => DeleteWordBack,
         // ^e = end of line — also what ghostty/iterm send for ⌘→.
         KeyCode::Char('e') if ctrl && shift => SelectLineEnd,
@@ -179,6 +201,11 @@ pub fn classify(key: &KeyEvent, ctx: KeyCtx) -> Option<Action> {
         KeyCode::Right if sup => LineEnd,
         KeyCode::Up if sup => JumpTop,
         KeyCode::Down if sup => JumpTail,
+        // ^↑/^↓ step the composer height (issue #147); the chords
+        // previously fell through to plain ↑/↓ (history / cursor), and
+        // these arms sit above those so nothing reachable is shadowed.
+        KeyCode::Up if ctrl => ComposerGrow,
+        KeyCode::Down if ctrl => ComposerShrink,
         // Word hops: ⌥-arrows on macOS · ctrl-arrows on linux/windows.
         KeyCode::Left if alt || ctrl => WordLeft,
         KeyCode::Right if alt || ctrl => WordRight,
@@ -812,6 +839,26 @@ pub const KEY_ROWS: &[KeyRow] = &[
     },
     // --- app shortcuts ----------------------------------------------------
     KeyRow {
+        action: ComposerGrow,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+↑"],
+        chords_other: &["ctrl+↑"],
+        ctx: CtxNote::Always,
+        desc_en: "composer one row taller (or drag its top border)",
+        desc_zh: "输入框加高一行（或拖上边框）",
+        probes: &[p(KeyCode::Up, CTRL, false)],
+    },
+    KeyRow {
+        action: ComposerShrink,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+↓"],
+        chords_other: &["ctrl+↓"],
+        ctx: CtxNote::Always,
+        desc_en: "composer one row shorter · at minimum restores auto",
+        desc_zh: "输入框降低一行 · 降到最低时恢复自动高度",
+        probes: &[p(KeyCode::Down, CTRL, false)],
+    },
+    KeyRow {
         action: CycleAgent,
         group: KeyGroup::App,
         chords_mac: &["ctrl+shift+a"],
@@ -820,6 +867,19 @@ pub const KEY_ROWS: &[KeyRow] = &[
         desc_en: "cycle agent preset",
         desc_zh: "切换 Agent 预设",
         probes: &[p(KeyCode::Char('a'), CTRL_SHIFT, false)],
+    },
+    KeyRow {
+        action: OpenAuth,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+g", "ctrl+shift+l"],
+        chords_other: &["ctrl+g", "ctrl+shift+l"],
+        ctx: CtxNote::Always,
+        desc_en: "auth picker · sign in / log out",
+        desc_zh: "登录选择器 · 登录 / 登出",
+        probes: &[
+            p(KeyCode::Char('l'), CTRL_SHIFT, false),
+            p(KeyCode::Char('g'), CTRL, false),
+        ],
     },
     KeyRow {
         action: CyclePermission,
@@ -872,6 +932,19 @@ pub const KEY_ROWS: &[KeyRow] = &[
         probes: &[p(KeyCode::Char('l'), CTRL, false)],
     },
     KeyRow {
+        action: CloseSession,
+        group: KeyGroup::App,
+        chords_mac: &["ctrl+shift+w", "⌘w"],
+        chords_other: &["ctrl+shift+w"],
+        ctx: CtxNote::Always,
+        desc_en: "close this session tab — a running turn asks once to confirm",
+        desc_zh: "关闭当前会话标签 —— 会话仍在运行时需再按一次确认",
+        probes: &[
+            p(KeyCode::Char('w'), CTRL_SHIFT, false),
+            p(KeyCode::Char('w'), SUPER, false),
+        ],
+    },
+    KeyRow {
         action: TabComplete,
         group: KeyGroup::App,
         chords_mac: &["tab"],
@@ -896,8 +969,8 @@ pub const KEY_ROWS: &[KeyRow] = &[
 pub const MOUSE_ROWS: &[MouseRow] = &[
     MouseRow {
         chords: &["click tab"],
-        desc_en: "switch session tab (strip shows 2+ sessions) · /session prev · /session next · /new · /fork · /resume · /close",
-        desc_zh: "点击标签页切换会话（≥2 个会话时显示）· /session prev · /session next · /new · /fork · /resume · /close",
+        desc_en: "switch session tab · click its × to close it (strip shows 2+ sessions) · /session prev · /session next · /new · /fork · /resume · /close",
+        desc_zh: "点击标签页切换会话 · 点标签上的 × 关闭它（≥2 个会话时显示）· /session prev · /session next · /new · /fork · /resume · /close",
     },
     MouseRow {
         chords: &["click"],
@@ -908,6 +981,11 @@ pub const MOUSE_ROWS: &[MouseRow] = &[
         chords: &["drag"],
         desc_en: "select text · copies on release",
         desc_zh: "拖动选择文本，松开即复制",
+    },
+    MouseRow {
+        chords: &["drag composer top border"],
+        desc_en: "resize the composer height · ctrl+↑/↓ steps it",
+        desc_zh: "拖输入框上边框调高度 · ctrl+↑/↓ 逐行调整",
     },
     MouseRow {
         chords: &["2×click"],

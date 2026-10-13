@@ -15,9 +15,10 @@ x64. Requires Node.js 22.19+.
 
 > **Rename note:** the project and recommended npm package have moved from
 > DeepSeek Harness TUI / `@openma/deepseek-harness-tui` to **Martty** / `martty`.
-> The `dsh-tui` command, configuration, and session data remain compatible.
-> The production profile is now `martty`; legacy `tui` profiles
-> continue to work.
+> Configuration and session data remain compatible. The production profile is
+> now `martty`; legacy `tui` profiles continue to work. The `dsh-tui` command
+> is no longer installed by the `martty` package — see
+> [Migrating from DeepSeek Harness TUI / the scoped package](#migrating-from-deepseek-harness-tui--the-scoped-package).
 
 ## Global Agent TUI
 
@@ -49,8 +50,35 @@ missing profile and installs the TUI plus its ACP dependency; no global
 
 `martty` is the recommended package name. Starting with `0.2.13`, it and the
 legacy `@openma/deepseek-harness-tui` package are published by the same CI run
-with identical versions and artifacts. Existing scoped-package installs remain
-supported. To switch package names:
+with identical versions and artifacts. The scoped name is deprecated; switch
+package names with:
+
+```sh
+npm install --global martty
+```
+
+No removal is needed first, whatever state the legacy package is in —
+published versions of `@openma/deepseek-harness-tui` register `dsh-tui`
+(every version) and `martty` (0.2.14/0.2.20) global commands, and `npm link`ed
+legacy checkouts own the same names (a checkout of this repository links as
+`martty`, so it replaces — or is replaced by — an installed `martty` with no
+collision). The `martty` package declares only `martty-cli` so npm never
+refuses the install over a bin another package owns (`EEXIST`); a
+postinstall step then retires the stale `martty`/`dsh-tui`/`dsb` links that
+verifiably belonged to the legacy package (a third-party `dsh-tui` stays
+untouched), creates the `martty` command itself, and detaches the legacy
+package's bin declarations so a later `npm rm -g` can't take `martty` down
+with it. Removing `@openma/deepseek-harness-tui` afterwards is optional
+cleanup; `martty` warns at launch while it remains — on an interactive
+terminal the notice prints when the session exits, so the TUI cannot hide
+it. With `--ignore-scripts`
+the postinstall never runs — invoke `martty-cli` once (or `npx martty`) and
+the first launch finishes the migration itself. And after `npm rm -g
+martty`, the `martty` command left behind is a self-cleaning shim: invoking
+it once prints the reinstall hint and removes it — nothing dead is left
+in `<prefix>/bin`.
+
+Inside a `dsh` profile the same switch is:
 
 ```sh
 dsh plugin --profile tui remove @openma/deepseek-harness-tui
@@ -58,8 +86,13 @@ dsh plugin --profile martty add martty@latest
 ```
 
 The recommended profile changes from `tui` to `martty`; runtime behavior,
-config, and session data remain unchanged. `dsh-tui` and legacy `tui`
-profiles remain compatible.
+config, and session data remain unchanged. Legacy `tui` profiles remain
+compatible.
+
+The `martty` package no longer installs a `dsh-tui` command: the name
+collided with both the legacy package and an unrelated `dsh-tui` package on
+npm, which blocked `npm install --global martty` outright. If your fingers
+still type `dsh-tui`, alias it: `alias dsh-tui=martty`.
 
 The profile Host mounts the ACP plugin on Base, then starts a separate TUI
 Client process over standard ACP stdin/stdout. For standalone use, run
@@ -198,10 +231,11 @@ Creator-authored UI Presets and Theme Plugins preview as process-local dynamic
 Packages, then persist explicitly under `$MARTTY_HOME/plugins` through
 `tui_plugin_save`; `tui_plugin_read` resumes authoring after restart.
 
-`MARTTY_HOME` resolves explicitly first, then to `$DSH_HOME/.martty`, then to
-`~/.martty`. UI choices live in `$MARTTY_HOME/settings.json`. On first use,
-legacy Creator artifacts and settings are copied forward without deleting or
-overwriting the old files.
+`MARTTY_HOME` (or `OMA_HOME`) resolves explicitly first, then to
+`$DSH_HOME/.oma`, then to `~/.oma` — the configuration home Martty shares
+with Backchat. UI choices live in `$MARTTY_HOME/settings.json`. On first use,
+a legacy `.martty` directory and old Creator artifacts/settings are copied
+forward without deleting or overwriting the old files.
 
 Third-party TUI plugins remain ordinary installed packages. Their Host-side
 registrar contributes an absolute Client module entry to `tuiClientPlugins`;
@@ -228,7 +262,8 @@ npx --yes martty --demo
 
 The profile path remains recommended for an existing DSH installation that
 wants standard plugin management and a durable `martty` profile. `martty` is the
-primary command; `dsh-tui` remains a compatibility alias.
+primary command; the legacy `dsh-tui` command is no longer installed
+(`alias dsh-tui=martty` restores it).
 
 ## Highlights
 

@@ -5,8 +5,56 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The Creator overlay no longer crashes on the bundled DeepSeek Harness
+  (`0.2.0-rc.2`) with `ctx.agentPresets.standingKeyFor is not a function`. It
+  now takes a scoped preset lease via `acquireScope`, which exists on every
+  published `@deepseek-ai/dsh-agent-preset-registry`, and releases it when the
+  overlay is disposed.
+- The Creator overlay now activates on the bundled runtime: the preset roster
+  fills in shortly after the overlay mounts, so `acquireScope` retries briefly
+  on `agent-preset/not-found` (bounded by `scopeWaitMs`) instead of failing the
+  entry on the first attempt.
+- Agent stderr warnings are now visible in the TUI: warning/error lines from
+  the spawned agent (e.g. "1 entry did not activate" and its RemoteError) show
+  as a notice in the input dock, so a failed bundle entry is no longer silent.
+- A failed ACP attach now shows the whole error: the status row keeps only the
+  first line (an embedded newline could never render there), the agent stderr
+  tail renders wrapped in the transcript instead of being hidden under the
+  welcome banner, and `/status` shows the full message in a fenced block.
+- `/status` and other client compositor commands now work after a failed ACP
+  attach: the attach task no longer exits on a refused `initialize`, so
+  diagnostics stay reachable. A prompt submitted in that state is held in the
+  queue, and the queue header/tip says the attach failed instead of promising
+  "send first"; prompts that do dispatch fail fast with
+  `agent is not attached` instead of parking behind the dead peer.
+- `/status` shows the dsh runtime the ACP agent actually booted
+  (`- dsh · <version> via <source>`), reported by dsh-acp through
+  `initialize` `agentCapabilities._meta.dsh.runtime`, so users can tell the
+  bundled runtime from an explicit or plugin host.
+- An agent that answers `initialize` with a refusal is now treated as
+  attached instead of dead: a refusal declaring auth methods offers sign-in
+  and holds prompts until `authenticate` settles, a non-auth refusal lets the
+  next prompt attempt `session/new` inline, and only transport/process
+  failures (the agent never answered) short-circuit prompts with
+  `agent is not attached`. The refused attach is its own surface — `/status`
+  reports `acp · refused` and the landing row says `initialize refused`; a
+  queued prompt on a non-auth refusal is sent so `session/new` retries
+  (reaching the inline retry from the real queue, not just directly), and
+  the prompt's own Enter releases it — the reattach (initialize, then
+  `session/new`, then `session/prompt`) needs no second keypress; while
+  sign-in is pending the queue header and the submit tip say "sign-in
+  needed" instead of "attach failed", and the refusal renders once — the
+  needs-auth block no longer duplicates the attach notice.
+
 ### Added
 
+- Declare the `@deepseek-ai/dsh` versions this release supports
+  (`0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2`) in `npm/package.json` `dsh.supported`
+  and in the README, matching the range the bundled dsh-acp enforces. dsh
+  runtime selection and compatibility checking remain entirely dsh-acp's
+  job; Martty only displays the result.
 - Check releases in CI before npm publish. A pull request lists pull requests
   merged since the previous tag without failing, and a version bump must keep
   the npm package, lockfile, and Cargo versions together. A `v*` tag must
@@ -30,9 +78,27 @@ All notable changes to this project are documented here. The project follows
 - Add the org contribution guide (`CONTRIBUTING.md`), with Martty's toolchain,
   CI, and release steps, plus a pull request evidence template and a bug report
   template.
+- Close an individual session tab three ways: `/close`, Ctrl+Shift+W (⌘W on
+  macOS), or a click on the tab's × (background tabs too, without switching).
+  A session that is still working — streaming, tool calls, an unanswered ask —
+  asks once to confirm; the second close cancels the in-flight turn first.
+  When `initialize` advertises `sessionCapabilities.close`, `session/close`
+  goes on the wire so the agent cancels its work and frees the session;
+  other agents keep the session server-side and it stays resumable through
+  `session/resume` / `session/list`. Focus moves to the right neighbor,
+  else the left; closing the last tab opens a fresh welcome session
+  instead of ending on an empty strip.
 
 ### Changed
 
+- Replace the composer's top-right `⛶` maximize button with a drag-to-resize
+  top border (issue #147). Hovering the composer's top border highlights the
+  whole cap line; dragging it up/down pins the well height within
+  [auto default, ~5/8 of the main area], so the conversation always keeps at
+  least the remaining 3/8. Terminals without a mouse use `ctrl+↑`/`ctrl+↓` to
+  step the height (shrinking on the floor releases back to the auto height),
+  and a pinned height re-clamps into the legal range when the terminal
+  shrinks. The height is remembered per session tab.
 - Launch the Pi catalog entry with `@openma/pi-acp@0.1.6` (was 0.1.4) for both
   the bundled snapshot and a refreshed ACP catalog. Official registry records
   stay untouched. 0.1.6 again writes model and thinking changes to pi's global
@@ -50,6 +116,152 @@ All notable changes to this project are documented here. The project follows
   are rewritten to `deepseek-flash` or `kimi-k2.6` when startup configuration
   is resolved. The same ids stay unchanged on routes whose catalogs still
   list them.
+- Remove the inline keyboard-shortcut hints glued to the composer footer
+  chips; the footer now shows only the current values (agent preset,
+  permission, approval, plan, model, effort). The composer dock's
+  contextual hint row is also trimmed to the single mid-turn
+  `esc interrupt` affordance — `⏎ send`, `⏎ queue`, `ctrl+⏎ steer`,
+  `edit queue`, and the slash/shell/modal hints are no longer advertised
+  there. The bindings themselves are unchanged and remain listed in
+  `/keys` (#148).
+- Rework ACP auth around the agent's `initialize.authMethods` and the ACP
+  `logout` method (issue #160). **Behaviour change:** the client-side
+  `/auth` command is removed — Martty has no client auth slash commands;
+  every slash command is the agent's and passes through exactly as
+  advertised in `availableCommands`. Authentication happens in the auth
+  picker, opened on a `-32000` auth-required reply or with `ctrl+shift+l`.
+  Each api-key method gets its own masked secret field (never sent to a
+  different method), gateway methods collect base URL + key + optional
+  provider name, env-var methods are reported rather than started, and
+  terminal methods run a spec-compliant Terminal Auth: the TUI leaves the
+  screen, runs the client's configured agent argv plus the method's
+  advertised `_meta["terminal-auth"]` (or top-level) args/env — never an
+  agent-supplied `command`, which could resolve to a missing or stale
+  PATH binary — and on exit 0 respawns the agent and re-runs
+  `initialize` —
+  terminal methods are never sent to `authenticate`. When the agent
+  declares `agentCapabilities.auth.logout`, the picker gains a
+  "Log out / switch method" row that calls the ACP `logout` method and
+  re-opens the picker; agents that do not declare it get no logout row.
+  URL-mode elicitations are now declared and rendered inline (the link is
+  shown, not opened, so it is safe on headless/SSH sessions). Auth and
+  reconnect failures are visible notices — nothing typed while signed
+  out is silently queued or sent as a substitute credential.
+- Slash input that names no client command passes through to the agent
+  instead of a client-side "unknown command" warning, so a typed `/login`
+  reaches `session/prompt` and the agent's auth-required reply opens the
+  picker. `ctrl+g` opens the auth picker everywhere `ctrl+shift+l`
+  collapses to plain `ctrl+l` (tmux, legacy terminals); `ctrl+shift+l`
+  still works. The TUI
+  fully repaints when a Terminal Auth subprocess returns, and Ctrl-C
+  during Terminal Auth cancels the login flow instead of quitting Martty.
+  A prompt parked by an auth-required reply is retried once after
+  sign-in and, if refused again, is discarded with a visible notice
+  instead of stalling the session queue; a successful Terminal Auth
+  credits the launched method by name in the credentials line.
+  Closing the auth picker reports the skip so prompts held for a
+  post-sign-in retry are dropped visibly instead of pinning the
+  session; a prompt queued while sign-in is unresolved says "input is
+  held until you sign in" rather than spinning on "contacting
+  runtime", and Esc with no live turn still resolves queued and held
+  prompts (the wire shows `session/cancel` and the drained sends).
+  A typed `/login` or `/logout` is an ordinary prompt — it ships to
+  the agent verbatim (the agent answers plainly, per the
+  claude-agent-acp convention) and the picker still opens only on a
+  real `auth_required` reply. Long auth-method names are ellipsized
+  inside the picker's label column instead of overflowing into the
+  type column. The picker no longer flashes on a signed-in startup —
+  a form-capable or terminal-first method set is only a guess until a
+  real `auth_required` reply proves sign-in is needed, so startup emits
+  no `NeedsAuth` snapshot and never opens the picker on its own. While
+  the auth picker is open, printable keys keep reaching the composer and
+  Enter on a non-empty composer submits the typed prompt — composer text
+  can no longer be swallowed into a credential field (the api-key form
+  still opens only on an explicit empty-composer Enter). "Sign-in
+  needed" notices resolve the advertised method's display name from its
+  id instead of falling back to a bare "agent", a configured agent that
+  advertises methods reports "ready" instead of "credential source not
+  reported", and the stale "sign-in needed" notices are hidden once
+  sign-in succeeds instead of sitting above the first turn. Snapshots
+  raised by a real `auth_required` reply name the credential that
+  failed — the method matching the provider the session's model runs
+  on (or the launch provider before a session exists) — a lone
+  advertised method names itself, and anything else stays generic
+  rather than repeating the method last signed in with. An ACP
+  `logout` names the signed-out credential the same way, and the
+  credentials row no longer repeats its own label. Signing into a
+  different account while the bound session's provider is dead now
+  completes end to end: when the agent's own credential report no
+  longer lists the session's provider, the session is rebound so the
+  agent picks a workable model, and prompts held behind sign-in ride
+  along to the replacement session instead of being refused into a
+  discard on the old provider (issue #160).
+
+
+### Fixed
+
+- Install `martty` globally alongside or after the legacy
+  `@openma/deepseek-harness-tui` package (#156) — in every state it can be
+  in. The `martty` package (and the source `npm/package.json`, so `npm
+  link`ed checkouts link as the same package and replace — or get replaced
+  by — an installed `martty` in either order) declares only `martty-cli`, a
+  bin name nothing else owns, so `npm install --global martty` can never
+  fail with `EEXIST` (npm links bins before any lifecycle script, which
+  also made every `martty`-owning legacy release — 0.2.14/0.2.20,
+  `npm link`ed legacy checkouts — unblockable). A `postinstall` migration
+  step then retires the legacy package's stale `martty`/`dsh-tui`/`dsb`
+  links (third-party `dsh-tui` stays untouched), creates the `martty`
+  command itself — a self-cleaning shim that, after `npm rm -g martty`,
+  prints the reinstall hint once and removes itself instead of leaving a
+  dead link — and detaches the legacy package's `bin` declarations so a
+  later `npm rm -g @openma/deepseek-harness-tui` cannot take `martty` down
+  with it. `martty` warns at launch while the legacy package remains —
+  deferred to process exit on interactive terminals so the TUI cannot
+  paint over it; with `--ignore-scripts`, the first `martty-cli` (or
+  `npx martty`) launch runs the whole converge — retiring stale links,
+  recreating `martty`, and sanitizing the legacy manifest.
+- Quitting the TUI no longer loses the `session <id>` resume line: the
+  post-quit TTY restore now leaves the alt screen with `?1047l` instead of
+  re-emitting `?1049l`, whose extra cursor restore overwrote whatever the
+  painter had just printed to the terminal.
+- Fix the profile bundle inserts for the renamed package: `cordis.patch.yml`
+  still pointed the four TUI plugin rows at
+  `@openma/deepseek-harness-tui/<subpath>`, so a profile installing the
+  `martty`-named package could not import them (`4 entries did not activate`
+  in the Windows profile smoke). They now resolve `martty/<subpath>`.
+- Show the pi harness as `pi-acp` everywhere its name appears (issue #158),
+  dropping the old `Pi (OpenMA)` branding. The catalog entry keeps Martty's
+  `@openma/pi-acp` recipe and now exposes its repository
+  (`https://github.com/openma-ai/pi-acp`) on the picker's description line so
+  it stays distinguishable from the official registry's unrelated unprefixed
+  `pi-acp`. Saved configurations keep working; the stale `Pi (OpenMA)` label
+  on a saved `pi-acp` entry reads as `pi-acp` while custom labels are kept.
+- Keep each session's own model and thinking effort. Pi writes
+  `session/set_config_option` into its global defaults, so the connection pool
+  now records every session's config options and re-asserts them, in order,
+  before forwarding that session's `session/prompt`. Sessions that only took
+  the defaults no longer leak their settings into existing sessions either way.
+- Resolve the built-in Pi harness as `@openma/pi-acp@latest` at runtime instead
+  of the unprefixed public `pi-acp` or a version pinned into user settings, so
+  harness upgrades never require a Martty release. Saved entries that pin any
+  `pi-acp`/`@openma/pi-acp@<version>` spec are rewritten to follow `latest`.
+- Share the configuration home with Backchat at `~/.oma` (`$DSH_HOME/.oma` when
+  `DSH_HOME` is set; `MARTTY_HOME` and `OMA_HOME` still win explicitly). An
+  existing `~/.martty` is migrated in place on first launch; the Rust session
+  root falls back to `~/.martty` only when `~/.oma` does not exist.
+- Surface upstream turn failures. A `session/prompt` rejection already showed
+  the agent's error, and now pi's `_meta.pi` turn events do too: an empty
+  assistant chunk carrying `stopReason: "error"` posts the real upstream reason
+  (for example 429 or quota exhausted) as an error notice instead of a silent
+  zero-response turn, and `auto_retry` notices no longer double-print as text.
+- Render auto-retry status on a single updating line per attempt — attempt
+  number, backoff delay, and the error that caused it — ending with either
+  "Retry succeeded — resuming" or an explicit final failure naming the last
+  error, instead of "Retry finished, resuming." after a failed sequence.
+- Scope the session info overlay, status overlay, and model picker provider to
+  the viewed tab: they now read the session's own model and the provider from
+  its catalog, so a `/model` pick made on another tab no longer shows up as
+  this session's provider or model, and `/effort` targets the viewed session.
 
 ## [0.3.1] - 2026-09-30
 
@@ -61,6 +273,15 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Sync the terminal's default background to the canvas color (`OSC 11`,
+  restored with `OSC 111` on exit) so emulator-painted regions — the
+  unusable sub-cell strip below the last row of a non-integer-height
+  window, lines scrolled in by the emulator, areas restored by non-BCE
+  erases — match the theme instead of reading as a gray band under the
+  status bar on macOS terminals (#145). With `NO_COLOR` set the sync is
+  suppressed entirely: the terminal's own default foreground/background
+  pair stays in charge, so e.g. `--theme light` can no longer paint
+  default-white text on a synced-white background.
 - Prefer `@openma/pi-acp@0.1.3` for the Pi entry in both the bundled and refreshed ACP catalog; require Node.js 22.19 or newer for the npm package.
 - Keep the session busy while a queued concurrent steer is still running.
 - Seal startup text before the first prompt turn so pi-acp's first reply renders

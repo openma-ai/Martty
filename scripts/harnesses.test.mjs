@@ -1492,3 +1492,61 @@ test('empty harness discovery gives an actionable next step', async () => {
   assert.match(result.stdout, /^No Harnesses found\.$/m)
   assert.match(result.stdout, /martty harness add <id> --command <cmd>/)
 })
+
+test('pinned pi-acp specs always resolve @openma/pi-acp@latest instead', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-pi-latest-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    // Whatever an older release pinned into user settings follows latest now:
+    // the unprefixed public package and any @openma/pi-acp@<version> alike.
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', command: 'npx', args: ['pi-acp@0.0.33'],
+    })
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, undefined)
+    module.setDefaultHarness(settingsPath, 'pi-acp')
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@latest'])
+
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', command: 'npx', args: ['@openma/pi-acp@0.1.6'],
+    })
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@latest'])
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    assert.deepEqual(
+      saved.harnesses.find(({ id }) => id === 'pi-acp').args,
+      ['@openma/pi-acp@latest'],
+      'nothing pinned is ever written back to user settings',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a saved pi-acp config drops the stale "Pi (OpenMA)" label for its id', async () => {
+  const module = await import(moduleUrl)
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-pi-label-'))
+  const settingsPath = path.join(root, 'settings.json')
+  try {
+    // Configurations written when the pi harness was branded "Pi (OpenMA)"
+    // keep working; only that stale default display label becomes `pi-acp`.
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', label: 'Pi (OpenMA)', command: 'npx', args: ['@openma/pi-acp@latest'],
+    })
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp-lookalike', label: 'Pi (OpenMA)', command: 'other-acp', args: [],
+    })
+    module.setDefaultHarness(settingsPath, 'pi-acp')
+    assert.equal(module.selectedHarness(settingsPath)?.label, 'pi-acp')
+    // A custom label on pi-acp and any label on other harnesses are kept.
+    module.upsertHarness(settingsPath, {
+      id: 'pi-acp', label: 'My Pi', command: 'npx', args: ['@openma/pi-acp@latest'],
+    })
+    assert.equal(module.selectedHarness(settingsPath)?.label, 'My Pi')
+    assert.equal(
+      module.savedHarnesses(settingsPath).find(({ id }) => id === 'pi-acp-lookalike')?.label,
+      'Pi (OpenMA)',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

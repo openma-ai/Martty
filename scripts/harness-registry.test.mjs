@@ -45,14 +45,23 @@ test('Martty offers its pi-acp package without changing the official catalog', a
   const engine = JSON.parse(readFileSync(new URL('../npm/package.json', import.meta.url), 'utf8')).engines.node
   assert.equal(engine, '>=22.19.0')
   const supported = readAcpRegistrySnapshot().find(({ id }) => id === 'pi-acp')
-  assert.equal(supported?.version, '0.1.6')
-  assert.deepEqual(supported?.distributions.find(({ type }) => type === 'npx')?.args, ['@openma/pi-acp@0.1.6'])
+  // The bundled official snapshot carries the unrelated unprefixed pi-acp
+  // (github.com/svkozak/pi-acp); Martty's entry keeps its own name and points
+  // at @openma/pi-acp — its repository URL is what tells them apart.
+  assert.equal(supported?.label, 'pi-acp')
+  assert.equal(supported?.repository, 'https://github.com/openma-ai/pi-acp')
+  assert.equal(supported?.version, 'latest')
+  assert.deepEqual(supported?.distributions.find(({ type }) => type === 'npx')?.args, ['@openma/pi-acp@latest'])
 
   const raw = { agents: [{ id: 'pi-acp', name: 'Pi', version: '0.0.34',
+    repository: 'https://github.com/svkozak/pi-acp',
     distribution: { npx: { package: 'pi-acp@0.0.34' } },
   }] }
   const refreshed = await fetchAcpRegistry({ fetchImpl: async () => new Response(JSON.stringify(raw)) })
-  assert.deepEqual(refreshed[0].distributions[0].args, ['@openma/pi-acp@0.1.6'])
+  assert.equal(refreshed[0].label, 'pi-acp')
+  assert.equal(refreshed[0].repository, 'https://github.com/openma-ai/pi-acp')
+  assert.deepEqual(refreshed[0].distributions[0].args, ['@openma/pi-acp@latest'])
+  assert.equal(raw.agents[0].repository, 'https://github.com/svkozak/pi-acp')
   assert.deepEqual(raw.agents[0].distribution.npx, { package: 'pi-acp@0.0.34' })
 
   const { root, options } = fixture(t)
@@ -62,8 +71,9 @@ test('Martty offers its pi-acp package without changing the official catalog', a
   const added = addHarness(options.settingsPath, 'pi-acp', [], {
     registry: readAcpRegistrySnapshot(), pathValue: root,
   })
+  assert.equal(added.label, 'pi-acp')
   assert.equal(added.command, runner)
-  assert.deepEqual(added.args, ['@openma/pi-acp@0.1.6'])
+  assert.deepEqual(added.args, ['@openma/pi-acp@latest'])
 })
 
 function delayedResponse(text, delay = 100) {

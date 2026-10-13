@@ -35,12 +35,25 @@ fn composer_height(height: u16) -> u16 {
     }
 }
 
+/// The legal composer-height range (issue #147): never below the auto
+/// default (`composer_height`) — the border can't drag the well under its
+/// rest height — and never past 5/8 of the main area, so the conversation
+/// keeps at least the remaining 3/8 (and at least 4 rows) to itself.
+fn composer_height_bounds(area: Rect) -> (u16, u16) {
+    let minimum = composer_height(area.height);
+    let maximum = (area.height * 5 / 8)
+        .max(minimum)
+        .min(area.height.saturating_sub(4).max(minimum));
+    (minimum, maximum)
+}
+
 /// Grow with hard/soft-wrapped draft rows, while leaving at least half of a
 /// normal terminal to the conversation. Beyond the cap, `draw_input` keeps a
-/// cursor-following viewport inside the composer. The mouse-only expand
-/// button (issue #92) pins the well to the amplified height instead.
+/// cursor-following viewport inside the composer. A top-border drag or the
+/// ^↑/^↓ keys pin the well to `app.composer_rows` instead — re-clamped to
+/// the legal range every frame, so a terminal resize can never strand it.
 fn resolved_composer_height(area: Rect, app: &App) -> u16 {
-    let minimum = composer_height(area.height);
+    let (minimum, maximum) = composer_height_bounds(area);
     let pet_pad = if app.pet_visible && area.width >= 60 && area.height >= 10 {
         PET_PAD
     } else {
@@ -49,20 +62,18 @@ fn resolved_composer_height(area: Rect, app: &App) -> u16 {
     let inner_width = area.width.saturating_sub(2 + pet_pad);
     let prompt_width = "❯ ".width() as u16;
     let wrap_width = inner_width.saturating_sub(prompt_width).max(1) as usize;
-    // Expanded: up to 5/8 of the main area, no compact 12-row cap — the
-    // conversation keeps the remaining 3/8. Auto: half the screen, ≤ 12.
-    let maximum = if app.input_expanded {
-        (area.height * 5 / 8).max(minimum).min(area.height.saturating_sub(4).max(minimum))
-    } else {
-        (area.height / 2).max(minimum).min(12)
-    };
-    let desired = if app.input_expanded {
-        maximum
-    } else {
-        app.input
-            .visual_row_count(wrap_width)
-            .saturating_add(1)
-            .min(maximum as usize) as u16
+    let desired = match app.composer_rows {
+        // Pinned height (drag / keys), clamped into this frame's range.
+        Some(rows) => rows,
+        // Auto: the draft's rows + the meta line, capped at half the
+        // screen and 12 — tighter than the drag ceiling.
+        None => {
+            let auto_max = (area.height / 2).max(minimum).min(12);
+            app.input
+                .visual_row_count(wrap_width)
+                .saturating_add(1)
+                .min(auto_max as usize) as u16
+        }
     };
     desired.max(minimum).min(maximum)
 }
@@ -179,14 +190,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
     app.slot_actions.clear();
     app.tab_rects.clear();
+    app.tab_close_rects.clear();
     app.pet_want = None;
     app.harness_thumb = None;
     app.caret_cell = None;
-    // The mouse-only expand button's frame rect is rebuilt by
-    // `layout_expand_btn`; clear it first so a child view (or a frame where
-    // the card vanished) cannot keep a stale hit-test rect alive. The ↥
-    // prompt-jump button rect rides the same layout pass.
-    app.expand_btn = None;
+    // The composer box rect (its top row is the drag handle) and the ↥
+    // prompt-jump rect are rebuilt by the layout pass below; clear them
+    // first so a child view (or a frame where the card vanished) cannot
+    // keep stale hit-test rects alive.
+    app.composer_box = None;
     app.prompt_jump_btn = None;
     app.prompt_flash_lines = None;
     f.render_widget(
@@ -310,6 +322,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         cap_h + input_dock_body_h + composer_h + navigation_dock_h,
     )
     .intersection(frame);
+    // The resolved height, its legal range and the box itself ride on the
+    // frame for the drag/keyboard resize paths (issue #147). Only the
+    // boxed layout's top border is a real drag handle.
+    app.composer_h = composer_h;
+    app.composer_bounds = composer_height_bounds(main);
+    app.composer_box = if !child_view && cap_h > 0 {
+        Some(composer_box)
+    } else {
+        None
+    };
     let composer = if child_view {
         Rect::new(
             main.x,
@@ -521,6 +543,24 @@ fn draw_queue_shelf(f: &mut Frame, app: &App, area: Rect) {
                         .tr(
                             "  ·  ↑/↓ choose · enter edit · esc close",
                             "  ·  ↑/↓ 选择 · enter 编辑 · esc 关闭",
+                        )
+                        .to_string()
+                } else if app.queue_attach_failed() {
+                    // The attach finished and failed: no bind is coming, so
+                    // "send first" would promise an action that never lands.
+                    app.locale
+                        .tr(
+                            "  ·  attach failed · prompt stays queued",
+                            "  ·  连接失败 · 消息保留在队列里",
+                        )
+                        .to_string()
+                } else if app.queue_signin_pending() {
+                    // Sign-in must settle before a bind can land — the head
+                    // stays queued until then.
+                    app.locale
+                        .tr(
+                            "  ·  sign-in needed · prompt stays queued",
+                            "  ·  需要登录 · 消息保留在队列里",
                         )
                         .to_string()
                 } else {
@@ -1166,12 +1206,12 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     if total == 0 || area.width < 4 {
         return;
     }
-    // Per-tab display width: `" {indicator} {label} "` plus the trailing
+    // Per-tab display width: `" {indicator} {label} ×"` plus the trailing
     // arrow. Every indicator — Braille spinner included — is one cell, so
     // the widths only depend on the clamped label.
     let widths: Vec<usize> = tabs
         .iter()
-        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 5)
+        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 6)
         .collect();
     let avail = right.saturating_sub(area.x as usize);
 
@@ -1259,7 +1299,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme.fg_secondary).bg(tab_bg)
         };
         let arrow_width = ARROW.width();
-        let width = indicator.width() + label.width() + 3 + arrow_width;
+        let width = indicator.width() + label.width() + 4 + arrow_width;
         if x + width > right {
             let remaining = total - idx;
             let note = format!(" +{remaining}");
@@ -1270,13 +1310,25 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         }
         app.tab_rects
             .push((Rect::new(x as u16, area.y, width as u16, 1), idx));
+        // The `×` cell closes this tab (issue #146): its own hit rect so a
+        // click here never falls through to `tab_at` and switches instead.
+        app.tab_close_rects.push((
+            Rect::new((x + 4 + label.width()) as u16, area.y, 1, 1),
+            idx,
+        ));
         spans.push(Span::styled(format!(" {indicator} ",), indicator_style));
         spans.push(Span::styled(format!("{label} "), label_style));
+        let close_style = if tab.current {
+            Style::default().fg(active_fg).bg(tab_bg)
+        } else {
+            Style::default().fg(theme.caption).bg(tab_bg)
+        };
+        spans.push(Span::styled("×", close_style));
         let next_fits = tabs.get(idx + 1).is_some_and(|next| {
             let next_label = crate::transcript::clamp_str(&next.label, 16);
             // Every native status marker (including the Braille spinner) is
             // one terminal cell wide.
-            let next_width = next_label.width() + 4;
+            let next_width = next_label.width() + 5;
             x + width + next_width <= right
         });
         let next_bg = tabs
@@ -1731,17 +1783,16 @@ fn draw_composer(f: &mut Frame, app: &mut App, area: Rect, pet_pad: u16, navigat
         inner.height.saturating_sub(1 + navigation_dock_h),
     );
     app.composer_wrap_width = inner.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
-    layout_expand_btn(app, Rect::new(inner.x, inner.y, inner.width, 1));
+    layout_jump_btn(app, Rect::new(inner.x, inner.y, inner.width, 1));
     draw_input(f, app, well);
     draw_meta_row(
         f,
         app,
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
-    // The mouse-only composer buttons sit on the card's top row, outside
-    // the well; painted last so no text render can paint over them (issue
-    // #92 / ↥ of issue #103).
-    paint_composer_buttons(f, app);
+    // The ↥ button sits on the card's top row, outside the well; painted
+    // last so no text render can paint over it (issue #103).
+    paint_composer_chrome(f, app);
 }
 
 /// Meta row: run state + mode/permission chips left, model right,
@@ -1884,16 +1935,16 @@ fn status_title(app: &App) -> Line<'static> {
     }
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    let key_style = Style::default().fg(theme.fg_tertiary);
     // Mode chips: folded from the durable event stream (same facts as the
     // Web UI chips). Stock defaults render until the host reports its own
     // facts, so the landing screen still advertises preset + permission.
+    // Values only — the bindings live in /keys, not glued to the chips
+    // (issue #148).
     let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
     spans.push(Span::styled(
         format!("· {}", app.agent_label(preset)),
         Style::default().fg(theme.fg_tertiary),
     ));
-    spans.push(Span::styled(" ctrl+shift+a", key_style));
     let perm = app
         .modes
         .permission
@@ -1918,7 +1969,6 @@ fn status_title(app: &App) -> Line<'static> {
             theme.fg_tertiary
         }),
     ));
-    spans.push(Span::styled(" shift+tab", key_style));
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
             format!(" · {approval}"),
@@ -1934,92 +1984,35 @@ fn status_title(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Contextual shortcut hints — a tiny state machine over (run state ×
-/// draft): what Enter does *right now*, how to interrupt, how to steer
-/// immediately. Idle+empty renders nothing (`/keys` lives in the tip
-/// banner, not the dock).
+/// Contextual hints — trimmed to the one affordance worth keeping in the
+/// dock: `esc` interrupts a running turn. Every other binding is
+/// discoverable through `/keys` and the slash descriptions (issue #148);
+/// modal flows (queue editor, slash completion, delete confirm) keep
+/// working, they are just no longer advertised here — and suppress the
+/// interrupt label too, since esc then closes the modal rather than the
+/// turn.
 fn context_hints(app: &App) -> Vec<Span<'static>> {
     let theme = app.theme;
-    let key = Style::default()
-        .fg(theme.fg_tertiary)
-        .add_modifier(Modifier::BOLD);
-    let lbl = Style::default().fg(theme.caption);
-    let running = !matches!(app.state, RunState::Idle);
-    let edit_queue_key = if cfg!(target_os = "macos") {
-        "⌥↑"
-    } else {
-        "alt+↑"
-    };
-    let pairs: Vec<(&str, &str)> = if app.queue_delete_confirming() {
-        vec![
-            ("⏎", app.locale.tr("delete", "删除")),
-            ("esc", app.locale.tr("back", "返回")),
-        ]
-    } else if app.queue_selecting() {
-        vec![
-            ("↑↓", app.locale.tr("choose", "选择")),
-            ("⏎", app.locale.tr("edit", "编辑")),
-            ("esc", app.locale.tr("close", "关闭")),
-        ]
-    } else if app.slash_completion_open() {
-        vec![
-            ("⏎", app.locale.tr("select", "选择")),
-            ("esc", app.locale.tr("close", "关闭")),
-        ]
-    } else if app.queue_editing() {
-        vec![
-            ("⏎", app.locale.tr("save", "保存")),
-            ("^d", app.locale.tr("delete", "删除")),
-            ("esc", app.locale.tr("cancel", "取消")),
-        ]
-    } else {
-        match (running, app.input.is_empty()) {
-            // Working, nothing typed: stop it or edit the pending FIFO.
-            (true, true) if app.queued > 0 => vec![
-                (edit_queue_key, app.locale.tr("edit queue", "编辑队列")),
-                ("esc", app.locale.tr("interrupt", "中断")),
-            ],
-            (true, true) => vec![("esc", app.locale.tr("interrupt", "中断"))],
-            // Working with a draft: enter queues; ctrl+enter steers without
-            // cancellation.
-            (true, false) => vec![
-                ("⏎", app.locale.tr("queue", "排队")),
-                ("ctrl+⏎", app.locale.tr("steer", "立即转向")),
-                ("esc", app.locale.tr("interrupt", "中断")),
-            ],
-            // Idle, empty: point at the FIFO editor; otherwise nothing.
-            (false, true) if app.queued > 0 => {
-                vec![(edit_queue_key, app.locale.tr("edit queue", "编辑队列"))]
-            }
-            (false, true) => vec![],
-            // Idle with a draft: enter's meaning follows the prefix.
-            (false, false) if app.input.lines()[0].starts_with('/') => {
-                vec![("⏎", app.locale.tr("command", "命令"))]
-            }
-            (false, false) if app.input.lines()[0].starts_with('!') => {
-                vec![("⏎", app.locale.tr("shell", "运行命令"))]
-            }
-            (false, false) => vec![("⏎", app.locale.tr("send", "发送"))],
-        }
-    };
-    let mut spans = Vec::new();
-    for (i, (k, l)) in pairs.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                " · ".to_string(),
-                Style::default().fg(theme.border),
-            ));
-        }
-        spans.push(Span::styled(k.to_string(), key));
-        spans.push(Span::styled(format!(" {l}"), lbl));
+    let modal_open = app.queue_delete_confirming()
+        || app.queue_selecting()
+        || app.slash_completion_open()
+        || app.queue_editing();
+    if modal_open || matches!(app.state, RunState::Idle) {
+        return Vec::new();
     }
-    if !pairs.is_empty() {
-        spans.push(Span::styled(
-            " · ".to_string(),
-            Style::default().fg(theme.border),
-        ));
-    }
-    spans
+    vec![
+        Span::styled(
+            "esc".to_string(),
+            Style::default()
+                .fg(theme.fg_tertiary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}", app.locale.tr("interrupt", "中断")),
+            Style::default().fg(theme.caption),
+        ),
+        Span::styled(" · ".to_string(), Style::default().fg(theme.border)),
+    ]
 }
 
 /// Meta row, right side: contextual shortcut hints, model chip (brand
@@ -2790,14 +2783,14 @@ fn draw_composer_box(
 ) {
     let theme = app.theme;
     let has_input_dock = slot_has_nodes(app, "conversation.input.dock");
-    // Leave the cap row's top-right corner to the mouse-only composer
-    // buttons: the workspace title ends four cells early, so the `↥`
-    // prompt-jump glyph (issue #103) and the `⛶` expand glyph (issue #92)
-    // — with a space between them — never cover title text.
+    // Leave the cap row's top-right corner to the ↥ prompt-jump glyph
+    // (issue #103): the workspace title ends three cells early so the
+    // button never covers title text. The rest of the cap row is the
+    // drag-to-resize border (issue #147).
     let mut workspace = workspace_cap_title(app, area.width as usize);
     workspace
         .spans
-        .push(Span::raw(" ".repeat(EXPAND_BTN_W as usize + 1)));
+        .push(Span::raw(" ".repeat(JUMP_BTN_W as usize + 1)));
     let workspace_width = span_widths(&workspace.spans);
     let title_budget = (area.width as usize).saturating_sub(2 + workspace_width + 1);
     let dock_sections = has_input_dock
@@ -2829,9 +2822,9 @@ fn draw_composer_box(
         .style(Style::default().bg(theme.panel));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    // The expand glyph lives on the cap row's top-right, recorded before
-    // any dock actions so both hit-tests stay disjoint.
-    layout_expand_btn(app, Rect::new(area.x, area.y, area.width, 1));
+    // The ↥ glyph lives on the cap row's top-right, recorded before any
+    // dock actions so both hit-tests stay disjoint.
+    layout_jump_btn(app, Rect::new(area.x, area.y, area.width, 1));
     if inner.width < 4 || inner.height < 2 {
         return;
     }
@@ -2886,10 +2879,11 @@ fn draw_composer_box(
     app.att_thumbs.clear();
     app.composer_wrap_width = input.width.saturating_sub("❯ ".width() as u16).max(1) as usize;
     draw_input(f, app, input);
-    // The mouse-only composer buttons sit on the card's top border (the cap
-    // row), outside the well — a full draft never hides them. Painted last
-    // so nothing can paint over them (issue #92 / ↥ of issue #103).
-    paint_composer_buttons(f, app);
+    // The ↥ button sits on the card's top border (the cap row), outside
+    // the well — a full draft never hides it. Painted last so nothing can
+    // paint over it, and so the drag-hover border highlight lands on top
+    // (issue #103 / #147).
+    paint_composer_chrome(f, app);
 }
 
 /// grok-style hover preview: when the pointer rests on an inline chip (or
@@ -2997,89 +2991,65 @@ fn paint_caret(f: &mut Frame, x: u16, y: u16) {
     }
 }
 
-/// Mouse-only composer buttons on the cap row's top-right (issue #92 / the
-/// ↥ prompt jump of issue #103): the `⛶` expand/collapse glyph and, one
-/// cell left of it, the `↥` user-prompt jump glyph — both on the card's top
-/// border, outside the text well. Always visible; hovering (no key binding)
-/// highlights them; clicking pins/restores the well height or walks the
-/// user prompts.
-const EXPAND_BTN_W: u16 = 3;
-const EXPAND_BTN_H: u16 = 1;
-const EXPAND_BTN_MARGIN: u16 = 1;
+/// Composer cap-row chrome (issues #103 / #147): the ↥ prompt-jump button
+/// on the top-right of the composer's top border, plus the drag-hover
+/// highlight for the border itself. The ⛶ expand button of issue #92 is
+/// gone — the whole top border is now the resize handle: hovering or
+/// dragging it brightens the cap line, dragging it up/down pins the well
+/// height, and ^↑/^↓ step it for non-mouse terminals.
 /// The ↥ prompt-jump button is 2 cells wide (glyph + one margin), tucked
-/// directly left of the expand button's hit rect.
+/// against the right corner of the cap row.
 const JUMP_BTN_W: u16 = 2;
+const CAP_BTN_H: u16 = 1;
 
-/// Record the expand button's screen rect for hit-testing. `cap` is the
+/// Record the ↥ jump button's screen rect for hit-testing. `cap` is the
 /// composer's top row: the rounded card's cap line (boxed layout) or the
 /// well's first row (short-terminal fallback). Runs every frame, so the
-/// pointer can discover the glyph before hovering it. The ↥ jump button
-/// rect (issue #103) is recorded in the same pass, one cell left of the
-/// expand glyph.
-fn layout_expand_btn(app: &mut App, cap: Rect) {
-    if cap.width < EXPAND_BTN_W + EXPAND_BTN_MARGIN + 1 {
-        app.expand_btn = None;
+/// pointer can discover the glyph before hovering it.
+fn layout_jump_btn(app: &mut App, cap: Rect) {
+    if cap.width < JUMP_BTN_W + 2 {
         app.prompt_jump_btn = None;
         return;
     }
-    let x = cap
-        .x
-        .saturating_add(cap.width)
-        .saturating_sub(EXPAND_BTN_W + EXPAND_BTN_MARGIN);
-    app.expand_btn = Some(Rect::new(x, cap.y, EXPAND_BTN_W, EXPAND_BTN_H));
-    // The jump glyph occupies the cell left of the expand rect (the cap
-    // title leaves both cells free); hide it on caps too narrow to fit.
-    app.prompt_jump_btn = if x >= cap.x.saturating_add(JUMP_BTN_W) {
-        Some(Rect::new(x - JUMP_BTN_W, cap.y, JUMP_BTN_W, EXPAND_BTN_H))
-    } else {
-        None
-    };
+    // The glyph occupies the rect's rightmost cell, one cell inside the
+    // corner `╮` (the cap title leaves the corner cells free).
+    let x = cap.right().saturating_sub(JUMP_BTN_W + 1);
+    app.prompt_jump_btn = Some(Rect::new(x, cap.y, JUMP_BTN_W, CAP_BTN_H));
 }
 
-/// Paint the composer cap-row glyphs — `↥` (prompt jump, issue #103) left
-/// of `⛶` (expand/collapse, issue #92). Idle: quiet caption tone. Hovered:
-/// the glyph brightens to the strongest foreground — no BOLD, which
-/// terminals synthesize by widening the glyph and clip at the cell edge
-/// (the right corner would vanish), and no background chip; the brightness
-/// shift alone is the hover affordance. Called after the card render so it
+/// Paint the composer cap-row chrome. Drag hover (or an active drag)
+/// brightens the whole top border — dashes and corners — to the strongest
+/// foreground; idle it stays at the border tone. The ↥ glyph follows the
+/// same idle/hover brightness shift — no BOLD, which terminals synthesize
+/// by widening the glyph and clip at the cell edge (the right corner would
+/// vanish), and no background chip. Called after the card render so it
 /// always wins the pixels.
-fn paint_composer_buttons(f: &mut Frame, app: &mut App) {
+fn paint_composer_chrome(f: &mut Frame, app: &mut App) {
     let theme = app.theme;
-    // Button rects are derived from the (already clipped) composer layout,
-    // but `set_string` indexes the buffer directly: skip any cell that a
-    // pathological frame put outside it.
     let frame = f.area();
     let b = f.buffer_mut();
-    if let Some(rect) = app.prompt_jump_btn {
-        if rect.width >= JUMP_BTN_W && rect.height >= EXPAND_BTN_H {
-            let tone = if app.hover_prompt_jump_btn {
-                theme.fg
-            } else {
-                theme.caption
-            };
-            // Glyph = the rect's rightmost cell, one cell left of the ⛶.
-            let x = rect.x.saturating_add(rect.width).saturating_sub(1);
-            if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
-                b.set_string(x, rect.y, "↥", Style::default().fg(tone));
+    if app.hover_composer_border || app.composer_resize.is_some() {
+        if let Some(cap) = app.composer_box {
+            // The recorded box is already clipped to the frame, so its cap
+            // cells index the buffer directly.
+            for x in cap.x..cap.right() {
+                let cell = &mut b[(x, cap.y)];
+                if matches!(cell.symbol(), "─" | "╭" | "╮") {
+                    cell.set_fg(theme.fg);
+                }
             }
         }
     }
-    let Some(rect) = app.expand_btn else {
-        return;
-    };
-    if rect.width < EXPAND_BTN_W || rect.height < EXPAND_BTN_H {
-        return;
-    }
-    // The glyph sits one cell in from the card's corner: rightmost cell of
-    // the rect minus one, so the corner `╮` stays visible beside it.
-    let x = rect.x + rect.width - 2;
-    let tone = if app.hover_expand_btn {
-        theme.fg
-    } else {
-        theme.caption
-    };
-    if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
-        b.set_string(x, rect.y, "⛶", Style::default().fg(tone));
+    if let Some(rect) = app.prompt_jump_btn {
+        let tone = if app.hover_prompt_jump_btn {
+            theme.fg
+        } else {
+            theme.caption
+        };
+        let x = rect.x.saturating_add(rect.width).saturating_sub(1);
+        if frame.contains(ratatui::layout::Position::new(x, rect.y)) {
+            b.set_string(x, rect.y, "↥", Style::default().fg(tone));
+        }
     }
 }
 
@@ -3596,11 +3566,16 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, screen: Rect) {
     let mut rows = Vec::with_capacity(item_count);
     for item in &items {
         // The current model/mode gets a ✓ pinned to its label — it survives
-        // narrow terminals, unlike a right-edge tag.
+        // narrow terminals, unlike a right-edge tag. A label longer than the
+        // column is ellipsized so it cannot bleed into the meta column
+        // (pi-acp's method names run past 30 chars).
         let label = if is_current(item) {
-            format!("{} ✓", item.label)
+            format!(
+                "{} ✓",
+                crate::transcript::clamp_str(&item.label, crate::app::PICKER_LABEL_COL - 3)
+            )
         } else {
-            item.label.clone()
+            crate::transcript::clamp_str(&item.label, crate::app::PICKER_LABEL_COL - 1)
         };
         rows.push(Row::new(vec![
             Cell::from(Span::styled(
@@ -3753,20 +3728,74 @@ fn draw_permission_ask(f: &mut Frame, app: &App, screen: Rect) {
 
 fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
     let theme = app.theme;
-    let Some(ask) = app.elicitation_ask.as_mut() else {
-        return;
-    };
-    let Some(state) = ask.form.fields.get(ask.form.index) else {
-        return;
-    };
+    // The auth credential form reuses this renderer — same modal chrome,
+    // with `secret` vars masked. The ACP elicitation ask wins when both
+    // are somehow up (issue #160).
+    let mut scroll_local = 0usize;
+    let (form, ask_scroll): (&mut crate::elicitation::ElicitationFormState, &mut usize) =
+        if let Some(ask) = app.elicitation_ask.as_mut() {
+            (&mut ask.form, &mut ask.scroll)
+        } else if let Some(ask) = app.auth_form.as_mut() {
+            (&mut ask.form, &mut scroll_local)
+        } else {
+            return;
+        };
     let content_width = screen.width.saturating_sub(10).clamp(28, 74) as usize;
+    let Some(state) = form.fields.get(form.index) else {
+        // A fieldless request is a URL elicitation: show the message and
+        // the link so it can be opened manually (headless/SSH safe), then
+        // Enter confirms / Esc cancels (issue #160).
+        let mut top = vec![
+            Line::from(Span::styled(
+                form.message.clone(),
+                Style::default().fg(theme.caption),
+            )),
+            Line::default(),
+        ];
+        if let Some(url) = &form.url {
+            top.push(Line::from(Span::styled(
+                url.clone(),
+                Style::default().fg(theme.brand).add_modifier(Modifier::BOLD),
+            )));
+            top.push(Line::default());
+            top.push(Line::from(Span::styled(
+                app.locale.tr(
+                    "open the link to continue · enter done · esc cancel",
+                    "请打开链接继续 · enter 完成 · esc 取消",
+                ),
+                Style::default().fg(theme.fg_secondary),
+            )));
+        } else {
+            top.push(Line::from(Span::styled(
+                app.locale.tr("enter confirm · esc cancel", "enter 确认 · esc 取消"),
+                Style::default().fg(theme.fg_secondary),
+            )));
+        }
+        let cap_w = screen.width.saturating_sub(4).max(24);
+        let w = (content_width as u16 + 4).min(cap_w);
+        let h = (top.len() + 2).min(screen.height.saturating_sub(2) as usize) as u16;
+        let x = screen.x + (screen.width.saturating_sub(w)) / 2;
+        let y = screen.y + (screen.height.saturating_sub(h)) / 3;
+        let area = Rect::new(x, y, w, h);
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.brand))
+            .title(Span::styled(" sign in ", Style::default().fg(theme.caption)))
+            .style(Style::default().bg(theme.panel));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(Paragraph::new(top), inner);
+        return;
+    };
     // Fixed chrome: message + field title on top, answers pinned to the
     // bottom. The question detail — for a plan review that is the complete
     // plan markdown — owns a scrollable pane between them and renders
     // through the full markdown pipeline.
     let top = vec![
         Line::from(Span::styled(
-            ask.form.message.clone(),
+            form.message.clone(),
             Style::default().fg(theme.caption),
         )),
         Line::default(),
@@ -3870,23 +3899,34 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
             }
         }
         _ => {
+            // Auth secret vars echo as bullets — the typed key never shows
+            // on screen (issue #160).
+            let display = if state.field.secret {
+                "\u{2022}".repeat(state.input.buf.chars().count())
+            } else {
+                state.input.buf.clone()
+            };
             let cursor_row = bottom.len();
             let cursor_col = "❯ ".width()
-                + state
-                    .input
-                    .buf
-                    .chars()
-                    .take(state.input.cursor)
-                    .collect::<String>()
-                    .width();
+                + if state.field.secret {
+                    state.input.cursor
+                } else {
+                    state
+                        .input
+                        .buf
+                        .chars()
+                        .take(state.input.cursor)
+                        .collect::<String>()
+                        .width()
+                };
             bottom.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(theme.brand)),
-                Span::styled(state.input.buf.clone(), Style::default().fg(theme.fg)),
+                Span::styled(display, Style::default().fg(theme.fg)),
             ]));
             field_cursor = Some((cursor_row, cursor_col));
         }
     }
-    if let Some(error) = &ask.form.error {
+    if let Some(error) = &form.error {
         bottom.push(Line::default());
         bottom.push(Line::from(Span::styled(
             error.clone(),
@@ -3907,26 +3947,26 @@ fn draw_elicitation_form(f: &mut Frame, app: &mut App, screen: Rect) {
     } else {
         desc_len.saturating_sub(middle_h)
     };
-    let scroll = ask.scroll.min(max_scroll) as u16;
+    let scroll = (*ask_scroll).min(max_scroll) as u16;
     // Normalize the stored offset so scrolling back up starts from the
     // visible bottom (End parks at `usize::MAX` until the next draw).
-    ask.scroll = ask.scroll.min(max_scroll);
+    *ask_scroll = (*ask_scroll).min(max_scroll);
     let h = (base + middle_h).min(budget) as u16;
     let x = screen.x + (screen.width.saturating_sub(w)) / 2;
     let y = screen.y + (screen.height.saturating_sub(h)) / 3;
     let area = Rect::new(x, y, w, h);
     f.render_widget(Clear, area);
-    let count = ask.form.fields.len();
+    let count = form.fields.len();
     let title = if max_scroll > 0 {
         format!(
             " ask · {}/{} · pgup/pgdn/end scroll · enter next/submit · tab skip · esc cancel ",
-            ask.form.index + 1,
+            form.index + 1,
             count,
         )
     } else {
         format!(
             " ask · {}/{} · enter next/submit · tab skip · esc cancel ",
-            ask.form.index + 1,
+            form.index + 1,
             count,
         )
     };
@@ -4077,29 +4117,41 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
                 .into(),
         ));
     } else if let Some(error) = &app.connection_error {
-        out.push(kv(app.locale.tr("status", "状态"), format!("{} · {error}", app.locale.tr("connection failed", "连接失败"))));
-    } else if matches!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn | crate::acp_auth::AuthStatus::Failed) {
-        let detail = app.auth.method_name.as_deref().or(app.auth.method_id.as_deref()).unwrap_or("Agent");
-        let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
-            format!("{} · {detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
+        // The full failure (including the agent stderr tail) is already in
+        // the transcript as a wrapped notice; the status row shows only its
+        // first line — embedded newlines cannot render in a one-line span.
+        let headline = error.lines().next().unwrap_or_default();
+        let label = if app.attach_refused {
+            app.locale.tr("initialize refused", "初始化被拒绝")
         } else {
-            format!("{} · {detail} · /auth", app.locale.tr("sign-in failed", "登录失败"))
+            app.locale.tr("connection failed", "连接失败")
+        };
+        out.push(kv(app.locale.tr("status", "状态"), format!("{label} · {headline}")));
+    } else if matches!(app.auth.status, crate::acp_auth::AuthStatus::SigningIn | crate::acp_auth::AuthStatus::Failed) {
+        let detail = app
+            .auth
+            .method_label()
+            .map(|name| format!(" · {name}"))
+            .unwrap_or_default();
+        let message = if app.auth.status == crate::acp_auth::AuthStatus::SigningIn {
+            format!("{}{detail}", app.locale.tr("signing in — waiting for Agent response", "登录中，等待 Agent 返回结果"))
+        } else {
+            format!("{}{detail} · ctrl+g", app.locale.tr("sign-in failed", "登录失败"))
         };
         out.push(kv(app.locale.tr("credentials", "凭据"), message));
     } else if app.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
         let detail = app
             .auth
-            .method_name
-            .as_deref()
-            .or(app.auth.method_id.as_deref())
-            .unwrap_or("agent");
+            .method_label()
+            .map(|name| format!(" · {name}"))
+            .unwrap_or_default();
         out.push(Line::from(vec![
             Span::styled("  ⚠ ".to_string(), Style::default().fg(theme.warn)),
             Span::styled(
                 if app.locale == crate::locale::Locale::Zh {
-                    format!("需要登录 · {detail} — 使用 /auth（Agent 的 /login 仍作为消息发送）")
+                    format!("需要登录{detail} — ctrl+g 选择登录方式")
                 } else {
-                    format!("sign-in needed · {detail} — /auth (agent /login stays a prompt)")
+                    format!("sign-in needed{detail} — ctrl+g opens the auth picker")
                 },
                 Style::default().fg(theme.warn_soft()),
             ),
@@ -4107,11 +4159,17 @@ fn welcome_info_lines(app: &App) -> Vec<Line<'static>> {
     } else if app.auth.status == crate::acp_auth::AuthStatus::Configured {
         let detail = app
             .auth
-            .method_name
-            .as_deref()
-            .or(app.auth.method_id.as_deref())
+            .method_label()
             .map(|method| format!("ACP authenticate · {method}"))
-            .unwrap_or_else(|| app.locale.tr("ready · credential source not reported", "已就绪 · 凭据来源未上报").into());
+            .unwrap_or_else(|| {
+                if app.auth.methods.is_empty() {
+                    app.locale.tr("ready · credential source not reported", "已就绪 · 凭据来源未上报").into()
+                } else {
+                    // The row is already labelled "credentials" — do not
+                    // repeat the word in the value (issue #160).
+                    app.locale.tr("ready", "已就绪").into()
+                }
+            });
         out.push(kv(
             app.locale.tr("credentials", "凭据"),
             detail,
@@ -4173,6 +4231,80 @@ fn shorten_home(path: &str) -> String {
     match std::env::var("HOME") {
         Ok(home) if path.starts_with(&home) => format!("~{}", &path[home.len()..]),
         _ => path.to_string(),
+    }
+}
+
+/// `OSC 111` — restore the terminal's own default background.
+///
+/// The painter fills every cell of the grid (see `draw`), but terminals
+/// also color regions no cell writer can reach — the unusable sub-cell
+/// strip below the last row of a non-integer-height window, lines the
+/// emulator scrolls in, areas restored by non-BCE erases — with the
+/// terminal default background, not with cell colors. Because the app
+/// never set it, that strip read as a gray band under the status bar on
+/// macOS terminals (#145). Syncing the default background to the canvas
+/// color via `OSC 11` makes those emulator-painted regions match.
+pub const OSC_BG_RESET: &str = "\x1b]111\x1b\\";
+
+/// Mirrors crossterm's `Colored::ansi_color_disabled`
+/// (<https://no-color.org/>): a non-empty `NO_COLOR` suppresses all ANSI
+/// colour output. The OSC background sync counts as colour output and
+/// must be suppressed too — with SGR colours off, the terminal's default
+/// fg draws on its default bg, so forcing the bg to the canvas colour
+/// (e.g. light theme's white) makes every glyph invisible on the
+/// same-coloured background (#149 regression: `NO_COLOR` + `--theme
+/// light` rendered a blank white window).
+pub fn ansi_color_disabled() -> bool {
+    !std::env::var("NO_COLOR").unwrap_or_default().is_empty()
+}
+
+/// Emits `OSC 11`/`OSC 111` when the canvas background changes, unless
+/// `NO_COLOR` disables colour output entirely. One instance lives in the
+/// run loop; `restore_terminal` always writes [`OSC_BG_RESET`] directly
+/// because it runs from exit paths (and the panic hook) that cannot reach
+/// this state — an idempotent restore is safe even when nothing was set.
+pub struct CanvasBgSync {
+    enabled: bool,
+    last: Option<ratatui::style::Color>,
+}
+
+impl CanvasBgSync {
+    /// `enabled=false` suppresses emission completely (used under
+    /// `NO_COLOR`; see [`ansi_color_disabled`]).
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last: None,
+        }
+    }
+
+    /// Write the background-sync sequence into `out` when `color` changed
+    /// since the previous call. Writes nothing when disabled or when the
+    /// canvas colour is unchanged.
+    pub fn sync<W: std::io::Write>(
+        &mut self,
+        out: &mut W,
+        color: ratatui::style::Color,
+    ) -> std::io::Result<()> {
+        if !self.enabled || self.last == Some(color) {
+            return Ok(());
+        }
+        self.last = Some(color);
+        out.write_all(canvas_bg_sequence(color).as_bytes())
+    }
+}
+
+/// The sequence setting the terminal default background to `color`
+/// (`OSC 11 ; #rrggbb`), or [`OSC_BG_RESET`] for `Color::Reset` — kitty
+/// backdrop sessions leave cells Reset so the emulator's own background
+/// shows through, and strips should match those cells. Non-Rgb named
+/// canvas colors also take the reset (themes ship Rgb).
+pub fn canvas_bg_sequence(color: ratatui::style::Color) -> String {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => {
+            format!("\x1b]11;#{r:02x}{g:02x}{b:02x}\x1b\\")
+        }
+        _ => OSC_BG_RESET.to_string(),
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-harness-tui"
-version = "0.3.1"
+version = "0.3.2-beta.2"
 edition = "2021"
 description = "Terminal-native ACP client UI with a Cordis client plugin tree"
 license = "MIT"
@@ -33,6 +33,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }
+
+# Full DWARF for dev/test binaries exceeds the linker's 4 GiB .debug_info
+# relocation limit (rust-lld R_X86_64_32 out of range) on this dependency
+# tree; line tables keep file:line info for panics and backtraces. `test`
+# and `devlocal` inherit `dev`, so they get the same setting.
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 lto = true

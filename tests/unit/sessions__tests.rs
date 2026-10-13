@@ -78,7 +78,7 @@ fn lists_workspace_sessions_newest_first_and_skips_current() {
 #[test]
 fn legacy_dsh_tui_sessions_remain_discoverable_after_the_martty_move() {
     let home = std::env::temp_dir().join(format!("martty-legacy-sessions-{}", std::process::id()));
-    let current = home.join(".martty/sessions");
+    let current = home.join(".oma/sessions");
     let legacy = home.join(".dsh-tui/sessions");
     std::fs::create_dir_all(&current).unwrap();
     std::fs::create_dir_all(&legacy).unwrap();

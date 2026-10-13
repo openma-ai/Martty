@@ -16,12 +16,17 @@ import {
   installRegistryBinary,
   managedBinaryPath,
   normalizeAcpRegistry,
+  OPENMA_PI_ACP,
   readAcpRegistrySnapshot,
 } from './harness-registry.js'
 
 export { fetchAcpRegistry } from './harness-registry.js'
 
 const HARNESS_ID = /^[a-z0-9][a-z0-9-]*$/
+const PI_ACP_LATEST = OPENMA_PI_ACP
+const PI_ACP_SPEC = /^(?:@openma\/)?pi-acp(?:@.+)?$/
+const PI_ACP_ID = 'pi-acp'
+const PI_ACP_LEGACY_LABEL = 'Pi (OpenMA)'
 const ANSI = Object.freeze({ reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m' })
 
 // Kept as a source-compatible empty export. The source of truth is the
@@ -361,14 +366,23 @@ function validateHarness(value) {
     || Object.entries(env).some(([key, item]) => key.length === 0 || typeof item !== 'string'))) {
     throw new Error('harness env must be an object of strings')
   }
-  const normalizedArgs = /^npx(?:\.(?:cmd|bat|exe))?$/i.test(path.win32.basename(value.command))
-    ? [...args].filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
+  const isNpx = /^npx(?:\.(?:cmd|bat|exe))?$/i.test(path.win32.basename(value.command))
+  const normalizedArgs = isNpx
+    ? [...args]
+      .filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
+      // A pinned pi-acp spec (any old `pi-acp@x` or `@openma/pi-acp@x` entry)
+      // always resolves `latest` at runtime instead — harness upgrades ship
+      // through npm, never through a Martty release.
+      .map((arg) => PI_ACP_SPEC.test(arg) ? PI_ACP_LATEST : arg)
     : [...args]
+  const label = typeof value.label === 'string' && value.label.trim().length > 0
+    ? value.label
+    : value.id
   return {
     id: value.id,
-    label: typeof value.label === 'string' && value.label.trim().length > 0
-      ? value.label
-      : value.id,
+    // Configs saved when the pi harness was branded "Pi (OpenMA)" keep
+    // working; only the stale default display label migrates to the id.
+    label: value.id === PI_ACP_ID && label === PI_ACP_LEGACY_LABEL ? PI_ACP_ID : label,
     command: value.command,
     args: normalizedArgs,
     ...(env !== undefined ? { env: { ...env } } : {}),
@@ -520,6 +534,7 @@ function registryRecords(options = {}) {
           : record.id,
         version: typeof record.version === 'string' ? record.version : 'unversioned',
         description: typeof record.description === 'string' ? record.description : '',
+        ...(typeof record.repository === 'string' ? { repository: record.repository } : {}),
         distributions,
       }]
     }

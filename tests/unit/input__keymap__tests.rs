@@ -174,6 +174,28 @@ fn expand_all_lives_on_ctrl_o_not_ctrl_e() {
     );
 }
 
+/// Issue #147: ^↑/^↓ resize the composer for non-mouse terminals; plain
+/// and ⌘-arrows keep their earlier meanings.
+#[test]
+fn ctrl_arrows_step_the_composer_height() {
+    assert_eq!(
+        classify(&key(KeyCode::Up, CTRL), typing()),
+        Some(Action::ComposerGrow)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Down, CTRL), typing()),
+        Some(Action::ComposerShrink)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Up, CTRL), empty()),
+        Some(Action::ComposerGrow)
+    );
+    assert_eq!(
+        classify(&key(KeyCode::Down, CTRL), empty()),
+        Some(Action::ComposerShrink)
+    );
+}
+
 #[test]
 fn dual_use_keys_scroll_only_on_empty_draft() {
     assert_eq!(
@@ -262,6 +284,8 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::ModelPicker,
         Action::CycleAgent,
         Action::CyclePermission,
+        Action::ComposerGrow,
+        Action::ComposerShrink,
         Action::TabComplete,
         Action::HistoryPrev,
         Action::HistoryNext,
@@ -298,6 +322,8 @@ fn every_action_has_exactly_one_documented_row_except_typing_insert() {
         Action::SelectLineEnd,
         Action::CopySelection,
         Action::CutSelection,
+        Action::CloseSession,
+        Action::OpenAuth,
     ];
     let documented: Vec<Action> = KEY_ROWS.iter().map(|row| row.action).collect();
     assert_eq!(
@@ -445,4 +471,23 @@ fn keys_markdown_lists_ctrl_j_and_the_composer_section() {
     let zh = crate::input::keymap::keys_markdown(true, false);
     assert!(zh.contains("ctrl+j"), "zh keys must list ctrl+j");
     assert!(zh.contains("输入框 · textarea"), "zh section title");
+}
+
+#[test]
+fn ctrl_shift_l_classifies_as_open_auth() {
+    let key = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(
+        classify(&key, crate::input::keymap::KeyCtx::default()),
+        Some(crate::input::keymap::Action::OpenAuth)
+    );
+}
+
+#[test]
+fn plain_g_does_not_open_auth() {
+    // The 'g' arm's ctrl guard must keep plain g typing/vim keys elsewhere.
+    let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_ne!(
+        classify(&key, crate::input::keymap::KeyCtx::default()),
+        Some(crate::input::keymap::Action::OpenAuth)
+    );
 }

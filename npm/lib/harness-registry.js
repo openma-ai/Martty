@@ -19,13 +19,18 @@ import { downloadFile } from './download.js'
 
 export const ACP_REGISTRY_URL = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json'
 
-const OPENMA_PI_ACP = '@openma/pi-acp@0.1.6'
+export const OPENMA_PI_ACP = '@openma/pi-acp@latest'
+export const OPENMA_PI_ACP_REPOSITORY = 'https://github.com/openma-ai/pi-acp'
 
 function preferMarttyPiAcp(records) {
   return records.map((record) => record.id === 'pi-acp' ? {
     ...record,
-    label: 'Pi (OpenMA)',
-    version: '0.1.6',
+    label: 'pi-acp',
+    version: 'latest',
+    // The official catalog also lists an unrelated unprefixed pi-acp package;
+    // Martty only ever launches @openma/pi-acp, and the repository URL is how
+    // users tell the two entries apart.
+    repository: OPENMA_PI_ACP_REPOSITORY,
     distributions: [{
       type: 'npx', command: 'npx', args: [OPENMA_PI_ACP], env: {},
     }],
@@ -144,6 +149,7 @@ export function normalizeAcpRegistry(value, options = {}) {
       ...(typeof agent.icon === 'string' ? { icon: agent.icon } : {}),
       version: agent.version,
       description: typeof agent.description === 'string' ? agent.description : '',
+      ...(typeof agent.repository === 'string' ? { repository: agent.repository } : {}),
       distributions,
     }]
   })

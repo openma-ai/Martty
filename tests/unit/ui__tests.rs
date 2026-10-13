@@ -451,6 +451,40 @@ fn failed_connection_landing_has_target_and_error_not_waiting_or_credentials() {
 }
 
 #[test]
+fn failed_connection_landing_keeps_only_the_first_error_line() {
+    let mut app = live_test_app();
+    app.server_info = Some("dsh-acp".into());
+    // The full error (including the agent stderr tail) renders wrapped in
+    // the transcript notice; the one-line status row can only carry the
+    // headline, so an embedded newline must not reach the span.
+    app.connection_error = Some("exited (1)\nAgent stderr:\nlong detail".into());
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("exited (1)"), "{text}");
+    assert!(!text.contains("Agent stderr"), "{text}");
+
+    app.connection_error = Some(String::new());
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("connection failed"), "{text}");
+}
+
+#[test]
+fn a_refused_attach_landing_says_initialize_refused_not_failed() {
+    let mut app = live_test_app();
+    app.server_info = Some("acp".into());
+    // An answered refusal: the agent is attached — the landing row names the
+    // refusal instead of the dead-attach "connection failed".
+    app.connection_error = Some("unsupported client".into());
+    app.attach_refused = true;
+    app.session_id = "unavailable".into();
+    let text = welcome_info_lines(&app).iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(text.contains("initialize refused"), "{text}");
+    assert!(!text.contains("connection failed"), "{text}");
+}
+
+#[test]
 fn attached_landing_does_not_guess_runtime_before_initialize_or_after_failure() {
     let mut app = live_test_app();
     app.cfg.bin = "dsh-acp".into();
@@ -493,6 +527,44 @@ fn welcome_auth_unknown_source_does_not_claim_authenticate() {
 }
 
 #[test]
+fn welcome_auth_with_methods_reports_ready_not_unreported() {
+    // An agent that advertised auth methods did report its providers, so
+    // a configured status without a named method reads "ready", not
+    // "credential source not reported" — and the "credentials" label is
+    // not repeated in the value (issue #160).
+    let mut app = live_test_app();
+    let methods = crate::acp_auth::parse_auth_methods(
+        &serde_json::json!([
+            { "id": "api-key:deepseek", "name": "DeepSeek API key",
+              "_meta": { "api-key": { "provider": "deepseek" } } }
+        ]),
+        &["dsh-acp".into()],
+        "/tmp",
+        &Default::default(),
+    );
+    app.auth = crate::acp_auth::configured_snapshot(methods, None);
+    let lines = welcome_info_lines(&app);
+    // The credentials row's value is "ready" — the label is not repeated.
+    let row = lines
+        .iter()
+        .find(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.contains("credentials"))
+        })
+        .expect("credentials row");
+    let value = row
+        .spans
+        .last()
+        .map(|span| span.content.as_ref())
+        .unwrap_or_default();
+    assert_eq!(value, "ready");
+    let text = lines.iter().flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref()).collect::<String>();
+    assert!(!text.contains("not reported"), "{text}");
+}
+
+#[test]
 fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     let flat = |lines: Vec<Line>| lines.iter().flat_map(|line| line.spans.iter())
         .map(|span| span.content.as_ref()).collect::<Vec<_>>().join("\n");
@@ -505,7 +577,7 @@ fn welcome_auth_distinguishes_pending_and_failed_authenticate() {
     app.auth.status = crate::acp_auth::AuthStatus::Failed;
     let failed = flat(welcome_info_lines(&app));
     assert!(failed.contains("sign-in failed"), "{failed}");
-    assert!(failed.contains("/auth"), "{failed}");
+    assert!(failed.contains("ctrl+g"), "{failed}");
     assert!(!failed.contains("host dsh"), "{failed}");
 }
 
@@ -534,7 +606,7 @@ fn welcome_info_uses_the_active_acp_runtime_and_reported_session_model() {
 }
 
 #[test]
-fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
+fn status_chips_show_values_without_inline_key_hints() {
     let flat = |line: &Line| -> String {
         line.spans
             .iter()
@@ -544,35 +616,31 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     let mut app = test_app();
 
     app.locale = crate::locale::Locale::Zh;
-    let zh_line = status_title(&app);
-    let zh = flat(&zh_line);
-    assert!(
-        zh.contains("Standard mode ctrl+shift+a · 工作区可写 shift+tab"),
-        "{zh}"
-    );
+    let zh = flat(&status_title(&app));
+    // Issue #148: values only — the bindings live in /keys, not the dock.
+    assert!(zh.contains("Standard mode · 工作区可写"), "{zh}");
+    assert!(!zh.contains("ctrl+shift+a"), "{zh}");
+    assert!(!zh.contains("shift+tab"), "{zh}");
     assert!(!zh.contains("permission"), "{zh}");
     assert!(!zh.contains("权限"), "{zh}");
 
     app.locale = crate::locale::Locale::En;
     let en_line = status_title(&app);
     let en = flat(&en_line);
-    assert!(
-        en.contains("Standard mode ctrl+shift+a · Workspace Write shift+tab"),
-        "{en}"
-    );
+    assert!(en.contains("Standard mode · Workspace Write"), "{en}");
+    assert!(!en.contains("ctrl+shift+a"), "{en}");
+    assert!(!en.contains("shift+tab"), "{en}");
     assert!(!en.contains("permission"), "{en}");
     assert!(!en.contains("access"), "{en}");
 
-    let key_spans = en_line
-        .spans
-        .iter()
-        .filter(|span| span.content.contains('+'))
-        .collect::<Vec<_>>();
-    assert_eq!(key_spans.len(), 2, "{en}");
-    assert!(key_spans.iter().all(|span| {
-        span.style.fg == Some(app.theme.fg_tertiary)
-            && !span.style.add_modifier.contains(Modifier::BOLD)
-    }));
+    // No chord-looking spans remain anywhere in the chip row.
+    assert!(
+        en_line
+            .spans
+            .iter()
+            .all(|span| !span.content.contains('+')),
+        "{en}"
+    );
     let value_spans = en_line
         .spans
         .iter()
@@ -584,9 +652,39 @@ fn status_shortcut_hints_follow_their_values_and_use_key_styling() {
     assert!(value_spans
         .iter()
         .all(|span| span.style.fg == Some(app.theme.fg_tertiary)));
-    // Issue #77: the shortcut hints share the light tertiary tone of the
-    // mode labels and the composer stats dock readout (no brand accent).
-    assert_eq!(key_spans[0].style.fg, value_spans[0].style.fg);
+}
+
+#[test]
+fn status_chips_render_optional_approval_plan_and_fallback_labels() {
+    let flat = |line: &Line| -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    let mut app = test_app();
+
+    // Approval and plan chips render when the host reports them — still
+    // values only, no key glued on (#148).
+    app.modes.approval = Some("on-request".into());
+    app.modes.plan = true;
+    let line = status_title(&app);
+    let s = flat(&line);
+    assert!(s.contains(" · on-request"), "{s}");
+    assert!(s.contains(" · plan"), "{s}");
+    assert!(!s.contains('+'), "{s}");
+
+    // zh: a permission id outside the renamed trio falls back to the
+    // shared label, and a sandbox-only mode feeds the same chip.
+    app.locale = crate::locale::Locale::Zh;
+    app.modes.permission = Some("custom-perm".into());
+    let s = flat(&status_title(&app));
+    assert!(s.contains("Custom Perm"), "{s}");
+    app.modes.permission = None;
+    app.modes.sandbox = Some("sandbox-mode".into());
+    let s = flat(&status_title(&app));
+    assert!(s.contains("Sandbox Mode"), "{s}");
+    assert!(!s.contains('+'), "{s}");
 }
 
 #[test]
@@ -619,43 +717,43 @@ fn cordis_protocol_id_is_rendered_as_creator() {
 }
 
 #[test]
-fn meta_row_hints_follow_the_state_machine() {
+fn meta_row_hints_only_advertise_the_running_interrupt() {
     let flat = |spans: Vec<Span>| -> String {
         spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     };
     let mut app = test_app();
-    // idle · empty → no dock hint at all (no /keys; ctrl+k belongs to the editor)
-    let s = flat(context_hints(&app));
-    assert!(s.is_empty(), "{s}");
-    assert!(!s.contains("keys"), "{s}");
-    // idle · draft → enter sends
-    app.input.set("hello".into());
-    let s = flat(context_hints(&app));
-    assert!(s.contains("⏎ send"), "{s}");
-    assert!(!s.contains("keys"), "{s}");
-    // idle · slash recommendations own Enter/Esc; shell drafts relabel Enter
-    app.input.set("/mo".into());
-    let s = flat(context_hints(&app));
-    assert!(s.contains("⏎ select") && s.contains("esc close"), "{s}");
-    app.input.set("!ls".into());
-    assert!(flat(context_hints(&app)).contains("⏎ shell"));
-    // running · empty → interrupt only
-    app.state = RunState::Running;
+    // Issue #148: only the mid-turn interrupt survives in the dock — every
+    // other binding lives in /keys. Idle states render nothing, whatever
+    // the draft holds (plain text, slash command, shell, pending FIFO).
+    for draft in ["", "hello", "/mo", "!ls"] {
+        app.input.set(draft.into());
+        let s = flat(context_hints(&app));
+        assert!(s.is_empty(), "idle draft {draft:?} rendered {s:?}");
+    }
     app.input.clear();
+    app.queued = 2;
+    assert!(flat(context_hints(&app)).is_empty());
+    app.queued = 0;
+    // Running, draft or not: esc interrupt, and nothing else.
+    app.state = RunState::Running;
+    for draft in ["", "follow-up"] {
+        app.input.set(draft.into());
+        let s = flat(context_hints(&app));
+        assert!(s.contains("esc interrupt"), "{s}");
+        assert!(!s.contains("⏎"), "{s}");
+        assert!(!s.contains("queue"), "{s}");
+        assert!(!s.contains("steer"), "{s}");
+        assert!(!s.contains("send"), "{s}");
+    }
+    // zh localizes the surviving label.
+    app.locale = crate::locale::Locale::Zh;
     let s = flat(context_hints(&app));
-    assert!(s.contains("esc interrupt"), "{s}");
+    assert!(s.contains("esc 中断"), "{s}");
     assert!(!s.contains("⏎"), "{s}");
-    // running · draft → queue + send-now + interrupt
-    app.input.set("follow-up".into());
-    let s = flat(context_hints(&app));
-    assert!(
-        s.contains("⏎ queue") && s.contains("ctrl+⏎ steer") && s.contains("esc interrupt"),
-        "{s}"
-    );
 }
 
 #[test]
-fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
+fn meta_row_hints_stay_quiet_while_queue_modals_are_open() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     let flat = |spans: Vec<Span>| -> String {
@@ -665,6 +763,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
     let (ctl, _commands) = crate::controller::tests::test_controller();
     app.state = RunState::Running;
     app.input.set("queued draft".into());
+    // Plain running state still advertises the interrupt (#148 keeps it).
+    assert!(flat(context_hints(&app)).contains("esc interrupt"));
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -677,10 +777,11 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         &ctl,
     );
 
-    let selecting = flat(context_hints(&app));
-    assert!(selecting.contains("↑↓ choose"), "{selecting}");
-    assert!(selecting.contains("⏎ edit"), "{selecting}");
-    assert!(selecting.contains("esc close"), "{selecting}");
+    // Modal flows still work — they just aren't advertised in the dock,
+    // and an open modal suppresses the interrupt label since esc then
+    // closes the modal rather than the turn.
+    assert!(app.queue_selecting(), "queue picker should be open");
+    assert!(flat(context_hints(&app)).is_empty());
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -689,10 +790,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         &ctl,
     );
 
-    let edit = flat(context_hints(&app));
-    assert!(edit.contains("⏎ save"), "{edit}");
-    assert!(edit.contains("^d delete"), "{edit}");
-    assert!(edit.contains("esc cancel"), "{edit}");
+    assert!(app.queue_editing(), "queue editor should be open");
+    assert!(flat(context_hints(&app)).is_empty());
 
     app.handle(
         crate::bus::AppEvent::Term(Event::Key(KeyEvent::new(
@@ -701,9 +800,8 @@ fn meta_row_hints_explain_queue_edit_and_delete_confirmation() {
         ))),
         &ctl,
     );
-    let confirm = flat(context_hints(&app));
-    assert!(confirm.contains("⏎ delete"), "{confirm}");
-    assert!(confirm.contains("esc back"), "{confirm}");
+    assert!(app.queue_delete_confirming(), "delete confirm should be open");
+    assert!(flat(context_hints(&app)).is_empty());
 }
 
 #[test]
@@ -1317,7 +1415,7 @@ fn elicitation_wait_uses_the_state_line_without_claiming_the_agent_is_working() 
     app.state = RunState::Running;
     app.elicitation_ask = Some(ElicitationAskOverlay {
         form: ElicitationFormState::new(ElicitationForm {
-            message: "The agent needs your input.".into(),
+            url: None,            message: "The agent needs your input.".into(),
             fields: Vec::new(),
         }),
         scroll: 0,
@@ -1441,13 +1539,14 @@ fn caret_cell_follows_wrapped_rows_and_hides_with_the_caret() {
     app.input.set("draft".into());
     app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
         form: crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
-            message: "m".into(),
+            url: None,            message: "m".into(),
             fields: vec![crate::elicitation::ElicitationField {
                 name: "f".into(),
                 custom_name: None,
                 title: "t".into(),
                 description: None,
                 required: true,
+                secret: false,
                 kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
             }],
         }),
@@ -2702,13 +2801,14 @@ fn elicitation_overlay_renders_a_real_question_form() {
     app.show_banner = false;
     app.elicitation_ask = Some(ElicitationAskOverlay {
         form: ElicitationFormState::new(ElicitationForm {
-            message: "The agent needs your input.".into(),
+            url: None,            message: "The agent needs your input.".into(),
             fields: vec![ElicitationField {
                 name: "question_0".into(),
                 custom_name: Some("question_0_custom".into()),
                 title: "Target".into(),
                 description: Some("Where should this run?".into()),
                 required: true,
+                secret: false,
                 kind: ElicitationFieldKind::Single {
                     options: vec![
                         ElicitationOption {
@@ -2757,13 +2857,14 @@ fn elicitation_text_field_owns_the_terminal_cursor_instead_of_the_composer() {
     app.show_banner = false;
     app.input.insert_str("composer draft");
     let mut form = ElicitationFormState::new(ElicitationForm {
-        message: "The agent needs your input.".into(),
+            url: None,        message: "The agent needs your input.".into(),
         fields: vec![ElicitationField {
             name: "answer".into(),
             custom_name: None,
             title: "Answer".into(),
             description: None,
             required: true,
+            secret: false,
             kind: ElicitationFieldKind::Text { default: None },
         }],
     });
@@ -3372,12 +3473,12 @@ fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
     }
 }
 
-/// Issue #92: the composer well's top-right corner carries a mouse-only,
-/// always-visible `⛶` on the composer card's top-right border — outside
-/// the text well, so a full draft never hides it; hover highlights it.
-/// No key binding.
+/// Issue #147: the composer card's whole top border is the resize handle
+/// — the ⛶ button is gone. Pressing it arms a drag that pins the well
+/// height, clamped to [auto default, 5/8 of the main area]; a plain click
+/// (Down+Up, no Drag) changes nothing.
 #[test]
-fn expand_button_is_hover_revealed_and_toggles_the_well() {
+fn composer_top_border_drags_to_resize_and_clamps() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3389,47 +3490,85 @@ fn expand_button_is_hover_revealed_and_toggles_the_well() {
 
     let area = ratatui::layout::Rect::new(0, 0, 100, 34);
     let auto = resolved_composer_height(area, &app);
-    let btn = app.expand_btn.expect("records the expand button rect");
-    assert_eq!(btn.width, 3, "small hit block, no frame");
-    assert_eq!(btn.height, 1);
-    // The glyph sits on the card's cap row (its top border), never on the
-    // text well.
-    assert!(btn.y < app.input_area.y, "outside the well: cap row");
+    let cap_y = app.composer_box.expect("records the composer box").y;
+    assert!(cap_y < app.input_area.y, "the border rides above the well");
+    // The ⛶ glyph is gone — every cap-row cell is plain border or title.
+    let buf = terminal.backend().buffer().clone();
+    for x in 0..100u16 {
+        assert_ne!(buf[(x, cap_y)].symbol(), "⛶", "maximize glyph gone at {x}");
+    }
 
-    // Clicking pins the well to the amplified height.
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 1,
-            btn.y,
-        ),
-        &ctl,
-    );
-    assert!(app.input_expanded);
-    let expanded = resolved_composer_height(area, &app);
-    assert!(
-        expanded > auto,
-        "expanded well {expanded} must exceed the auto height {auto}"
-    );
-    assert_eq!(expanded, 34 * 5 / 8, "amplified to 5/8 of the main area");
+    // A plain click arms then releases the resize without moving the well.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    assert_eq!(app.composer_resize, Some((cap_y, auto)));
+    assert_eq!(app.composer_rows, None, "a press alone pins nothing");
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, cap_y), &ctl);
+    assert!(app.composer_resize.is_none());
+    assert_eq!(app.composer_rows, None, "a click without drag keeps auto");
 
-    // Clicking again restores the draft-following auto height.
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 1,
-            btn.y,
-        ),
-        &ctl,
-    );
-    assert!(!app.input_expanded);
+    // Dragging up grows the well by exactly the pointer's travel.
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 9), &ctl);
+    assert_eq!(app.composer_rows, Some(auto + 9));
+    assert_eq!(resolved_composer_height(area, &app), auto + 9);
+    // Past the ceiling clamps at 5/8 of the main area — the conversation
+    // always keeps at least its remaining 3/8.
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 0), &ctl);
+    assert_eq!(app.composer_rows, Some(34 * 5 / 8));
+    // Dragging below the grab clamps at the auto default, never under it.
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, 33), &ctl);
+    assert_eq!(app.composer_rows, Some(auto));
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, 33), &ctl);
+    assert!(app.composer_resize.is_none());
     assert_eq!(resolved_composer_height(area, &app), auto);
 }
 
-/// The button's hit-test survives the hover-reveal (it never paints over
-/// the caret placement: clicking it must not move the caret).
+/// Hovering the top border lights the whole cap line — the resize
+/// affordance; leaving restores the quiet border tone. The ↥ glyph's
+/// cells hover on their own instead (jump button, issue #103).
 #[test]
-fn expand_button_click_does_not_place_the_caret() {
+fn composer_border_hover_highlights_the_cap_row() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+    let cap_y = app.composer_box.expect("composer box").y;
+    assert_eq!(buf[(0, cap_y)].symbol(), "╭", "cap row of the card");
+    assert_eq!(buf[(99, cap_y)].symbol(), "╮");
+    assert_eq!(buf[(0, cap_y)].fg, theme.border, "idle border tone");
+    let dash_x = (0..100u16)
+        .find(|&x| buf[(x, cap_y)].symbol() == "─")
+        .expect("cap row keeps border dashes");
+
+    // Hover: dashes and corners brighten to the strongest foreground.
+    app.handle_mouse(mouse(MouseEventKind::Moved, dash_x, cap_y), &ctl);
+    assert!(app.hover_composer_border);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(0, cap_y)].fg, theme.fg, "left corner brightens");
+    assert_eq!(buf[(dash_x, cap_y)].fg, theme.fg, "dash brightens");
+    assert_eq!(buf[(99, cap_y)].fg, theme.fg, "right corner brightens");
+    assert_eq!(buf[(50, cap_y + 1)].bg, theme.panel, "the well below is untouched");
+
+    // The pointer leaves: quiet border again.
+    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
+    assert!(!app.hover_composer_border);
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    assert_eq!(buf[(dash_x, cap_y)].fg, theme.border, "idle tone restored");
+    assert_eq!(buf[(0, cap_y)].fg, theme.border);
+}
+
+/// The border's hit-test never reaches the text: grabbing it must not
+/// move the caret.
+#[test]
+fn composer_border_drag_does_not_place_the_caret() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3439,119 +3578,23 @@ fn expand_button_click_does_not_place_the_caret() {
     let backend = TestBackend::new(100, 34);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let btn = app.expand_btn.expect("button rect");
+    let cap_y = app.composer_box.expect("composer box").y;
     let before = app.input.cursor_char();
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 1,
-            btn.y,
-        ),
-        &ctl,
-    );
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 2), &ctl);
     assert_eq!(
         app.input.cursor_char(),
         before,
-        "button click toggles the well, never the caret"
+        "border drag resizes the well, never the caret"
     );
-    assert!(app.input_expanded);
+    assert!(app.composer_resize.is_some());
+    assert!(app.composer_rows.is_some());
 }
 
-/// The idle `⛶` is always painted on the card's top-right; hovering turns
-/// it into the brightened glyph on a small chip block; the pointer leaving
-/// restores the quiet tone.
+/// A full draft cannot reach the border: with the well completely filled,
+/// the cap row still takes the drag and carries no button glyph.
 #[test]
-fn expand_button_idle_glyph_and_hover_icon() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    let mut app = test_app();
-    app.show_banner = false;
-    let (ctl, _commands) = crate::controller::tests::test_controller();
-    let backend = TestBackend::new(100, 34);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let btn = app.expand_btn.expect("button rect");
-
-    // Idle: the `⛶` glyph is visible in the quiet caption tone, on the
-    // cap row next to the card corner — a full draft cannot reach it.
-    let buf = terminal.backend().buffer().clone();
-    let theme = app.theme;
-    assert_eq!(buf[(0, btn.y)].symbol(), "╭", "cap row of the card");
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].symbol(),
-        "⛶",
-        "idle state keeps the expand glyph visible"
-    );
-    assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
-    assert_eq!(buf[(btn.x + 2, btn.y)].symbol(), " ", "one cell between glyph and corner");
-
-    // Hover: the same glyph brightened to the strongest foreground — no
-    // BOLD, no background chip; the brightness shift alone is the affordance.
-    app.handle_mouse(mouse(MouseEventKind::Moved, btn.x + 2, btn.y), &ctl);
-    assert!(app.hover_expand_btn);
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    assert_ne!(
-        buf[(btn.x, btn.y)].bg,
-        theme.chip_bg,
-        "no hover background chip"
-    );
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].symbol(),
-        "⛶",
-        "the same glyph, occupied exactly one cell"
-    );
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].fg,
-        theme.fg,
-        "hover brightens the glyph to the strongest foreground"
-    );
-    assert_eq!(
-        buf[(btn.x + 3, btn.y)].symbol(),
-        "╮",
-        "the glyph sits right next to the card's top-right corner"
-    );
-    assert_eq!(buf[(btn.x + 1, btn.y)].bg, buf[(btn.x, btn.y)].bg, "no background change on hover");
-    assert_eq!(
-        buf[(btn.x, btn.y)].symbol(),
-        " ",
-        "no frame characters anywhere"
-    );
-
-    // Expanded: the same cell keeps the same glyph (one icon, two states).
-    app.handle_mouse(
-        mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            btn.x + 2,
-            btn.y,
-        ),
-        &ctl,
-    );
-    assert!(app.input_expanded);
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    let btn2 = app.expand_btn.expect("button rect after expanding");
-    assert_eq!(buf[(btn2.x + 1, btn2.y)].symbol(), "⛶");
-
-    // The pointer leaves: back to the quiet glyph, block gone.
-    app.handle_mouse(mouse(MouseEventKind::Moved, 5, 5), &ctl);
-    assert!(!app.hover_expand_btn);
-    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    let idle_btn = app.expand_btn.expect("button rect when idle");
-    assert_eq!(
-        buf[(idle_btn.x + 1, idle_btn.y)].symbol(),
-        "⛶",
-        "idle glyph restored when the pointer leaves"
-    );
-    assert_eq!(buf[(idle_btn.x, idle_btn.y)].bg, theme.panel, "block cleared");
-}
-
-/// A full draft cannot reach the border-mounted glyph: with the well
-/// completely filled, the cap row's right corner still shows `⛶` on
-/// untouched title text.
-#[test]
-fn expand_button_survives_a_full_draft() {
+fn composer_border_survives_a_full_draft() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3562,24 +3605,82 @@ fn expand_button_survives_a_full_draft() {
     let backend = TestBackend::new(100, 34);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
-    let buf = terminal.backend().buffer().clone();
-    let theme = app.theme;
-    let btn = app.expand_btn.expect("button rect");
-    assert_eq!(
-        buf[(btn.x + 1, btn.y)].symbol(),
-        "⛶",
-        "full draft: the glyph stays on the border"
+    let cap_y = app.composer_box.expect("composer box").y;
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 5), &ctl);
+    assert!(
+        app.composer_rows.is_some(),
+        "full draft: the border still resizes"
     );
-    assert_eq!(buf[(btn.x + 1, btn.y)].fg, theme.caption);
-    // The well rows themselves carry no button glyph.
-    assert_ne!(buf[(btn.x + 2, app.input_area.y)].symbol(), "⛶");
+    let buf = terminal.backend().buffer().clone();
+    for x in 0..100u16 {
+        assert_ne!(buf[(x, app.input_area.y)].symbol(), "↥", "well rows carry no button glyph");
+    }
 }
 
-/// The ↥ user-prompt jump button (issue #103) renders between the project
-/// path and the ⛶ expand glyph — spaces on both sides — and hovers the
-/// same way: quiet caption tone idle, brightest foreground on hover.
+/// ^↑/^↓ step the composer for non-mouse terminals (issue #147): the
+/// first press pins the resolved height, steps clamp inside the frame's
+/// legal range, and shrinking on the floor releases back to auto.
 #[test]
-fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
+fn composer_keyboard_steps_clamp_and_release() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let area = ratatui::layout::Rect::new(0, 0, 100, 34);
+    let auto = resolved_composer_height(area, &app);
+    assert_eq!(app.composer_bounds, (auto, 34 * 5 / 8));
+
+    app.resize_composer_step(1);
+    assert_eq!(app.composer_rows, Some(auto + 1));
+    app.resize_composer_step(100);
+    assert_eq!(app.composer_rows, Some(34 * 5 / 8), "grow clamps at the ceiling");
+    app.resize_composer_step(-100);
+    assert_eq!(app.composer_rows, Some(auto), "shrink clamps at the floor");
+    app.resize_composer_step(-1);
+    assert_eq!(app.composer_rows, None, "shrinking on the floor releases to auto");
+    assert_eq!(resolved_composer_height(area, &app), auto);
+}
+
+/// A pinned composer height re-clamps into the legal range when the
+/// terminal shrinks — the stored value survives, the render never strands.
+#[test]
+fn pinned_composer_height_reclamps_on_terminal_resize() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    app.composer_rows = Some(34 * 5 / 8);
+
+    // Shrink to 16 rows: bounds become (4, 10); the pinned 21 renders 10.
+    let backend = TestBackend::new(100, 16);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let small = ratatui::layout::Rect::new(0, 0, 100, 16);
+    assert_eq!(app.composer_bounds, (4, 10));
+    assert_eq!(resolved_composer_height(small, &app), 10);
+    assert_eq!(app.composer_rows, Some(34 * 5 / 8), "the pin itself survives");
+
+    // Grow back: the pin renders at its full height again.
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let area = ratatui::layout::Rect::new(0, 0, 100, 34);
+    assert_eq!(resolved_composer_height(area, &app), 34 * 5 / 8);
+}
+
+/// The ↥ user-prompt jump button (issue #103) keeps the cap row's
+/// top-right corner now that ⛶ is gone — one cell inside the corner — and
+/// hovers the same way: quiet caption tone idle, brightest foreground on
+/// hover.
+#[test]
+fn prompt_jump_button_sits_at_the_corner_and_hovers() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = test_app();
@@ -3590,17 +3691,14 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
     terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
     let buf = terminal.backend().buffer().clone();
     let theme = app.theme;
-    let expand = app.expand_btn.expect("expand rect");
+    let composer_box = app.composer_box.expect("composer box");
     let jump = app.prompt_jump_btn.expect("jump rect");
 
-    // Geometry: ↥ (space) ⛶ (space) ╮ — the jump glyph one cell left of
-    // the expand glyph with a space in between, and a space before it.
-    assert_eq!(jump.y, expand.y, "both buttons share the cap row");
-    assert_eq!(jump.x + jump.width, expand.x, "jump rect tucked left of expand");
+    // Geometry: (space) ↥ ╮ — the glyph one cell inside the corner.
+    assert_eq!(jump.y, composer_box.y, "the ↥ rides the cap row");
     assert_eq!(buf[(jump.x + 1, jump.y)].symbol(), "↥");
-    assert_eq!(buf[(expand.x - 2, expand.y)].symbol(), " ", "space before ↥");
-    assert_eq!(buf[(expand.x, expand.y)].symbol(), " ", "space between ↥ and ⛶");
-    assert_eq!(buf[(expand.x + 1, expand.y)].symbol(), "⛶");
+    assert_eq!(buf[(jump.x + 2, jump.y)].symbol(), "╮", "↥ sits right next to the corner");
+    assert_eq!(buf[(jump.x, jump.y)].symbol(), " ", "a space before ↥");
     assert_eq!(buf[(jump.x + 1, jump.y)].fg, theme.caption, "idle tone");
 
     // Hover brightens the ↥ glyph.
@@ -3623,6 +3721,121 @@ fn prompt_jump_button_sits_between_path_and_expand_and_hovers() {
         theme.caption,
         "idle tone restored when the pointer leaves"
     );
+}
+
+/// While the drag is armed the cap line stays bright even if the pointer
+/// row leaves the border — mid-drag frames paint the highlight, not just
+/// the hover state.
+#[test]
+fn composer_border_highlight_paints_while_dragging() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let cap_y = app.composer_box.expect("composer box").y;
+    let theme = app.theme;
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 3), &ctl);
+    assert!(app.composer_resize.is_some());
+    // No hover flag during a drag — the resize state alone lights the cap.
+    app.hover_composer_border = false;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame mid-drag");
+    let drag_cap_y = app.composer_box.expect("composer box").y;
+    assert_eq!(drag_cap_y, cap_y - 3, "the border rode up with the well");
+    let buf = terminal.backend().buffer().clone();
+    let dash_x = (0..100u16)
+        .find(|&x| buf[(x, drag_cap_y)].symbol() == "─")
+        .expect("cap row keeps border dashes");
+    assert_eq!(buf[(dash_x, drag_cap_y)].fg, theme.fg, "cap stays bright mid-drag");
+    assert_eq!(buf[(0, drag_cap_y)].fg, theme.fg);
+    assert_eq!(
+        buf[(0, cap_y)].symbol(),
+        "│",
+        "the old cap row is inside the taller well now"
+    );
+}
+
+/// Dragging back to exactly the armed height resolves to the same pin —
+/// the setter short-circuits instead of writing an identical value.
+#[test]
+fn composer_border_redrag_to_the_same_height_is_a_noop() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let cap_y = app.composer_box.expect("composer box").y;
+    let auto = resolved_composer_height(Rect::new(0, 0, 100, 34), &app);
+
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y - 6), &ctl);
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 50, cap_y - 6), &ctl);
+    assert_eq!(app.composer_rows, Some(auto + 6));
+
+    // A frame bakes the pin into composer_h; re-grabbing the moved border
+    // then dragging zero rows resolves to the armed height — a no-op.
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let cap_y = app.composer_box.expect("composer box").y;
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, cap_y), &ctl);
+    app.needs_redraw = false;
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 50, cap_y), &ctl);
+    assert_eq!(app.composer_rows, Some(auto + 6));
+    assert!(!app.needs_redraw, "same-height drag stays a no-op");
+}
+
+/// Below the boxed layout's floor the composer falls back to the
+/// borderless inner view: no drag handle exists there, and a stale hover
+/// flag cannot make the chrome painter wander outside the frame.
+#[test]
+fn composer_chrome_survives_the_borderless_fallback() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    let backend = TestBackend::new(100, 8);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    app.hover_composer_border = true;
+    terminal.draw(|f| draw(f, &mut app)).expect("draw fallback frame");
+    assert!(app.composer_box.is_none(), "borderless fallback has no drag handle");
+    assert!(app.prompt_jump_btn.is_some(), "↥ still lands on the inner cap");
+}
+
+/// `layout_jump_btn` yields no rect when the cap row is too narrow for the
+/// glyph plus its margins — the painter must not scribble over the well.
+#[test]
+fn composer_cap_layout_hides_the_jump_glyph_on_tiny_widths() {
+    let mut app = test_app();
+    layout_jump_btn(&mut app, Rect::new(0, 0, 3, 1));
+    assert!(app.prompt_jump_btn.is_none());
+    layout_jump_btn(&mut app, Rect::new(0, 0, 4, 1));
+    assert_eq!(app.prompt_jump_btn, Some(Rect::new(1, 0, 2, 1)));
+}
+
+/// `paint_composer_chrome` writes nothing when the ↥ rect is absent or
+/// points outside the frame — stale rects cannot scribble past the border.
+#[test]
+fn composer_chrome_tolerates_a_missing_or_stray_jump_rect() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    let backend = TestBackend::new(100, 34);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|f| {
+            app.prompt_jump_btn = Some(Rect::new(95, 40, 2, 1)); // below the frame
+            paint_composer_chrome(f, &mut app);
+            app.prompt_jump_btn = None;
+            paint_composer_chrome(f, &mut app);
+        })
+        .expect("paint with stray and absent jump rects");
 }
 
 /// Regression: a full queue shelf plus an expanded draft used to push the
@@ -3747,4 +3960,341 @@ fn harness_icon_is_session_scoped_and_falls_back_on_non_pixel_terminals() {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| draw(frame, &mut app)).unwrap();
     assert!(app.harness_thumb.is_none());
+}
+
+/// #145: the OSC sequence that ties the terminal's *default* background to
+/// the canvas color. Rgb canvases emit `OSC 11 ; #rrggbb`; `Reset` (kitty
+/// backdrop, cells intentionally left Reset) and named colors restore the
+/// profile default via `OSC 111`.
+#[test]
+fn canvas_bg_sequence_bytes() {
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Rgb(0x0f, 0x11, 0x15)),
+        "\x1b]11;#0f1115\x1b\\"
+    );
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Reset),
+        "\x1b]111\x1b\\"
+    );
+    assert_eq!(
+        canvas_bg_sequence(ratatui::style::Color::Black),
+        "\x1b]111\x1b\\"
+    );
+    assert_eq!(OSC_BG_RESET, "\x1b]111\x1b\\");
+}
+
+/// #145: every cell of every frame must carry a painted background. A row
+/// left at `Color::Reset` is exactly the "gray band" the terminal fills
+/// with its own default bg — sweep heights, widths, themes, banner and the
+/// composer-dock status row on/off so no layout path can skip a row again.
+#[test]
+fn every_frame_cell_has_a_painted_background() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let dock_slot: crate::slots::SlotSnapshot = serde_json::from_value(serde_json::json!({
+        "protocol": 0,
+        "slot": "conversation.composer.dock",
+        "rev": 1,
+        "nodes": [
+            { "id": "stats:counts", "kind": "generic", "title": "1 turn · 3 steps", "body": "" }
+        ]
+    }))
+    .expect("dock slot snapshot");
+
+    for theme in [Theme::dark(), Theme::light()] {
+        for &(w, h) in &[
+            (20u16, 4u16),   // below the drawable minimum: pre-fill still paints
+            (24, 6),
+            (40, 10),
+            (80, 24),
+            (100, 33),
+            (120, 50),
+        ] {
+            for banner in [true, false] {
+                for dock in [false, true] {
+                    let mut app = test_app();
+                    app.theme = theme;
+                    app.show_banner = banner;
+                    if dock {
+                        app.slot_snapshots
+                            .insert("conversation.composer.dock".into(), dock_slot.clone());
+                    }
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+                    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+                    let buf = terminal.backend().buffer();
+                    for y in 0..h {
+                        for x in 0..w {
+                            assert_ne!(
+                                buf[(x, y)].bg,
+                                Color::Reset,
+                                "unpainted cell ({x},{y}) at {w}x{h} theme={:?} banner={banner} dock={dock}",
+                                theme.mode
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// #149 regression: with colour output disabled, `CanvasBgSync` must not
+/// write any OSC sequence — the terminal's default fg draws on its default
+/// bg, and forcing a canvas bg (e.g. light-theme white) blanks the window.
+#[test]
+fn canvas_bg_sync_disabled_writes_nothing() {
+    let mut sync = CanvasBgSync::new(false);
+    let mut out = Vec::new();
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0xff, 0xff, 0xff))
+        .expect("sync");
+    sync.sync(&mut out, ratatui::style::Color::Reset).expect("sync");
+    assert!(out.is_empty(), "disabled sync must emit nothing");
+}
+
+#[test]
+fn canvas_bg_sync_emits_once_and_recovers_on_change() {
+    let mut sync = CanvasBgSync::new(true);
+    let mut out = Vec::new();
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0x0f, 0x11, 0x15))
+        .expect("sync");
+    assert_eq!(out, b"\x1b]11;#0f1115\x1b\\");
+    out.clear();
+    // Unchanged canvas colour: no re-emit.
+    sync.sync(&mut out, ratatui::style::Color::Rgb(0x0f, 0x11, 0x15))
+        .expect("sync");
+    assert!(out.is_empty(), "unchanged colour must not re-emit");
+    // Change to Reset (kitty backdrop): emits the profile restore.
+    sync.sync(&mut out, ratatui::style::Color::Reset).expect("sync");
+    assert_eq!(out, b"\x1b]111\x1b\\");
+}
+
+/// Mirrors crossterm `Colored::ansi_color_disabled`: only a *non-empty*
+/// NO_COLOR suppresses colour output.
+#[test]
+fn ansi_color_disabled_matches_crossterm_semantics() {
+    let prev = std::env::var_os("NO_COLOR");
+    std::env::set_var("NO_COLOR", "1");
+    assert!(ansi_color_disabled());
+    std::env::set_var("NO_COLOR", "anything");
+    assert!(ansi_color_disabled());
+    std::env::set_var("NO_COLOR", "");
+    assert!(!ansi_color_disabled());
+    match prev {
+        Some(v) => std::env::set_var("NO_COLOR", v),
+        None => std::env::remove_var("NO_COLOR"),
+    }
+}
+
+fn url_or_secret_form(url: Option<String>, secret_value: Option<&str>) -> crate::elicitation::ElicitationFormState {
+    let fields = match secret_value {
+        Some(_) => vec![crate::elicitation::ElicitationField {
+            name: "api-key".into(),
+            custom_name: None,
+            title: "API key".into(),
+            description: None,
+            required: true,
+            secret: true,
+            kind: crate::elicitation::ElicitationFieldKind::Text { default: None },
+        }],
+        None => Vec::new(),
+    };
+    let mut form = crate::elicitation::ElicitationFormState::new(crate::elicitation::ElicitationForm {
+        message: "sign in".into(),
+        url,
+        fields,
+    });
+    if let (Some(value), Some(field)) = (secret_value, form.fields.first_mut()) {
+        field.input.buf = value.to_string();
+    }
+    form
+}
+
+#[test]
+fn auth_form_masks_secret_values_as_bullets() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.auth_form = Some(crate::app::AuthFormOverlay {
+        method_id: "api-key:deepseek".into(),
+        form: url_or_secret_form(None, Some("sk-live-secret")),
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(!text.contains("sk-live-secret"), "secret leaked: {text}");
+    assert!(text.contains('•'), "masked bullets rendered: {text}");
+}
+
+#[test]
+fn url_elicitation_renders_the_link_fieldlessly() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form: url_or_secret_form(Some("https://auth.example/login".into()), None),
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(
+        text.contains("https://auth.example/login"),
+        "url rendered: {text}"
+    );
+}
+
+#[test]
+fn fieldless_form_without_url_renders_confirm_hint() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    let form = url_or_secret_form(None, None);
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(text.contains("enter confirm"), "{text}");
+}
+
+#[test]
+fn welcome_needs_auth_line_in_english_and_chinese() {
+    let flat = |lines: Vec<Line>| -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut app = live_test_app();
+    app.auth = crate::acp_auth::needs_auth_snapshot(
+        Vec::new(),
+        None,
+        Some("token missing".into()),
+    );
+    let en = flat(welcome_info_lines(&app));
+    assert!(en.contains("sign-in needed"), "{en}");
+    assert!(en.contains("ctrl+g"), "{en}");
+    // No known method stays unspecific — never the type word (issue #160).
+    assert!(!en.contains("agent"), "{en}");
+    // A named method appears in place of the old "agent" fallback.
+    app.auth.method_name = Some("DeepSeek API key".into());
+    let named = flat(welcome_info_lines(&app));
+    assert!(named.contains("sign-in needed · DeepSeek API key"), "{named}");
+    app.locale = crate::locale::Locale::Zh;
+    let zh = flat(welcome_info_lines(&app));
+    assert!(zh.contains("需要登录"), "{zh}");
+}
+
+#[test]
+fn fielded_form_renders_the_error_line() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = test_app();
+    app.show_banner = false;
+    let mut form = url_or_secret_form(None, Some("api-key"));
+    form.error = Some("too short".into());
+    app.elicitation_ask = Some(crate::app::ElicitationAskOverlay {
+        form,
+        scroll: 0,
+        reply: None,
+    });
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw");
+    let buf = terminal.backend().buffer();
+    let text: String = (0..30)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".into()))
+        })
+        .collect();
+    assert!(text.contains("too short"), "{text}");
+}
+
+#[test]
+fn auth_picker_clamps_long_labels_before_the_meta_column() {
+    // pi-acp advertises ~40-char method names; they must ellipsize instead
+    // of overflowing into the type column (issue #160).
+    use crate::app::{Picker, PickerItem, PickerKind, PICKER_LABEL_COL};
+    let mut app = test_app();
+    app.show_banner = false;
+    // Theme is a kind that can mark a current entry: item `a` exercises the
+    // `✓` row (clamp to COL-3), item `b` the plain row (clamp to COL-1).
+    app.active_palette_id = "a".into();
+    app.picker = Some(Picker {
+        offset: 0,
+        kind: PickerKind::Theme,
+        title: " sign in ".into(),
+        sel: 0,
+        items: vec![
+            PickerItem {
+                id: "a".into(),
+                label: "Sign in with a very long provider name that overflows".into(),
+                meta: "agent".into(),
+                provider: None,
+            },
+            PickerItem {
+                id: "b".into(),
+                label: "Another long method name that also overflows here".into(),
+                meta: "agent".into(),
+                provider: None,
+            },
+        ],
+    });
+    let frame = dump_frame(&mut app, 100, 30);
+    for line in frame.lines().filter(|l| l.contains('…') && l.contains("agent")) {
+        // The picker floats inside the frame — measure the meta column
+        // relative to the row's own leading marker.
+        let start = line.find('▸').or_else(|| line.find('│')).unwrap_or(0);
+        let meta_col = line[start..]
+            .find("agent")
+            .map(|index| line[start..start + index].chars().count())
+            .expect("meta column still rendered");
+        assert!(
+            meta_col <= 2 + PICKER_LABEL_COL + 2,
+            "label overflowed the {PICKER_LABEL_COL}-char column: {line}"
+        );
+    }
+    assert!(frame.contains('…'), "long labels ellipsize:\n{frame}");
 }

@@ -76,14 +76,45 @@ export function tuiPluginRoot(env = process.env) {
   return path.join(marttyHome(env), 'plugins')
 }
 
+/**
+ * Martty's configuration home, shared with Backchat: `~/.oma`.
+ * Resolution order: explicit `MARTTY_HOME`/`OMA_HOME`, then `$DSH_HOME/.oma`,
+ * then `~/.oma`. When the new home is missing but a legacy `.martty`
+ * directory sits next to it, its contents are migrated once (config, cache,
+ * sessions, managed binaries) so existing installs keep their state.
+ */
 export function marttyHome(env = process.env, userHome = homedir()) {
   if (typeof env.MARTTY_HOME === 'string' && env.MARTTY_HOME.length > 0) {
     return env.MARTTY_HOME
   }
-  if (typeof env.DSH_HOME === 'string' && env.DSH_HOME.length > 0) {
-    return path.join(env.DSH_HOME, '.martty')
+  if (typeof env.OMA_HOME === 'string' && env.OMA_HOME.length > 0) {
+    return env.OMA_HOME
   }
-  return path.join(userHome, '.martty')
+  const base = typeof env.DSH_HOME === 'string' && env.DSH_HOME.length > 0
+    ? env.DSH_HOME
+    : userHome
+  return migrateMarttyHome(base)
+}
+
+function migrateMarttyHome(base) {
+  const home = path.join(base, '.oma')
+  const legacy = path.join(base, '.martty')
+  if (existsSync(home) || !existsSync(legacy)) return home
+  // Stage the copy under a temporary sibling so a crash cannot leave a
+  // half-migrated `.oma` behind; the legacy directory is left untouched.
+  const staged = `${home}.migrating-${process.pid}`
+  try {
+    rmSync(staged, { recursive: true, force: true })
+    cpSync(legacy, staged, { recursive: true, errorOnExist: true })
+    renameSync(staged, home)
+    process.stderr.write(`martty: migrated ${legacy} to ${home} (shared with Backchat)\n`)
+  } catch {
+    rmSync(staged, { recursive: true, force: true })
+    // Migration is best effort: an unmigrated legacy directory keeps working
+    // under its old name rather than blocking startup.
+    return legacy
+  }
+  return home
 }
 
 export function legacyTuiPluginRoot(env = process.env, userHome = homedir()) {

@@ -105,7 +105,12 @@ export function apply(ctx, config = {}) {
     }
   }
   liveAgent = null
-  const service = createAgentPool(agent, { spawnAgent, resolveAgent, diagnosticError })
+  const noteAgentDiagnostics = installAgentWarnings(ctx)
+  const service = createAgentPool(agent, {
+    spawnAgent: (spec) => spawnAgent(spec, noteAgentDiagnostics),
+    resolveAgent,
+    diagnosticError,
+  })
   if (liveAgentExitHook !== null) process.removeListener('exit', liveAgentExitHook)
   liveAgentExitHook = () => service.close()
   process.once('exit', liveAgentExitHook)
@@ -113,14 +118,14 @@ export function apply(ctx, config = {}) {
   provide(ctx, service)
 }
 
-function spawnAgent(agent) {
+function spawnAgent(agent, onDiagnosticLine) {
   const child = spawn(agent.command, agent.args ?? [], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: harnessEnvironment(agent.env),
   })
   child.stdin.on('error', () => {})
   child.stdout.on('error', () => {})
-  const diagnostics = drainDiagnostics(child.stderr)
+  const diagnostics = drainDiagnostics(child.stderr, onDiagnosticLine)
   return {
     kind: 'spawn',
     command: agent.command,
@@ -133,14 +138,67 @@ function spawnAgent(agent) {
   }
 }
 
-function drainDiagnostics(stream) {
+/**
+ * Agent stderr lines worth surfacing in the input dock: warnings and
+ * failures the agent reports but survives (e.g. a bundle entry that did
+ * not activate) would otherwise be invisible until something exits.
+ */
+const DIAGNOSTIC_NOTICE = /warn|error|fail|did not activate|refus|incompat/i
+
+/**
+ * Feed warning-shaped agent stderr lines to a `conversation.input.dock`
+ * notice when the client tree carries `tuiSlots`. Returns undefined when the
+ * slot service is absent — stderr stays diagnostics-only as before.
+ */
+function installAgentWarnings(ctx) {
+  const slots = ctx.get?.('tuiSlots') ?? ctx.tuiSlots
+  if (typeof slots?.register !== 'function') return undefined
+  let controller
+  try {
+    controller = slots.register(
+      { name: 'conversation.input.dock', id: 'acp-agent-warnings' },
+      [],
+    )
+  } catch {
+    return undefined
+  }
+  const shown = []
+  return (line) => {
+    if (!DIAGNOSTIC_NOTICE.test(line)) return
+    shown.push(line.trimEnd())
+    if (shown.length > 4) shown.shift()
+    try {
+      controller.update([{ id: 'latest', kind: 'notice', level: 'warn', text: shown.join('\n') }])
+    } catch {
+      // The contribution is gone (disposed or re-mounted); stderr keeps
+      // flowing to the diagnostics tail regardless.
+    }
+  }
+}
+
+function drainDiagnostics(stream, onLine) {
   const limit = 8192
   let tail = Buffer.alloc(0)
+  let pending = ''
   let state = 'text'
+  const emitLines = (text, flush = false) => {
+    if (onLine === undefined) return
+    pending += text
+    for (let index = pending.indexOf('\n'); index !== -1; index = pending.indexOf('\n')) {
+      const line = pending.slice(0, index)
+      pending = pending.slice(index + 1)
+      if (line.trim() !== '') onLine(line)
+    }
+    if (flush && pending.trim() !== '') {
+      onLine(pending)
+      pending = ''
+    }
+  }
   // stderr is not a UI surface. Drain it even without a diagnostics consumer,
   // strip control strings incrementally, and never retain their payloads.
   stream.setEncoding('utf8')
   stream.on('error', () => {})
+  stream.on('close', () => emitLines('', true))
   stream.on('data', (chunk) => {
     let text = ''
     for (const char of chunk) {
@@ -174,6 +232,7 @@ function drainDiagnostics(stream) {
       text += char
     }
     if (text.length === 0) return
+    emitLines(text)
     const combined = Buffer.concat([tail, Buffer.from(text)])
     let start = Math.max(0, combined.length - limit)
     // Never split a UTF-8 code point or retain the large incoming allocation.

@@ -121,11 +121,11 @@ test('Martty settings live under the branded home with explicit environment prec
   )
   assert.equal(
     uiSettingsPath([], { DSH_HOME: '/opt/dsh' }, '/Users/test'),
-    path.join('/opt/dsh', '.martty', 'settings.json'),
+    path.join('/opt/dsh', '.oma', 'settings.json'),
   )
   assert.equal(
     uiSettingsPath([], {}, '/Users/test'),
-    path.join('/Users/test', '.martty', 'settings.json'),
+    path.join('/Users/test', '.oma', 'settings.json'),
   )
   assert.equal(
     uiSettingsPath(['--session-root', '/tmp/isolated'], {}, '/Users/test'),
@@ -170,7 +170,10 @@ test('the published plugin is ESM so Cordis can import() it in parallel', () => 
 
 test('the bundle carries ACP as a dependency and its Creator overlay internally', () => {
   const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
-  assert.deepEqual(pkg.dsh, { bundle: { patch: './cordis.patch.yml' } })
+  assert.deepEqual(pkg.dsh, {
+    bundle: { patch: './cordis.patch.yml' },
+    supported: '0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2',
+  })
   for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
     const names = Object.keys(pkg[field] ?? {})
     const forbidden = names.filter(

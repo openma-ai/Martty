@@ -22,6 +22,60 @@ test('each tab publishes its own Harness identity after a different Harness crea
   assert.equal(status.current().server, 'alpha')
 })
 
+test('captures the advertised dsh runtime from initialize for /status', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({ id: 'init', method: 'initialize' })
+  status.observeAgent({
+    id: 'init',
+    result: {
+      agentInfo: { name: 'dsh-acp' },
+      agentCapabilities: {
+        _meta: { dsh: { runtime: { version: '0.2.0-rc.2', source: 'bundled standalone runtime', base: '/cache/dsh' } } },
+      },
+      authMethods: [],
+    },
+  })
+  assert.deepEqual(status.current().dshRuntime, {
+    version: '0.2.0-rc.2',
+    source: 'bundled standalone runtime',
+    base: '/cache/dsh',
+  })
+
+  status.observeClient({ id: 'init-2', method: 'initialize' })
+  assert.equal(status.current().dshRuntime, undefined)
+  status.observeAgent({ id: 'init-2', result: { agentInfo: { name: 'other' }, authMethods: [] } })
+  assert.equal(status.current().dshRuntime, undefined)
+})
+
+test('ignores malformed dsh runtime metadata in initialize', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  const send = (id, runtime) => {
+    status.observeClient({ id, method: 'initialize' })
+    status.observeAgent({
+      id,
+      result: {
+        agentInfo: { name: 'dsh-acp' },
+        agentCapabilities: { _meta: { dsh: { runtime } } },
+        authMethods: [],
+      },
+    })
+  }
+
+  // An object carrying neither version nor source is not a usable identity.
+  send('init-no-fields', { base: '/x' })
+  assert.equal(status.current().dshRuntime, undefined)
+
+  send('init-non-object', 'not-an-object')
+  assert.equal(status.current().dshRuntime, undefined)
+
+  // Either field alone is enough to surface.
+  send('init-version-only', { version: '0.2.0-rc.2' })
+  assert.deepEqual(status.current().dshRuntime, { version: '0.2.0-rc.2', source: undefined, base: undefined })
+
+  send('init-source-only', { source: '--dsh-path (/x)' })
+  assert.deepEqual(status.current().dshRuntime, { version: undefined, source: '--dsh-path (/x)', base: undefined })
+})
+
 test('a new initialize clears every old Agent projection and ignores late request responses', () => {
   const config = installAcpSessionConfig(makeCtx())
   const status = installAcpSessionStatus(makeCtx(), { sessionConfig: config })
@@ -86,8 +140,9 @@ test('Failed session setup reports failure and clears session credentials until 
   status.observeClient({ id: 'init', method: 'initialize' })
   status.observeAgent({ id: 'init', result: { agentInfo: { name: 'Cline' }, authMethods: [] } })
   status.observeClient({ id: 'new', method: 'session/new' })
+  // An answered session/new refusal: the agent is still attached.
   status.observeAgent({ id: 'new', error: { code: -32603, message: 'missing executable' } })
-  assert.equal(status.current().connection, 'failed')
+  assert.equal(status.current().connection, 'refused')
   assert.equal(status.current().error, 'missing executable')
   assert.equal(status.current().session.bound, false)
   assert.equal(status.current().auth.status, undefined)
@@ -110,12 +165,36 @@ test('status reads model and effort by ACP category before legacy option ids', (
   assert.equal(status.current().effort, 'ultra')
 })
 
-test('initialize failure is not an attached connection', () => {
+test('an answered initialize refusal is refused, a dead attach stays failed', () => {
   const status = installAcpSessionStatus(makeCtx())
   status.observeClient({ id: 'init', method: 'initialize' })
-  status.observeAgent({ id: 'init', error: { code: -32603, message: 'Agent failed to initialize' } })
-  assert.equal(status.current().connection, 'failed')
+  // The agent answered — still attached, no session bound yet.
+  status.observeAgent({ id: 'init', error: { code: -32603, message: 'Agent failed to initialize\nAgent stderr:\nnoise' } })
+  assert.equal(status.current().connection, 'refused')
+  // The refusal keeps its own words; our transport's stderr tail is noise.
+  assert.equal(status.current().error, 'Agent failed to initialize')
   assert.equal(status.current().server, undefined)
+
+  const dead = installAcpSessionStatus(makeCtx())
+  dead.observeClient({ id: 'init', method: 'initialize' })
+  dead.observeAgent({ id: 'init', error: { code: -32603, message: 'child exited', data: { agentExited: true } } })
+  assert.equal(dead.current().connection, 'failed')
+  assert.equal(dead.current().error, 'child exited')
+})
+
+test('a refused initialize offering auth methods flags sign-in', () => {
+  const status = installAcpSessionStatus(makeCtx())
+  status.observeClient({ id: 'init', method: 'initialize' })
+  status.observeAgent({ id: 'init', error: { code: -32000, message: 'sign in first', data: { authMethods: [{ id: 'oauth-x', name: 'Sign in with X' }] } } })
+  assert.equal(status.current().connection, 'refused')
+  assert.equal(status.current().auth.status, 'needs sign-in')
+
+  // Auth required but no methods offered: unremediable, still failed.
+  const bare = installAcpSessionStatus(makeCtx())
+  bare.observeClient({ id: 'init', method: 'initialize' })
+  bare.observeAgent({ id: 'init', error: { code: -32000, message: 'sign in first' } })
+  assert.equal(bare.current().connection, 'failed')
+  assert.equal(bare.current().auth.status, undefined)
 })
 
 function makeSessionConfig() {

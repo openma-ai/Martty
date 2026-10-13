@@ -35,6 +35,9 @@ pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦'
 
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_millis(1500);
+/// `/close` on a still-working tab arms this window: a second close inside
+/// it cancels the in-flight turn and drops the tab (issue #146).
+const CLOSE_CONFIRM_WINDOW: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy)]
 struct CtrlCQuitChord {
@@ -146,11 +149,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         desc: "switch agent preset · ctrl+shift+a",
     },
     SlashCommand {
-        name: "auth",
-        usage: "/auth [method|api-key]",
-        desc: "ACP sign-in (Backchat authenticate)",
-    },
-    SlashCommand {
         name: "clear",
         usage: "/clear",
         desc: "clear the scrollback",
@@ -163,7 +161,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "close",
         usage: "/close",
-        desc: "close the current session tab (last tab cannot close)",
+        desc: "close the current session tab · ctrl+shift+w · click its ×"
     },
     SlashCommand {
         name: "cordis-plugins",
@@ -856,8 +854,10 @@ pub struct SessionSlot {
     pub input: ComposerEditor,
     /// Images staged in the draft as `[image n]` chips (draft-bound).
     pub pending_images: crate::attachments::Staged,
-    /// Composer well pinned to the amplified height (issue #92).
-    pub input_expanded: bool,
+    /// Composer well height pinned by the top-border drag / ^↑^↓ (issue
+    /// #147); `None` = the draft-following auto height. Rides with the
+    /// session like the draft does — each tab keeps its own height.
+    pub composer_rows: Option<u16>,
     /// Open `@file` browser + its Esc-dismissed `@` token tag. Both are
     /// draft-bound: the menu filters the draft's token, so it follows the
     /// draft to its tab.
@@ -926,7 +926,7 @@ impl SessionSlot {
             title: None,
             input: ComposerEditor::new(),
             pending_images: crate::attachments::Staged::default(),
-            input_expanded: false,
+            composer_rows: None,
             file_menu: None,
             file_menu_dismissed: None,
             scroll_up: 0,
@@ -1007,6 +1007,34 @@ impl Drop for ElicitationAskOverlay {
             let _ = reply.send(crate::elicitation::ElicitationReply::Cancelled);
         }
     }
+}
+
+/// The in-app credential form behind the auth picker (api-key and gateway
+/// methods). It reuses the elicitation form editor — secret vars echo as
+/// bullets. `method_id` pins the reply to the row the user picked, so a
+/// key can never be sent to a different method (issue #160).
+pub struct AuthFormOverlay {
+    pub method_id: String,
+    pub form: crate::elicitation::ElicitationFormState,
+}
+
+/// Sentinel picker row id for the ACP `logout` action — impossible to
+/// collide with an agent-advertised method id (issue #160).
+const AUTH_LOGOUT_ID: &str = "martty:logout";
+
+/// Values collected from the credential form for one `authenticate` call.
+/// Auth vars are always Text fields → `ElicitationValue::String`; any
+/// other variant is dropped rather than coerced into a secret (#160).
+fn auth_values_from_reply(
+    values: std::collections::BTreeMap<String, crate::elicitation::ElicitationValue>,
+) -> std::collections::BTreeMap<String, String> {
+    values
+        .into_iter()
+        .filter_map(|(name, value)| match value {
+            crate::elicitation::ElicitationValue::String(text) => Some((name, text)),
+            _ => None,
+        })
+        .collect()
 }
 
 impl Drop for PermissionAskOverlay {
@@ -1349,27 +1377,37 @@ pub struct App {
     pub(crate) input_sel: Option<InputSel>,
     /// A left-button drag inside the composer well is in progress.
     input_selecting: bool,
-    /// Mouse pointer cell from the latest `Moved` event. The composer
-    /// expand button is hover-revealed only while the pointer sits on it
-    /// (issue #92 — mouse-only affordance, no key binding).
+    /// Mouse pointer cell from the latest `Moved` event — drives the
+    /// hover affordances (↥ jump glyph, composer top-border drag handle).
     pub(crate) mouse_pos: Option<(u16, u16)>,
-    /// Composer well enlarged by the mouse-only expand button (issue #92):
-    /// `true` pins the well to the amplified height, `false` restores the
-    /// draft-following auto height.
-    pub(crate) input_expanded: bool,
-    /// Screen rect of the mouse-only expand/collapse button from the
-    /// latest frame — it sits on the composer card's top-right border.
-    /// Recorded every frame, even before the pointer finds it.
-    pub(crate) expand_btn: Option<ratatui::layout::Rect>,
-    /// True while the pointer rests on the expand button; only then does
-    /// the frame painter show it (`needs_redraw` on change).
-    pub(crate) hover_expand_btn: bool,
+    /// Composer well height pinned by the top-border drag or the ^↑/^↓
+    /// keys (issue #147): `Some` pins the well to that many rows, `None`
+    /// is the draft-following auto height.
+    pub(crate) composer_rows: Option<u16>,
+    /// Composer box rect from the latest frame (boxed layout only): its
+    /// top border row is the drag-to-resize handle. `None` in the
+    /// borderless short-terminal fallback and in child views — there is
+    /// no border to grab there.
+    pub(crate) composer_box: Option<ratatui::layout::Rect>,
+    /// Resolved composer well height (rows) from the latest frame — the
+    /// grab anchor for border drags and the step base for ^↑/^↓.
+    pub(crate) composer_h: u16,
+    /// Legal `[min, max]` composer-height range from the latest frame
+    /// (issue #147): the clamp drag events and key steps apply.
+    pub(crate) composer_bounds: (u16, u16),
+    /// An in-progress top-border drag: (pointer row at grab, resolved
+    /// `composer_h` at grab). Each Drag event re-derives the height
+    /// absolutely, so bursts of events between redraws cannot drift.
+    pub(crate) composer_resize: Option<(u16, u16)>,
+    /// True while the pointer rests on the composer's top border — the
+    /// border brightens as the drag affordance (`needs_redraw` on change).
+    pub(crate) hover_composer_border: bool,
     /// Screen rect of the mouse-only `↥` user-prompt jump button (issue
-    /// #103) from the latest frame — one cell left of the expand glyph on
-    /// the composer card's top-right.
+    /// #103) from the latest frame — on the composer card's top-right
+    /// corner, the slot the removed ⛶ used to hold.
     pub(crate) prompt_jump_btn: Option<ratatui::layout::Rect>,
     /// True while the pointer rests on the `↥` button (`needs_redraw` on
-    /// change, same hover policy as the expand button).
+    /// change, same hover policy as the border handle).
     pub(crate) hover_prompt_jump_btn: bool,
     /// Transcript cell of the user prompt the last `↥` click jumped to
     /// (issue #103). The next click walks one prompt back; the oldest
@@ -1431,6 +1469,8 @@ pub struct App {
     resume_session_cap: bool,
     /// Agent advertised `sessionCapabilities.fork` (`{}`).
     fork_session_cap: bool,
+    /// Agent advertised `sessionCapabilities.close` (`{}` or `true`).
+    close_session_cap: bool,
     /// Agent advertised `sessionCapabilities.additionalDirectories`.
     additional_directories_cap: bool,
     /// `additional_directories_cap` has been learned from initialize.
@@ -1507,6 +1547,10 @@ pub struct App {
     pub ambient_tip_idx: usize,
     pub ambient_tip_at: Instant,
     ctrl_c_armed: Option<CtrlCQuitChord>,
+    /// `/close`·`×`·ctrl+shift+w on a still-working tab arms this: a second
+    /// close inside `CLOSE_CONFIRM_WINDOW` cancels the turn and drops the
+    /// tab (session id + when the confirm was armed).
+    close_armed: Option<(String, Instant)>,
     pub session_id: String,
     /// Parked sessions — every session except the viewed one (issue #94).
     /// Conceptual tab order is this list with the live session spliced in
@@ -1524,6 +1568,8 @@ pub struct App {
     awaiting_binds: VecDeque<AwaitingBind>,
     /// Tab strip hit-test rects, recorded by `ui::draw_session_tabs`.
     pub(crate) tab_rects: Vec<(ratatui::layout::Rect, usize)>,
+    /// The `×` cell of each tab (issue #146), same tab index.
+    pub(crate) tab_close_rects: Vec<(ratatui::layout::Rect, usize)>,
     /// First tab index rendered in the session tab strip (the strip's
     /// scroll window). Mouse clicks on the window's edge tabs nudge it by
     /// one so the neighboring tab appears — a mouse can walk through every
@@ -1552,8 +1598,17 @@ pub struct App {
     startup_bound: bool,
     /// ACP initialize / authenticate status (live ACP only).
     pub auth: crate::acp_auth::AuthSnapshot,
+    /// Indices of pushed "sign-in needed" notice cells — hidden once
+    /// sign-in succeeds so they do not sit above the first turn (#160).
+    auth_notice_cells: Vec<usize>,
     /// Leave the TUI and run this agent login, then `authenticate`.
     pending_terminal_auth: Option<crate::acp_auth::TerminalAuthLaunch>,
+    /// The agent declared `agentCapabilities.auth.logout` in initialize —
+    /// the auth picker may then offer logout / switch (issue #160).
+    agent_auth_logout: bool,
+    /// Masked credential form opened by the auth picker for api-key and
+    /// gateway methods (issue #160).
+    pub auth_form: Option<AuthFormOverlay>,
     pub quit: bool,
     /// Escape suppresses slash recommendations for the current draft without
     /// deleting it. Text edits or an explicit Tab completion reopen them.
@@ -1576,6 +1631,10 @@ pub struct App {
     bus_tx: Sender<AppEvent>,
     pub server_info: Option<String>,
     pub connection_error: Option<String>,
+    /// The agent answered `initialize` with a refusal — it is attached but
+    /// refused the handshake. Distinct from a dead attach (`connection_error`
+    /// alone): the send path stays open because `session/new` can still bind.
+    pub attach_refused: bool,
     pub needs_redraw: bool,
 }
 
@@ -1598,6 +1657,8 @@ fn ui_session(event: &crate::events::UiEvent) -> Option<&str> {
         | UiEvent::UserMessage { session, .. }
         | UiEvent::SessionTitle { session, .. }
         | UiEvent::SessionNotice { session, .. }
+        | UiEvent::RetryStatus { session, .. }
+        | UiEvent::RetryFinished { session, .. }
         | UiEvent::SessionModel { session, .. }
         | UiEvent::Plan { session, .. }
         | UiEvent::PlanMode { session, .. }
@@ -1906,9 +1967,12 @@ impl App {
             input_sel: None,
             input_selecting: false,
             mouse_pos: None,
-            input_expanded: false,
-            expand_btn: None,
-            hover_expand_btn: false,
+            composer_rows: None,
+            composer_box: None,
+            composer_h: 1,
+            composer_bounds: (1, u16::MAX),
+            composer_resize: None,
+            hover_composer_border: false,
             prompt_jump_btn: None,
             hover_prompt_jump_btn: false,
             prompt_jump_cell: None,
@@ -1937,6 +2001,7 @@ impl App {
             list_session: false,
             resume_session_cap: false,
             fork_session_cap: false,
+            close_session_cap: false,
             additional_directories_cap: false,
             additional_directories_known: false,
             session_title: None,
@@ -1973,11 +2038,13 @@ impl App {
             ambient_tip_idx: 0,
             ambient_tip_at: Instant::now(),
             ctrl_c_armed: None,
+            close_armed: None,
             session_id,
             parked: Vec::new(),
             current: 0,
             awaiting_binds: VecDeque::new(),
             tab_rects: Vec::new(),
+            tab_close_rects: Vec::new(),
             tab_strip_offset: 0,
             cfg,
             selected_model: None,
@@ -1989,7 +2056,10 @@ impl App {
             // unrequested bind coming; a live ACP start does.
             startup_bound: demo,
             auth: crate::acp_auth::AuthSnapshot::none(),
+            auth_notice_cells: Vec::new(),
             pending_terminal_auth: None,
+            agent_auth_logout: false,
+            auth_form: None,
             quit: false,
             slash_completion_dismissed: false,
             queued: 0,
@@ -2005,6 +2075,7 @@ impl App {
             bus_tx,
             server_info: None,
             connection_error: None,
+            attach_refused: false,
             needs_redraw: true,
         };
         app.transcript.locale = locale;
@@ -2038,6 +2109,9 @@ impl App {
     /// a parking slot, leaving cheap placeholders behind. Always paired with
     /// [`Self::put_live_slot`] before anything reads the fields again.
     fn take_live_slot(&mut self) -> SessionSlot {
+        // A border drag never survives a session switch: the pointer's
+        // grab point belongs to the tab it started on.
+        self.composer_resize = None;
         let mut placeholder = Transcript::new(String::new());
         placeholder.locale = self.locale;
         SessionSlot {
@@ -2047,6 +2121,7 @@ impl App {
                 load_session: self.load_session, list_session: self.list_session,
                 resume_session: self.resume_session_cap,
                 fork_session: self.fork_session_cap,
+                close_session: self.close_session_cap,
                 additional_directories: self.additional_directories_cap,
             }),
             title: self.session_title.take(),
@@ -2054,7 +2129,7 @@ impl App {
             // Composer + chat chrome bound to the tab (see `put_live_slot`).
             input: std::mem::take(&mut self.input),
             pending_images: std::mem::take(&mut self.pending_images),
-            input_expanded: std::mem::take(&mut self.input_expanded),
+            composer_rows: self.composer_rows.take(),
             file_menu: self.file_menu.take(),
             file_menu_dismissed: self.file_menu_dismissed.take(),
             scroll_up: std::mem::take(&mut self.scroll_up),
@@ -2106,6 +2181,7 @@ impl App {
             list_session: false,
             resume_session: false,
             fork_session: false,
+            close_session: false,
             additional_directories: false,
         }));
         self.session_title = slot.title;
@@ -2140,7 +2216,7 @@ impl App {
         // @file browser, scroll, banner, model pick, running note.
         self.input = slot.input;
         self.pending_images = slot.pending_images;
-        self.input_expanded = slot.input_expanded;
+        self.composer_rows = slot.composer_rows;
         self.file_menu = slot.file_menu;
         self.file_menu_dismissed = slot.file_menu_dismissed;
         self.scroll_up = slot.scroll_up;
@@ -2335,6 +2411,17 @@ impl App {
             .map(|(_, idx)| *idx)
     }
 
+    /// Hit-test against each tab's `×` cell (issue #146) — checked before
+    /// `tab_at` so a click on the `×` closes instead of switching.
+    fn tab_close_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_close_rects
+            .iter()
+            .find(|(rect, _)| {
+                col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+            })
+            .map(|(_, idx)| *idx)
+    }
+
     /// Was this session mid-turn (live RunState, or a parked slot's running
     /// bit)? Read just before folding a `SessionStatus` event.
     fn session_was_running(&self, session: &str) -> bool {
@@ -2436,7 +2523,9 @@ impl App {
         };
         for block in &prompt.blocks {
             match block {
-                StagedBlock::Text(text) => slot.transcript.push_user(text.clone(), false),
+                StagedBlock::Text(text) => {
+                    slot.transcript.push_user(text.clone(), false);
+                }
                 StagedBlock::Image(att) => slot.transcript.push_image(
                     att.name.clone(),
                     String::new(),
@@ -3129,8 +3218,7 @@ impl App {
             .skills
             .iter()
             .filter(|s| {
-                !s.name.eq_ignore_ascii_case("logout")
-                    && s.name.starts_with(prefix)
+                s.name.starts_with(prefix)
                     && !self.plugin_command_active(&s.name)
                     && !(s.client_command && builtin_slash_name(&s.name))
             })
@@ -3467,18 +3555,6 @@ impl App {
                     )
                 })
                 .collect(),
-            "auth" => self
-                .auth
-                .methods
-                .iter()
-                .map(|method| {
-                    (
-                        method.id.clone(),
-                        method.name.clone().unwrap_or_else(|| method.id.clone()),
-                        method.description.clone().unwrap_or_default(),
-                    )
-                })
-                .collect(),
             "lang" => vec![plain("zh", "中文"), plain("en", "English")],
             "liang" => vec![plain("on", "show pet"), plain("off", "hide pet")],
             "session" => vec![
@@ -3532,11 +3608,31 @@ impl App {
         }
     }
 
+    /// The attach finished and failed: no session will bind, so no queued
+    /// prompt can be promoted — views must not promise "send first". An
+    /// answered refusal is not "failed": the agent is attached, so a
+    /// queued prompt can still retry `session/new` once it is sent.
+    pub(crate) fn queue_attach_failed(&self) -> bool {
+        !self.session_bound && self.connection_error.is_some() && !self.attach_refused
+    }
+
+    /// The agent is attached but sign-in must complete before a bind can
+    /// land — the queue head stays put until authentication settles.
+    pub(crate) fn queue_signin_pending(&self) -> bool {
+        !self.session_bound
+            && matches!(
+                self.auth.status,
+                crate::acp_auth::AuthStatus::NeedsAuth
+                    | crate::acp_auth::AuthStatus::SigningIn
+                    | crate::acp_auth::AuthStatus::Failed
+            )
+    }
+
     /// Identity of everything `queue_snapshot` projects, without the summary
     /// strings: ordered prompt ids (order captures reordering) plus the
-    /// selection/edit/confirm flags. A summary edit always passes through an
-    /// `editing_id` transition, so text changes are covered too.
-    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool) {
+    /// selection/edit/confirm/attach flags. A summary edit always passes
+    /// through an `editing_id` transition, so text changes are covered too.
+    fn queue_fingerprint(&self) -> (Vec<u64>, Option<u64>, Option<u64>, bool, bool, bool) {
         (
             self.prompt_queue.iter().map(|prompt| prompt.id).collect(),
             self.queue_selection
@@ -3544,6 +3640,8 @@ impl App {
                 .map(|prompt| prompt.id),
             self.queue_edit.as_ref().map(|edit| edit.prompt_id),
             self.queue_delete_confirming(),
+            self.queue_attach_failed(),
+            self.queue_signin_pending(),
         )
     }
 
@@ -3610,6 +3708,8 @@ impl App {
             selected_id,
             editing_id,
             delete_confirm: self.queue_delete_confirming(),
+            attach_failed: self.queue_attach_failed(),
+            auth_pending: self.queue_signin_pending(),
         }
     }
 
@@ -3968,7 +4068,7 @@ impl App {
                             self.awaiting_binds.push_front(AwaitingBind { id: previous_id, open: true });
                             self.handle_inner(AppEvent::Ctl(CtlEvent::SessionBound { session_id, notice }), ctl);
                         } else {
-                            ctl.send(Cmd::ForgetSession { session_id });
+                            ctl.send(Cmd::CloseSession { session_id });
                         }
                     }
                     CtlEvent::BindFailedTo { previous_id, message } => {
@@ -3999,6 +4099,7 @@ impl App {
                     },
                     CtlEvent::Starting { runtime } => {
                         self.connection_error = None;
+                        self.attach_refused = false;
                         self.state = RunState::Starting;
                         self.run_started = Some(Instant::now());
                         self.state_note = if runtime == "harness" {
@@ -4012,6 +4113,7 @@ impl App {
                     }
                     CtlEvent::Ready { server } => {
                         self.connection_error = None;
+                        self.attach_refused = false;
                         self.server_info = Some(server.clone());
                         if !self.prompt_pending {
                             self.state = RunState::Idle;
@@ -4023,6 +4125,11 @@ impl App {
                         if !target.is_empty() { self.server_info = Some(target); }
                         if self.server_info.is_none() { self.server_info = Some("ACP".into()); }
                         self.connection_error = Some(error.clone());
+                        self.attach_refused = false;
+                        // A failed attach must show its error, not the welcome
+                        // page — the banner skips transcript lines entirely
+                        // (same convention as BindFailedTo above).
+                        self.show_banner = false;
                         self.session_id = "unavailable".into();
                         self.session_bound = false;
                         self.session_model = None;
@@ -4033,6 +4140,30 @@ impl App {
                         self.run_started = None;
                         self.state_note.clear();
                         self.transcript.push_notice(NoticeLevel::Error, error);
+                    }
+                    CtlEvent::ConnectionRefused { target, error } => {
+                        if !target.is_empty() { self.server_info = Some(target); }
+                        if self.server_info.is_none() { self.server_info = Some("ACP".into()); }
+                        self.connection_error = Some(error.clone());
+                        self.attach_refused = true;
+                        // Same transcript convention as a failed attach: the
+                        // refusal replaces the welcome page. The auth state
+                        // is kept — a sign-in offer may have just opened.
+                        self.show_banner = false;
+                        self.session_id = "unavailable".into();
+                        self.session_bound = false;
+                        self.session_model = None;
+                        self.selected_model = None;
+                        self.prompt_pending = false;
+                        self.state = RunState::Idle;
+                        self.run_started = None;
+                        self.state_note.clear();
+                        // An auth-carrying refusal already printed its
+                        // needs-auth block with this message (the Auth event
+                        // lands first) — don't print it twice.
+                        if !self.queue_signin_pending() {
+                            self.transcript.push_notice(NoticeLevel::Error, error);
+                        }
                     }
                     CtlEvent::PromptQueued {
                         session_id: Some(sid),
@@ -4277,7 +4408,7 @@ impl App {
                         }
                         let mode_current = self.current_mode();
                         let model_current = self.current_model();
-                        let model_provider = self.cfg.provider.clone();
+                        let model_provider = self.session_provider().to_string();
                         if let Some(picker) = &mut self.picker {
                             match picker.kind {
                                 PickerKind::Model if !models.is_empty() => {
@@ -4448,18 +4579,52 @@ impl App {
                     CtlEvent::SessionAuth { session_id, snapshot, open } => {
                         if session_id == self.session_id {
                             self.handle_inner(AppEvent::Ctl(CtlEvent::Auth(snapshot)), ctl);
-                            if open { self.open_auth_surface(ctl); }
-                        } else if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
-                            if let Some(connection) = &mut slot.connection { connection.auth = snapshot; }
+                            if open { self.open_auth_surface(); }
+                        } else {
+                            if let Some(slot) = self.parked.iter_mut().find(|slot| slot.id == session_id) {
+                                if let Some(connection) = &mut slot.connection {
+                                    connection.auth = snapshot;
+                                }
+                            }
                         }
                     }
                     CtlEvent::Auth(snap) => {
+                        // A terminal sign-in cannot name itself through
+                        // `authenticate`: the post-reconnect configured
+                        // snapshot carries no method, so the identity
+                        // recorded when its TTY launch started stands in
+                        // (#160). Only a method that is itself a terminal
+                        // launch may fill the blank.
+                        let mut snap = snap;
+                        if snap.method_id.is_none()
+                            && self
+                                .auth
+                                .method_id
+                                .as_ref()
+                                .and_then(|id| self.auth.methods.iter().find(|m| m.id == *id))
+                                .is_some_and(|m| m.terminal_launch.is_some())
+                        {
+                            snap.method_id = self.auth.method_id.clone();
+                            snap.method_name = self.auth.method_name.clone();
+                        }
                         let retrying_prompt =
                             self.state == RunState::Running || self.prompt_pending;
                         if let Some((level, text)) = snap.notice(self.locale) {
+                            let index = self.transcript.cells.len();
                             self.transcript.push_notice(level, text);
+                            if snap.status == crate::acp_auth::AuthStatus::NeedsAuth {
+                                self.auth_notice_cells.push(index);
+                            }
                         }
                         if snap.status == crate::acp_auth::AuthStatus::Configured {
+                            // Sign-in succeeded: drop the stale "sign-in
+                            // needed" notices so they do not float above
+                            // the first turn (issue #160).
+                            if !self.auth_notice_cells.is_empty() {
+                                let cells = std::mem::take(&mut self.auth_notice_cells);
+                                let gen = self.transcript.gen();
+                                self.transcript.hide_cells(&cells, gen);
+                            }
                             if self.view_overlay.as_ref().is_some_and(|view| view.id == "builtin.auth.failure") {
                                 self.view_overlay = None;
                             }
@@ -4480,29 +4645,34 @@ impl App {
                             self.open_text_overlay("builtin.auth.failure",
                                 self.locale.tr("Sign-in failed", "登录失败").into(),
                                 format!("{}\n\n{}", snap.message.as_deref().unwrap_or("ACP authenticate failed"),
-                                    self.locale.tr("Close this panel, then use /auth to retry or choose another method. Browser authorization alone does not mean the Agent accepted sign-in.",
-                                        "关闭面板后可用 /auth 重试或选择其他方式。浏览器授权完成不代表 Agent 已接受登录。")));
+                                    self.locale.tr("Close this panel, then pick a method again (ctrl+g). Browser authorization alone does not mean the Agent accepted sign-in.",
+                                        "关闭面板后用 ctrl+g 重新选择登录方式。浏览器授权完成不代表 Agent 已接受登录。")));
                         }
                         self.auth = snap;
                     }
                     CtlEvent::OpenAuth => {
-                        self.open_auth_surface(ctl);
+                        self.open_auth_surface();
                     }
                     CtlEvent::AgentCaps {
                         load_session,
                         list_session,
                         resume_session,
                         fork_session,
+                        close_session,
                         additional_directories,
+                        auth_logout,
                     } => {
+                        self.agent_auth_logout = auth_logout;
                         self.load_session = load_session;
                         self.list_session = list_session;
                         self.resume_session_cap = resume_session;
                         self.fork_session_cap = fork_session;
+                        self.close_session_cap = close_session;
                         self.note_additional_directories(additional_directories);
                     }
                     CtlEvent::SessionBound { session_id, notice } => {
                         self.connection_error = None;
+                        self.attach_refused = false;
                         // The session that just bound, for the queue dispatch
                         // below (prompts submitted while the tab was unbound
                         // are held in its queue — acp.rs rejects unbound ids).
@@ -4585,8 +4755,9 @@ impl App {
                                 // The requesting tab was closed (/close)
                                 // before the bind resolved. acp already
                                 // registered the new session server-side, so
-                                // forget it and never hijack the viewed tab.
-                                ctl.send(Cmd::ForgetSession {
+                                // close it there (capable agents free its
+                                // resources) and never hijack the viewed tab.
+                                ctl.send(Cmd::CloseSession {
                                     session_id: session_id.clone(),
                                 });
                                 self.show_tip(self.locale.trf(
@@ -5078,7 +5249,12 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.needs_redraw = true;
-                // Session tab strip (issue #94): left-click a tab switches.
+                // Session tab strip (issues #94, #146): left-click a tab
+                // switches; a click on its `×` closes it instead.
+                if let Some(tab) = self.tab_close_at(mouse.column, mouse.row) {
+                    self.close_session_tab(tab, ctl);
+                    return;
+                }
                 if let Some(tab) = self.tab_at(mouse.column, mouse.row) {
                     self.switch_view_to_tab(tab, ctl);
                     // Clicking the strip's outermost visible tab also
@@ -5154,22 +5330,21 @@ impl App {
                     self.jump_to_user_prompt();
                     return;
                 }
-                // The mouse-only expand button (issue #92) wins over caret
-                // placement inside the well: clicking toggles the input
-                // height instead of moving the caret. It lives inside the
-                // well, so it is only live outside child views and the
-                // elicitation form (which owns its own field).
+                // The composer's top border is a drag handle (issue #147):
+                // pressing it arms a resize the Drag events drive — the
+                // grab remembers the pointer row and the resolved height
+                // so every later delta is exact regardless of redraws. A
+                // plain click (Down then Up, no Drag) changes nothing.
                 if self.elicitation_ask.is_none()
                     && self.active_subagent.is_none()
-                    && self.expand_btn_hit(mouse.column, mouse.row)
+                    && self.composer_border_hit(mouse.column, mouse.row)
                 {
                     self.sel = None;
                     self.selecting = false;
                     self.last_click = None;
                     self.input_selecting = false;
                     self.input_sel = None;
-                    self.input_expanded = !self.input_expanded;
-                    self.needs_redraw = true;
+                    self.composer_resize = Some((mouse.row, self.composer_h));
                     return;
                 }
                 // Click inside the composer well: place the caret at the
@@ -5219,6 +5394,20 @@ impl App {
                     self.selecting = true;
                 }
             }
+            MouseEventKind::Drag(MouseButton::Left)
+                if let Some((grab_row, start_h)) = self.composer_resize =>
+            {
+                // Absolute-delta resize: grab row ↔ height came from the
+                // same frame, so events arriving between redraws still
+                // land on the right total instead of accumulating error.
+                let (min_h, max_h) = self.composer_bounds;
+                let next = (start_h as i64 + grab_row as i64 - mouse.row as i64)
+                    .clamp(min_h as i64, max_h as i64) as u16;
+                if self.composer_rows != Some(next) {
+                    self.composer_rows = Some(next);
+                    self.needs_redraw = true;
+                }
+            }
             MouseEventKind::Drag(MouseButton::Left) if self.selecting => {
                 // Edge auto-scroll (grok: compute_autoscroll): dragging
                 // past the pane keeps scrolling while events arrive.
@@ -5243,6 +5432,15 @@ impl App {
                 }
                 self.needs_redraw = true;
             }
+            MouseEventKind::Up(MouseButton::Left) if self.composer_resize.is_some() => {
+                self.composer_resize = None;
+                // The border keeps its highlight only while still hovered.
+                self.hover_composer_border = self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.composer_border_hit(mouse.column, mouse.row)
+                    && !self.prompt_jump_btn_hit(mouse.column, mouse.row);
+                self.needs_redraw = true;
+            }
             MouseEventKind::Up(MouseButton::Left) if self.selecting => {
                 self.selecting = false;
                 self.finish_selection();
@@ -5255,9 +5453,14 @@ impl App {
                 // grok-style hover: track which inline chip the pointer is
                 // over; redraw only on changes (mouse moves are a firehose).
                 self.mouse_pos = Some((mouse.column, mouse.row));
-                let over_btn = self.expand_btn_hit(mouse.column, mouse.row);
-                if over_btn != self.hover_expand_btn {
-                    self.hover_expand_btn = over_btn;
+                // Hovering the composer's top border (outside the ↥
+                // glyph) lights it up as the resize affordance.
+                let over_border = self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.composer_border_hit(mouse.column, mouse.row)
+                    && !self.prompt_jump_btn_hit(mouse.column, mouse.row);
+                if over_border != self.hover_composer_border {
+                    self.hover_composer_border = over_border;
                     self.needs_redraw = true;
                 }
                 let over_jump = self.prompt_jump_btn_hit(mouse.column, mouse.row);
@@ -5337,16 +5540,31 @@ impl App {
             .map(|&(_, _, idx)| idx)
     }
 
-    /// Hit-test the mouse-only composer expand button (issue #92). The
-    /// button's rect is recorded by the painter every frame, so the
-    /// pointer can discover it while moving across the card's top-right.
-    fn expand_btn_hit(&self, col: u16, row: u16) -> bool {
-        self.expand_btn.is_some_and(|r| {
-            col >= r.x
-                && col < r.x.saturating_add(r.width)
-                && row >= r.y
-                && row < r.y.saturating_add(r.height)
+    /// Hit-test the composer's top border — the drag-to-resize handle
+    /// (issue #147). Recorded by the painter every frame; only the
+    /// border row itself counts, never the well rows below it.
+    fn composer_border_hit(&self, col: u16, row: u16) -> bool {
+        self.composer_box.is_some_and(|r| {
+            row == r.y && col >= r.x && col < r.x.saturating_add(r.width)
         })
+    }
+
+    /// One keyboard step on the composer height (issue #147): ^↑ grows
+    /// the well a row, ^↓ shrinks it a row. The first press pins the
+    /// resolved height the frame already shows; steps then stay inside
+    /// the frame's legal range. Shrinking while already on the floor
+    /// releases the pin — the well returns to the draft-following auto
+    /// height instead of sticking at its minimum.
+    pub(crate) fn resize_composer_step(&mut self, delta: i64) {
+        let (min_h, max_h) = self.composer_bounds;
+        let cur = self.composer_rows.unwrap_or(self.composer_h);
+        if delta < 0 && cur <= min_h {
+            self.composer_rows = None;
+        } else {
+            let next = (cur as i64 + delta).clamp(min_h as i64, max_h as i64) as u16;
+            self.composer_rows = Some(next);
+        }
+        self.needs_redraw = true;
     }
 
     /// Hit-test the mouse-only `↥` user-prompt jump button (issue #103).
@@ -6106,6 +6324,13 @@ impl App {
             return;
         }
 
+        // The auth credential form shares the elicitation editor and its
+        // modal level — a typed key is always in a masked field context.
+        if self.auth_form.is_some() {
+            self.handle_auth_form_key(key, ctl);
+            return;
+        }
+
         // ACP tool permission sits above session pickers (Backchat ask panel).
         if self.permission_ask.is_some() {
             self.handle_permission_ask_key(key);
@@ -6185,7 +6410,6 @@ impl App {
         // Vim mode: plain keys become vim commands, but only with no
         // modal above (see the note at the top of this function).
         if self.vim.is_active()
-            && self.elicitation_ask.is_none()
             && self.queue_edit.is_none()
             && !self.slash_completion_open()
         {
@@ -6554,6 +6778,7 @@ impl App {
             Action::Esc => self.handle_esc(ctl),
             Action::CtrlC => self.handle_ctrl_c(ctl),
             Action::Quit => self.quit = true,
+            Action::CloseSession => self.close_session_flow(ctl),
             Action::ClearScrollback => {
                 self.transcript.clear();
                 self.sel = None;
@@ -6580,7 +6805,10 @@ impl App {
             Action::AttachClipboard => self.clip_image("", ctl),
             Action::ModelPicker => self.open_model_picker(ctl),
             Action::CycleAgent => self.cycle_agent(ctl),
+            Action::OpenAuth => self.open_auth_surface(),
             Action::CyclePermission => self.cycle_permission(ctl),
+            Action::ComposerGrow => self.resize_composer_step(1),
+            Action::ComposerShrink => self.resize_composer_step(-1),
             Action::HistoryPrev => self.history_prev(),
             Action::HistoryNext => self.history_next(),
             Action::ScrollHalfUp => self.scroll_by(10),
@@ -6907,6 +7135,36 @@ impl App {
             self.dispatch(Action::ToggleTheme, ctl);
             return;
         }
+        // Issue #160: the auth picker can open on its own after a refused
+        // prompt, so printable keys keep reaching the composer — a typed
+        // prompt stays visible instead of being eaten by the modal, and a
+        // non-empty composer makes Enter submit it rather than pick a
+        // sign-in method. The credential form still needs an empty-
+        // composer Enter: explicit intent, never stray composer text.
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Auth)
+        {
+            match (key.code, key.modifiers) {
+                (KeyCode::Char(c), m)
+                    if m == KeyModifiers::NONE || m == KeyModifiers::SHIFT =>
+                {
+                    self.input.insert_char(c);
+                    return;
+                }
+                (KeyCode::Backspace, KeyModifiers::NONE) => {
+                    self.input.backspace();
+                    return;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) if !self.input.is_empty() => {
+                    self.picker = None;
+                    self.submit(ctl);
+                    return;
+                }
+                _ => {}
+            }
+        }
         let Some(picker) = &mut self.picker else {
             return;
         };
@@ -6917,7 +7175,31 @@ impl App {
         let page = self.picker_page_rows.max(1);
         let sel_before = picker.sel;
         match key.code {
-            KeyCode::Esc => self.picker = None,
+            KeyCode::Esc => {
+                if kind == PickerKind::Auth {
+                    ctl.send(Cmd::AuthSkipped {
+                        session_id: self.session_id.clone(),
+                    });
+                    // Prompts queued behind sign-in before a session exists
+                    // never reached acp, so `AuthSkipped` cannot drop them —
+                    // clear them here or the user stays pinned under a queue
+                    // only a sign-in could drain (issue #160).
+                    if self.queue_signin_pending() && !self.prompt_queue.is_empty() {
+                        let dropped = self.prompt_queue.len();
+                        self.prompt_queue.clear();
+                        self.queued = 0;
+                        self.transcript.push_notice(
+                            crate::transcript::NoticeLevel::Warn,
+                            self.locale.trf(
+                                "sign-in skipped — discarded {} held prompt(s)",
+                                "已跳过登录 —— 丢弃 {} 条排队消息",
+                                &[dropped.to_string()],
+                            ),
+                        );
+                    }
+                }
+                self.picker = None;
+            }
             KeyCode::Up => picker.sel = picker.sel.checked_sub(1).unwrap_or(n - 1),
             KeyCode::Down => picker.sel = (picker.sel + 1) % n,
             KeyCode::PageUp => picker.sel = picker.sel.saturating_sub(page),
@@ -7230,7 +7512,7 @@ impl App {
                 },
             );
         }
-        let current_provider = self.cfg.provider.clone();
+        let current_provider = self.session_provider().to_string();
         let sel = items
             .iter()
             .position(|i| {
@@ -7628,35 +7910,97 @@ impl App {
         fresh.transcript.locale = self.locale;
         fresh.input = old.input;
         fresh.pending_images = old.pending_images;
-        fresh.input_expanded = old.input_expanded;
+        fresh.composer_rows = old.composer_rows;
         self.put_live_slot(fresh);
         self.after_switch();
     }
 
-    /// The `/close` flow (issue #94): stop viewing the current session tab
-    /// and drop everything bound to it (transcript, composer draft, queue,
-    /// asks, subagents). Local only — ACP has no session/close, so the
-    /// server-side session keeps existing; acp.rs forgets its turn state
-    /// and queued prompts so nothing more is sent into the void, and the
-    /// session's later updates drop at the router. An in-flight turn keeps
-    /// running and is dropped when it settles. Never closes the last tab.
+    /// The `/close`·`×`·ctrl+shift+w flow (issues #94, #146): stop viewing
+    /// a session tab and drop everything bound to it (transcript, composer
+    /// draft, queue, asks, subagents). A still-working tab — streaming
+    /// turn, prompt in flight, an unanswered permission/elicitation ask —
+    /// is never dropped silently: the first close arms a confirm window,
+    /// and closing again cancels the turn first, then drops the tab. On
+    /// the ACP side `session/close` goes out when the owning connection
+    /// advertised it (the agent cancels ongoing work and frees the
+    /// session); other agents keep the session server-side, resumable
+    /// through `session/resume`·`session/list`. Closing the live tab
+    /// focuses its right neighbor, else the left one; closing the last
+    /// tab opens a fresh welcome tab so the strip never ends on nothing.
     fn close_session_flow(&mut self, ctl: &Controller) {
+        self.close_session_tab(self.current, ctl);
+    }
+
+    /// Close the tab at index `tab` (`0..session_tab_count()`): the live
+    /// tab or, via a `×` click, a parked one.
+    fn close_session_tab(&mut self, tab: usize, ctl: &Controller) {
         let total = self.session_tab_count();
-        if total < 2 {
-            self.show_tip(self.locale.tr(
-                "cannot close the last session — /new opens another first",
-                "不能关闭最后一个会话 —— 先用 /new 开一个新的",
-            ));
+        if tab >= total {
             return;
         }
-        let doomed = self.session_id.clone();
-        let running = self.state != RunState::Idle || self.prompt_pending;
-        // Compositor-owned overlays (plugin view/select/slider) must be
-        // released with a cancel event before the tab dies — the same path
-        // a tab click takes. Painter popups, asks and the composer draft
-        // die with the slot (ask overlays auto-cancel through Drop).
-        self.cancel_plugin_overlays(ctl);
-        let doomed_slot = self.take_live_slot();
+        let live = tab == self.current;
+        let pidx = if live {
+            None
+        } else {
+            Some(if tab < self.current { tab } else { tab - 1 })
+        };
+        let (doomed, busy) = if let Some(pidx) = pidx {
+            let slot = &self.parked[pidx];
+            (
+                slot.id.clone(),
+                slot.running
+                    || slot.prompt_pending
+                    || slot.permission_ask.is_some()
+                    || slot.elicitation_ask.is_some(),
+            )
+        } else {
+            (
+                self.session_id.clone(),
+                self.state != RunState::Idle
+                    || self.prompt_pending
+                    || self.permission_ask.is_some()
+                    || self.elicitation_ask.is_some(),
+            )
+        };
+        if busy {
+            // One confirm: close again inside the window to cancel the
+            // turn and drop the tab — nothing is discarded silently.
+            let armed = self
+                .close_armed
+                .as_ref()
+                .is_some_and(|(id, started)| {
+                    id == &doomed && started.elapsed() < CLOSE_CONFIRM_WINDOW
+                });
+            if !armed {
+                self.close_armed = Some((doomed.clone(), Instant::now()));
+                self.show_tip(self.locale.trf(
+                    "session {} is still running — close again within 4s to cancel it and close the tab",
+                    "会话 {} 仍在运行 —— 4 秒内再次关闭将取消当前回合",
+                    &[short_id(&doomed)],
+                ));
+                return;
+            }
+            // Confirmed: interrupt the in-flight turn first (`Interrupt`
+            // only aborts when a prompt is in flight — pending asks die
+            // with the slot), then close.
+            ctl.send(Cmd::Interrupt {
+                session_id: doomed.clone(),
+            });
+            self.close_armed = None;
+        }
+
+        if live {
+            // Compositor-owned overlays (plugin view/select/slider) must
+            // be released with a cancel event before the tab dies — the
+            // same path a tab click takes. Painter popups, asks and the
+            // composer draft die with the slot (ask overlays auto-cancel
+            // through Drop).
+            self.cancel_plugin_overlays(ctl);
+        }
+        let doomed_slot = match pidx {
+            Some(pidx) => self.parked.remove(pidx),
+            None => self.take_live_slot(),
+        };
         let discarded = doomed_slot.prompt_queue.len();
         let had_draft = !doomed_slot.input.is_empty()
             || !doomed_slot.pending_images.is_empty();
@@ -7671,31 +8015,47 @@ impl App {
         if let Some(entry) = self.awaiting_binds.iter_mut().find(|entry| entry.id == doomed) {
             entry.open = false;
         }
-        // Forget the session on the ACP side too: drop its turn state and
-        // queued prompts (no-op for an unbound placeholder id).
-        ctl.send(Cmd::ForgetSession {
+        // Close the session on the ACP side too: `session/close` when the
+        // owning connection advertised it, always the local drop (a no-op
+        // for an unbound placeholder id).
+        ctl.send(Cmd::CloseSession {
             session_id: doomed.clone(),
         });
 
-        // View a neighbor first, keeping the closed tab's conceptual slot:
-        // the right neighbor when one exists, else the tab on the left.
-        let right = self.current + 1 < total;
-        let pidx = if right { self.current } else { self.current - 1 };
-        let mut target = self.parked.remove(pidx);
-        target.completed_unseen = false;
-        self.current = if right {
-            self.current
+        if live {
+            if total == 1 {
+                // The last tab: reopen a fresh welcome tab so the strip
+                // never ends on nothing (issue #146).
+                self.reopen_fresh_tab(ctl);
+            } else {
+                // View a neighbor first, keeping the closed tab's
+                // conceptual slot: the right neighbor when one exists,
+                // else the tab on the left.
+                let right = self.current + 1 < total;
+                let pidx = if right { self.current } else { self.current - 1 };
+                let mut target = self.parked.remove(pidx);
+                target.completed_unseen = false;
+                self.current = if right {
+                    self.current
+                } else {
+                    self.current.saturating_sub(1)
+                };
+                self.put_live_slot(target);
+                self.after_switch();
+            }
         } else {
-            self.current.saturating_sub(1)
-        };
-        self.put_live_slot(target);
-        self.after_switch();
+            // A parked tab vanished: the live slot keeps its place among
+            // the remaining tabs.
+            if tab < self.current {
+                self.current -= 1;
+            }
+        }
         self.needs_redraw = true;
 
         let label = short_id(&doomed);
         let mut bits: Vec<String> = Vec::new();
-        if running {
-            bits.push("its running turn keeps settling".into());
+        if busy {
+            bits.push("turn cancelled".into());
         }
         if discarded > 0 {
             bits.push(format!("{discarded} queued dropped"));
@@ -7717,6 +8077,36 @@ impl App {
         }
     }
 
+    /// After the last tab closed, open one fresh welcome tab: a bound demo
+    /// tab when no live ACP transport drives sessions, else a placeholder
+    /// that binds the `session/new` it requests.
+    fn reopen_fresh_tab(&mut self, ctl: &Controller) {
+        if self.demo {
+            let id = format!("dsh-{}", timestamp());
+            let mut slot = SessionSlot::fresh(id.clone(), true);
+            slot.transcript.locale = self.locale;
+            self.put_live_slot(slot);
+            ctl.send(Cmd::FetchSkills {
+                session_id: self.session_id.clone(),
+            });
+        } else {
+            let placeholder = format!("dsh-{}", timestamp());
+            let mut slot = SessionSlot::fresh(placeholder.clone(), false);
+            slot.transcript.locale = self.locale;
+            self.put_live_slot(slot);
+            self.awaiting_binds.push_back(AwaitingBind {
+                id: placeholder.clone(),
+                open: true,
+            });
+            ctl.send(Cmd::NewSession {
+                requester: Some(placeholder),
+                retry_auth: None,
+            });
+            self.show_tip(self.locale.tr("session/new …", "正在创建会话（session/new）…"));
+        }
+        self.after_switch();
+    }
+
     fn set_session_connection(&mut self, connection: crate::bus::SessionConnection) {
         self.server_info = connection.server;
         self.auth = connection.auth;
@@ -7724,6 +8114,7 @@ impl App {
         self.list_session = connection.list_session;
         self.resume_session_cap = connection.resume_session;
         self.fork_session_cap = connection.fork_session;
+        self.close_session_cap = connection.close_session;
         self.additional_directories_cap = connection.additional_directories;
         self.additional_directories_known = true;
     }
@@ -8149,7 +8540,27 @@ impl App {
         self.selected_model
             .clone()
             .or_else(|| self.transcript.last_model.clone())
+            .or_else(|| self.session_model.clone())
             .unwrap_or_else(|| self.cfg.model.clone())
+    }
+
+    /// Provider the viewed session's model came from — resolved through the
+    /// session's own catalog because `cfg.provider` is app-global and a
+    /// `/model` pick on another tab would otherwise bleed into this one.
+    pub fn session_provider(&self) -> &str {
+        let model = self.current_model();
+        // The running model is the global pick itself: `cfg.provider` is its
+        // recorded provider — the catalog cannot disambiguate duplicate ids.
+        if model == self.cfg.model {
+            return &self.cfg.provider;
+        }
+        let model_id = model.rsplit('/').next().unwrap_or(&model);
+        self.last_models
+            .iter()
+            .find(|entry| entry.id == model || entry.id == model_id)
+            .map(|entry| entry.provider.as_str())
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or(&self.cfg.provider)
     }
 
     /// The effective permission preset: the folded `permission/preset` fact,
@@ -8583,7 +8994,6 @@ impl App {
                 )),
             },
             "status" => self.push_status_info(),
-            "auth" => self.start_auth(arg, ctl),
             "resume" => {
                 // `/resume [n|id]` — a bare number is how many of the most
                 // recent durable sessions to list (default 50); anything
@@ -8615,8 +9025,8 @@ impl App {
                 if arg.is_empty() {
                     ctl.send(Cmd::FetchEfforts {
                         session_id: self.session_id.clone(),
-                        provider: self.cfg.provider.clone(),
-                        model: self.cfg.model.clone(),
+                        provider: self.session_provider().to_string(),
+                        model: self.current_model(),
                     });
                 } else {
                     ctl.send(Cmd::SelectModel {
@@ -8674,24 +9084,56 @@ impl App {
             "image" => self.send_image(arg, ctl),
             "clip" => self.clip_image(arg, ctl),
             other => {
-                self.transcript.push_notice(
-                    NoticeLevel::Warn,
-                    if self.locale == Locale::Zh {
-                        format!("未知命令 /{other} — 使用 /help 查看命令")
-                    } else {
-                        format!("unknown command /{other} — /help lists commands")
-                    },
-                );
+                // Not a client command: slash input passes through to the
+                // agent as advertised (issue #160) — the client never owns
+                // auth slash commands, and only a real auth_required reply
+                // opens the picker.
+                let text = if arg.is_empty() {
+                    format!("/{other}")
+                } else {
+                    format!("/{other} {arg}")
+                };
+                self.send_agent_text(text, ctl);
             }
         }
     }
 
     /// Take a pending Terminal Auth launch so the main loop can leave the TUI.
+    /// The picker that started it is already answered — close it so the
+    /// resumed frame reflects the reconnect outcome, not a stale row.
     pub fn take_terminal_auth(&mut self) -> Option<crate::acp_auth::TerminalAuthLaunch> {
-        self.pending_terminal_auth.take()
+        if let Some(launch) = self.pending_terminal_auth.take() {
+            self.picker = None;
+            self.auth.method_id = Some(launch.method_id.clone());
+            self.auth.method_name = self
+                .auth
+                .methods
+                .iter()
+                .find(|method| method.id == launch.method_id)
+                .and_then(|method| method.name.clone());
+            return Some(launch);
+        }
+        None
     }
 
-    fn open_auth_surface(&mut self, ctl: &Controller) {
+    /// A TTY sign-in launch just returned (issue #160): exit 0 means the
+    /// agent may hold fresh credentials — respawn it and re-run
+    /// `initialize` (never `authenticate` for a terminal method). A
+    /// non-zero exit is a visible error and the picker reopens so the
+    /// user can retry or pick a different method.
+    pub fn finish_terminal_auth(&mut self, result: Result<(), String>, ctl: &Controller) {
+        match result {
+            Ok(()) => ctl.send(Cmd::AgentReconnect {
+                method_id: self.auth.method_id.clone(),
+            }),
+            Err(err) => {
+                self.transcript.push_notice(NoticeLevel::Error, err);
+                self.open_auth_surface();
+            }
+        }
+    }
+
+    pub(crate) fn open_auth_surface(&mut self) {
         if self.demo {
             return;
         }
@@ -8704,8 +9146,11 @@ impl App {
         self.state = RunState::Idle;
         self.run_started = None;
         self.state_note.clear();
-        self.show_tip(self.locale.tr("sign-in needed — /auth to retry", "需要登录 —— /auth 重试"));
-        self.start_auth("", ctl);
+        self.show_tip(self.locale.tr(
+            "pick an auth method (ctrl+g reopens this)",
+            "请选择登录方式（ctrl+g 重新打开）",
+        ));
+        self.open_auth_picker();
     }
 
     fn open_auth_picker(&mut self) {
@@ -8720,6 +9165,18 @@ impl App {
                 provider: None,
             })
             .collect();
+        let mut items = items;
+        if self.agent_auth_logout {
+            items.push(PickerItem {
+                id: AUTH_LOGOUT_ID.into(),
+                label: self
+                    .locale
+                    .tr("Log out / switch method", "登出 / 切换登录方式")
+                    .into(),
+                meta: "logout".into(),
+                provider: None,
+            });
+        }
         if items.is_empty() {
             return;
         }
@@ -8743,10 +9200,13 @@ impl App {
         });
     }
 
-    fn start_auth(&mut self, arg: &str, ctl: &Controller) {
-        use crate::acp_auth::{
-            authenticate_meta_from_method, select_auth_method, values_from_auth_arg,
-        };
+    /// A picker row was chosen: run that method — and only that method —
+    /// through its kind's flow. The terminal row leaves the TUI for the
+    /// client-owned login launch; api-key/gateway rows open the masked
+    /// credential form; anything else goes straight to `authenticate`
+    /// (issue #160 — never a fallback to methods[0], never values typed
+    /// into the composer).
+    fn start_auth(&mut self, method_id: &str, ctl: &Controller) {
         if self.demo {
             self.transcript
                 .push_notice(
@@ -8761,7 +9221,7 @@ impl App {
             self.show_tip(self.locale.tr("sign-in is still pending — waiting for the Agent", "登录仍在进行中，等待 Agent 返回结果"));
             return;
         }
-        if self.auth.methods.is_empty() {
+        if self.auth.methods.is_empty() && method_id != AUTH_LOGOUT_ID {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
                 self.auth.message.clone().unwrap_or_else(|| {
@@ -8775,34 +9235,44 @@ impl App {
             );
             return;
         }
-        let arg = arg.trim();
-        if arg.is_empty() && self.auth.methods.len() > 1 {
-            self.open_auth_picker();
+        // The logout row is only appended when the agent declared
+        // `auth.logout`; the guard stays so a stale row can never send a
+        // request the agent said it does not implement (issue #160).
+        if method_id == AUTH_LOGOUT_ID {
+            if !self.agent_auth_logout {
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    self.locale
+                        .tr(
+                            "this agent did not declare auth.logout — sign-out is not offered",
+                            "此 Agent 未声明 auth.logout —— 不提供登出",
+                        )
+                        .into(),
+                );
+            } else {
+                self.auth.status = crate::acp_auth::AuthStatus::SigningIn;
+                self.auth.message = Some(
+                    self.locale
+                        .tr("signing out…", "正在登出…")
+                        .into(),
+                );
+                ctl.send(Cmd::Logout);
+            }
             return;
         }
-        let (method_id, rest) = {
-            let mut parts = arg.splitn(2, char::is_whitespace);
-            let first = parts.next().unwrap_or("");
-            let rest = parts.next().unwrap_or("").trim();
-            if self.auth.methods.iter().any(|m| m.id == first) {
-                (first.to_string(), rest.to_string())
-            } else {
-                (
-                    self.auth
-                        .method_id
-                        .clone()
-                        .unwrap_or_else(|| self.auth.methods[0].id.clone()),
-                    arg.to_string(),
-                )
-            }
-        };
-        let Some(method) = select_auth_method(&self.auth.methods, Some(&method_id)).cloned() else {
+        let Some(method) = self
+            .auth
+            .methods
+            .iter()
+            .find(|method| method.id == method_id)
+            .cloned()
+        else {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
                 self.locale.trf(
-                    "ACP auth method is unavailable or not supported: {}",
-                    "ACP 认证方式不可用或不支持：{}",
-                    &[method_id.clone()],
+                    "ACP auth method is not advertised by this agent: {}",
+                    "此 Agent 未声明 ACP 认证方式：{}",
+                    &[method_id.to_string()],
                 ),
             );
             return;
@@ -8832,43 +9302,129 @@ impl App {
             );
             return;
         }
-        let values = values_from_auth_arg(&method, &rest);
-        if method.form && authenticate_meta_from_method(&method, &values).is_none() {
-            self.show_tip(self.locale.tr(
-                "usage: /auth <api-key> · gateway: /auth <base-url> <api-key>",
-                "用法：/auth <api-key> · 网关：/auth <base-url> <api-key>",
-            ));
+        // Terminal sign-in is a TTY flow, never `authenticate` (issue #160).
+        if let Some(launch) = method.terminal_launch.clone() {
+            self.pending_terminal_auth = Some(launch);
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                self.locale.trf(
+                    "leaving the TUI for {} — return here when it finishes",
+                    "离开 TUI 前往 {} —— 完成后回到这里",
+                    &[method
+                        .name
+                        .as_deref()
+                        .unwrap_or(&method.id)
+                        .to_string()],
+                ),
+            );
             return;
         }
-        if values.is_empty() {
-            if let Some(launch) = method.terminal_launch.clone() {
-                self.pending_terminal_auth = Some(launch);
-                self.transcript.push_notice(
-                    NoticeLevel::Info,
-                    self.locale.trf(
-                        "leaving the TUI for {} — return here when it finishes",
-                        "离开 TUI 前往 {} —— 完成后回到这里",
-                        &[method
-                            .name
-                            .as_deref()
-                            .unwrap_or(&method.id)
-                            .to_string()],
-                    ),
-                );
-                return;
-            }
+        // api-key / gateway methods collect their secret in a masked form —
+        // a bare composer string is never accepted as a credential.
+        if method.form {
+            self.open_auth_form(&method);
+            return;
         }
+        self.submit_auth_values(&method.id, std::collections::BTreeMap::new(), ctl);
+    }
+
+    /// Send `authenticate` for exactly `method_id` with the values the
+    /// credential form collected (empty for a plain agent method).
+    fn submit_auth_values(
+        &mut self,
+        method_id: &str,
+        values: std::collections::BTreeMap<String, String>,
+        ctl: &Controller,
+    ) {
+        let Some(method) = self
+            .auth
+            .methods
+            .iter()
+            .find(|method| method.id == method_id)
+            .cloned()
+        else {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale.trf(
+                    "ACP auth method is not advertised by this agent: {}",
+                    "此 Agent 未声明 ACP 认证方式：{}",
+                    &[method_id.to_string()],
+                ),
+            );
+            return;
+        };
         self.auth.status = crate::acp_auth::AuthStatus::SigningIn;
         self.auth.method_id = Some(method.id.clone());
         self.auth.method_name = method.name.clone();
         self.auth.message = None;
-        if self.view_overlay.as_ref().is_some_and(|view| view.id == "builtin.auth.failure") {
+        if self
+            .view_overlay
+            .as_ref()
+            .is_some_and(|view| view.id == "builtin.auth.failure")
+        {
             self.view_overlay = None;
         }
         ctl.send(Cmd::Authenticate {
             method_id: method.id,
             values,
         });
+    }
+
+    /// One masked field per declared auth var — the api-key / gateway secret
+    /// only ever leaves through `Cmd::Authenticate` for this method (issue
+    /// #160). Esc backs out to the picker.
+    fn open_auth_form(&mut self, method: &crate::acp_auth::AuthMethodInfo) {
+        use crate::elicitation::{ElicitationField, ElicitationFieldKind, ElicitationForm};
+        let fields = method
+            .vars
+            .iter()
+            .map(|var| ElicitationField {
+                name: var.name.clone(),
+                custom_name: None,
+                title: var.label.clone().unwrap_or_else(|| var.name.clone()),
+                description: None,
+                required: !var.optional.unwrap_or(false),
+                secret: var.secret.unwrap_or(false),
+                kind: ElicitationFieldKind::Text { default: None },
+            })
+            .collect();
+        let mut form = crate::elicitation::ElicitationFormState::new(ElicitationForm {
+            message: self.locale.trf(
+                "sign in — {}",
+                "登录 —— {}",
+                &[method
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| method.id.clone())
+                    .into()],
+            ),
+            url: None,
+            fields,
+        });
+        form.locale = self.locale;
+        self.auth_form = Some(AuthFormOverlay {
+            method_id: method.id.clone(),
+            form,
+        });
+    }
+
+    fn handle_auth_form_key(&mut self, key: KeyEvent, ctl: &Controller) {
+        let Some((reply, method_id)) = self
+            .auth_form
+            .as_mut()
+            .and_then(|ask| ask.form.handle_key(key).map(|reply| (reply, ask.method_id.clone())))
+        else {
+            return;
+        };
+        // Any reply ends the form interaction: it is done, not just paused.
+        self.auth_form = None;
+        match reply {
+            crate::elicitation::ElicitationReply::Accepted(values) => {
+                self.submit_auth_values(&method_id, auth_values_from_reply(values), ctl);
+            }
+            // Back to the picker — a wrong row must not trap the user.
+            crate::elicitation::ElicitationReply::Cancelled => self.open_auth_picker(),
+        }
     }
 
     fn push_help(&mut self) {
@@ -8885,7 +9441,7 @@ impl App {
 - ↓ · 空输入时展开 Agent 会话导航；←/→ 选择，enter 打开，esc 折叠
 - /agent · 切换 ACP 广告的 Agent 预设
 - /lang · 切换界面语言：/lang zh 或 /lang en
-- /auth · ACP 登录；多种方式时打开选择器
+- ctrl+g（或 ctrl+shift+l）· 登录选择器（Agent 声明的方式；声明 auth.logout 时可登出）
 - /effort · 推理强度 · /permission 权限预设 · /plan 计划模式
 - /resume · 恢复持久会话并继续写入原日志
 - /fork · Agent 声明 sessionCapabilities.fork 时，用 session/fork 分叉当前会话并打开新标签；原会话保留。不接受参数，也不按 Harness 名称判断
@@ -8896,6 +9452,7 @@ impl App {
 - /<skill> · Agent 命令会进入 / 菜单，选择后由 Host 注入技能正文。与内置命令同名时，菜单用 Agent 名前缀区分，选中后仍把原来的 /name 发给 Agent
 - ctrl+o · 展开思考和工具输出 · ctrl+l · 清屏
 - 输入框编辑：readline 组合键 + ⌘/⌥ 方向键 + 键盘选区 · 完整映射见 /keys
+- 拖动输入框上边框 · 调整输入区高度（悬停高亮）· ctrl+↑/↓ 逐行调整
 - 点击工具 · 展开/折叠 · 滚轮滚动对话
 - pgup/pgdn · 翻页 · end 回到最新消息
 - 鼠标拖动 · 选择并复制文本 · 双击复制单词
@@ -8916,7 +9473,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - ctrl+shift+a · cycle agent preset directly
 - ↓ · expand Agent transcript navigation from an empty prompt · ←/→ choose, enter opens, esc collapses
 - /agent · switch the agent preset advertised over ACP
-- /auth · ACP sign-in (picker when several methods; else Terminal Auth or authenticate _meta)
+- ctrl+g (or ctrl+shift+l) · auth picker (agent-advertised methods; logout when auth.logout is declared)
 - /effort · reasoning effort · /permission preset · /plan host plan mode
 - /resume · pick up a durable session — transcript replays, log continues
 - /fork · when the agent advertises sessionCapabilities.fork, session/fork branches the current session into a new tab and leaves the original in place. No arguments, and not gated on the harness name
@@ -8927,6 +9484,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - /<skill> · agent commands join the / menu — enter ships it and the host injects the skill body. A name that matches a builtin keeps a prefixed row; choosing it still sends the original /name line
 - ctrl+o · expand thoughts + tool output · ctrl+l · clear
 - editing · readline chords + ⌘/⌥ arrows (ctrl+arrows elsewhere) · full map in /keys
+- drag the composer's top border · resize the input well (hover highlights) · ctrl+↑/↓ step it
 - click tool · expand/collapse that tool · wheel scrolls the conversation
 - pgup/pgdn · scroll · mouse wheel works · end follows the tail
 - mouse drag · select text — copied on release · 2×click copies a word
@@ -8958,28 +9516,23 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         let creds = if self.demo {
             "demo mode (no API calls)".to_string()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Configured {
-            match self
-                .auth
-                .method_name
-                .as_deref()
-                .or(self.auth.method_id.as_deref())
-            {
-                Some(name) => format!("ACP authenticate · {name}"),
-                None => "ready · credential source not reported".into(),
+            match self.auth.method_label() {
+                Some(name) => format!("ready · {name}"),
+                None if self.auth.methods.is_empty() => {
+                    "ready · credential source not reported".into()
+                }
+                // The row is labelled "credentials" — do not repeat the
+                // word in the value (issue #160).
+                None => "ready".into(),
             }
         } else if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
             "signing in — waiting for Agent response".into()
         } else if self.auth.status == crate::acp_auth::AuthStatus::Failed {
-            format!("sign-in failed · {} · /auth", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
+            format!("sign-in failed · {} · ctrl+g", self.auth.message.as_deref().unwrap_or("ACP authenticate failed"))
         } else if self.auth.status == crate::acp_auth::AuthStatus::NeedsAuth {
-            match self
-                .auth
-                .method_name
-                .as_deref()
-                .or(self.auth.method_id.as_deref())
-            {
-                Some(name) => format!("sign-in needed · {name} · /auth"),
-                None => "sign-in needed · /auth".into(),
+            match self.auth.method_label() {
+                Some(name) => format!("sign-in needed · {name} · ctrl+g"),
+                None => "sign-in needed · ctrl+g".into(),
             }
         } else if self.cfg.has_credentials() {
             match self.cfg.credential_source() {
@@ -9018,8 +9571,8 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
                 .as_deref()
                 .map(|t| format!(" · {t}"))
                 .unwrap_or_default(),
-            self.cfg.provider,
-            self.cfg.model,
+            self.session_provider(),
+            self.current_model(),
             effort_line,
             self.agent_label(&self.current_mode()),
             if self.modes.agent_preset.is_none() {
@@ -9123,7 +9676,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
         let acp = if self.demo {
             "demo".to_string()
         } else if self.connection_error.is_some() {
-            "failed".to_string()
+            if self.attach_refused { "refused" } else { "failed" }.to_string()
         } else if self.attached {
             "attached".to_string()
         } else {
@@ -9177,7 +9730,7 @@ context, subagent lifecycles, token usage (incl. cache hits), end reason.";
              - agent · {}{}\n\
              - permission · {}\n\
              - plan · {}",
-            self.cfg.model,
+            self.current_model(),
             effort_line,
             self.agent_label(&self.current_mode()),
             if self.modes.agent_preset.is_none() {
@@ -9314,10 +9867,29 @@ impl App {
                 blocks: vec![StagedBlock::Text(text.clone())],
             });
             self.queued += 1;
-            self.show_tip(self.locale.tr(
-                "queued · empty enter sends first · alt+↑ edit",
-                "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
-            ));
+            // A refused attach can reattach inline: the prompt's own Enter
+            // releases the queue head so `session/new` retries without a
+            // second keypress. Sign-in pending, a dead attach, and a retry
+            // already in flight keep the queue.
+            if self.attach_refused
+                && !self.queue_signin_pending()
+                && !self.prompt_pending
+                && self.state != RunState::Running
+            {
+                self.send_queue_head_now(ctl);
+            } else {
+                self.show_tip(if self.queue_signin_pending() {
+                    self.locale.tr(
+                        "sign-in needed · prompt stays queued — ctrl+g opens the auth picker",
+                        "需要登录 · 消息保留在队列里 —— ctrl+g 打开登录选择器",
+                    )
+                } else {
+                    self.locale.tr(
+                        "queued · empty enter sends first · alt+↑ edit",
+                        "已排队 · 空输入按 enter 发送队首 · alt+↑ 编辑",
+                    )
+                });
+            }
         } else {
             self.transcript.push_user(text.clone(), false);
             self.prompt_pending = true;
@@ -9383,10 +9955,27 @@ impl App {
     /// Empty Enter promotes the FIFO head into the active turn. If the agent
     /// cannot accept the steer, settlement restores the item to the front.
     fn send_queue_head_now(&mut self, ctl: &Controller) {
-        if !self.session_bound {
+        // An agent that answered `initialize` with a refusal is attached —
+        // a non-auth refusal lets the head through so `session/new` retries
+        // inline; everything else unbound keeps the queue.
+        if !self.session_bound && !(self.attach_refused && !self.queue_signin_pending()) {
+            // A finished-but-failed attach keeps the queue too: say so —
+            // "still binding" wrongly implies the bind is in progress.
             self.show_tip(self.locale.tr(
-                "session still binding — prompt stays queued",
-                "会话仍在绑定中 —— 消息保留在队列里",
+                if self.queue_attach_failed() {
+                    "agent attach failed — prompt stays queued"
+                } else if self.queue_signin_pending() {
+                    "sign-in needed — ctrl+g opens the auth picker"
+                } else {
+                    "session still binding — prompt stays queued"
+                },
+                if self.queue_attach_failed() {
+                    "Agent 连接失败 —— 消息保留在队列里"
+                } else if self.queue_signin_pending() {
+                    "需要先登录 —— ctrl+g 打开登录选择器"
+                } else {
+                    "会话仍在绑定中 —— 消息保留在队列里"
+                },
             ));
             return;
         }
@@ -9725,7 +10314,9 @@ impl App {
         let first_cell = self.transcript.cells.len();
         for block in staged {
             match block {
-                StagedBlock::Text(text) => self.transcript.push_user(text.clone(), false),
+                StagedBlock::Text(text) => {
+                    self.transcript.push_user(text.clone(), false);
+                }
                 StagedBlock::Image(att) => self.transcript.push_image(
                     att.name.clone(),
                     String::new(),

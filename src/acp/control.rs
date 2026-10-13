@@ -16,6 +16,14 @@ pub(super) enum ControlFinish {
         method: AuthMethodInfo,
         result: Result<(), AcpError>,
     },
+    /// ACP `logout` / `auth/logout` completed (ok or agent error); carries
+    /// the provider scope the request was sent with, and the response so
+    /// the agent's own report of what was cleared can be surfaced (issue
+    /// #160).
+    LoggedOut {
+        provider: Option<String>,
+        result: Result<agent_client_protocol::schema::v1::LogoutResponse, AcpError>,
+    },
 }
 
 type ControlJob = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -69,14 +77,13 @@ impl ControlWorkers {
         // Preserve setup FIFO and per-session mutation order without blocking
         // prompts, cancellations, or other sessions' control requests.
         let lane = match &cmd {
-            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } | Cmd::ForkSession { .. } => {
-                "setup".to_string()
-            }
+            Cmd::NewSession { .. } | Cmd::ResumeSession { .. } | Cmd::ForkSession { .. }
+            | Cmd::CloseSession { .. } => "setup".to_string(),
             Cmd::SelectModel { session_id, .. }
             | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. }
             | Cmd::SetConfigOption { session_id, .. } => format!("config:{session_id}"),
-            Cmd::Authenticate { .. } => "auth".to_string(),
+            Cmd::Authenticate { .. } | Cmd::Logout => "auth".to_string(),
             _ => "client".to_string(),
         };
         let session = lane.strip_prefix("config:").map(str::to_string);
@@ -138,7 +145,9 @@ async fn run_control(
         let target = match &cmd {
             Cmd::SelectModel { session_id, .. } | Cmd::SetPermission { session_id, .. }
             | Cmd::SetPreset { session_id, .. } | Cmd::SetConfigOption { session_id, .. }
-            | Cmd::ResumeSession { session_id } => Some(session_id),
+            | Cmd::ResumeSession { session_id } | Cmd::CloseSession { session_id } => {
+                Some(session_id)
+            }
             Cmd::ListSessions { requester_session_id, .. } => Some(requester_session_id),
             _ => None,
         };
@@ -216,7 +225,7 @@ async fn run_control(
                         emit_needs_auth_open(
                             &bus,
                             methods.clone(),
-                            selected.as_ref(),
+                            session_provider(&surface, &sid.0).as_deref(),
                             Some(acp_error_message(&err)),
                         );
                     }
@@ -256,7 +265,7 @@ async fn run_control(
                         emit_needs_auth_open(
                             &bus,
                             methods.clone(),
-                            selected.as_ref(),
+                            session_provider(&surface, &sid.0).as_deref(),
                             Some(acp_error_message(&err)),
                         );
                     }
@@ -507,7 +516,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &sid.0).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -559,7 +568,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &sid.0).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -594,7 +603,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &sid.0).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -607,8 +616,12 @@ async fn run_control(
             }
         }
         Cmd::Authenticate { method_id, values } => {
-            let method = select_auth_method(&methods, Some(&method_id))
-                .or_else(|| select_auth_method(&methods, None))
+            // The picker always names the method the user selected — never
+            // fall back to the first advertised method, or a submitted key
+            // would silently land on a method it was not meant for (#160).
+            let method = methods
+                .iter()
+                .find(|method| method.id == method_id)
                 .cloned();
             let Some(method) = method else {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
@@ -620,6 +633,15 @@ async fn run_control(
                 )));
                 return;
             };
+            if method.terminal_launch.is_some() {
+                // Terminal methods are never sent to `authenticate`: the TTY
+                // launch plus reconnect+re-initialize is the whole flow.
+                let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(format!(
+                    "ACP auth method {} is a terminal sign-in — it cannot be completed through authenticate",
+                    method.id
+                ))));
+                return;
+            }
             if method.is_env_prompt() {
                 let vars = method
                     .vars
@@ -644,8 +666,7 @@ async fn run_control(
             }
             if method.form && authenticate_meta_from_method(&method, &values).is_none() {
                 let _ = bus.send(AppEvent::Ctl(CtlEvent::TuiOpFailed(
-                    "sign-in needs values — /auth <api-key> (gateway: /auth <base-url> <api-key>)"
-                        .into(),
+                    "sign-in needs values — enter them in the auth form".into(),
                 )));
                 return;
             }
@@ -658,6 +679,19 @@ async fn run_control(
             emit_method_auth(&bus, &surface, signing_in);
             let result = cx.send_request(req).block_task_setup_deadline().await.map(|_| ());
             let _ = done.send(ControlFinish::Authenticated { method, result });
+        }
+        Cmd::Logout => {
+            // A bare `logout`: the agent scopes it to the credential the
+            // session runs on — there is no negotiated _meta shape for a
+            // provider name, and Martty must not send agent-specific ones
+            // (issue #160). The resolved provider is kept only to name the
+            // notice.
+            let provider = logout_provider(&surface, &methods, selected.as_ref());
+            let result = cx
+                .send_request(LogoutRequest::new())
+                .block_task_setup_deadline()
+                .await;
+            let _ = done.send(ControlFinish::LoggedOut { provider, result });
         }
         Cmd::NewSession { .. } => {
             let mut request = new_session_request(&cwd, additional_directories, &directories);
@@ -716,6 +750,27 @@ async fn run_control(
             };
             let _ = done.send(ControlFinish::Setup { result, requester });
         }
+        // `session/close` (issue #146): the agent cancels the session's
+        // ongoing work and frees its resources. The tab is already gone —
+        // a failure surfaces as a session op failure, never as a retry.
+        Cmd::CloseSession { session_id: id } => {
+            // Reaching this lane means the owning connection advertised
+            // `sessionCapabilities.close` — the main loop gates the enqueue
+            // on exactly that. Put `session/close` on the wire; a failure
+            // surfaces as a session op failure, never as a retry.
+            let request =
+                UntypedMessage::new("session/close", serde_json::json!({ "sessionId": id }))
+                    .expect("static session/close payload is always valid");
+            match cx.send_request(request).block_task_setup_deadline().await {
+                Ok(_) => {}
+                Err(err) => {
+                    let _ = bus.send(AppEvent::Ctl(CtlEvent::SessionOpFailed {
+                        session_id: id.clone(),
+                        message: format!("session/close: {}", acp_error_message(&err)),
+                    }));
+                }
+            }
+        }
         Cmd::ListSessions {
             requester_session_id,
             prefix,
@@ -764,7 +819,7 @@ async fn run_control(
                     emit_needs_auth_open(
                         &bus,
                         methods.clone(),
-                        selected.as_ref(),
+                        session_provider(&surface, &requester_session_id).as_deref(),
                         Some(acp_error_message(&err)),
                     );
                 }
@@ -852,6 +907,8 @@ async fn run_control(
                         "selectedId": snapshot.selected_id,
                         "editingId": snapshot.editing_id,
                         "deleteConfirm": snapshot.delete_confirm,
+                        "attachFailed": snapshot.attach_failed,
+                        "authPending": snapshot.auth_pending,
                     }),
                 )
                 .await;

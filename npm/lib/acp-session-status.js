@@ -68,6 +68,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
   let selectionKnown = false
   let connection = 'connecting'
   let server
+  let dshRuntime
   const auth = { status: undefined, method: undefined }
   let initializeId
   let authMethods = []
@@ -94,7 +95,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
     const value = stateFor(sessionId)
     const { permissionPreset: _permissionPreset, sandboxMode: _sandboxMode,
       connectionFacts, ...visible } = value
-    return structuredClone({ connection, server, auth, ...connectionFacts, ...visible })
+    return structuredClone({ connection, server, dshRuntime, auth, ...connectionFacts, ...visible })
   }
 
   function publish() {
@@ -146,6 +147,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
       selectionKnown = false
       connection = 'connecting'
       server = undefined
+      dshRuntime = undefined
       auth.status = undefined
       auth.method = undefined
       delete auth.message
@@ -197,13 +199,44 @@ export function installAcpSessionStatus(ctx, options = {}) {
     if (!object(message)) return
     if (message.id !== undefined && message.id === initializeId) {
       initializeId = undefined
-      connection = message.error === undefined ? 'attached' : 'failed'
       fallback.error = message.error?.message
       const result = object(message.result) ? message.result : undefined
       server = readString(result?.agentInfo, 'name')
+      // The runtime the ACP agent actually booted (dsh-acp advertises it in
+      // agentCapabilities._meta.dsh.runtime); shown in /status so users can
+      // tell bundled from host installs (issue #157).
+      dshRuntime = readDshRuntime(result?.agentCapabilities)
       const methods = Array.isArray(result?.authMethods) ? result.authMethods : []
       authMethods = methods
       // initialize advertises choices, not the credential used by this process.
+      if (message.error === undefined) {
+        connection = 'attached'
+      } else {
+        // An agent that answered `initialize` with a refusal is still
+        // attached — only a locally synthesized failure (the pool's
+        // agentExited marker for a dead child) counts as 'failed'. A refused
+        // handshake may advertise auth methods in its error data (the -32000
+        // convention): surface sign-in the same way the refused
+        // session/new path does. A refusal demanding auth while declaring
+        // no methods can never be remedied, so it stays 'failed'.
+        const offered = Array.isArray(message.error.data?.authMethods)
+          ? message.error.data.authMethods : []
+        if (message.error.data?.agentExited === true
+          || (isAuthRequired(message.error) && offered.length === 0)) {
+          connection = 'failed'
+        } else {
+          connection = 'refused'
+          if (isAuthRequired(message.error)) {
+            authMethods = offered
+            auth.status = 'needs sign-in'
+          }
+          // The refusal's own words are the diagnosis — our transport's
+          // appended "Agent stderr:" tail is unrelated launch noise.
+          if (typeof fallback.error === 'string') {
+            fallback.error = fallback.error.split('\nAgent stderr:')[0].trimEnd()
+          }
+        }
+      }
       publish()
       return
     }
@@ -230,7 +263,7 @@ export function installAcpSessionStatus(ctx, options = {}) {
       if (message.error !== undefined) {
         if (isAuthRequired(message.error)) auth.status = 'needs sign-in'
         else {
-          connection = 'failed'
+          connection = message.error.data?.agentExited === true ? 'failed' : 'refused'
           const value = stateFor(setup.sessionId, false)
           value.error = readString(message.error, 'message') ?? 'Session setup failed'
           value.state = 'idle'
@@ -414,6 +447,15 @@ export function installAcpSessionStatus(ctx, options = {}) {
 function isAuthRequired(error) {
   return object(error) && (error.code === AUTH_REQUIRED_CODE
     || error.code === 'auth_required' || error.code === 'AuthRequired')
+}
+
+function readDshRuntime(capabilities) {
+  const runtime = capabilities?._meta?.dsh?.runtime
+  if (!object(runtime)) return undefined
+  const version = readString(runtime, 'version')
+  const source = readString(runtime, 'source')
+  if (version === undefined && source === undefined) return undefined
+  return { version, source, base: readString(runtime, 'base') }
 }
 
 function readString(value, ...keys) {

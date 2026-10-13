@@ -61,6 +61,7 @@ fn dsh_question_schema_becomes_one_field_with_inline_other_input() {
 
 fn single_form() -> ElicitationForm {
     ElicitationForm {
+        url: None,
         message: "Choose".into(),
         fields: vec![ElicitationField {
             name: "question_0".into(),
@@ -68,6 +69,7 @@ fn single_form() -> ElicitationForm {
             title: "Target".into(),
             description: Some("Where?".into()),
             required: true,
+            secret: false,
             kind: ElicitationFieldKind::Single {
                 options: vec![
                     ElicitationOption {
@@ -91,6 +93,7 @@ fn single_form() -> ElicitationForm {
 
 fn boolean_form(default: Option<bool>) -> ElicitationForm {
     ElicitationForm {
+        url: None,
         message: "Confirm".into(),
         fields: vec![ElicitationField {
             name: "confirmed".into(),
@@ -98,6 +101,7 @@ fn boolean_form(default: Option<bool>) -> ElicitationForm {
             title: "Continue?".into(),
             description: None,
             required: true,
+            secret: false,
             kind: ElicitationFieldKind::Boolean { default },
         }],
     }
@@ -199,6 +203,7 @@ fn space_on_an_optionless_multi_select_is_a_noop_not_a_panic() {
     // ACP allows a multi-select property with an empty enum; Space toggles
     // selected[cursor], which must not index a zero-length vector.
     let mut form = ElicitationFormState::new(ElicitationForm {
+            url: None,
         message: "Pick things".into(),
         fields: vec![ElicitationField {
             name: "choices".into(),
@@ -206,6 +211,7 @@ fn space_on_an_optionless_multi_select_is_a_noop_not_a_panic() {
             title: "Choices".into(),
             description: None,
             required: false,
+            secret: false,
             kind: ElicitationFieldKind::Multi {
                 options: vec![],
                 default: vec![],
@@ -228,5 +234,90 @@ fn space_on_an_optionless_multi_select_is_a_noop_not_a_panic() {
             "choices".into(),
             ElicitationValue::StringArray(vec![])
         )])))
+    );
+}
+
+#[test]
+fn url_elicitation_is_a_fieldless_form() {
+    // URL mode: no fields — just the message and the link, so it is safe to
+    // handle on a headless/SSH TTY (issue #160).
+    let request: CreateElicitationRequest = serde_json::from_value(json!({
+        "mode": "url",
+        "sessionId": "s1",
+        "elicitationId": "e1",
+        "url": "https://auth.example/login?x=1",
+        "message": "Open this URL to sign in"
+    }))
+    .expect("request");
+    let form = form_from_request(&request).expect("url form");
+    assert!(form.fields.is_empty());
+    assert_eq!(
+        form.url.as_deref(),
+        Some("https://auth.example/login?x=1")
+    );
+    assert!(form.message.contains("sign in"));
+
+    // Enter accepts with an empty answer map; Esc cancels — neither panics
+    // on the empty field list.
+    let mut state = ElicitationFormState::new(form.clone());
+    let reply = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(reply, Some(ElicitationReply::Accepted(Default::default())));
+    let mut state = ElicitationFormState::new(form);
+    let reply = state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(reply, Some(ElicitationReply::Cancelled));
+}
+
+#[test]
+fn fieldless_form_keys_ctrl_c_and_inert_chars() {
+    let request: CreateElicitationRequest = serde_json::from_value(json!({
+        "mode": "url",
+        "sessionId": "s1",
+        "elicitationId": "e2",
+        "url": "https://auth.example/login",
+        "message": "open"
+    }))
+    .expect("request");
+    let form = form_from_request(&request).expect("url form");
+    let mut state = ElicitationFormState::new(form);
+    // ctrl+c cancels; shift/alt modified c does not; other keys are inert.
+    let reply = state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert_eq!(reply, Some(ElicitationReply::Cancelled));
+    let reply = state.handle_key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(reply, None);
+    let reply = state.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(reply, None);
+}
+
+#[test]
+fn unknown_elicitation_modes_are_rejected() {
+    let request: CreateElicitationRequest = serde_json::from_value(json!({
+        "mode": "harness_custom",
+        "sessionId": "s1",
+        "elicitationId": "e3",
+        "message": "custom payload"
+    }))
+    .expect("request");
+    let error = form_from_request(&request).expect_err("unsupported mode");
+    assert!(error.contains("only form and url"), "{error}");
+}
+
+#[test]
+fn fieldless_form_plain_c_is_inert() {
+    let request: CreateElicitationRequest = serde_json::from_value(json!({
+        "mode": "url",
+        "sessionId": "s1",
+        "elicitationId": "e4",
+        "url": "https://auth.example/login",
+        "message": "open"
+    }))
+    .expect("request");
+    let form = form_from_request(&request).expect("url form");
+    let mut state = ElicitationFormState::new(form);
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+        None
     );
 }

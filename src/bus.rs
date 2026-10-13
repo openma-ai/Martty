@@ -83,6 +83,8 @@ pub struct SessionConnection {
     pub resume_session: bool,
     /// Agent advertised `sessionCapabilities.fork` as an object (`{}`).
     pub fork_session: bool,
+    /// Agent advertised `sessionCapabilities.close` (`{}` or `true`).
+    pub close_session: bool,
     /// Agent advertised `sessionCapabilities.additionalDirectories`.
     pub additional_directories: bool,
 }
@@ -104,6 +106,9 @@ pub enum CtlEvent {
     Ready { server: String },
     /// Connection/session setup failed, distinct from an individual prompt error.
     ConnectionFailed { target: String, error: String },
+    /// The agent answered `initialize` with a refusal — it is attached, so a
+    /// prompt may still retry `session/new` inline or authenticate first.
+    ConnectionRefused { target: String, error: String },
     /// session/prompt accepted into the durable inbox. `session_id` names
     /// the session the prompt belongs to when the sender knows it — the
     /// App must not settle the viewed tab's state for another session's
@@ -182,7 +187,7 @@ pub enum CtlEvent {
     /// ACP initialize / authenticate status (Backchat probe equivalent).
     Auth(crate::acp_auth::AuthSnapshot),
     SessionAuth { session_id: String, snapshot: crate::acp_auth::AuthSnapshot, open: bool },
-    /// Open the client `/auth` surface (method picker or the one method).
+    /// Open the auth surface — the agent method picker (issue #160).
     OpenAuth,
     /// Agent-advertised session lifecycle capabilities.
     AgentCaps {
@@ -191,8 +196,13 @@ pub enum CtlEvent {
         resume_session: bool,
         /// `sessionCapabilities.fork` was an object (`{}`).
         fork_session: bool,
+        /// `sessionCapabilities.close` was an object (`{}`) or `true`.
+        close_session: bool,
         /// `sessionCapabilities.additionalDirectories` was an object (`{}`).
         additional_directories: bool,
+        /// `agentCapabilities.auth.logout` was an object (`{}`): the auth
+        /// picker may offer logout/switch (issue #160).
+        auth_logout: bool,
     },
     /// `session/new`, `session/resume`, or `session/load` resolved; the UI must use this id.
     SessionBound {
@@ -342,6 +352,13 @@ pub struct QueueSnapshot {
     pub selected_id: Option<u64>,
     pub editing_id: Option<u64>,
     pub delete_confirm: bool,
+    /// The attach finished and failed — no session will bind, so the view
+    /// must not promise "enter sends the queue head".
+    pub attach_failed: bool,
+    /// The agent is attached but sign-in must complete before a bind can
+    /// land — the queue head stays put until `/auth` or the sign-in form
+    /// finishes.
+    pub auth_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,12 +503,27 @@ pub enum Cmd {
         config_id: String,
         value: String,
     },
-    /// Backchat-style `authenticate`: optional in-app `_meta` values after
-    /// `/auth`, or a retry after Terminal Auth / out-of-band login.
+    /// Backchat-style `authenticate`: in-app `_meta` values from the auth
+    /// picker's secret/gateway form, or a retry after out-of-band login.
     Authenticate {
         method_id: String,
         values: std::collections::BTreeMap<String, String>,
     },
+    /// ACP `logout` (v2 `auth/logout`): offered only when the agent declared
+    /// `agentCapabilities.auth.logout`; the picker reopens on success.
+    Logout,
+    /// The auth picker was dismissed without choosing a method. Prompts
+    /// parked on that session for a post-sign-in retry can never run now —
+    /// they are dropped visibly so the session cannot stall behind a picker
+    /// the user already closed (issue #160).
+    AuthSkipped { session_id: String },
+    /// Terminal sign-in finished on the TTY (exit 0): drop the current
+    /// transport, respawn the configured agent, and re-run `initialize`.
+    /// Never implies `authenticate` — terminal methods must not be sent to
+    /// `authenticate` (issue #160). `method_id` names the method the user
+    /// launched so the post-reconnect snapshot can credit it instead of the
+    /// advertised first method (issue #160).
+    AgentReconnect { method_id: Option<String> },
     /// Live ACP `/new` → `session/new` (cwd = workspace).
     NewSession { requester: Option<String>, retry_auth: Option<String> },
     /// Live ACP `/fork` → `session/fork` of `source_session_id`.
@@ -511,11 +543,21 @@ pub enum Cmd {
     ResumeSession {
         session_id: String,
     },
-    /// `/close`: this client stops viewing a session. ACP has no
-    /// session/close, so the server-side session survives; the controller
+    /// This client stops viewing a session, silently: the controller
     /// drops the session's turn state and queued prompts so nothing more is
-    /// sent into the void, and its later events settle at the router.
+    /// sent into the void, and its later events settle at the router. Used
+    /// by internal discards (a tab replaced while empty, a bind that
+    /// resolves after its requester died); the user-facing close sends
+    /// [`Cmd::CloseSession`] instead, which also notifies capable agents.
     ForgetSession {
+        session_id: String,
+    },
+    /// `/close`, the tab-strip `×`, or ctrl+shift+w: the user closed this
+    /// session's tab. When the owning connection advertised
+    /// `sessionCapabilities.close`, `session/close` goes on the wire first
+    /// (the agent cancels its ongoing work and frees the session); the
+    /// local drop then happens either way.
+    CloseSession {
         session_id: String,
     },
     Shutdown,

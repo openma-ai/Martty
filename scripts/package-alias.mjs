@@ -54,8 +54,8 @@ try {
     )
   }
   const packageJson = JSON.parse(readFileSync(path.join(source, 'package.json'), 'utf8'))
-  if (packageJson.name !== legacyName) {
-    throw new Error(`expected source package ${legacyName}, found ${packageJson.name}`)
+  if (packageJson.name !== legacyName && packageJson.name !== aliasName) {
+    throw new Error(`expected source package ${legacyName} or ${aliasName}, found ${packageJson.name}`)
   }
 
   cpSync(source, destination, {
@@ -80,6 +80,16 @@ try {
   aliasJson.optionalDependencies = Object.fromEntries(nativeTargets.map(({ platform, arch }) => [
     `@openma/martty-${platform}-${arch}`, aliasJson.version,
   ]))
+  // The published package declares only `<alias>-cli`, a name nothing else
+  // owns: npm refuses to link a global bin already owned by another package
+  // (and links bins before running lifecycle scripts), so declaring `martty`
+  // or `dsh-tui` would EEXIST against every legacy install and the unrelated
+  // `dsh-tui` package. The postinstall migration step creates the real
+  // `martty` command itself; `martty-cli` keeps the package runnable when
+  // scripts are skipped and lets `npx` resolve a binary.
+  aliasJson.bin = {
+    [`${aliasName}-cli`]: packageJson.bin?.[`${aliasName}-cli`] ?? packageJson.bin?.[aliasName] ?? 'bin/martty.js',
+  }
   if (Array.isArray(aliasJson.files)) aliasJson.files = aliasJson.files.filter((entry) => entry !== 'vendor')
   writeFileSync(path.join(destination, 'package.json'), `${JSON.stringify(aliasJson, null, 2)}\n`)
   process.stdout.write(`${destination}\n`)

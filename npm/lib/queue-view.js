@@ -29,11 +29,17 @@ function dockNodes(queue) {
   if (!Array.isArray(queue?.items) || queue.items.length === 0) return []
   const expanded = queue.selectedId !== null || queue.editingId !== null
   const count = Number.isInteger(queue.count) ? queue.count : queue.items.length
+  // A finished-but-failed attach never binds: the head cannot be sent, so
+  // the collapsed title names the failure instead of promising it.
   const title = expanded
     ? queue.editingId !== null
       ? `Queue · ${count} · enter save · ctrl+d delete · esc cancel`
       : `Queue · ${count} · ↑/↓ choose · enter edit · esc close`
-    : `Queue · ${count} · enter send first · ⌥↑ edit`
+    : queue.attachFailed === true
+      ? `Queue · ${count} · attach failed · prompt stays queued`
+      : queue.authPending === true
+        ? `Queue · ${count} · sign-in needed · prompt stays queued`
+        : `Queue · ${count} · enter send first · ⌥↑ edit`
   const nodes = [{
     id: 'summary',
     kind: 'generic',

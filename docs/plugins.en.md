@@ -313,12 +313,12 @@ Creator artifacts live under `$MARTTY_HOME/plugins` and are managed by
 `tui_plugin_save` accepts only Packages without `code.host`. Any Host half,
 with or without a Client half, makes the complete Plugin Harness-owned and
 subject to that Harness's persistence path; Martty never writes Host code into
-`.martty`.
+`.oma`.
 
-`MARTTY_HOME` resolves from the explicit environment variable, then
-`$DSH_HOME/.martty`, then `~/.martty`. On first startup, legacy artifacts and
-settings are copied forward without deleting the source or overwriting current
-Martty data.
+`MARTTY_HOME` (or `OMA_HOME`) resolves from the explicit environment variable,
+then `$DSH_HOME/.oma`, then `~/.oma`. On first startup, a legacy `.martty`
+directory and old artifacts/settings are copied forward without deleting the
+source or overwriting current Martty data.
 
 An installed package exports a small Host registrar:
 

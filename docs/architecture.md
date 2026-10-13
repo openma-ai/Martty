@@ -303,7 +303,7 @@ Client import。两类来源进入同一个 lifecycle manager；同 id 时安装
 UI Plugin 只组合结构性 UI contribution，不拥有 Theme；保存的 `uiPreset`、`theme`
 和 dark/light 相互独立。
 
-`MARTTY_HOME` 依次取显式环境变量、`$DSH_HOME/.martty`、`~/.martty`。默认 Session
+`MARTTY_HOME`（或 `OMA_HOME`）依次取显式环境变量、`$DSH_HOME/.oma`、`~/.oma`；首次启动会自动迁移遗留的 `.martty`。默认 Session
 根是 `$MARTTY_HOME/sessions`。旧 settings、Creator artifacts 与 Session 根只作为
 非破坏迁移/发现来源保留。
 

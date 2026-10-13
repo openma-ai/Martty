@@ -72,7 +72,9 @@ dsh plugin --profile martty add martty@latest
 ```
 
 从 `0.2.13` 开始，两个包名由同一条 CI 发布相同版本和产物。迁移不改变
-配置或会话数据；`dsh-tui` 与旧 `tui` profile 继续作为兼容入口。
+配置或会话数据；旧 `tui` profile 继续作为兼容入口。`martty` 包不再
+安装 `dsh-tui` 命令（与旧包及第三方 `dsh-tui` 包的 bin 冲突）；需要时
+用 `alias dsh-tui=martty` 恢复。
 
 ## 5. 卸载（可选）
 
