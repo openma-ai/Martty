@@ -280,11 +280,18 @@ jobs:
             *) DIST_TAG=latest ;;
           esac
           echo "publishing with dist-tag: $DIST_TAG"
+          already_published() {
+            local spec
+            spec="$(tar -xOzf "$1" package/package.json | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(j.name+"@"+j.version)')"
+            if npm view "$spec" version >/dev/null 2>&1; then echo "skip $spec (already published)"; return 0; fi
+            return 1
+          }
           for package in ./dist/openma-martty-*.tgz; do
             test -f "$package"
-            npm publish "$package" --access public --tag "$DIST_TAG" --provenance
+            # Skip versions already on npm so a rerun after a partial publish can finish.
+            already_published "$package" || npm publish "$package" --access public --tag "$DIST_TAG" --provenance
           done
-          npm publish ./dist/martty-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
+          already_published ./dist/martty-[0-9]*.tgz || npm publish ./dist/martty-[0-9]*.tgz --access public --tag "$DIST_TAG" --provenance
 
   release:
     name: Create GitHub release

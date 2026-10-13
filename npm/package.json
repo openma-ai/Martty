@@ -1,6 +1,6 @@
 {
   "name": "martty",
-  "version": "0.3.2-beta.1",
+  "version": "0.3.2-beta.3",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
@@ -79,7 +79,7 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@openma/common": "github:openma-ai/openma-common#v0.9.0",
     "@lobehub/icons-static-svg": "1.95.0",
-    "@openma/deepseek-harness-acp": "0.4.37",
+    "@openma/deepseek-harness-acp": "0.4.38-beta.1",
     "@resvg/resvg-js": "2.6.2",
     "cross-spawn": "^7.0.6",
     "node-downloader-helper": "2.1.11"
