@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 
-// Bump all package versions, commit, and tag a release.
+// Releases go through an issue and a release pull request; nothing is pushed
+// to main directly (see RELEASING.md).
 //
-// Usage: node scripts/release.mjs <version> [--dry-run]
+// Usage:
+//   node scripts/release.mjs <version> [--dry-run]
+//     From a clean, up-to-date main: create branch release/v<version>, bump
+//     npm/package.json, npm/package-lock.json, Cargo.toml and Cargo.lock, and
+//     commit "release: v<version>" there. Push the branch and open the
+//     release PR; nothing is tagged.
+//   node scripts/release.mjs <version> --tag
+//     After the release PR is merged, from a clean main whose versions equal
+//     <version>: create tag v<version> on HEAD. Pushing the tag publishes.
 //
 // The version may be "0.2.8" or "v0.2.8"; the tag is always v<version>.
-// Requires a clean git working tree and refuses to run on a non-main
-// branch or when a tag for the version already exists.
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -72,6 +79,7 @@ try {
   const version = match[1]
   const tag = `v${version}`
 
+  const tagMode = process.argv.includes('--tag')
   const branch = git(['branch', '--show-current'])
   if (branch !== 'main') throw new Error(`refusing to release from branch "${branch}" (expected main)`)
 
@@ -82,6 +90,23 @@ try {
   if (existing) throw new Error(`tag ${tag} already exists`)
 
   const packageJson = JSON.parse(readFileSync(npmPackage, 'utf8'))
+  if (tagMode) {
+    // The release PR is merged: tag the merge on main, never a local commit.
+    if (packageJson.version !== version) {
+      throw new Error(`npm/package.json is at ${packageJson.version}, not ${version}; merge the release PR first`)
+    }
+    const verified = spawnSync(process.execPath, [verifyScript, tag, npmPackage, cargoToml], { cwd: repoRoot, encoding: 'utf8' })
+    if (verified.status !== 0) throw new Error(`version check failed: ${verified.stderr.trim()}`)
+    if (dryRun) {
+      process.stdout.write(`[dry-run] would tag HEAD as ${tag}\n`)
+      process.exit(0)
+    }
+    git(['tag', tag])
+    process.stdout.write(`tag ${tag} created on main.\npublish with: git push origin ${tag}\n`)
+    process.exit(0)
+  }
+  const releaseBranch = `release/${tag}`
+  if (git(['branch', '--list', releaseBranch])) throw new Error(`branch ${releaseBranch} already exists`)
   if (packageJson.version === version) {
     throw new Error(`npm/package.json is already at ${version}`)
   }
@@ -117,10 +142,11 @@ try {
   }
 
   if (dryRun) {
-    process.stdout.write(`[dry-run] would bump npm/package.json + npm/package-lock.json + Cargo.toml + Cargo.lock to ${version} and create tag ${tag}\n`)
+    process.stdout.write(`[dry-run] would create ${releaseBranch} and bump npm/package.json + npm/package-lock.json + Cargo.toml + Cargo.lock to ${version}\n`)
     process.exit(0)
   }
 
+  git(['switch', '-c', releaseBranch])
   packageJson.version = version
   packageLockJson.version = version
   packageLockRoot.version = version
@@ -146,10 +172,10 @@ try {
     path.relative(repoRoot, cargoLock),
   ])
   git(['commit', '-m', `release: ${tag}`])
-  git(['tag', tag])
 
-  process.stdout.write(`release ${tag} created.\n`)
-  process.stdout.write(`push with: git push origin main --tags\n`)
+  process.stdout.write(`release commit for ${tag} created on ${releaseBranch}.\n`)
+  process.stdout.write(`next: git push -u origin ${releaseBranch} && gh pr create --title "release: ${tag}" --body "Closes #<release issue>"\n`)
+  process.stdout.write(`after merge: git switch main && git pull && node scripts/release.mjs ${version} --tag && git push origin ${tag}\n`)
 } catch (error) {
   fail(error.message)
 }

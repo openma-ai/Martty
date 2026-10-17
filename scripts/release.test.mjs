@@ -56,7 +56,7 @@ function run(root, version, extra = []) {
   })
 }
 
-test('bumps all package versions, commits, and tags', (t) => {
+test('bumps all package versions on a release branch without tagging', (t) => {
   const root = fixture(t)
   const result = run(root, '0.2.8')
   assert.equal(result.status, 0, result.stderr)
@@ -67,25 +67,51 @@ test('bumps all package versions, commits, and tags', (t) => {
   assert.match(readFileSync(path.join(root, 'Cargo.toml'), 'utf8'), /^version = "0\.2\.8"$/m)
   assert.match(readFileSync(path.join(root, 'Cargo.lock'), 'utf8'), /^version = "0\.2\.8"$/m)
   assert.equal(git(root, ['log', '-1', '--format=%s']), 'release: v0.2.8')
-  assert.equal(git(root, ['tag', '--list']), 'v0.2.8')
+  assert.equal(git(root, ['branch', '--show-current']), 'release/v0.2.8')
+  assert.equal(git(root, ['log', '-1', '--format=%s', 'main']), 'initial')
+  assert.equal(git(root, ['tag', '--list']), '')
   assert.equal(git(root, ['status', '--porcelain']), '')
+  assert.match(result.stdout, /gh pr create/)
 })
 
-test('bumps and tags a beta prerelease', (t) => {
+test('--tag tags main only once the merged versions match', (t) => {
+  const root = fixture(t)
+  const early = run(root, '0.2.8', ['--tag'])
+  assert.equal(early.status, 1)
+  assert.match(early.stderr, /merge the release PR first/)
+  assert.equal(run(root, '0.2.8').status, 0)
+  git(root, ['switch', 'main'])
+  git(root, ['merge', '--ff-only', 'release/v0.2.8'])
+  const tagged = run(root, '0.2.8', ['--tag'])
+  assert.equal(tagged.status, 0, tagged.stderr)
+  assert.equal(git(root, ['tag', '--list']), 'v0.2.8')
+  assert.match(tagged.stdout, /git push origin v0\.2\.8/)
+})
+
+test('refuses to run on a branch other than main', (t) => {
+  const root = fixture(t)
+  git(root, ['switch', '-c', 'feature'])
+  const result = run(root, '0.2.8')
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /expected main/)
+})
+
+test('bumps a beta prerelease on its release branch', (t) => {
   const root = fixture(t)
   const result = run(root, '0.2.17-beta.0')
   assert.equal(result.status, 0, result.stderr)
   assert.equal(JSON.parse(readFileSync(path.join(root, 'npm', 'package.json'), 'utf8')).version, '0.2.17-beta.0')
   assert.match(readFileSync(path.join(root, 'Cargo.toml'), 'utf8'), /^version = "0\.2\.17-beta\.0"$/m)
   assert.equal(git(root, ['log', '-1', '--format=%s']), 'release: v0.2.17-beta.0')
-  assert.equal(git(root, ['tag', '--list']), 'v0.2.17-beta.0')
+  assert.equal(git(root, ['branch', '--show-current']), 'release/v0.2.17-beta.0')
+  assert.equal(git(root, ['tag', '--list']), '')
 })
 
 test('accepts a v-prefixed version and dry-run changes nothing', (t) => {
   const root = fixture(t)
   const result = run(root, 'v0.3.0', ['--dry-run'])
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /would bump/)
+  assert.match(result.stdout, /would create release\/v0\.3\.0 and bump/)
   assert.equal(git(root, ['tag', '--list']), '')
   assert.equal(git(root, ['status', '--porcelain']), '')
   assert.equal(JSON.parse(readFileSync(path.join(root, 'npm', 'package.json'), 'utf8')).version, '0.1.0')
