@@ -1,6 +1,6 @@
 {
   "name": "martty",
-  "version": "0.3.3-beta.1",
+  "version": "0.3.3",
   "description": "Terminal-native ACP client UI; Cordis client tree, any ACP agent",
   "license": "MIT",
   "repository": {
