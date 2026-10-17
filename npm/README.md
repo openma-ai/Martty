@@ -24,7 +24,7 @@ x64. Requires Node.js 22.19+.
 
 ```sh
 npm install --global martty
-martty
+martty-cli   # the first launch creates `martty`; use `martty` afterwards
 ```
 
 Martty directly depends on our `@openma/deepseek-harness-acp` implementation.
@@ -46,6 +46,38 @@ The profile command is the recommended install and upgrade path. It creates a
 missing profile and installs the TUI plus its ACP dependency; no global
 `martty` installation is required.
 
+dsh installs plugins with pnpm. Martty declares no install lifecycle scripts
+(`preinstall`/`install`/`postinstall`), so it installs under pnpm's strict
+build-script policy (`ERR_PNPM_IGNORED_BUILDS`) without `--ignore-scripts`. A
+profile where an install of 0.3.2 or earlier failed (`martty` is a dependency
+but not in `dsh.profile.bundles`) needs `dsh plugin --profile martty remove
+martty` and then `add` again.
+
+With such a profile in place, the npm entry point attaches to it too:
+
+```sh
+npx martty --dsh martty     # same as dsh --profile martty, after a version check
+```
+
+## Harness resolution and supported dsh
+
+1. Default (`martty` / `npx martty`): the bundled `@openma/deepseek-harness-acp`
+   and its bundled dsh runtime; ambient installs never override it.
+2. `--dsh <profile>`: the global `dsh` on `PATH` with that profile — a profile
+   carrying `martty` gets the terminal, one carrying only dsh-acp becomes the
+   ACP agent. Below the dsh floor Martty falls back to (1) and shows a short
+   notice (`/dismiss` hides it).
+3. As a dsh plugin (`dsh --profile martty`): the hosting dsh.
+4. An explicit dsh path in a harness recipe (`--dsh-path` / `DSH_PATH`).
+
+Supported dsh is a floor, `>=0.1.7-rc.2` (`engines.dsh`, which dsh's own plugin
+compatibility check reads), never an exact list. Newer dsh releases are
+attempted — API differences are feature-detected, and a dsh newer than the
+newest tested one (`0.2.1-rc.2`) only warns. Below the floor, or when the Host
+lacks a required capability, `dsh --profile martty` still opens the TUI and the
+conversation explains the installed version, the floor or missing capability,
+and the options (`npx martty`, or install a supported dsh).
+
 ## Migrating from DeepSeek Harness TUI / the scoped package
 
 `martty` is the recommended package name. Starting with `0.2.13`, it and the
@@ -63,17 +95,17 @@ published versions of `@openma/deepseek-harness-tui` register `dsh-tui`
 legacy checkouts own the same names (a checkout of this repository links as
 `martty`, so it replaces — or is replaced by — an installed `martty` with no
 collision). The `martty` package declares only `martty-cli` so npm never
-refuses the install over a bin another package owns (`EEXIST`); a
-postinstall step then retires the stale `martty`/`dsh-tui`/`dsb` links that
-verifiably belonged to the legacy package (a third-party `dsh-tui` stays
-untouched), creates the `martty` command itself, and detaches the legacy
-package's bin declarations so a later `npm rm -g` can't take `martty` down
-with it. Removing `@openma/deepseek-harness-tui` afterwards is optional
+refuses the install over a bin another package owns (`EEXIST`). It ships no
+install scripts: the first launch of `martty-cli` (or `npx martty`) retires
+the stale `martty`/`dsh-tui`/`dsb` links that verifiably belonged to the
+legacy package (a third-party `dsh-tui` stays untouched), creates the `martty`
+command itself, and detaches the legacy package's bin declarations so a later
+`npm rm -g` can't take `martty` down with it. Until that first launch a fresh
+install has only `martty-cli`; upgrades from 0.3.2 keep their `martty`.
+Removing `@openma/deepseek-harness-tui` afterwards is optional
 cleanup; `martty` warns at launch while it remains — on an interactive
 terminal the notice prints when the session exits, so the TUI cannot hide
-it. With `--ignore-scripts`
-the postinstall never runs — invoke `martty-cli` once (or `npx martty`) and
-the first launch finishes the migration itself. And after `npm rm -g
+it. And after `npm rm -g
 martty`, the `martty` command left behind is a self-cleaning shim: invoking
 it once prints the reinstall hint and removes it — nothing dead is left
 in `<prefix>/bin`.
