@@ -361,7 +361,7 @@ Harness 按以下顺序解析：
 （改用 `npx martty` 内置模式，或安装受支持的 dsh），不会留下静默挂起的条目。
 CI 在 dsh 的 `latest` 与 `next` dist-tag 上以全局安装验证插件安装路径与 `--dsh`。
 `/status` 会显示 ACP agent 实际启动的 dsh runtime（`- dsh · <版本> via <来源>`）。
-本版本内置 `@openma/deepseek-harness-acp` `0.4.39-beta.2`。
+本版本内置 `@openma/deepseek-harness-acp` `0.4.39`。
 
 运行中的 standalone TUI 也可以直接添加并切换（Registry binary 会先确认安装）：
 

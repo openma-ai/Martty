@@ -5,13 +5,15 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-17
+
 ### Compatibility
 
 - Supported `@deepseek-ai/dsh` is now a floor, `>=0.1.7-rc.2`, declared as
   `engines.dsh` (read by dsh's plugin compatibility check); the exact-version
   `dsh.supported` list is gone. Newer dsh releases are attempted; a dsh newer
   than the newest tested (`0.2.1-rc.2`) only warns.
-- Bundles `@openma/deepseek-harness-acp` `0.4.39-beta.2`, which applies the
+- Bundles `@openma/deepseek-harness-acp` `0.4.39`, which applies the
   same floor and feature-detects dsh 0.2.1's subagent teardown API.
 
 ### Added
