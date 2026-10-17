@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-17
+
+### Compatibility
+
+- Bundles `@openma/deepseek-harness-acp` `0.4.38` (stable; compatible range
+  `>=0.4.38 <0.5.0`). Supported `@deepseek-ai/dsh`:
+  `0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2` (`npm/package.json` `dsh.supported`).
+- The Pi entry launches `@openma/pi-acp@latest` (`0.1.8` at release time).
+
+### Known issues
+
+- ACP auth: choosing another method while an agent auth is pending does
+  nothing, and a typed key falls into the prompt queue (#168).
+
 ### Changed
 
 - Custom ACP agent definitions now live in `~/.oma/config.toml` `[[agents]]`
