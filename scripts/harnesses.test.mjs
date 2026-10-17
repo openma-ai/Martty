@@ -12,6 +12,20 @@ import test from 'node:test'
 const moduleUrl = new URL('../npm/lib/harnesses.js', import.meta.url)
 const registryModuleUrl = new URL('../npm/lib/harness-registry.js', import.meta.url)
 
+// Harness definitions persist to the shared <home>/config.toml [[agents]]
+// store next to settings.json (see @openma/common/acp-harnesses/custom-agents);
+// assert them through the module's public read surface.
+function savedAgents(api, settingsPath) {
+  return api.savedHarnesses(settingsPath)
+}
+
+// Raw row check: custom agents live in config.toml as [[agents]] rows with
+// command_override — never in settings.json anymore.
+function savedTomlRows(settingsPath) {
+  const configPath = path.join(path.dirname(settingsPath), 'config.toml')
+  return existsSync(configPath) ? readFileSync(configPath, 'utf8') : ''
+}
+
 test('CLI saved add is offline and preserves its recipe without reinstallation', async t => {
   const api = await import(moduleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-cli-saved-'))
@@ -83,7 +97,8 @@ test('CLI removal previews exact paths and requires confirmation before cleaning
   const done = await api.runHarnessCommandAsync(['remove', 'agent', '--cleanup', '--yes'], options)
   assert.equal(done.code, 0)
   assert.ok(!existsSync(resource))
-  assert.deepEqual(JSON.parse(readFileSync(settingsPath)), { harnesses: [] })
+  assert.deepEqual(JSON.parse(readFileSync(settingsPath)), {})
+  assert.deepEqual(savedAgents(api, settingsPath), [])
 })
 
 test('CLI binary add validates before downloading and preserves label and argument overrides', async t => {
@@ -102,14 +117,15 @@ test('CLI binary add validates before downloading and preserves label and argume
   await assert.rejects(api.runHarnessCommandAsync(['add', 'fixture', '--bogus', 'x'], options), /Unknown add option/)
   assert.equal(downloads, 0)
   await api.runHarnessCommandAsync(['add', 'fixture', '--label', 'Custom', '--arg', '--stdio'], options)
-  const entry = JSON.parse(readFileSync(settingsPath)).harnesses[0]
+  const entry = savedAgents(api, settingsPath)[0]
   assert.equal(entry.label, 'Custom'); assert.deepEqual(entry.args, ['--stdio'])
   assert.equal(entry.command, path.join(root, 'bin', 'fixture', '1', 'darwin-aarch64', 'fixture'))
   await api.runHarnessCommandAsync(['add', 'fixture'], options)
   assert.equal(downloads, 1)
 })
 
-test('CLI wrapper runs add/list/use/remove against isolated settings and rejects missing startup values', t => {
+test('CLI wrapper runs add/list/use/remove against isolated settings and rejects missing startup values', async t => {
+  const api = await import(moduleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-cli-wrapper-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const settingsPath = path.join(root, 'settings.json')
@@ -127,11 +143,12 @@ test('CLI wrapper runs add/list/use/remove against isolated settings and rejects
   result = cli('harness', 'use', 'fixture'); assert.equal(result.status, 0, result.stderr)
   assert.equal(JSON.parse(readFileSync(settingsPath)).defaultHarness, 'fixture')
   result = cli('harness', 'remove', 'fixture'); assert.equal(result.status, 2, result.stderr)
-  assert.equal(JSON.parse(readFileSync(settingsPath)).harnesses.length, 1)
+  assert.equal(savedAgents(api, settingsPath).length, 1)
   result = cli('--agent'); assert.equal(result.status, 2, result.stderr)
   assert.match(result.stderr, /--agent needs a value/)
   result = cli('harness', 'remove', 'fixture', '--yes'); assert.equal(result.status, 0, result.stderr)
-  assert.deepEqual(JSON.parse(readFileSync(settingsPath)), { harnesses: [] })
+  assert.deepEqual(JSON.parse(readFileSync(settingsPath)), {})
+  assert.deepEqual(savedAgents(api, settingsPath), [])
 })
 
 test('CLI Ctrl-C aborts a real binary transfer, clears staging and never saves a recipe', { skip: process.platform === 'win32' }, async t => {
@@ -165,6 +182,7 @@ test('CLI Ctrl-C aborts a real binary transfer, clears staging and never saves a
 })
 
 test('CLI installs a real archive from cached Registry, reports progress, and reuses it offline', { skip: process.platform === 'win32' }, async t => {
+  const api = await import(moduleUrl)
   const { ACP_REGISTRY_URL, registryPlatformKey } = await import(registryModuleUrl)
   const root = mkdtempSync(path.join(tmpdir(), 'martty-cli-install-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -197,7 +215,7 @@ test('CLI installs a real archive from cached Registry, reports progress, and re
   assert.match(installed.stderr, /Harness install: extract/)
   assert.match(installed.stderr, /Harness install: complete/)
   const settingsPath = path.join(home, 'settings.json'), before = readFileSync(settingsPath, 'utf8')
-  const settings = JSON.parse(before), entry = settings.harnesses[0]
+  const settings = JSON.parse(before), entry = savedAgents(api, settingsPath)[0]
   assert.equal(settings.defaultHarness, undefined)
   assert.equal(entry.label, 'Local Fixture'); assert.deepEqual(entry.args, ['--stdio'])
   assert.equal(readFileSync(entry.command, 'utf8'), '#!/bin/sh\nexit 0\n')
@@ -399,7 +417,7 @@ test('async harness add installs and persists an ACP Registry binary', async () 
       },
     })
     assert.match(result.stdout, /^Saved Amp$/m)
-    const saved = JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses[0]
+    const saved = savedAgents(module, settingsPath)[0]
     assert.equal(saved.command, path.join(
       root, 'bin', 'amp-acp', '0.9.0', 'darwin-aarch64', 'amp-acp',
     ))
@@ -435,14 +453,14 @@ test('named harnesses persist without overwriting existing Martty settings', asy
     assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')), {
       language: 'zh',
       theme: 'ayu',
-      harnesses: [{
-        id: 'local',
-        label: 'Local ACP',
-        command: '/opt/local/bin/local-acp',
-        args: ['--stdio'],
-      }],
       defaultHarness: 'local',
     })
+    assert.deepEqual(savedAgents(module, settingsPath), [{
+      id: 'local',
+      label: 'Local ACP',
+      command: '/opt/local/bin/local-acp',
+      args: ['--stdio'],
+    }])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -463,6 +481,8 @@ test('writing a legacy active Harness migrates it to defaultHarness', async () =
     const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
     assert.equal(settings.defaultHarness, 'legacy')
     assert.equal(Object.hasOwn(settings, 'activeHarness'), false)
+    assert.equal(Object.hasOwn(settings, 'harnesses'), false)
+    assert.deepEqual(savedAgents(module, settingsPath).map(({ id }) => id), ['legacy', 'new'])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -926,7 +946,7 @@ test('harness add stores a named command through the CLI surface', async () => {
     assert.equal(result.stderr, '')
     assert.match(result.stdout, /^Saved Codex ACP$/m)
     assert.match(result.stdout, /^  Next     martty harness use codex$/m)
-    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses, [{
+    assert.deepEqual(savedAgents(module, settingsPath), [{
       id: 'codex',
       label: 'Codex ACP',
       command: 'codex-acp',
@@ -1004,7 +1024,7 @@ test('harness add uses the official ACP Registry npx distribution', async () => 
     })
     assert.equal(result.code, 0)
     assert.match(result.stdout, /^Saved Codex$/m)
-    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses, [{
+    assert.deepEqual(savedAgents(module, settingsPath), [{
       id: 'codex-acp',
       label: 'Codex',
       command: npx,
@@ -1189,7 +1209,7 @@ test('registry Harness add saves the resolved local command without asking for a
     })
     assert.equal(result.code, 0)
     assert.match(result.stdout, /^Saved Demo Harness$/m)
-    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).harnesses, [{
+    assert.deepEqual(savedAgents(module, settingsPath), [{
       id: 'demo',
       label: 'Demo Harness',
       command,
@@ -1493,29 +1513,27 @@ test('empty harness discovery gives an actionable next step', async () => {
   assert.match(result.stdout, /martty harness add <id> --command <cmd>/)
 })
 
-test('pinned pi-acp specs always resolve @openma/pi-acp@latest instead', async () => {
+test('pinned pi-acp specs are kept exactly as written', async () => {
   const module = await import(moduleUrl)
-  const root = mkdtempSync(path.join(tmpdir(), 'martty-pi-latest-'))
+  const root = mkdtempSync(path.join(tmpdir(), 'martty-pi-pinned-'))
   const settingsPath = path.join(root, 'settings.json')
   try {
-    // Whatever an older release pinned into user settings follows latest now:
-    // the unprefixed public package and any @openma/pi-acp@<version> alike.
+    // A version the user pins is never rewritten to another tag: the shared
+    // agents.json store keeps args verbatim (openma-common#36).
     module.upsertHarness(settingsPath, {
       id: 'pi-acp', command: 'npx', args: ['pi-acp@0.0.33'],
     })
-    assert.deepEqual(module.selectedHarness(settingsPath)?.args, undefined)
     module.setDefaultHarness(settingsPath, 'pi-acp')
-    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@latest'])
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['pi-acp@0.0.33'])
 
     module.upsertHarness(settingsPath, {
       id: 'pi-acp', command: 'npx', args: ['@openma/pi-acp@0.1.6'],
     })
-    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@latest'])
-    const saved = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    assert.deepEqual(module.selectedHarness(settingsPath)?.args, ['@openma/pi-acp@0.1.6'])
     assert.deepEqual(
-      saved.harnesses.find(({ id }) => id === 'pi-acp').args,
-      ['@openma/pi-acp@latest'],
-      'nothing pinned is ever written back to user settings',
+      savedAgents(module, settingsPath).find(({ id }) => id === 'pi-acp').args,
+      ['@openma/pi-acp@0.1.6'],
+      'pinned versions are written back verbatim',
     )
   } finally {
     rmSync(root, { recursive: true, force: true })

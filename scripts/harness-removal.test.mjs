@@ -25,7 +25,10 @@ test('Configuration-only removal clears the default but keeps resources and unre
   writeFileSync(settings, JSON.stringify(config))
   removeHarness(settings, planHarnessRemoval(settings, 'agent'), { cleanup: false })
   assert.ok(existsSync(resource))
-  assert.deepEqual(JSON.parse(readFileSync(settings)), { harnesses: [], theme: 'ember' })
+  assert.deepEqual(JSON.parse(readFileSync(settings)), { theme: 'ember' })
+  // The shared config.toml store keeps no leftover command for the id.
+  const configPath = path.join(path.dirname(settings), 'config.toml')
+  assert.ok(!existsSync(configPath) || !readFileSync(configPath, 'utf8').includes('command_override'))
 })
 
 test('Resolved executable paths still identify the private installation through OS directory aliases', t => {

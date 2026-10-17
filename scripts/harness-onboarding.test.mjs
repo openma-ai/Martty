@@ -7,7 +7,7 @@ import { apply } from '../npm/lib/harness-view.js'
 import { installTuiCommands } from '../npm/lib/tui-commands.js'
 import { installTuiOverlay } from '../npm/lib/tui-overlay.js'
 import { installTuiSlots } from '../npm/lib/tui-slots.js'
-import { selectedHarness, setDefaultHarness, upsertHarness } from '../npm/lib/harnesses.js'
+import { savedHarnesses, selectedHarness, setDefaultHarness, upsertHarness } from '../npm/lib/harnesses.js'
 
 function setup(t, options = {}, client = { async setDefaultAgent() {} }) {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-onboard-'))
@@ -119,7 +119,7 @@ test('Current removal entry is disabled and cannot be bypassed by a typed comman
   await ctx.tuiOverlay.dispatch({ protocol: 0, id: 'harness', event: 'cancel' })
   await command('remove live')
   assert.match(JSON.stringify(ctx.tuiOverlay.active()), /Harness is still running/)
-  assert.equal(JSON.parse(readFileSync(settingsPath)).harnesses.length, 1)
+  assert.equal(savedHarnesses(settingsPath).length, 1)
 })
 
 test('Removal waits for download cancellation and prevents late configuration writeback', async t => {
@@ -130,10 +130,10 @@ test('Removal waits for download cancellation and prevents late configuration wr
   const pending = app.submit('remove')
   await new Promise(setImmediate)
   assert.equal(app.preparations[0].signal.aborted, true)
-  assert.equal(JSON.parse(readFileSync(app.settingsPath)).harnesses.length, 1, 'wait for worker and open handles')
+  assert.equal(savedHarnesses(app.settingsPath).length, 1, 'wait for worker and open handles')
   app.preparations[0].resolve()
   await pending
-  assert.deepEqual(JSON.parse(readFileSync(app.settingsPath)).harnesses, [])
+  assert.deepEqual(savedHarnesses(app.settingsPath), [])
   assert.equal(app.ctx.tuiOverlay.active().id, 'harness-removed')
 })
 
@@ -309,7 +309,7 @@ test('Selecting an unchecked catalog entry probes only that recipe and prefers i
   const result = await app.submit('alpha')
   assert.equal(result, undefined)
   assert.deepEqual(switched, [])
-  assert.equal(JSON.parse(readFileSync(app.settingsPath)).harnesses[0].command, '/installed/alpha')
+  assert.equal(savedHarnesses(app.settingsPath)[0].command, '/installed/alpha')
   assert.equal(app.ctx.tuiOverlay.active().id, 'harness-saved')
 })
 
@@ -345,7 +345,7 @@ test('Cancelling an explicit switch leaves the newly configured recipe saved', a
 test('Connect saves a prepared Harness before authentication or session readiness', async (t) => {
   let ready
   const { ctx, command, settingsPath } = setup(t, {}, { async setDefaultAgent() {
-    assert.equal(JSON.parse(readFileSync(settingsPath)).harnesses[0].command, 'new-acp',
+    assert.equal(savedHarnesses(settingsPath)[0].command, 'new-acp',
       'Connect must persist configuration before launching the authentication flow')
     return { ready: new Promise((resolve) => { ready = resolve }) }
   } })
@@ -382,7 +382,7 @@ test('Host-owned transports still save prepared configuration without switching'
     async setDefaultAgent() { assert.fail('Host-owned transport cannot switch') },
   })
   await command('add local --command local-acp')
-  assert.equal(JSON.parse(readFileSync(settingsPath)).harnesses[0].command, 'local-acp')
+  assert.equal(savedHarnesses(settingsPath)[0].command, 'local-acp')
   assert.equal(selectedHarness(settingsPath), undefined)
   assert.equal(ctx.tuiOverlay.active().id, 'harness-saved')
 })
@@ -518,7 +518,7 @@ test('Package download stays in its panel until ready and releases the command l
   app.complete()
   await waitUntil(() => app.ctx.tuiOverlay.active()?.title.includes('Download complete'))
   assert.match(app.ctx.tuiOverlay.active().title, /Download complete/)
-  assert.equal(JSON.parse(readFileSync(app.settingsPath)).harnesses[0].id, 'package-agent')
+  assert.equal(savedHarnesses(app.settingsPath)[0].id, 'package-agent')
   assert.equal(selectedHarness(app.settingsPath), undefined, 'configuration does not change the default')
   await app.ctx.tuiOverlay.dispatch({ protocol: 0, id: 'harness-installing', event: 'cancel' })
   assert.equal(app.switched.length, 0, 'installation must not start initialize, session/new, or authentication')
@@ -531,7 +531,7 @@ test('Package download stays in its panel until ready and releases the command l
 test('Adding a local command only configures it and never switches', async (t) => {
   const app = setup(t, {}, { async setDefaultAgent() { assert.fail('configuration must not switch') } })
   assert.equal(await app.command('add local --command local-acp'), undefined)
-  assert.equal(JSON.parse(readFileSync(app.settingsPath)).harnesses[0].command, 'local-acp')
+  assert.equal(savedHarnesses(app.settingsPath)[0].command, 'local-acp')
   assert.equal(selectedHarness(app.settingsPath), undefined)
   assert.equal(app.ctx.tuiOverlay.active().id, 'harness-saved')
 })
@@ -693,7 +693,7 @@ test('A saved local replacement is not intercepted by a same-id background packa
   const app = parallelPackages(t, { async setDefaultAgent(entry) { switched.push(entry) } })
   await app.start('alpha'); await app.hide()
   await app.command('add alpha --command local-acp')
-  assert.equal(JSON.parse(readFileSync(app.settingsPath)).harnesses[0].command, 'local-acp')
+  assert.equal(savedHarnesses(app.settingsPath)[0].command, 'local-acp')
   await selectConfigured(app.ctx, 'alpha')
   assert.equal(switched.length, 1)
   assert.equal(switched.at(-1).command, 'local-acp')
@@ -701,7 +701,7 @@ test('A saved local replacement is not intercepted by a same-id background packa
   assert.equal(app.preparations[0].signal.aborted, false)
   app.preparations[0].resolve()
   await new Promise(setImmediate)
-  assert.equal(JSON.parse(readFileSync(app.settingsPath)).harnesses[0].command, 'local-acp',
+  assert.equal(savedHarnesses(app.settingsPath)[0].command, 'local-acp',
     'an older background installation cannot overwrite the newer explicit configuration')
 })
 

@@ -16,15 +16,18 @@ import {
   installRegistryBinary,
   managedBinaryPath,
   normalizeAcpRegistry,
-  OPENMA_PI_ACP,
   readAcpRegistrySnapshot,
 } from './harness-registry.js'
+import {
+  migrateLegacyAcpAgents,
+  readCustomAcpAgents,
+  removeCustomAcpAgent,
+  upsertCustomAcpAgent,
+} from '@openma/common/acp-harnesses/custom-agents'
 
 export { fetchAcpRegistry } from './harness-registry.js'
 
 const HARNESS_ID = /^[a-z0-9][a-z0-9-]*$/
-const PI_ACP_LATEST = OPENMA_PI_ACP
-const PI_ACP_SPEC = /^(?:@openma\/)?pi-acp(?:@.+)?$/
 const PI_ACP_ID = 'pi-acp'
 const PI_ACP_LEGACY_LABEL = 'Pi (OpenMA)'
 const ANSI = Object.freeze({ reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m' })
@@ -368,12 +371,7 @@ function validateHarness(value) {
   }
   const isNpx = /^npx(?:\.(?:cmd|bat|exe))?$/i.test(path.win32.basename(value.command))
   const normalizedArgs = isNpx
-    ? [...args]
-      .filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
-      // A pinned pi-acp spec (any old `pi-acp@x` or `@openma/pi-acp@x` entry)
-      // always resolves `latest` at runtime instead — harness upgrades ship
-      // through npm, never through a Martty release.
-      .map((arg) => PI_ACP_SPEC.test(arg) ? PI_ACP_LATEST : arg)
+    ? [...args].filter((arg) => arg !== '--yes' && arg !== '--prefer-offline')
     : [...args]
   const label = typeof value.label === 'string' && value.label.trim().length > 0
     ? value.label
@@ -389,9 +387,34 @@ function validateHarness(value) {
   }
 }
 
-function configuredHarnesses(settings) {
-  if (!Array.isArray(settings.harnesses)) return []
-  return settings.harnesses.map(validateHarness)
+// Harness definitions live in <oma>/agents.json, the shared store from
+// @openma/common — Backchat reads and writes the same file. Legacy rows
+// still inside settings.json (and Backchat's config.toml overrides) keep
+// reading through the shared module; the first shared write migrates
+// harnesses[] into config.toml and strips the key so removals stick.
+function settingsHome(settingsPath) {
+  return path.dirname(settingsPath)
+}
+
+function migrateStoredLabel(agent) {
+  // Configs saved when the pi harness was branded "Pi (OpenMA)" keep
+  // working; only the stale default display label migrates to the id.
+  return agent.id === PI_ACP_ID && agent.label === PI_ACP_LEGACY_LABEL
+    ? { ...agent, label: PI_ACP_ID }
+    : agent
+}
+
+function configuredHarnesses(settingsPath) {
+  // enabled=false is Backchat's disable flag: the definition stays stored
+  // but a disabled agent must not be selectable or launchable here.
+  return readCustomAcpAgents(settingsHome(settingsPath))
+    .filter((agent) => agent.enabled !== false)
+    .map(migrateStoredLabel)
+}
+
+function settingsWithoutHarnesses(settings) {
+  const { harnesses: _legacyHarnesses, ...rest } = settings
+  return rest
 }
 
 function withoutLegacyActive(settings) {
@@ -414,36 +437,37 @@ function persistedDefaultId(settings) {
 
 export function upsertHarness(settingsPath, harness) {
   const next = validateHarness(harness)
-  const settings = readSettings(settingsPath)
-  const harnesses = configuredHarnesses(settings)
-  const index = harnesses.findIndex(({ id }) => id === next.id)
-  if (index === -1) harnesses.push(next)
-  else harnesses[index] = next
-  writeSettings(settingsPath, { ...withoutLegacyActive(settings), harnesses })
+  // The shared write migrates legacy harnesses[] into config.toml and
+  // strips the key; read settings after it so a stale copy cannot race
+  // the migrated file back in.
+  upsertCustomAcpAgent(settingsHome(settingsPath), next)
+  const settings = withoutLegacyActive(readSettings(settingsPath))
+  writeSettings(settingsPath, settingsWithoutHarnesses(settings))
   return next
 }
 
 export function setDefaultHarness(settingsPath, id) {
-  const settings = readSettings(settingsPath)
-  const harnesses = configuredHarnesses(settings)
+  const harnesses = configuredHarnesses(settingsPath)
   if (!harnesses.some((harness) => harness.id === id)) {
     throw new Error(`unknown harness ${JSON.stringify(id)}`)
   }
-  writeSettings(settingsPath, { ...withoutLegacyActive(settings), harnesses, defaultHarness: id })
+  const settings = withoutLegacyActive(readSettings(settingsPath))
+  migrateLegacyAcpAgents(settingsHome(settingsPath))
+  writeSettings(settingsPath, { ...settingsWithoutHarnesses(settings), defaultHarness: id })
 }
 
 export function savedHarnesses(settingsPath) {
-  return configuredHarnesses(readSettings(settingsPath))
+  return configuredHarnesses(settingsPath)
 }
 
 export function removeHarnessConfiguration(settingsPath, expected) {
-  const settings = withoutLegacyActive(readSettings(settingsPath))
-  const harnesses = configuredHarnesses(settings)
-  const current = harnesses.find(({ id }) => id === expected.id)
+  const current = configuredHarnesses(settingsPath).find(({ id }) => id === expected.id)
   if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Harness configuration changed; review removal again')
-  settings.harnesses = harnesses.filter(({ id }) => id !== expected.id)
-  if (settings.defaultHarness === expected.id) delete settings.defaultHarness
-  writeSettings(settingsPath, settings)
+  removeCustomAcpAgent(settingsHome(settingsPath), expected.id)
+  const settings = withoutLegacyActive(readSettings(settingsPath))
+  const rest = settingsWithoutHarnesses(settings)
+  if (rest.defaultHarness === expected.id) delete rest.defaultHarness
+  writeSettings(settingsPath, rest)
 }
 
 // Kept as a source-compatible alias for integrations compiled against 0.2.30.
@@ -454,7 +478,7 @@ export function selectedHarness(settingsPath) {
   const settings = readSettings(settingsPath)
   const id = persistedDefaultId(settings)
   if (typeof id !== 'string') return undefined
-  return configuredHarnesses(settings).find((harness) => harness.id === id)
+  return configuredHarnesses(settingsPath).find((harness) => harness.id === id)
 }
 
 function executableFile(command) {
@@ -1010,7 +1034,7 @@ export function discoverHarnesses(settingsPath, options = {}) {
 }
 
 function discoverHarnessEntries(settingsPath, options, registryEntries) {
-  const configured = configuredHarnesses(readSettings(settingsPath))
+  const configured = configuredHarnesses(settingsPath)
     .map((harness) => ({ ...harness, source: 'configured' }))
   const defaults = (options.defaults ?? []).map((entry) => ({
     ...validateHarness(entry),
@@ -1077,7 +1101,7 @@ function searchScore(entry, query = '') {
 }
 
 function findHarnessCandidates(settingsPath, options = {}, query = '') {
-  const configured = configuredHarnesses(readSettings(settingsPath)).map((entry) => ({
+  const configured = configuredHarnesses(settingsPath).map((entry) => ({
     ...entry,
     source: 'configured',
     status: 'Configured',
