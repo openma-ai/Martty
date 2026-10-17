@@ -19,6 +19,15 @@ const textExtensions = new Set(['.js', '.json', '.md', '.mjs', '.yaml', '.yml'])
 // dependency internals.
 const skippedEntries = new Set(['node_modules', 'package-lock.json'])
 
+// npm and pnpm both treat these as "build scripts" of an installed package.
+const INSTALL_LIFECYCLE = ['preinstall', 'install', 'postinstall']
+
+function installLifecycleScripts(manifest) {
+  const scripts = manifest?.scripts
+  if (scripts === null || typeof scripts !== 'object') return []
+  return INSTALL_LIFECYCLE.filter((name) => typeof scripts[name] === 'string')
+}
+
 function rewriteTextFiles(root, aliasName) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const file = path.join(root, entry.name)
@@ -54,6 +63,19 @@ try {
     )
   }
   const packageJson = JSON.parse(readFileSync(path.join(source, 'package.json'), 'utf8'))
+  // The published package must stay installable under pnpm's build-script
+  // policy: `dsh plugin --profile <name> add martty` runs pnpm, which fails
+  // with ERR_PNPM_IGNORED_BUILDS on any dependency that declares an install
+  // lifecycle script it has not been allowed to run. Migration happens at
+  // launch instead (lib/install-migration.js).
+  const lifecycle = installLifecycleScripts(packageJson)
+  if (lifecycle.length > 0) {
+    throw new Error(
+      `${packageJson.name} declares install lifecycle scripts (${lifecycle.join(', ')}); `
+      + 'the published package must ship none — pnpm-managed installs such as '
+      + '`dsh plugin add` refuse them. Converge at launch instead.',
+    )
+  }
   if (packageJson.name !== legacyName && packageJson.name !== aliasName) {
     throw new Error(`expected source package ${legacyName} or ${aliasName}, found ${packageJson.name}`)
   }
@@ -84,9 +106,9 @@ try {
   // owns: npm refuses to link a global bin already owned by another package
   // (and links bins before running lifecycle scripts), so declaring `martty`
   // or `dsh-tui` would EEXIST against every legacy install and the unrelated
-  // `dsh-tui` package. The postinstall migration step creates the real
-  // `martty` command itself; `martty-cli` keeps the package runnable when
-  // scripts are skipped and lets `npx` resolve a binary.
+  // `dsh-tui` package. The binary writes the real `martty` command itself
+  // on first launch (lib/install-migration.js); `martty-cli` is what npm
+  // links and what `npx` resolves.
   aliasJson.bin = {
     [`${aliasName}-cli`]: packageJson.bin?.[`${aliasName}-cli`] ?? packageJson.bin?.[aliasName] ?? 'bin/martty.js',
   }

@@ -72,6 +72,9 @@ OPTIONS:
       --api-key <key>       sets DEEPSEEK_API_KEY for a spawned agent
       --agent <cmd>         ACP agent command (default: dsh-acp or $DSH_TUI_AGENT)
       --agent-arg <arg>     extra argument for --agent (repeatable)
+      --dsh <profile>       attach to the global dsh's <profile> instead of the
+                            bundled dsh-acp (falls back to bundled, with a
+                            notice, when that dsh is below the supported floor)
       --theme <dark|light>  DeepSeek Web UI palette (default: persisted, then dark)
       --demo                scripted turns, no runtime / API key needed
       --demo-skin           ember gallery palette via the plugin runner (implies --demo)
@@ -155,6 +158,12 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--agent" => args_out.agent = Some(take("--agent")?),
             "--agent-arg" => args_out.agent_args.push(take("--agent-arg")?),
             "--theme" => args_out.theme = Some(take("--theme")?),
+            "--dsh" => bail!(
+                "--dsh <profile> is handled by the npm launcher; run it as `martty --dsh <profile>` or `npx martty --dsh <profile>`"
+            ),
+            other if other.starts_with("--dsh=") => bail!(
+                "--dsh <profile> is handled by the npm launcher; run it as `martty --dsh <profile>` or `npx martty --dsh <profile>`"
+            ),
             "--demo" => args_out.demo = true,
             "--demo-skin" => {
                 args_out.demo_skin = true;

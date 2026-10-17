@@ -41,6 +41,7 @@ if (tcpIndex >= 0) {
 }
 let buffer = ''
 let initialized
+let noticeSession
 
 const timeout = setTimeout(() => {
   console.error('PROFILE_SMOKE_TIMEOUT')
@@ -58,6 +59,14 @@ function fail(message) {
 }
 
 function accept(message) {
+  if (noticeSession !== undefined && message?.method === 'session/update') {
+    const text = message.params?.update?.content?.text
+    if (typeof text === 'string') {
+      clearTimeout(timeout)
+      console.log(JSON.stringify({ marker: 'PROFILE_SMOKE_NOTICE', text }))
+      process.exit(3)
+    }
+  }
   if (message?.id === 1) {
     if (message.error !== undefined) {
       fail(`initialize: ${message.error?.message ?? JSON.stringify(message.error)}`)
@@ -82,6 +91,13 @@ function accept(message) {
     return
   }
   const agentOption = session.configOptions?.find?.((option) => option?.id === 'agent')
+  if (initialized?.agentInfo?.name === 'martty-host-notice') {
+    // Martty replaced an ACP plugin that cannot run on this Host with an
+    // agent that explains why; report its message (exit 3) so callers can
+    // assert the in-TUI explanation instead of a silent pending entry.
+    noticeSession = session.sessionId
+    return
+  }
   if (agentOption === undefined) {
     fail('session/new exposed no Agent preset config option')
     return

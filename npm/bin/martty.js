@@ -10,6 +10,7 @@ import { bootClient, parseClientArgv, painterArgs, uiSettingsPath } from '../lib
 import { runHarnessCommandAsync } from '../lib/harnesses.js'
 import { nativeBinary } from '../lib/spawn-tui.js'
 import { reportLaunchNotices, warnAboutLegacyPackage } from '../lib/install-migration.js'
+import { planDshLaunch, runDshProfile, takeDshFlag } from '../lib/dsh-launch.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const configuredBin = process.env.MARTTY_BIN || process.env.DSH_TUI_BIN
@@ -90,11 +91,28 @@ if (argv[0] === 'harness') {
 // Validate startup arguments before resolving the native painter. A source
 // checkout must report the same usage errors as an installed package.
 let parsed
+let dshNotice
 if (!wantHelp && !wantVersion && !wantDemo && !wantDemoSkin) {
-  try { parsed = parseClientArgv(argv) }
-  catch (error) {
-    console.error(`martty: ${error instanceof Error ? error.message : String(error)}`)
+  let dshPlan
+  try {
+    // `--dsh <profile>` attaches to the global dsh. Its version is checked
+    // before anything spawns: below a floor, Martty keeps its bundled
+    // harness and says why in the TUI; newer than tested only warns.
+    const { profile, rest } = takeDshFlag(argv)
+    if (profile !== null) dshPlan = planDshLaunch(profile, rest)
+    parsed = parseClientArgv(rest)
+    if (dshPlan?.mode === 'agent') parsed = { ...parsed, agent: dshPlan.agent }
+    if (dshPlan?.mode === 'bundled') console.error(`martty: ${dshPlan.notice.text}`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(message.startsWith('martty:') ? message : `martty: ${message}`)
     process.exit(Number.isInteger(error?.exitCode) ? error.exitCode : 1)
+  }
+  dshNotice = dshPlan?.notice
+  if (dshPlan?.mode === 'profile') {
+    // The profile carries Martty itself: dsh boots its Host tree and the
+    // profile's runner starts the TUI on this terminal.
+    process.exit(runDshProfile(dshPlan))
   }
 }
 
@@ -141,4 +159,4 @@ if (wantDemoSkin) {
 }
 
 process.env.MARTTY_BIN ??= binaryPath
-await bootClient({ agent: parsed.agent, extraArgs: painterArgs(parsed) })
+await bootClient({ agent: parsed.agent, extraArgs: painterArgs(parsed), notice: dshNotice })

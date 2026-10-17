@@ -32,7 +32,7 @@ test('creates a thin Martty package with platform optional dependencies', (t) =>
       'dsh-tui': 'bin/martty.js',
     },
     scripts: {
-      postinstall: 'node lib/install-migration.js',
+      test: 'node --test',
     },
   }, null, 2) + '\n')
   writeFileSync(
@@ -65,7 +65,7 @@ test('creates a thin Martty package with platform optional dependencies', (t) =>
         'martty-cli': 'bin/martty.js',
       },
       scripts: {
-        postinstall: 'node lib/install-migration.js',
+        test: 'node --test',
       },
       optionalDependencies: {
         '@openma/martty-darwin-arm64': '1.2.3',
@@ -85,6 +85,41 @@ test('creates a thin Martty package with platform optional dependencies', (t) =>
     JSON.parse(readFileSync(path.join(source, 'package.json'), 'utf8')).name,
     '@openma/deepseek-harness-tui',
   )
+})
+
+test('refuses a source that declares install lifecycle scripts', (t) => {
+  // `dsh plugin --profile <name> add martty` installs through pnpm, which
+  // fails with ERR_PNPM_IGNORED_BUILDS on an unapproved install script.
+  for (const hook of ['preinstall', 'install', 'postinstall']) {
+    const root = mkdtempSync(path.join(tmpdir(), 'martty-package-alias-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const source = path.join(root, 'martty')
+    const destination = path.join(root, 'out')
+    mkdirSync(source, { recursive: true })
+    writeFileSync(path.join(source, 'package.json'), JSON.stringify({
+      name: 'martty',
+      version: '1.2.3',
+      scripts: { [hook]: 'node lib/install-migration.js', test: 'node --test' },
+    }, null, 2) + '\n')
+
+    const result = spawnSync(process.execPath, [script, source, destination, 'martty'], {
+      encoding: 'utf8',
+    })
+
+    assert.equal(result.status, 1, `${hook} must be refused`)
+    assert.match(result.stderr, new RegExp(`declares install lifecycle scripts \\(${hook}\\)`))
+    assert.equal(existsSync(destination), false)
+  }
+})
+
+test('the shipped package declares no install lifecycle scripts', () => {
+  const manifest = JSON.parse(readFileSync(
+    path.resolve(import.meta.dirname, '..', 'npm', 'package.json'),
+    'utf8',
+  ))
+  for (const hook of ['preinstall', 'install', 'postinstall']) {
+    assert.equal(manifest.scripts?.[hook], undefined, `npm/package.json must not declare ${hook}`)
+  }
 })
 
 test('falls back to the canonical bin entry when the source has none', (t) => {

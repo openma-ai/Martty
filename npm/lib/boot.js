@@ -1,3 +1,4 @@
+import { apply as applyLaunchNotice, inject as launchNoticeInject } from './launch-notice.js'
 import { apply as applyHarnessBadge, inject as harnessBadgeInject } from './harness-badge.js'
 /**
  * Boot-time restore of a statically-registered gallery palette (ayu,
@@ -71,6 +72,7 @@ import { installTuiLocalPlugins } from './tui-local-plugins.js'
  * Internal product-only forced Harness; null means no pinned Harness.
  * @param {{ id: string, label: string, command: string, args?: string[] } | null} [options.forcedHarness]
  * @param {string} [options.artifactRoot]
+ * @param {{ text: string, level?: 'info' | 'warn' | 'error', dismissAfterMs?: number }} [options.notice]
  * @param {Array<{ id: string, label: string, command: string, args?: string[], source?: string }>} [options.harnessDefaults]
  * @param {string} [options.harnessPathValue]
  * @param {Array<{ id: string, kind: 'theme' | 'ui', entry: string }>} [options.packagePlugins]
@@ -131,6 +133,9 @@ export async function bootClient(options = {}) {
     restorePreferredTheme(ctx.get('tuiTheme'))
     await ctx.plugin({ name: 'tui-slots', inject: [], apply: applySlots })
     await ctx.plugin({ name: 'tui-commands', inject: [], apply: applyCommands })
+    if (options.notice !== undefined) {
+      await ctx.plugin({ name: 'launch-notice', inject: launchNoticeInject, apply: applyLaunchNotice }, options.notice)
+    }
     await ctx.plugin({ name: 'tui-overlay', inject: [], apply: applyOverlay })
     await ctx.plugin({ name: 'tui-agents', inject: [], apply: applyAgents })
     await ctx.plugin({ name: 'tui-queue', inject: [], apply: applyQueue })
@@ -193,6 +198,7 @@ export async function bootClient(options = {}) {
     restorePreferredTheme(ctx.tuiTheme)
     applySlots(ctx)
     applyCommands(ctx)
+    if (options.notice !== undefined) applyLaunchNotice(ctx, options.notice)
     applyOverlay(ctx)
     applyAgents(ctx)
     applyQueue(ctx)
