@@ -185,3 +185,15 @@ fn martty_home_falls_back_to_legacy_martty_only_when_oma_is_absent() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn dsh_flag_points_at_the_npm_launcher() {
+    for argv in [vec!["--dsh".to_string(), "martty".to_string()], vec!["--dsh=martty".to_string()]] {
+        let err = match parse_args_from(argv) {
+            Ok(_) => panic!("--dsh must not be accepted by the native painter"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("npm launcher"), "{err}");
+    }
+    assert!(HELP.contains("--dsh <profile>"));
+}

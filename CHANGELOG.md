@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Compatibility
+
+- Supported `@deepseek-ai/dsh` is now a floor, `>=0.1.7-rc.2`, declared as
+  `engines.dsh` (read by dsh's plugin compatibility check); the exact-version
+  `dsh.supported` list is gone. Newer dsh releases are attempted; a dsh newer
+  than the newest tested (`0.2.1-rc.2`) only warns.
+- Bundles `@openma/deepseek-harness-acp` `0.4.39-beta.2`, which applies the
+  same floor and feature-detects dsh 0.2.1's subagent teardown API.
+
+### Added
+
+- `martty --dsh <profile>` (also `npx martty --dsh <profile>`) attaches to the
+  global dsh's profile after a version check; below the floor it falls back to
+  the bundled harness with a dismissible notice.
+
+### Fixed
+
+- The published package no longer declares a `postinstall` script, so
+  `dsh plugin add martty` installs under pnpm's strict build-script policy
+  (`ERR_PNPM_IGNORED_BUILDS`). Global-install migration runs at the first
+  launch instead; until then a fresh install exposes `martty-cli` only.
+- `dsh --profile martty` on dsh 0.2.1 no longer leaves `tui-runner` and
+  `tui-host-creator` pending. When the ACP plugin cannot run on the Host, the
+  TUI starts and explains why (installed dsh, the floor or missing capability,
+  and the options) instead of silent pending entries.
+
 ## [0.3.2] - 2026-10-17
 
 ### Compatibility

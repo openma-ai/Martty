@@ -8,9 +8,16 @@ import { installSessionPersistenceCompatibility } from './acp-host.js'
 import { createTuiPluginStore } from './tui-plugin-store.js'
 
 export const name = 'tui-creator-overlay'
-export const inject = [
-  'agentPresets', 'skills', 'systemPrompt', 'loader', 'tools', 'dynamicCordisRunner',
-]
+export const inject = ['skills', 'systemPrompt', 'loader', 'tools']
+
+/**
+ * Services the ACP plugin provides. They are awaited by a nested
+ * `ctx.inject` rather than by this entry: when the ACP plugin cannot run on
+ * the Host (Martty then shows the reason in the TUI), the overlay simply
+ * stays idle instead of becoming a pending top-level entry in dsh's
+ * activation report.
+ */
+export const acpServices = ['agentPresets', 'dynamicCordisRunner']
 
 const SKILL_NAME = 'tui-plugin-development'
 const ROUTING_PROMPT = `# Dynamic TUI Plugin routing
@@ -224,7 +231,11 @@ const skillContent = skillDocument.slice(skillFrontmatter[0].length)
  * @param {object} ctx
  * @param {{ preset?: string, scopeWaitMs?: number, scopePollMs?: number }} [config]
  */
-export async function apply(ctx, config = {}) {
+export function apply(ctx, config = {}) {
+  ctx.inject(acpServices, (scoped) => applyOverlay(scoped, config))
+}
+
+export async function applyOverlay(ctx, config = {}) {
   // Standalone launches mount this overlay directly into the ACP Host tree,
   // which never loads martty/acp-host; both trees need the ACP compatibility
   // surface, and the installer is idempotent when the profile path already

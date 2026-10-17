@@ -1,7 +1,12 @@
 /** Resolve the embeddable ACP plugin from TUI's own dependency graph. */
 
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { DSH_FLOOR, isUntested, requirementOf, satisfiesRange, untestedWarning } from './dsh-compat.js'
+import { createHostNoticeServer } from './host-notice-agent.js'
+
+const OWN_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
 export const name = 'dsh-tui-acp-host'
 export const inject = ['loader', 'userQuestions', 'permissionPresets']
@@ -203,6 +208,69 @@ export function installSessionPersistenceCompatibility(ctx) {
   return true
 }
 
+function readManifest(anchor, specifier) {
+  if (typeof anchor !== 'string') return undefined
+  try {
+    const file = createRequire(anchor).resolve(`${specifier}/package.json`)
+    return { file, manifest: JSON.parse(readFileSync(file, 'utf8')) }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The hosting dsh and the ACP plugin this entry is about to mount, resolved
+ * the way dsh-acp resolves them: the Host anchor is `dshAcpHostBaseUrl` or
+ * the profile base; the plugin comes from the profile, then from Martty's
+ * own dependency graph.
+ */
+export function hostCompatibility(ctx) {
+  const hostBase = ctx.get?.('dshAcpHostBaseUrl')
+  const host = readManifest(typeof hostBase === 'string' ? hostBase : ctx.baseUrl, '@deepseek-ai/dsh')
+  let acp
+  for (const anchor of [ctx.baseUrl, import.meta.url]) {
+    acp = readManifest(anchor, '@openma/deepseek-harness-acp')
+    if (acp !== undefined) break
+  }
+  const dsh = host?.manifest?.version
+  const checks = [{ name: 'martty', version: OWN_VERSION, range: DSH_FLOOR }]
+  const acpRange = requirementOf(acp?.manifest)
+  if (acpRange !== undefined) {
+    checks.push({ name: '@openma/deepseek-harness-acp', version: acp.manifest.version, range: acpRange })
+  }
+  const unmet = typeof dsh === 'string' ? checks.filter(({ range }) => !satisfiesRange(dsh, range)) : []
+  return { dsh, dshPath: host?.file, unmet, untested: isUntested(dsh) }
+}
+
+/** The in-TUI explanation when the ACP plugin cannot run on this Host. */
+export function hostNoticeMessage({ dsh, dshPath, reason, unmet = [] }) {
+  const lines = ['**Martty cannot attach to this dsh profile.**', '']
+  if (reason !== undefined) lines.push(reason, '')
+  if (dsh !== undefined) lines.push(`Installed dsh: \`${dsh}\`${dshPath ? ` (${dshPath})` : ''}`)
+  for (const { name, version, range } of unmet) {
+    lines.push(`\`${name}\` ${version} supports dsh \`${range}\``)
+  }
+  lines.push(
+    '',
+    'To continue:',
+    '- run Martty with its bundled harness instead: `npx martty`',
+    '- or install a supported dsh: `npm install -g @deepseek-ai/dsh@latest`',
+    '- or update this profile\'s plugins: `dsh plugin --profile <name> update`',
+  )
+  return lines.join('\n')
+}
+
+function provideHostNotice(ctx, details) {
+  if (ctx.get?.('acpServer') !== undefined) return
+  const message = hostNoticeMessage(details)
+  process.stderr.write(`${message.replace(/\*\*|`/g, '')}\n`)
+  ctx.provide?.('acpServer', createHostNoticeServer(message, { version: OWN_VERSION }))
+}
+
+// How long the ACP plugin may wait for a Host service before Martty names
+// the missing capability in the TUI instead of leaving the runner pending.
+export const REQUIRED_SERVICE_WAIT_MS = 10_000
+
 async function mountHostCompatibility(ctx) {
   // The service can come from the active Host even when module resolution
   // below lands on ACP's older peer copy, so adapt the live instance directly.
@@ -231,6 +299,16 @@ async function mountHostCompatibility(ctx) {
 }
 
 export async function apply(ctx, config) {
+  const compatibility = hostCompatibility(ctx)
+  if (compatibility.unmet.length > 0) {
+    // Below a declared floor (or an older dsh-acp's exact list): show why in
+    // the TUI rather than mounting a plugin that will refuse the Host.
+    provideHostNotice(ctx, compatibility)
+    return
+  }
+  if (compatibility.untested) {
+    process.stderr.write(`${untestedWarning(compatibility.dsh, compatibility.dshPath)}\n`)
+  }
   await mountHostCompatibility(ctx)
   installUserQuestionsCompatibility(ctx)
   const specifier = '@openma/deepseek-harness-acp/plugin'
@@ -242,9 +320,48 @@ export async function apply(ctx, config) {
     throw new Error(`dsh-tui: failed to import ${specifier} from ${resolved}`, { cause })
   }
   const plugin = ctx.loader.unwrapExports(exports)
+  let fiber
   try {
-    await ctx.plugin(plugin, config)
+    fiber = ctx.plugin(plugin, config)
+    await fiber
   } catch (cause) {
-    throw new Error(`dsh-tui: failed to mount ${specifier}`, { cause })
+    provideHostNotice(ctx, { ...compatibility, reason: `The ACP plugin failed to mount: ${errorText(cause)}` })
+    return
   }
+  watchAcpPlugin(ctx, fiber, plugin, compatibility)
+}
+
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * The ACP plugin activates asynchronously (it waits for its injected Host
+ * services) and reports a refusal from its own fiber, which dsh's
+ * activation report never sees. Surface either outcome in the TUI: a
+ * failure names its error; a service still missing after
+ * {@link REQUIRED_SERVICE_WAIT_MS} is named as the absent capability.
+ */
+function watchAcpPlugin(ctx, fiber, plugin, compatibility) {
+  if (ctx.get?.('acpServer') !== undefined) return
+  let settled = false
+  fiber?.await?.().then(
+    () => { settled = true },
+    (error) => {
+      settled = true
+      provideHostNotice(ctx, { ...compatibility, reason: `The ACP plugin did not start: ${errorText(error)}` })
+    },
+  )
+  const timer = setTimeout(() => {
+    if (settled || ctx.get?.('acpServer') !== undefined) return
+    const missing = (Array.isArray(plugin?.inject) ? plugin.inject : [])
+      .filter((service) => ctx.get?.(service) === undefined)
+    if (missing.length === 0) return
+    provideHostNotice(ctx, {
+      ...compatibility,
+      reason: `This dsh does not provide ${missing.length === 1 ? 'a service' : 'services'} the ACP plugin requires: ${missing.map((name) => `\`${name}\``).join(', ')}.`,
+    })
+  }, REQUIRED_SERVICE_WAIT_MS)
+  timer.unref?.()
+  ctx.effect?.(() => () => clearTimeout(timer), 'martty.acp-plugin-watch')
 }

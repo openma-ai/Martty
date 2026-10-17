@@ -26,11 +26,11 @@
 >
 > AI agent / 自动化安装步骤见 [Agent 安装说明](docs/agent-install.md)。
 
-全局安装后直接启动：
+全局安装后启动：
 
 ```sh
 npm install --global martty
-martty
+martty-cli   # 首次启动会创建 `martty` 命令，之后直接运行 `martty`
 ```
 
 不想安装到全局，可以直接运行：
@@ -47,6 +47,19 @@ npm install --global @deepseek-ai/dsh
 dsh plugin --profile martty add martty@latest
 dsh --profile martty
 ```
+
+已经装好这样的 profile 时，也可以从 npm 入口直接连到全局 dsh：
+
+```sh
+npx martty --dsh martty     # 等价于 dsh --profile martty，先做版本检查
+```
+
+`dsh plugin add` 由 dsh 通过 pnpm 安装插件。Martty 不声明任何安装脚本
+（`preinstall`/`install`/`postinstall`），因此在 pnpm 严格的 build-scripts 策略下
+（`ERR_PNPM_IGNORED_BUILDS`）也能直接安装，无需 `--ignore-scripts` 或批准构建。
+之前用 0.3.2 及更早版本安装失败过的 profile（`martty` 已是依赖却不在
+`dsh.profile.bundles` 中，重复 `add` 无效），先执行
+`dsh plugin --profile martty remove martty` 再重新 `add`。
 
 只想看界面，可以运行：
 
@@ -327,17 +340,28 @@ Agent 上报的模型与 effort。这只绑定空会话，不会启动模型 tur
 
 ### dsh runtime 选择与兼容范围
 
-选择、定位与校验 `@deepseek-ai/dsh` runtime 完全由 dsh-acp 负责；Martty 只做透传与展示。
-内置入口使用 dsh-acp 自带的 bundled runtime——除非：作为 dsh 插件启动（使用启动它的 host dsh），
-或该 Harness 配置显式指定了 dsh 路径（`--dsh-path` / `DSH_PATH`）。隐式发现（`PATH`、当前目录、
-全局 npm）永远不会覆盖 bundled runtime。显式路径与 host dsh 都会做兼容性检查，超出受支持版本
-范围时以清晰的错误拒绝（注明发现的版本、来源与受支持范围）。
+Harness 按以下顺序解析：
 
-本版本支持的 `@deepseek-ai/dsh`：`0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2`
-（与 bundled `@openma/deepseek-harness-acp` 强制校验的范围一致，同时声明在
-`npm/package.json` 的 `dsh.supported`）。`/status` 会显示 ACP agent 实际启动的
-dsh runtime（`- dsh · <版本> via <来源>`）。
-本版本内置 `@openma/deepseek-harness-acp` `0.4.38`（兼容范围 `>=0.4.38 <0.5.0`）。
+1. **默认（`martty` / `npx martty`）**：使用内置的 `@openma/deepseek-harness-acp`
+   及其 bundled dsh runtime。隐式发现（`PATH`、当前目录、全局 npm）永远不会覆盖它。
+2. **`--dsh <profile>`**：连接 `PATH` 上的全局 `dsh` 及其 `~/.dsh/profiles/<profile>`。
+   profile 中装有 `martty` 时，终端交给 `dsh --profile <profile>`；只装有
+   `@openma/deepseek-harness-acp` 时，`dsh --profile <profile>` 作为本 Client 的 ACP agent。
+   启动前会检查全局 dsh 的版本；低于下限时自动回退到第 1 种，并在界面中显示一条可用
+   `/dismiss` 关闭的简短提示说明原因。找不到 `dsh` 或 profile 不存在时直接报错并给出命令。
+3. **作为 dsh 插件启动（`dsh --profile martty`）**：使用启动它的 host dsh。
+4. Harness 配置显式指定 dsh 路径（`--dsh-path` / `DSH_PATH`）时使用该路径。
+
+**支持的 dsh 版本：`>=0.1.7-rc.2`**——这是下限，不是固定版本列表，声明在
+`npm/package.json` 的 `engines.dsh`（dsh 自身的插件兼容性检查读取这个字段），
+与 `@openma/deepseek-harness-acp` 的下限一致。更新的 dsh 一律尝试运行：两者之间的 API
+差异按能力检测处理；新于已测试的最高版本（当前 `0.2.1-rc.2`）时只打印警告并继续。
+只有低于下限、或 host 缺少必需能力时才不会挂载 ACP 插件——此时 `dsh --profile martty`
+仍会启动界面，并在会话中说明已安装的 dsh 版本、要求的下限或缺失的能力，以及可选做法
+（改用 `npx martty` 内置模式，或安装受支持的 dsh），不会留下静默挂起的条目。
+CI 在 dsh 的 `latest` 与 `next` dist-tag 上以全局安装验证插件安装路径与 `--dsh`。
+`/status` 会显示 ACP agent 实际启动的 dsh runtime（`- dsh · <版本> via <来源>`）。
+本版本内置 `@openma/deepseek-harness-acp` `0.4.39-beta.2`。
 
 运行中的 standalone TUI 也可以直接添加并切换（Registry binary 会先确认安装）：
 
@@ -435,9 +459,10 @@ npm install --global martty
 ```
 
 发布出去的 `martty` 包只声明 `martty-cli`——这个名字不会被任何其他包
-占用，npm 因此永远不可能因 bin 冲突拒绝安装。随后 postinstall 会清理
-确实属于旧包的 `martty`/`dsh-tui`/`dsb` 链接（第三方 `dsh-tui` 保持原样），
-自行创建 `martty` 命令，并摘除旧包清单里的 bin 声明，使之后执行
+占用，npm 因此永远不可能因 bin 冲突拒绝安装。包不带任何安装脚本：迁移在
+**首次启动**时完成——运行一次 `martty-cli`（或 `npx martty`）会清理确实属于旧包的
+`martty`/`dsh-tui`/`dsb` 链接（第三方 `dsh-tui` 保持原样），自行创建 `martty`
+命令，并摘除旧包清单里的 bin 声明，使之后执行
 `npm rm -g @openma/deepseek-harness-tui` 不会误删新的 `martty`。删除旧包
 只是可选的收尾；旧包还在时 `martty` 每次启动都会提示——交互终端中提示
 会延迟到进程退出时打印，避免被界面覆盖。本仓库的源码包名
@@ -446,10 +471,9 @@ npm install --global martty
 
 注意事项：
 
-- `npm install --global --ignore-scripts martty` 会跳过 postinstall——
-  跑一次 `martty-cli`（或 `npx martty`），首次启动会自动完成迁移：清理
-  旧链接、创建 `martty`、摘除旧包 bin 声明。当某个不相干工具占用了
-  `martty` 时，`martty-cli` 也是本包自己的命令名。
+- 全新安装后、首次启动前只有 `martty-cli`；从 0.3.1 升级的用户（当时 `martty`
+  由 npm 声明）同样需要运行一次 `martty-cli`。从 0.3.2 升级时已有的 `martty` 保持可用。
+  当某个不相干工具占用了 `martty` 时，`martty-cli` 也是本包自己的命令名。
 - `npm rm -g martty` 只会移除 npm 声明的 `martty-cli` 链接；留下的
   `martty` 是一个自清理的 shim 而不是死链接——下次运行它时会提示重装
   命令并自行删除，不留残留。

@@ -16,7 +16,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import {
-  migrate,
+  convergePrefix,
   warnAboutLegacyPackage,
   reportLaunchNotices,
   ensureMarttyLink,
@@ -27,22 +27,14 @@ import {
   LEGACY_PACKAGE,
 } from '../npm/lib/install-migration.js'
 
-const script = new URL('../npm/lib/install-migration.js', import.meta.url).pathname
-
 function fixture(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'martty-install-migration-'))
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const prefix = path.join(root, 'prefix')
   const lines = []
   const write = (line) => lines.push(line)
-  const env = (overrides = {}) => ({
-    npm_config_global: 'true',
-    npm_config_prefix: prefix,
-    npm_package_name: 'martty',
-    ...overrides,
-  })
   const legacyDir = path.join(prefix, 'lib', 'node_modules', '@openma', 'deepseek-harness-tui')
-  return { root, prefix, lines, write, env, legacyDir }
+  return { root, prefix, lines, write, legacyDir }
 }
 
 function installLegacy(prefix, { link = false, names = ['martty', 'dsh-tui', 'dsb'] } = {}) {
@@ -63,48 +55,25 @@ function installLegacy(prefix, { link = false, names = ['martty', 'dsh-tui', 'ds
   return legacyDir
 }
 
-test('ignores non-global installs', (t) => {
-  const { env, write, lines } = fixture(t)
-  migrate(env({ npm_config_global: undefined }), write)
-  migrate(env({ npm_config_global: 'false' }), write)
+test('converging a prefix without the legacy package only writes martty', (t) => {
+  const { prefix, write, lines } = fixture(t)
+  convergePrefix(prefix, { write })
+  convergePrefix(prefix, { write })
   assert.deepEqual(lines, [])
-})
-
-test('ignores global installs without a resolvable prefix', (t) => {
-  const { env, write, lines } = fixture(t)
-  migrate(env({ npm_config_prefix: undefined }), write)
-  assert.deepEqual(lines, [])
-})
-
-test('points legacy-package installs at martty', (t) => {
-  const { env, write, lines } = fixture(t)
-  migrate(env({ npm_package_name: '@openma/deepseek-harness-tui' }), write)
-  assert.equal(lines.length, 2)
-  assert.match(lines[0], /previous name.*martty/)
-  assert.match(lines[1], /npm rm -g @openma\/deepseek-harness-tui/)
-})
-
-test('stays silent when the legacy package is absent', (t) => {
-  const { prefix, env, write, lines } = fixture(t)
-  migrate(env(), write)
-  migrate(env({ npm_package_name: undefined }), write)
-  assert.deepEqual(lines, [])
-  // …but it did create the `martty` command: postinstall self-links it
-  // because npm never declares it for this package.
+  // npm never declares `martty` for this package, so the converge writes
+  // the command itself.
   const content = readFileSync(path.join(prefix, 'bin', 'martty'), 'utf8')
   assert.match(content, /martty-command-shim/)
 })
 
-test('retires every legacy-owned bin, creates martty, and names the fix', (t) => {
-  const { prefix, env, write, lines, legacyDir } = fixture(t)
+test('retires every legacy-owned bin and creates martty', (t) => {
+  const { prefix, write, lines, legacyDir } = fixture(t)
   installLegacy(prefix, { link: true })
 
-  migrate(env(), write)
+  convergePrefix(prefix, { write })
 
-  assert.equal(lines.length, 3)
+  assert.equal(lines.length, 1)
   assert.match(lines[0], /removed the stale `martty`, `dsh-tui`, `dsb` commands/)
-  assert.match(lines[1], /still installed/)
-  assert.match(lines[2], /npm rm -g @openma\/deepseek-harness-tui/)
   const command = path.join(prefix, 'bin', 'martty')
   assert.equal(lstatSync(command).isFile(), true)
   assert.equal(lstatSync(command).isSymbolicLink(), false)
@@ -114,8 +83,8 @@ test('retires every legacy-owned bin, creates martty, and names the fix', (t) =>
   assert.ok(legacyDir.endsWith(path.join('@openma', 'deepseek-harness-tui')))
 })
 
-test('leaves foreign bins alone but still nudges', (t) => {
-  const { prefix, env, write, lines } = fixture(t)
+test('leaves foreign bins alone', (t) => {
+  const { prefix, write, lines } = fixture(t)
   installLegacy(prefix, { names: ['dsh-tui'] })
   const foreign = path.join(prefix, 'lib', 'node_modules', 'dsh-tui', 'bin')
   mkdirSync(foreign, { recursive: true })
@@ -123,16 +92,15 @@ test('leaves foreign bins alone but still nudges', (t) => {
   rmSync(path.join(prefix, 'bin', 'dsh-tui'))
   symlinkSync(path.join(foreign, 'cli.js'), path.join(prefix, 'bin', 'dsh-tui'))
 
-  migrate(env(), write)
+  convergePrefix(prefix, { write })
 
-  assert.equal(lines.length, 2)
-  assert.match(lines[0], /still installed/)
+  assert.deepEqual(lines, [])
   assert.equal(readlinkSync(path.join(prefix, 'bin', 'dsh-tui')), path.join(foreign, 'cli.js'))
   assert.match(readFileSync(path.join(prefix, 'bin', 'martty'), 'utf8'), /martty-command-shim/)
 })
 
 test('detects the legacy package in the Windows-style layout', (t) => {
-  const { prefix, env, write, lines } = fixture(t)
+  const { prefix, write, lines } = fixture(t)
   const legacyDir = path.join(prefix, 'node_modules', '@openma', 'deepseek-harness-tui')
   mkdirSync(legacyDir, { recursive: true })
   // Windows shims are regular files that embed the package path.
@@ -142,9 +110,9 @@ test('detects the legacy package in the Windows-style layout', (t) => {
   )
   writeFileSync(path.join(prefix, 'dsh-tui'), '#!/bin/sh\necho third-party\n')
 
-  migrate(env(), write, 'win32')
+  convergePrefix(prefix, { write, platform: 'win32' })
 
-  assert.equal(lines.length, 3)
+  assert.equal(lines.length, 1)
   assert.match(lines[0], /removed the stale `dsh-tui` command/)
   assert.throws(() => lstatSync(path.join(prefix, 'dsh-tui.cmd')), /ENOENT/)
   assert.equal(lstatSync(path.join(prefix, 'dsh-tui')).isFile(), true)
@@ -162,7 +130,7 @@ test('detects the legacy package in the Windows-style layout', (t) => {
 })
 
 test('cleans stale bins even when the legacy directory is gone', (t) => {
-  const { prefix, env, write, lines } = fixture(t)
+  const { prefix, write, lines } = fixture(t)
   const dangling = path.join(prefix, 'bin')
   mkdirSync(dangling, { recursive: true })
   symlinkSync(
@@ -170,7 +138,7 @@ test('cleans stale bins even when the legacy directory is gone', (t) => {
     path.join(dangling, 'dsh-tui'),
   )
 
-  migrate(env(), write)
+  convergePrefix(prefix, { write })
 
   assert.equal(lines.length, 1)
   assert.match(lines[0], /removed the stale `dsh-tui` command/)
@@ -209,8 +177,8 @@ test('isLegacyOwned handles every entry kind', (t) => {
   assert.equal(isLegacyOwned(legacyLink), true)
 })
 
-test('a bin entry that cannot be inspected or removed never fails the install', (t) => {
-  const { prefix, env, write, lines } = fixture(t)
+test('a bin entry that cannot be inspected or removed never fails the converge', (t) => {
+  const { prefix, write, lines } = fixture(t)
   installLegacy(prefix, { names: ['dsh-tui'] })
   const unreadable = path.join(prefix, 'bin', 'unreadable')
   writeFileSync(unreadable, 'x')
@@ -225,13 +193,12 @@ test('a bin entry that cannot be inspected or removed never fails the install', 
   writeFileSync(blocked, 'deepseek-harness-tui')
   chmodSync(path.join(prefix, 'bin'), 0o555)
   try {
-    migrate(env(), write)
+    convergePrefix(prefix, { write })
   } finally {
     chmodSync(path.join(prefix, 'bin'), 0o755)
   }
-  assert.equal(lines.length, 3)
+  assert.equal(lines.length, 1)
   assert.match(lines[0], /could not create the `martty` command/)
-  assert.match(lines[1], /still installed/)
   rmSync(blocked, { force: true })
 })
 
@@ -247,26 +214,6 @@ test('helper paths cover both layouts', () => {
     path.join('/p', 'dsh-tui.ps1'),
   ])
   assert.equal(LEGACY_PACKAGE, '@openma/deepseek-harness-tui')
-})
-
-test('runs standalone under npm lifecycle environment variables', (t) => {
-  const { prefix, legacyDir } = fixture(t)
-  installLegacy(prefix, { link: true })
-  const result = spawnSync(process.execPath, [script], {
-    encoding: 'utf8',
-    env: {
-      PATH: process.env.PATH,
-      npm_config_global: 'true',
-      npm_config_prefix: prefix,
-      npm_package_name: 'martty',
-    },
-  })
-  assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stderr, /removed the stale `martty`, `dsh-tui`, `dsb` commands/)
-  assert.match(result.stderr, /npm rm -g @openma\/deepseek-harness-tui/)
-  assert.match(readFileSync(path.join(prefix, 'bin', 'martty'), 'utf8'), /martty-command-shim/)
-  assert.throws(() => lstatSync(path.join(prefix, 'bin', 'dsh-tui')), /ENOENT/)
-  assert.ok(legacyDir)
 })
 
 // ensureMarttyLink: creates the user-facing `martty` command next to a
@@ -618,7 +565,7 @@ test('sanitizeLegacyInstall warns when the manifest cannot be rewritten', (t) =>
 })
 
 test('migrating also strips bin declarations off the installed legacy manifest', (t) => {
-  const { prefix, env, write, legacyDir } = fixture(t)
+  const { prefix, write, legacyDir } = fixture(t)
   installLegacy(prefix)
   writeFileSync(path.join(legacyDir, 'package.json'), JSON.stringify({
     name: LEGACY_PACKAGE,
@@ -626,7 +573,7 @@ test('migrating also strips bin declarations off the installed legacy manifest',
     bin: { martty: 'bin/martty.js' },
   }))
 
-  migrate(env(), write)
+  convergePrefix(prefix, { write })
 
   assert.equal('bin' in JSON.parse(readFileSync(path.join(legacyDir, 'package.json'), 'utf8')), false)
 })
@@ -753,11 +700,10 @@ test('the martty shim reports the reinstall hint and removes itself', (t) => {
   assert.throws(() => lstatSync(shim), /ENOENT/, 'the shim cleaned itself up')
 })
 
-// warnAboutLegacyPackage converges a global prefix at launch exactly like
-// the postinstall would — this is the recovery path for installs whose
-// lifecycle scripts never ran (`--ignore-scripts`, allowScripts policies).
+// warnAboutLegacyPackage converges a global prefix at launch — the only
+// migration path, since the package ships no install lifecycle script.
 
-test('launch as martty-cli converges the prefix like the postinstall', (t) => {
+test('launch as martty-cli converges the prefix', (t) => {
   const { root, libDir, lines, write } = runtimeFixture(t)
   const prefix = path.join(root, 'prefix')
   const legacyDir = installLegacy(prefix, { link: true })

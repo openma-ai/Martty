@@ -2,26 +2,35 @@
 // `martty`.
 //
 // npm refuses to link a global bin owned by another package, and it links
-// bins before running any lifecycle script — so no script inside this
-// package can stop an EEXIST on a name the legacy package may already own
-// (`martty`, `dsh-tui`, `dsb`). The published `martty` package therefore
-// declares only `martty-cli` — a name nothing else owns — and this
-// postinstall step creates the user-facing `martty` command itself after
-// retiring any legacy-owned links. It also strips `bin` from the legacy
-// package's installed manifest, because `npm rm -g` deletes bin links by
-// name without checking what they point at — left in place, removing the
-// old package would take the fresh `martty` command down with it.
+// bins before running any lifecycle script — so nothing inside this package
+// can stop an EEXIST on a name the legacy package may already own
+// (`martty`, `dsh-tui`, `dsb`) or on the `martty` shim earlier martty
+// releases wrote. The published `martty` package therefore declares only
+// `martty-cli` — a name nothing else owns — and the user-facing `martty`
+// command is a shim this module writes itself, after retiring any
+// legacy-owned links. It also strips `bin` from the legacy package's
+// installed manifest, because `npm rm -g` deletes bin links by name without
+// checking what they point at — left in place, removing the old package
+// would take the fresh `martty` command down with it.
 //
 // `martty` is a small shim file, not a symlink: `npm rm -g martty` removes
 // the package but not this command, and a shim can degrade gracefully —
 // when its package is gone it prints a one-line hint and deletes itself,
 // instead of leaving a dead symlink behind.
 //
-// npm hides postinstall output on success, so the binary re-checks its
-// install root at launch: invoked as a real `martty`/`martty-cli` command
-// it converges the prefix the same way the postinstall does (retire legacy
-// links, recreate `martty`, sanitize) and warns while the legacy package is
-// still present — which is also what recovers a `--ignore-scripts` install.
+// None of this runs as an install lifecycle script. A `postinstall` makes
+// every pnpm-managed consumer — `dsh plugin --profile <name> add martty`
+// above all — treat the package as one with build scripts, and pnpm's
+// build-script policy then refuses the install (ERR_PNPM_IGNORED_BUILDS
+// under `strictDepBuilds`, which newer pnpm releases enable by default);
+// npm's allow-scripts policy flags it as well. The binary converges at
+// launch instead: invoked as a real `martty`/`martty-cli` command it creates
+// `martty` next to `martty-cli`, and for a global prefix still holding the
+// legacy package it retires the legacy links and sanitizes the legacy
+// install. That single
+// path covers fresh installs, upgrades, and `--ignore-scripts` installs
+// alike; a fresh `npm i -g martty` exposes `martty-cli` until its first
+// launch writes `martty`.
 //
 // The legacy name is intentionally assembled: `scripts/package-alias.mjs`
 // rewrites the literal `@openma/deepseek-harness-tui` to `martty` in every
@@ -30,7 +39,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 export const LEGACY_PACKAGE = ['@openma', 'deepseek-harness-tui'].join('/')
 const scopedParts = LEGACY_PACKAGE.split('/')
@@ -279,32 +288,17 @@ function retireLegacyBins(prefix, write) {
   }
 }
 
-// postinstall entry point (`npm_package_name`/`npm_config_*` env): retire
-// the legacy package's bin links, create the `martty` command, and nudge
-// the user to remove the old package. Never fails the install.
-export function migrate(env, write = stderrLine, platform = process.platform) {
-  if (env.npm_config_global !== 'true') return
-  const prefix = env.npm_config_prefix
-  if (!prefix) return
-  const packageName = env.npm_package_name ?? ''
-
-  if (packageName === LEGACY_PACKAGE) {
-    legacyNotice(write)
-    return
-  }
-
-  const legacyInstalled = legacyInstallDirs(prefix).some((dir) => fs.existsSync(dir))
-
+// Converge one global prefix that still holds the legacy package: retire
+// the legacy package's bin links, (re)create the `martty` command in the
+// prefix's bin directory, and detach the legacy `bin` declarations. Every
+// step is best effort and only touches entries this package or the legacy
+// package verifiably owns.
+export function convergePrefix(prefix, { packageDir, platform = process.platform, write = stderrLine } = {}) {
+  const selfPackageDir = packageDir ?? path.dirname(path.dirname(fileURLToPath(import.meta.url)))
   retireLegacyBins(prefix, write)
-
-  const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
   const binDir = platform === 'win32' ? prefix : path.join(prefix, 'bin')
-  ensureMarttyLink({ binDir, packageDir, platform, write })
-
-  if (legacyInstalled) {
-    sanitizeLegacyInstall(prefix, write)
-    marttyNotice(write, `npm rm -g ${LEGACY_PACKAGE}`)
-  }
+  ensureMarttyLink({ binDir, packageDir: selfPackageDir, platform, write })
+  sanitizeLegacyInstall(prefix, write)
 }
 
 // Neutralize the legacy package's `bin` declarations so a later
@@ -364,12 +358,11 @@ export function sanitizeLegacyInstall(prefix, write = stderrLine) {
   }
 }
 
-// Launch-time entry point: npm hides postinstall output unless it fails, so
-// the binary re-checks its install root on every run. Invoked through a
-// real command name (`martty`, `martty-cli`, `npx`) it converges the global
-// prefix the same way the postinstall does — retire the legacy links,
-// (re)create `martty`, sanitize the legacy install — which is also what
-// recovers an install whose scripts were skipped. A bare `node
+// Launch-time entry point — the only migration path; the package ships no
+// install lifecycle script. Invoked through a real command name (`martty`,
+// `martty-cli`, `npx`) it writes the `martty` command next to `martty-cli`
+// and converges a global prefix that still holds the legacy package
+// (retire the legacy links, sanitize the legacy install). A bare `node
 // bin/martty.js` or a dsh profile layout only gets the warning, never the
 // filesystem changes.
 export function warnAboutLegacyPackage({ argv1, libDir, write = stderrLine, platform = process.platform } = {}) {
@@ -419,10 +412,7 @@ export function warnAboutLegacyPackage({ argv1, libDir, write = stderrLine, plat
     }
     hint ??= `npm rm -g ${LEGACY_PACKAGE}`
     try {
-      retireLegacyBins(prefix, write)
-      const binDir = platform === 'win32' ? prefix : path.join(prefix, 'bin')
-      ensureMarttyLink({ binDir, packageDir, platform, write })
-      sanitizeLegacyInstall(prefix, write)
+      convergePrefix(prefix, { packageDir, platform, write })
     } catch {
       // Best effort: nothing here may break the launch.
     }
@@ -451,6 +441,3 @@ export function reportLaunchNotices(
   for (const line of lines) write(line)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  migrate(process.env)
-}

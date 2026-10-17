@@ -65,6 +65,38 @@ jobs:
           DSH_TUI_MATRIX_TMP: ${{ runner.temp }}
         run: npm run test:profile-install-matrix --prefix npm
 
+  # The dsh plugin install path against a GLOBAL dsh, per dist-tag: dsh's own
+  # plugin manager (pnpm, strict dependency build scripts) installs the packed
+  # package into a profile, `dsh --profile martty` must activate every entry
+  # headlessly, and `martty --dsh <profile>` (hand-off and below-floor
+  # fallback) is exercised. Required on pull requests.
+  dsh-plugin:
+    name: dsh plugin (${{ matrix.dist-tag }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        dist-tag: [latest, next]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: "10"
+      - name: Install the global dsh (${{ matrix.dist-tag }})
+        run: |
+          npm install --global --no-audit --no-fund "@deepseek-ai/dsh@${{ matrix.dist-tag }}"
+          command -v dsh
+          dsh --version
+          pnpm --version
+      - name: Install into a dsh profile and boot it
+        env:
+          DSH_PLUGIN_CI_TMP: ${{ runner.temp }}
+        run: node scripts/dsh-plugin-install.mjs
+
   native:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -157,7 +189,7 @@ jobs:
 
   package:
     name: Assemble npm package
-    needs: [test, native]
+    needs: [test, dsh-plugin, native]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6

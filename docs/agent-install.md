@@ -35,11 +35,9 @@ command -v dsh || echo "dsh missing (only needed for the dsh plugin path)"
 
 ```sh
 npm install --global martty
-# 若因 pnpm 报错（postinstall 相关），先装 pnpm 再重试：
-# npm install --global pnpm && npm install --global martty
-
+martty-cli -V              # 首次启动：输出版本号，并创建 `martty` 命令
 command -v martty          # 必须输出路径
-martty -V                  # 必须输出版本号（如 0.2.27）
+martty -V                  # 必须输出版本号
 ```
 
 不想全局安装：`npx --yes martty`（首次会拉包）。

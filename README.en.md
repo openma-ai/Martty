@@ -70,6 +70,20 @@ dsh --profile martty
 `dsh plugin ... add` is the recommended installation and upgrade entry point.
 It creates the profile and installs the TUI plus its ACP dependency; no global
 `martty` or separate pnpm installation is required.
+
+dsh installs plugins with pnpm. Martty declares no install lifecycle scripts
+(`preinstall`/`install`/`postinstall`), so it installs under pnpm's strict
+build-script policy (`ERR_PNPM_IGNORED_BUILDS`) without `--ignore-scripts` or
+approving builds. A profile where an install of 0.3.2 or earlier failed —
+`martty` is a dependency but missing from `dsh.profile.bundles`, and re-running
+`add` does not fix it — needs `dsh plugin --profile martty remove martty`
+followed by `add` again.
+
+With such a profile in place, the npm entry point can attach to it too:
+
+```sh
+npx martty --dsh martty     # same as dsh --profile martty, after a version check
+```
 The legacy `@openma/deepseek-harness-tui` name continues to receive the same
 versions, so existing installs do not need to migrate immediately.
 
@@ -89,8 +103,9 @@ npm install --global martty
 ```
 
 The published `martty` package declares only `martty-cli` — a name nothing
-else owns — so npm can never refuse the install over a bin collision. A
-postinstall step then retires the stale `martty`/`dsh-tui`/`dsb` links that
+else owns — so npm can never refuse the install over a bin collision. It ships
+no install scripts; the **first launch** converges the install instead: running
+`martty-cli` once (or `npx martty`) retires the stale `martty`/`dsh-tui`/`dsb` links that
 verifiably belonged to the legacy package (a third-party `dsh-tui` is left
 untouched), creates the `martty` command itself, and detaches the legacy
 package's bin declarations so `npm rm -g @openma/deepseek-harness-tui`
@@ -104,11 +119,10 @@ replaces the other cleanly in either order.
 
 Caveats:
 
-- `npm install --global --ignore-scripts martty` skips the postinstall —
-  run `martty-cli` once (or `npx martty`) and the first launch finishes the
-  migration: it retires the stale legacy links, creates `martty`, and
-  detaches the legacy `bin` declarations. `martty-cli` is also the command
-  to use when an unrelated tool owns a `martty` bin.
+- Until that first launch a fresh install has only `martty-cli`; upgrading from
+  0.3.1 (whose `martty` was npm-declared) also needs one `martty-cli` run.
+  Upgrading from 0.3.2 keeps the existing `martty` working. `martty-cli` is
+  also the command to use when an unrelated tool owns a `martty` bin.
 - `npm rm -g martty` removes only the declared `martty-cli` link. The
   `martty` command left behind is a small shim, not a dead symlink: the
   next `martty` invocation prints the reinstall hint and removes itself,
@@ -142,7 +156,7 @@ One global install provides the Martty Agent TUI and its built-in ACP connection
 
 ```sh
 npm install --global martty
-martty
+martty-cli   # the first launch creates `martty`; use `martty` afterwards
 ```
 
 Martty directly depends on our `@openma/deepseek-harness-acp` implementation.
@@ -297,6 +311,36 @@ the same configuration.
 For an existing DSH environment with a durable `martty` profile and standard
 plugin management, the recommended path remains
 `dsh plugin --profile martty add martty@latest`.
+
+### dsh runtime resolution and supported versions
+
+The harness resolves in this order:
+
+1. **Default (`martty` / `npx martty`)**: the bundled
+   `@openma/deepseek-harness-acp` with its bundled dsh runtime. Ambient installs
+   (`PATH`, the working directory, global npm) never override it.
+2. **`--dsh <profile>`**: the global `dsh` on `PATH` with
+   `~/.dsh/profiles/<profile>`. A profile carrying `martty` gets the terminal
+   (`dsh --profile <profile>`); a profile carrying only
+   `@openma/deepseek-harness-acp` becomes this Client's ACP agent. The global
+   dsh version is checked first: below the floor, Martty falls back to (1) and
+   shows a short notice explaining why (`/dismiss` hides it). A missing `dsh`
+   or profile fails with the command to fix it.
+3. **As a dsh plugin (`dsh --profile martty`)**: the hosting dsh.
+4. An explicit dsh path in a harness recipe (`--dsh-path` / `DSH_PATH`).
+
+**Supported dsh: `>=0.1.7-rc.2`** — a floor, not an exact-version list,
+declared as `engines.dsh` in `npm/package.json` (the field dsh's own plugin
+compatibility check reads) and matching `@openma/deepseek-harness-acp`'s floor.
+Newer dsh releases are always attempted: API differences are feature-detected,
+and a dsh newer than the newest tested one (currently `0.2.1-rc.2`) only logs a
+warning. Only below the floor, or when the Host lacks a required capability,
+is the ACP plugin not mounted — `dsh --profile martty` still opens the TUI and
+the conversation explains the installed dsh version, the floor or the missing
+capability, and the options (`npx martty` bundled mode, or install a supported
+dsh) instead of leaving pending entries. CI verifies the plugin install path and
+`--dsh` against a global dsh from both the `latest` and `next` dist-tags.
+This release bundles `@openma/deepseek-harness-acp` `0.4.39-beta.2`.
 
 From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, binary in `npm/vendor/<platform>/`, or `MARTTY_BIN`):
 
