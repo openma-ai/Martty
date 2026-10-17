@@ -340,7 +340,7 @@ the conversation explains the installed dsh version, the floor or the missing
 capability, and the options (`npx martty` bundled mode, or install a supported
 dsh) instead of leaving pending entries. CI verifies the plugin install path and
 `--dsh` against a global dsh from both the `latest` and `next` dist-tags.
-This release bundles `@openma/deepseek-harness-acp` `0.4.39-beta.1`.
+This release bundles `@openma/deepseek-harness-acp` `0.4.39-beta.2`.
 
 From this checkout (need `cargo build --release` or `scripts/build-npm.sh`, binary in `npm/vendor/<platform>/`, or `MARTTY_BIN`):
 

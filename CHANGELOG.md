@@ -11,7 +11,7 @@ All notable changes to this project are documented here. The project follows
   `engines.dsh` (read by dsh's plugin compatibility check); the exact-version
   `dsh.supported` list is gone. Newer dsh releases are attempted; a dsh newer
   than the newest tested (`0.2.1-rc.2`) only warns.
-- Bundles `@openma/deepseek-harness-acp` `0.4.39-beta.1`, which applies the
+- Bundles `@openma/deepseek-harness-acp` `0.4.39-beta.2`, which applies the
   same floor and feature-detects dsh 0.2.1's subagent teardown API.
 
 ### Added
