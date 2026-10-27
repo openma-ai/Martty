@@ -509,6 +509,23 @@ impl ComposerEditor {
         self.move_cursor(CursorMove::Jump(row as u16, col as u16));
     }
 
+    /// Select the char range `[start, end)` (global char offsets).
+    ///
+    /// The widget's own selection is used, so the highlighted cells are the
+    /// ones it renders (reversed) and a typed character replaces the
+    /// selection. The cursor lands on the range's end.
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        let (srow, scol) = self.char_to_rowcol(start);
+        let (erow, ecol) = self.char_to_rowcol(end);
+        let ta = self.textarea_mut();
+        ta.cancel_selection();
+        ta.move_cursor(CursorMove::Jump(srow as u16, scol as u16));
+        ta.start_selection();
+        // Moving while a selection is open extends it instead of
+        // cancelling it (the widget's shift-move semantics).
+        ta.move_cursor(CursorMove::Jump(erow as u16, ecol as u16));
+    }
+
     // --- text selection (shift+move) --------------------------------------
 
     /// Anchor at the cursor and move — the first press starts the

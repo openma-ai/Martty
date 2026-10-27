@@ -3157,6 +3157,36 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(&*ta, text_area);
     }
 
+    // The command's argument hint (ACP `AvailableCommand.input.hint`) rides
+    // the composer as muted ghost text: it shows what the agent expects
+    // after the command name without ever entering the buffer. Tab (or a
+    // right-click inside the well) turns it into real text.
+    if let Some(hint) = app.slash_input_hint() {
+        let ghost = hint.ghost_text(&buf);
+        let top = app.input.scroll_top;
+        let col = {
+            let layout = app.input.layout(avail);
+            layout
+                .rows
+                .first()
+                .and_then(|row| row.graphemes.last())
+                .map(|grapheme| grapheme.start_col + grapheme.width)
+                .unwrap_or(0)
+        };
+        // The ghost follows the typed command on the first visual row; a
+        // scrolled draft has no room for it.
+        if top == 0 {
+            let x = text_area.x + col as u16;
+            let room = text_area.right().saturating_sub(x) as usize;
+            if room > 0 {
+                let style = Style::default()
+                    .fg(theme.caption)
+                    .add_modifier(Modifier::ITALIC);
+                f.buffer_mut().set_stringn(x, text_area.y, ghost, room, style);
+            }
+        }
+    }
+
     // Chip restyle + drag-selection highlight share the layout mirror:
     // both are buffer patches on top of the widget's own rendering. The
     // layout borrows `app.input`, so the char spans are computed first.

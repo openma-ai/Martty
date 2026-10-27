@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Composer shows ACP `AvailableCommand.input.hint` as muted ghost text after a
+  bare `/command` (or `/command `), and **Tab** or a **right-click** in the
+  input well inserts the hint as real text (selected). The slash / `@file`
+  menus keep owning Tab while open; Escape hides the ghost without clearing
+  the draft.
+
 ## [0.3.3] - 2026-10-17
 
 ### Compatibility
