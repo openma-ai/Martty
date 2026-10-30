@@ -38,6 +38,19 @@
 
 lockfile 冲突时可以把多篇依赖更新合成一篇，跑一次完整 CI（#202 包含 #201–#206）。描述里列出被包含的 PR。
 
+## Issue 关联与关闭关键字 / Issue linking (Closes vs Refs)
+
+**关闭关键字只出现在合并进默认分支 `main` 的 PR 正文里。** 子 PR、堆叠 PR 只做关联，不提前关闭。
+
+1. base 是 `main` → 正文写 `Closes #N`（`Fixes #N` / `Resolves #N` 等价），一个 issue 一个关键字。
+2. base 不是 `main`（例如堆叠进 `feat/*`）→ 正文写 `Refs #N` 或 `Part of #N`，不写 `Closes` / `Fixes` / `Resolves`。
+3. 集成 PR 合并进 `main` 前，必须把子 PR 提到的每个 issue 汇总成 `Closes #…`（或 `Fixes` / `Resolves`）写进集成 PR 正文；漏掉的话 GitHub 不会关闭这些 issue。
+4. 提交主题里单独写 `(#N)` 不会关闭 issue。GitHub 只在 PR 合并进默认分支、且正文里带关闭关键字时才关闭。
+
+#156 是反例：子 PR 的 base 不是 `main`，正文却写了 `Closes`，issue 没有按预期关闭，关联也是错的。
+
+填写位置见 `.github/pull_request_template.md` 的「Issue 关联与关闭关键字」一节。
+
 ## 证据报告 / Evidence report
 
 **合并前，PR 描述或一条评论里必须有证据报告，并且对应当前 head SHA。** 缺段，或证据还停在旧 SHA 上，就不合并。仓库没有把这件事做成 status check：作者填写，维护者核对。模板是 `.github/pull_request_template.md`。

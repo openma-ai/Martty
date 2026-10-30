@@ -3,6 +3,22 @@
 不适用的段落写「不适用」并说明原因。填写说明见 CONTRIBUTING.md「证据报告」。
 -->
 
+## Issue 关联与关闭关键字 / Issue linking
+
+<!--
+base 决定用哪一类关键字：
+- base 是默认分支 main → 写 Closes #N（Fixes / Resolves 等价），一个 issue 一个关键字。
+- base 不是 main（堆叠进 feat/* 等）→ 写 Refs #N 或 Part of #N，不写关闭关键字。
+集成 PR 合并进 main 时，把子 PR 提到的 issue 全部汇总成 Closes #…。
+-->
+
+- Base 分支:
+- 关联 issue:
+
+- [ ] base 是 `main`：正文写 `Closes #N`（也可用 `Fixes` / `Resolves`）
+- [ ] base 不是 `main`（例如堆叠进 `feat/*`）：正文写 `Refs #N` 或 `Part of #N`，不写 `Closes` / `Fixes` / `Resolves`；关闭由合并进 `main` 的集成 PR 承担
+- [ ] 只在提交主题里写 `(#N)` 不会关闭 issue：GitHub 只在 PR 合并进默认分支时按正文的关闭关键字关闭
+
 ## 问题 / 动机
 
 <!-- 缺陷：贴在真实产品上跑过的命令、版本和原样输出。新能力：谁在什么场景下需要它。 -->
