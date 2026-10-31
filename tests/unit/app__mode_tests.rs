@@ -4823,6 +4823,161 @@ fn agent_auth_reports_in_progress_before_the_agent_replies() {
 }
 
 #[test]
+fn switching_auth_method_while_signing_in_cancels_and_opens_the_new_form() {
+    // Issue #168: while method A's sign-in is hung, picking method B must
+    // cancel A's pending flow, report that cancellation, and open B's UI
+    // instead of silently keeping A's tip.
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("oauth-personal", &ctl);
+    assert_eq!(format!("{:?}", app.auth.status), "SigningIn");
+    assert!(
+        matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::Authenticate { method_id, .. }) if method_id == "oauth-personal"
+        ),
+        "the first method's authenticate is in flight"
+    );
+
+    app.start_auth("api-key:deepseek", &ctl);
+
+    let form = app.auth_form.as_ref().expect("replacement method form");
+    assert_eq!(form.method_id, "api-key:deepseek");
+    assert_ne!(
+        format!("{:?}", app.auth.status),
+        "SigningIn",
+        "the cancelled flow must not leave the status stuck on signing in"
+    );
+    assert!(
+        last_notice_text(&app).is_some_and(|text| {
+            text.contains("cancelled") && text.contains("DeepSeek API key")
+        }),
+        "the replacement is visible: {:?}",
+        last_notice_text(&app)
+    );
+    assert!(
+        matches!(
+            commands.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Cmd::CancelAuth { method_id })
+                if method_id.as_deref() == Some("oauth-personal")
+        ),
+        "the stuck auth lane must be aborted before the new method"
+    );
+
+    // A late Configured snapshot naming the superseded method cannot close
+    // the replacement's form or flip the status to configured.
+    app.handle(
+        AppEvent::Ctl(CtlEvent::Auth(crate::acp_auth::configured_snapshot(
+            methods.clone(),
+            methods.first(),
+        ))),
+        &ctl,
+    );
+    assert!(app.auth_form.is_some(), "stale A snapshot clobbered B");
+    assert_eq!(
+        app.auth_form.as_ref().map(|form| form.method_id.as_str()),
+        Some("api-key:deepseek")
+    );
+    assert_ne!(format!("{:?}", app.auth.status), "Configured");
+}
+
+#[test]
+fn signing_in_blocks_composer_prompts_and_keeps_the_draft() {
+    // Issue #168: typed text is not a credential. It must never enter the
+    // prompt FIFO while sign-in is pending (it would be sent to the model as
+    // plain text once auth settles).
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("oauth-personal", &ctl);
+    let _ = commands.recv_timeout(std::time::Duration::from_secs(1));
+
+    app.send_agent_text("sk-typed-secret".into(), &ctl);
+    assert!(app.prompt_queue.is_empty(), "no prompt may be queued");
+    assert!(
+        app.tip.as_ref().is_some_and(|(text, _)| {
+            text.contains("sign-in") && text.contains("ctrl+g") && text.contains("esc")
+        }),
+        "the block explains why and where to cancel: {:?}",
+        app.tip.as_ref().map(|(text, _)| text.as_str())
+    );
+
+    app.input.set("sk-typed-secret".into());
+    app.submit(&ctl);
+    assert_eq!(
+        app.input.buf(),
+        "sk-typed-secret",
+        "the composer draft survives the block"
+    );
+    assert!(app.prompt_queue.is_empty());
+    assert!(
+        !commands
+            .try_iter()
+            .any(|cmd| matches!(cmd, Cmd::Prompt { .. } | Cmd::PromptImages { .. } | Cmd::Steer { .. })),
+        "typed text must not reach the prompt channel"
+    );
+
+    // The masked form is an auth surface too.
+    app.start_auth("api-key:deepseek", &ctl);
+    assert!(app.auth_form.is_some());
+    app.send_agent_text("secret-typed-into-the-wrong-place".into(), &ctl);
+    assert!(app.prompt_queue.is_empty());
+}
+
+#[test]
+fn esc_on_the_auth_picker_cancels_a_pending_sign_in() {
+    // Issue #168: Esc is the cancel path — it must drop the optimistic
+    // SigningIn state, not leave the status stuck forever.
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.first(), None);
+    app.start_auth("oauth-personal", &ctl);
+    let _ = commands.recv_timeout(std::time::Duration::from_secs(1));
+    app.open_auth_picker();
+    app.handle(
+        AppEvent::Term(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+        &ctl,
+    );
+    assert_eq!(
+        format!("{:?}", app.auth.status),
+        "NeedsAuth",
+        "Esc must clear the pending sign-in state"
+    );
+    assert!(app.auth.method_id.is_none());
+    assert!(
+        last_notice_text(&app).is_some_and(|text| text.contains("cancelled")),
+        "{:?}",
+        last_notice_text(&app)
+    );
+    assert!(matches!(
+        commands.recv_timeout(std::time::Duration::from_secs(1)),
+        Ok(Cmd::AuthSkipped { .. })
+    ));
+}
+
+#[test]
+fn open_auth_picker_selects_the_first_entry_not_the_chosen_method() {
+    // Issue #168: the cursor starts at the first advertised method instead
+    // of the last-chosen one, which made switching look like a no-op.
+    let (mut app, _ctl, _rx) = test_app();
+    app.demo = false;
+    let methods = auth_methods_fixture();
+    app.auth = crate::acp_auth::needs_auth_snapshot(methods.clone(), methods.get(1), None);
+    app.open_auth_picker();
+    let picker = app.picker.as_ref().expect("auth picker");
+    assert_eq!(picker.sel, 0);
+    assert_eq!(picker.items[0].id, "oauth-personal");
+}
+
+#[test]
 fn auth_failure_is_visible_on_landing_and_retry_clears_it() {
     let (mut app, ctl, _rx) = test_app();
     app.demo = false;

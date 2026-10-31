@@ -509,6 +509,15 @@ pub enum Cmd {
         method_id: String,
         values: std::collections::BTreeMap<String, String>,
     },
+    /// Abort the pending `authenticate` flow before replacing it with a
+    /// different auth method (issue #168). Dropping the auth lane's
+    /// in-flight future cancels the RPC await, so a hung OAuth flow cannot
+    /// block the method the user just picked. A late result from the
+    /// cancelled attempt is ignored.
+    CancelAuth {
+        /// The pending method being superseded, when the UI knows it.
+        method_id: Option<String>,
+    },
     /// ACP `logout` (v2 `auth/logout`): offered only when the agent declared
     /// `agentCapabilities.auth.logout`; the picker reopens on success.
     Logout,
