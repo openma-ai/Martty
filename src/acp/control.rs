@@ -15,6 +15,10 @@ pub(super) enum ControlFinish {
     Authenticated {
         method: AuthMethodInfo,
         result: Result<(), AcpError>,
+        /// Monotonic attempt token (issue #168): a finish whose token is no
+        /// longer current belongs to a cancelled/replaced sign-in and must
+        /// not touch the surface or the UI.
+        token: u64,
     },
     /// ACP `logout` / `auth/logout` completed (ok or agent error); carries
     /// the provider scope the request was sent with, and the response so
@@ -28,17 +32,28 @@ pub(super) enum ControlFinish {
 
 type ControlJob = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 
+/// One serialized control lane: the queue sender and the task that drains
+/// it. Keeping the task handle here lets `cancel_auth` abort the *in-flight*
+/// job too — dropping the sender alone would still run queued jobs.
+struct ControlLane {
+    sender: tokio::sync::mpsc::UnboundedSender<ControlJob>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 #[derive(Default)]
 pub(super) struct ControlWorkers {
     pending: HashMap<String, usize>,
-    lanes: HashMap<String, tokio::sync::mpsc::UnboundedSender<ControlJob>>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    lanes: HashMap<String, ControlLane>,
+    /// Generation of the latest `authenticate` attempt (issue #168).
+    /// Cancelling bumps it, invalidating any reply that was already in
+    /// flight; starting the replacement bumps it again.
+    auth_seq: u64,
 }
 
 impl Drop for ControlWorkers {
     fn drop(&mut self) {
-        for task in &self.tasks {
-            task.abort();
+        for lane in self.lanes.values() {
+            lane.task.abort();
         }
     }
 }
@@ -55,6 +70,24 @@ impl ControlWorkers {
                 self.pending.remove(session);
             }
         }
+    }
+
+    /// Abort the `auth` lane and invalidate its pending attempt (issue
+    /// #168). A hung OAuth `authenticate` future is dropped, so the next
+    /// method's `Authenticate` starts on a fresh lane instead of waiting
+    /// behind a reply that may never come.
+    pub(super) fn cancel_auth(&mut self) {
+        self.auth_seq = self.auth_seq.wrapping_add(1);
+        if let Some(lane) = self.lanes.remove("auth") {
+            lane.task.abort();
+            drop(lane.sender);
+        }
+    }
+
+    /// Whether `token` names the current authenticate attempt. A reply
+    /// carrying an older token was superseded and must be ignored.
+    pub(super) fn auth_token_is_current(&self, token: u64) -> bool {
+        token == self.auth_seq
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -86,19 +119,33 @@ impl ControlWorkers {
             Cmd::Authenticate { .. } | Cmd::Logout => "auth".to_string(),
             _ => "client".to_string(),
         };
+        // Cancelling bumps the generation; a job keeps the generation it
+        // was enqueued under. No cancel means every queued attempt is still
+        // legitimate (the lane runs them in order).
+        let auth_token = self.auth_seq;
         let session = lane.strip_prefix("config:").map(str::to_string);
         if let Some(session) = &session {
             *self.pending.entry(session.clone()).or_default() += 1;
         }
-        let sender = self.lanes.entry(lane).or_insert_with(|| {
+        let lane_key = lane;
+        let sender = if let Some(lane) = self.lanes.get(&lane_key) {
+            lane.sender.clone()
+        } else {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ControlJob>();
-            self.tasks.push(tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 while let Some(job) = rx.recv().await {
                     job.await;
                 }
-            }));
+            });
+            self.lanes.insert(
+                lane_key.clone(),
+                ControlLane {
+                    sender: tx.clone(),
+                    task,
+                },
+            );
             tx
-        });
+        };
         let job = run_control(
             cmd,
             cx.clone(),
@@ -112,6 +159,7 @@ impl ControlWorkers {
             list_session,
             additional_directories,
             directories.to_vec(),
+            auth_token,
             done.clone(),
         );
         let done = done.clone();
@@ -138,6 +186,7 @@ async fn run_control(
     list_session: bool,
     additional_directories: bool,
     directories: Vec<String>,
+    auth_token: u64,
     done: tokio::sync::mpsc::UnboundedSender<ControlFinish>,
 ) {
     let connection = {
@@ -678,7 +727,11 @@ async fn run_control(
             signing_in.status = AuthStatus::SigningIn;
             emit_method_auth(&bus, &surface, signing_in);
             let result = cx.send_request(req).block_task_setup_deadline().await.map(|_| ());
-            let _ = done.send(ControlFinish::Authenticated { method, result });
+            let _ = done.send(ControlFinish::Authenticated {
+                method,
+                result,
+                token: auth_token,
+            });
         }
         Cmd::Logout => {
             // A bare `logout`: the agent scopes it to the credential the

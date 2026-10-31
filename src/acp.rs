@@ -3344,7 +3344,23 @@ where
                                 }
                             }
                         }
+                        Cmd::CancelAuth { method_id } => {
+                            // Issue #168: dropping the auth lane's in-flight
+                            // future cancels the pending `authenticate` RPC
+                            // await (a hung OAuth flow included), so the
+                            // replacement method is not queued behind it.
+                            // `cancel_auth` also invalidates any reply that
+                            // already raced back, so it cannot clobber the
+                            // new UI state. `method_id` names the superseded
+                            // flow; the attempt token is what gates it.
+                            let _ = method_id;
+                            controls.cancel_auth();
+                        }
                         Cmd::AuthSkipped { session_id: cmd_session } => {
+                            // Esc cancels a pending sign-in too (issue #168):
+                            // abort its in-flight request, then release any
+                            // prompts parked behind the stall below.
+                            controls.cancel_auth();
                             match resolve_cmd_session(&sessions, &current, &cmd_session, "auth skip") {
                                 Ok(Some(sid)) => {
                                     let before = parked.len();
@@ -3773,7 +3789,15 @@ where
                                         }
                                     }
                                 },
-                                ControlFinish::Authenticated { method, result } => match result {
+                                ControlFinish::Authenticated { token, .. }
+                                    if !controls.auth_token_is_current(token) =>
+                                {
+                                    // Issue #168: the sign-in this reply belongs
+                                    // to was cancelled and replaced. Its late
+                                    // Configured/Failed result must not touch the
+                                    // surface or the replacement's UI state.
+                                }
+                                ControlFinish::Authenticated { method, result, .. } => match result {
                                     Ok(()) => {
                                         selected = Some(method.clone());
                                         emit_method_auth(&bus, &surface, configured_snapshot(methods.clone(), Some(&method)));

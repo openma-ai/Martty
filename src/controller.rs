@@ -640,9 +640,13 @@ fn controller_loop(
                         .into(),
                 )));
             }
-            Cmd::ForgetSession { .. } | Cmd::CloseSession { .. } | Cmd::AuthSkipped { .. } => {
+            Cmd::ForgetSession { .. }
+            | Cmd::CloseSession { .. }
+            | Cmd::AuthSkipped { .. }
+            | Cmd::CancelAuth { .. } => {
                 // Sessions only exist on the ACP transport; the legacy/demo
-                // controller owns nothing to forget, close, or release.
+                // controller owns nothing to forget, close, or release, and
+                // has no auth lane to abort.
             }
             Cmd::QueueSnapshot { .. } | Cmd::AgentsSnapshot { .. } | Cmd::ActiveSession { .. } => {
                 // The legacy/demo controller has no local Cordis compositor.
