@@ -42,6 +42,84 @@ async fn browser_auth_outlives_the_short_control_deadline() {
     }).await.unwrap();
 }
 
+/// Issue #168: a hung OAuth `authenticate` must not block the method the
+/// user switches to. Cancelling the auth lane drops the in-flight RPC
+/// await, and the replacement runs on a fresh lane.
+#[tokio::test]
+async fn cancel_auth_drops_a_hung_authenticate_and_runs_the_replacement() {
+    use agent_client_protocol::schema::v1::AuthenticateResponse;
+    let (release, release_rx) = tokio::sync::watch::channel(false);
+    let (started, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = Agent.builder().on_receive_request(
+        {
+            let release_rx = release_rx.clone();
+            async move |req: AuthenticateRequest, responder, cx| {
+                if req.method_id.to_string() == "hung" {
+                    let _ = started.send(());
+                    let mut release_rx = release_rx.clone();
+                    cx.spawn(async move {
+                        release_rx.wait_for(|ready| *ready).await.unwrap();
+                        responder.respond(AuthenticateResponse::new())
+                    })?;
+                } else {
+                    let _ = responder.respond(AuthenticateResponse::new());
+                }
+                Ok(())
+            }
+        },
+        on_receive_request!(),
+    );
+    Client
+        .builder()
+        .connect_with(agent, move |cx: ConnectionTo<Agent>| async move {
+            let (bus, _events) = std::sync::mpsc::channel();
+            let (done, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+            let methods = parse_auth_methods(
+                &json!([
+                    {"id": "hung", "name": "Hung browser login"},
+                    {"id": "replacement", "name": "Replacement method"}
+                ]),
+                &[],
+                "/tmp",
+                &Default::default(),
+            );
+            let mut workers = ControlWorkers::default();
+            workers.enqueue(
+                Cmd::Authenticate { method_id: "hung".into(), values: Default::default() },
+                &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+                std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
+            tokio::time::timeout(Duration::from_secs(3), started_rx.recv())
+                .await
+                .expect("hung authenticate started")
+                .expect("started channel open");
+            workers.cancel_auth();
+            workers.enqueue(
+                Cmd::Authenticate { method_id: "replacement".into(), values: Default::default() },
+                &cx, &bus, &Arc::new(Mutex::new(Surface::default())), &methods, &None,
+                std::path::Path::new("/tmp"), false, false, false, false, &[], &done);
+            match tokio::time::timeout(Duration::from_secs(3), done_rx.recv())
+                .await
+                .expect("replacement authenticate settles")
+            {
+                Some(ControlFinish::Authenticated { method, result, token }) => {
+                    assert_eq!(method.id, "replacement");
+                    assert!(result.is_ok());
+                    assert!(workers.auth_token_is_current(token));
+                }
+                _ => panic!("expected the replacement's authenticate result"),
+            }
+            // The cancelled attempt must not post a finish of its own.
+            tokio::task::yield_now().await;
+            assert!(done_rx.try_recv().is_err());
+            // Keep the watch sender alive until the client ends: the old
+            // agent-side response future may still be parked.
+            let _ = &release;
+            Ok(())
+        })
+        .await
+        .expect("client task");
+}
+
 async fn wait_event(rx: &Receiver<AppEvent>, predicate: impl Fn(&AppEvent) -> bool) {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -483,6 +561,7 @@ async fn permission_response_events(
                 false,
                 false,
                 Vec::new(),
+                0,
                 done,
             )
             .await;
@@ -898,6 +977,7 @@ async fn logout_request_is_bare_and_agent_neutral() {
                 false,
                 false,
                 Vec::new(),
+                0,
                 done,
             )
             .await;

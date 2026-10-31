@@ -1612,6 +1612,11 @@ pub struct App {
     /// Masked credential form opened by the auth picker for api-key and
     /// gateway methods (issue #160).
     pub auth_form: Option<AuthFormOverlay>,
+    /// The method whose pending sign-in was cancelled by switching auth
+    /// methods (issue #168). Late snapshots for it must not overwrite the
+    /// replacement's UI state; cleared when another method reports a
+    /// settled status.
+    superseded_auth_method: Option<String>,
     pub quit: bool,
     /// Escape suppresses slash recommendations for the current draft without
     /// deleting it. Text edits or an explicit Tab completion reopen them.
@@ -2067,6 +2072,7 @@ impl App {
             pending_terminal_auth: None,
             agent_auth_logout: false,
             auth_form: None,
+            superseded_auth_method: None,
             quit: false,
             slash_completion_dismissed: false,
             dismissed_hint_text: None,
@@ -3694,6 +3700,15 @@ impl App {
             )
     }
 
+    /// Issue #168: an in-flight sign-in (or its masked credential form)
+    /// owns the composer. Typed text is a draft/model prompt, never a
+    /// credential, so it must not be queued while the flow is pending —
+    /// otherwise it would be sent to the model as plain text once sign-in
+    /// somehow completes.
+    pub(crate) fn auth_input_blocked(&self) -> bool {
+        self.auth.status == crate::acp_auth::AuthStatus::SigningIn || self.auth_form.is_some()
+    }
+
     /// Identity of everything `queue_snapshot` projects, without the summary
     /// strings: ordered prompt ids (order captures reordering) plus the
     /// selection/edit/confirm/attach flags. A summary edit always passes
@@ -4672,6 +4687,20 @@ impl App {
                         {
                             snap.method_id = self.auth.method_id.clone();
                             snap.method_name = self.auth.method_name.clone();
+                        }
+                        // Issue #168: a cancelled/replaced sign-in can still
+                        // deliver a late snapshot (agent auth update, or a
+                        // reply that raced the abort). It names the superseded
+                        // method, so never let it overwrite the replacement's
+                        // form/status. A settled snapshot from another method
+                        // releases the guard.
+                        if let Some(superseded) = self.superseded_auth_method.clone() {
+                            if snap.method_id.as_deref() == Some(superseded.as_str()) {
+                                return;
+                            }
+                            if snap.status != crate::acp_auth::AuthStatus::SigningIn {
+                                self.superseded_auth_method = None;
+                            }
                         }
                         let retrying_prompt =
                             self.state == RunState::Running || self.prompt_pending;
@@ -7285,6 +7314,10 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 if kind == PickerKind::Auth {
+                    // Issue #168: Esc cancels a pending sign-in instead of
+                    // leaving the status stuck. `AuthSkipped` aborts the
+                    // controller's auth lane, dropping the hung request.
+                    self.cancel_pending_auth();
                     ctl.send(Cmd::AuthSkipped {
                         session_id: self.session_id.clone(),
                     });
@@ -9298,11 +9331,10 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let current = self.auth.method_id.clone();
-        let sel = current
-            .as_ref()
-            .and_then(|id| items.iter().position(|item| item.id == *id))
-            .unwrap_or(0);
+        // Issue #168: always start at the first advertised method instead of
+        // the last-chosen one. Re-picking the pending method is a no-op, so
+        // the cursor must not make switching look like it did nothing.
+        let sel = 0;
         self.picker = Some(Picker {
             offset: 0,
             kind: PickerKind::Auth,
@@ -9335,9 +9367,21 @@ impl App {
                 );
             return;
         }
+        // Issue #168: a pending sign-in only blocks re-picking the SAME
+        // method. Choosing a different method replaces the flow — the old
+        // `authenticate` may be hung forever (e.g. a browser OAuth that
+        // never returns), so cancel its lane and open the new method's UI
+        // instead of silently doing nothing.
         if self.auth.status == crate::acp_auth::AuthStatus::SigningIn {
-            self.show_tip(self.locale.tr("sign-in is still pending — waiting for the Agent", "登录仍在进行中，等待 Agent 返回结果"));
-            return;
+            if self.auth.method_id.as_deref() == Some(method_id) {
+                self.show_tip(self.locale.tr("sign-in is still pending — waiting for the Agent", "登录仍在进行中，等待 Agent 返回结果"));
+                return;
+            }
+            self.replace_pending_auth(method_id, ctl);
+        } else {
+            // A new explicit attempt owns the surface again; late snapshots
+            // from the previously superseded method no longer matter.
+            self.superseded_auth_method = None;
         }
         if self.auth.methods.is_empty() && method_id != AUTH_LOGOUT_ID {
             self.transcript.push_notice(
@@ -9444,6 +9488,74 @@ impl App {
             return;
         }
         self.submit_auth_values(&method.id, std::collections::BTreeMap::new(), ctl);
+    }
+
+    /// Issue #168: abandon the pending sign-in and hand the surface to
+    /// `next_method`. The controller aborts the auth lane (dropping the
+    /// in-flight `authenticate` await, hung OAuth included); this client
+    /// resets its optimistic `SigningIn` state and records the superseded
+    /// method so a late snapshot cannot overwrite the replacement.
+    fn replace_pending_auth(&mut self, next_method: &str, ctl: &Controller) {
+        let previous = self.auth.method_id.clone();
+        let previous_label = self
+            .auth
+            .method_label()
+            .map(str::to_string)
+            .or_else(|| previous.clone())
+            .unwrap_or_else(|| self.locale.tr("previous method", "之前的方式").into());
+        let next_label = self
+            .auth
+            .methods
+            .iter()
+            .find(|method| method.id == next_method)
+            .and_then(|method| method.name.clone())
+            .unwrap_or_else(|| next_method.to_string());
+        ctl.send(Cmd::CancelAuth {
+            method_id: previous.clone(),
+        });
+        self.clear_pending_auth(
+            previous,
+            self.locale.trf(
+                "previous pending sign-in ({}) cancelled — switching to {}",
+                "已取消之前待处理的登录（{}）—— 正在切换到 {}",
+                &[previous_label, next_label],
+            ),
+        );
+    }
+
+    /// Issue #168: Esc cancelled the pending sign-in. Clear the local
+    /// optimistic state so the status line cannot stay stuck on "signing
+    /// in"; `AuthSkipped` aborts the controller's auth lane.
+    fn cancel_pending_auth(&mut self) {
+        if self.auth.status != crate::acp_auth::AuthStatus::SigningIn {
+            return;
+        }
+        let previous = self.auth.method_id.clone();
+        let previous_label = self
+            .auth
+            .method_label()
+            .map(str::to_string)
+            .or_else(|| previous.clone())
+            .unwrap_or_else(|| self.locale.tr("previous method", "之前的方式").into());
+        self.clear_pending_auth(
+            previous,
+            self.locale.trf(
+                "sign-in cancelled ({}) — ctrl+g picks a method again",
+                "已取消登录（{}）—— ctrl+g 重新选择登录方式",
+                &[previous_label],
+            ),
+        );
+    }
+
+    fn clear_pending_auth(&mut self, previous: Option<String>, notice: String) {
+        self.superseded_auth_method = previous;
+        self.auth.status = crate::acp_auth::AuthStatus::NeedsAuth;
+        self.auth.message = None;
+        self.auth.method_id = None;
+        self.auth.method_name = None;
+        self.auth_form = None;
+        self.pending_terminal_auth = None;
+        self.transcript.push_notice(NoticeLevel::Warn, notice);
     }
 
     /// Send `authenticate` for exactly `method_id` with the values the
@@ -9897,6 +10009,29 @@ impl App {
         // A pending @file browser never survives a send.
         self.file_menu = None;
         let text = self.input.buf().trim().to_string();
+        // Issue #168: while sign-in is pending (or its masked form is open),
+        // composer text is not a credential and must never be queued as a
+        // normal prompt. Keep the draft and point at the auth UI. Client-side
+        // commands and local shell still work.
+        if self.auth_input_blocked() {
+            let client_action = text.starts_with('!')
+                || text.strip_prefix('/').is_some_and(|cmdline| {
+                    let name = cmdline.split_whitespace().next().unwrap_or("");
+                    SLASH_COMMANDS.iter().any(|c| c.name == name)
+                        || self.plugin_command_active(name)
+                        || self
+                            .skills
+                            .iter()
+                            .any(|skill| skill.name == name && skill.client_command)
+                });
+            if !client_action {
+                self.show_tip(self.locale.tr(
+                    "sign-in pending — prompt not sent · ctrl+g opens the auth picker · esc cancels",
+                    "登录进行中 —— 消息未发送 · ctrl+g 打开登录选择器 · esc 取消",
+                ));
+                return;
+            }
+        }
         // Client namespaces don't take images — keep the chips editable
         // instead of silently dropping them.
         if !self.pending_images.is_empty() && (text.starts_with('/') || text.starts_with('!')) {
@@ -9970,6 +10105,16 @@ impl App {
     /// Send raw text as an agent prompt (shared by submit and command
     /// passthroughs like /plan).
     fn send_agent_text(&mut self, text: String, ctl: &Controller) {
+        // Issue #168: an agent prompt must never ride a pending auth flow.
+        // Without this guard the text would sit in the client FIFO and be
+        // sent to the model as plain text as soon as sign-in settles.
+        if self.auth_input_blocked() {
+            self.show_tip(self.locale.tr(
+                "sign-in pending — prompt not sent · ctrl+g opens the auth picker · esc cancels",
+                "登录进行中 —— 消息未发送 · ctrl+g 打开登录选择器 · esc 取消",
+            ));
+            return;
+        }
         self.show_banner = false;
         // An unbound tab (placeholder id awaiting session/new·load) must not
         // send: acp.rs rejects ids it never bound. Hold the prompt in the
@@ -10486,6 +10631,15 @@ impl App {
     /// then emit the interleaved prompt.
     fn send_staged(&mut self, staged: Vec<StagedBlock>, ctl: &Controller) {
         if staged.is_empty() {
+            return;
+        }
+        // Issue #168: staged images follow the same rule as typed text — no
+        // new prompt may be queued behind a pending sign-in.
+        if self.auth_input_blocked() {
+            self.show_tip(self.locale.tr(
+                "sign-in pending — images not sent · ctrl+g opens the auth picker · esc cancels",
+                "登录进行中 —— 图片未发送 · ctrl+g 打开登录选择器 · esc 取消",
+            ));
             return;
         }
         let n = staged

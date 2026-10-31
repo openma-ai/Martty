@@ -13,6 +13,15 @@ All notable changes to this project are documented here. The project follows
   menus keep owning Tab while open; Escape hides the ghost without clearing
   the draft.
 
+### Fixed
+
+- ACP sign-in: choosing a different auth method while another sign-in is
+  pending now cancels the in-flight flow (including a hung OAuth request) and
+  opens the chosen method's UI, instead of silently doing nothing. Composer
+  text stays a draft while sign-in is pending and is never queued as a prompt;
+  Esc cancels a pending sign-in. The auth picker starts on the first method
+  (#168).
+
 ## [0.3.3] - 2026-10-17
 
 ### Compatibility
