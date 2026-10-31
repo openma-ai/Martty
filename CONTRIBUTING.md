@@ -38,6 +38,20 @@
 
 lockfile 冲突时可以把多篇依赖更新合成一篇，跑一次完整 CI（#202 包含 #201–#206）。描述里列出被包含的 PR。
 
+## 分支与 Issue 关联 / Branching and issue linking
+
+本仓库走主干开发（trunk-based）：
+
+1. **PR 默认直接打 `main`，squash 合并，正文写 `Closes #N`**（`Fixes` / `Resolves` 等价），一个 issue 一个关键字。不开长期的 `feat/*` 集成分支。
+2. **发版从 `main` 打 tag**，流程见 RELEASING.md。
+3. **需要维护 release 分支时，修复先合进 `main`，再 backport。** 能 `git cherry-pick` 就 cherry-pick；冲突太大就针对老代码重写，PR 注明 `backport of #PR`。backport PR 的 base 是 `release-*`，正文写 `Refs #N`，不写关闭关键字（issue 已由进 `main` 的 PR 关闭）。不值得 backport 的修复就不 backport，在 issue 里说明。
+4. **例外：确实要堆叠进临时分支时**，子 PR 写 `Refs #N` / `Part of #N`；合进 `main` 的那篇 PR 必须把每个 issue 汇总成 `Closes #…`，否则 GitHub 不会关闭。临时分支尽快合回并删除。
+5. 提交主题里单独写 `(#N)` 不会关闭 issue。GitHub 只在 PR 合并进默认分支、且正文带关闭关键字时关闭。
+
+#156 是反例：#163 的 base 是 `feat/tui-polish`，正文写了 `Closes #156`，不生效；集成 PR #154 又没汇总，issue 一直开着。
+
+填写位置见 `.github/pull_request_template.md` 的「Issue 关联与关闭关键字」一节。
+
 ## 证据报告 / Evidence report
 
 **合并前，PR 描述或一条评论里必须有证据报告，并且对应当前 head SHA。** 缺段，或证据还停在旧 SHA 上，就不合并。仓库没有把这件事做成 status check：作者填写，维护者核对。模板是 `.github/pull_request_template.md`。
