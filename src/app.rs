@@ -24,6 +24,9 @@ use crate::bus::{
 };
 use crate::controller::Controller;
 use crate::events::parse_notification;
+use crate::input::slash_input_hint::{
+    apply_slash_input_hint, resolve_slash_input_hint, SlashInputHint,
+};
 use crate::input::{Action, VimMode};
 use crate::locale::{Locale, UiSettings};
 use crate::markdown::ToneMode;
@@ -1618,6 +1621,10 @@ pub struct App {
     /// Escape suppresses slash recommendations for the current draft without
     /// deleting it. Text edits or an explicit Tab completion reopen them.
     slash_completion_dismissed: bool,
+    /// The draft text whose slash argument hint (ACP
+    /// `AvailableCommand.input.hint`) the user dismissed with Escape. The
+    /// ghost stays hidden while the draft reads the same; any edit clears it.
+    dismissed_hint_text: Option<String>,
     pub queued: usize,
     /// Follow-ups not yet sent over ACP. The Agent only sees the front item
     /// after the active turn settles.
@@ -2068,6 +2075,7 @@ impl App {
             superseded_auth_method: None,
             quit: false,
             slash_completion_dismissed: false,
+            dismissed_hint_text: None,
             queued: 0,
             prompt_queue: VecDeque::new(),
             queue_selection: None,
@@ -3403,6 +3411,64 @@ impl App {
         self.skills.iter().find(|skill| {
             skill.name == name && !skill.client_command && !self.plugin_command_active(&skill.name)
         })
+    }
+
+    /// The slash command argument hint the composer shows as ghost text for
+    /// the current draft, if the agent declared one.
+    ///
+    /// The agent owns the hint (ACP `AvailableCommand.input.hint`); the
+    /// composer only shows it while the draft still reads as the bare
+    /// command, so the ghost never lies about what the user already typed.
+    /// The hint the agent declared for the current draft, ignoring Escape
+    /// dismissal. Tab still completes a dismissed hint; only the ghost paint
+    /// and right-click care that Escape hid it.
+    fn resolved_slash_input_hint(&self) -> Option<SlashInputHint> {
+        resolve_slash_input_hint(&self.input.buf(), &self.skills, false)
+    }
+
+    /// The slash command argument hint the composer shows as ghost text for
+    /// the current draft, if the agent declared one and Escape has not
+    /// dismissed it for this exact text.
+    pub(crate) fn slash_input_hint(&self) -> Option<SlashInputHint> {
+        let text = self.input.buf();
+        let dismissed = self.dismissed_hint_text.as_deref() == Some(text.as_str());
+        resolve_slash_input_hint(&text, &self.skills, dismissed)
+    }
+
+    /// Write a slash hint into the composer as real text and select it.
+    /// Shared by Tab and the right-click inside the composer.
+    ///
+    /// `visible_only`: when true (right-click), require the ghost to be
+    /// showing; when false (Tab), Escape-dismissed hints remain completable.
+    fn commit_slash_input_hint_inner(&mut self, visible_only: bool) -> bool {
+        let hint = if visible_only {
+            self.slash_input_hint()
+        } else {
+            self.resolved_slash_input_hint()
+        };
+        let Some(hint) = hint else {
+            return false;
+        };
+        let applied = apply_slash_input_hint(&self.input.buf(), &hint.hint);
+        self.input.set(applied.text);
+        self.input.select_range(applied.selection_start, applied.selection_end);
+        self.dismissed_hint_text = None;
+        self.snap_slash_sel();
+        self.needs_redraw = true;
+        true
+    }
+
+    fn commit_slash_input_hint(&mut self) -> bool {
+        self.commit_slash_input_hint_inner(true)
+    }
+
+    /// Hide the slash argument hint for the current draft (Escape) without
+    /// touching the draft itself.
+    fn dismiss_slash_input_hint(&mut self) {
+        let text = self.input.buf();
+        if !text.is_empty() {
+            self.dismissed_hint_text = Some(text);
+        }
     }
 
     /// The value currently in effect for an open builtin option menu
@@ -5423,6 +5489,19 @@ impl App {
                     self.selecting = true;
                 }
             }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.needs_redraw = true;
+                // Right-click inside the composer applies the visible slash
+                // argument hint — the same insert Tab does — instead of
+                // opening a context menu.
+                if self.elicitation_ask.is_none()
+                    && self.active_subagent.is_none()
+                    && self.input_hit(mouse.column, mouse.row)
+                    && self.commit_slash_input_hint()
+                {
+                    return;
+                }
+            }
             MouseEventKind::Drag(MouseButton::Left)
                 if let Some((grab_row, start_h)) = self.composer_resize =>
             {
@@ -6756,6 +6835,8 @@ impl App {
                 | Action::SelectLineEnd
         ) {
             self.slash_completion_dismissed = false;
+            // A new draft re-opens a dismissed argument hint.
+            self.dismissed_hint_text = None;
             // Text edits invalidate the drag-selection highlight.
             self.input_sel = None;
         }
@@ -6789,8 +6870,35 @@ impl App {
                 }
             }
             Action::TabComplete => {
-                self.slash_completion_dismissed = false;
                 self.input_sel = None;
+                // The slash popup owns Tab while it is open. Do not reopen a
+                // dismissed popup before asking the argument hint for the
+                // key — Escape hid the menu so Tab can finish the hint.
+                if !self.slash_completion_dismissed {
+                    let menu = self.slash_matches();
+                    if !menu.is_empty() {
+                        let entry = &menu[self.slash_sel.min(menu.len() - 1)];
+                        if entry.disabled { return; }
+                        self.input.set(
+                            entry
+                                .completion
+                                .clone()
+                                .unwrap_or_else(|| format!("/{} ", entry.name)),
+                        );
+                        self.snap_slash_sel();
+                        return;
+                    }
+                }
+                // No slash candidate owns the Tab: complete the declared
+                // argument hint (even if Escape hid the ghost).
+                if self.commit_slash_input_hint_inner(false) {
+                    self.slash_completion_dismissed = false;
+                    return;
+                }
+                // Nothing to complete — restore the usual reopen-and-accept
+                // path so Tab still works after an Escape dismissal with no
+                // hint on the draft.
+                self.slash_completion_dismissed = false;
                 let menu = self.slash_matches();
                 if !menu.is_empty() {
                     let entry = &menu[self.slash_sel.min(menu.len() - 1)];
@@ -8701,6 +8809,9 @@ impl App {
         }
         if self.slash_completion_open() {
             self.slash_completion_dismissed = true;
+            // The popup and the argument hint are one affordance: Escape
+            // hides both for the current draft.
+            self.dismiss_slash_input_hint();
             return;
         }
         if let Some(edit) = &mut self.queue_edit {
@@ -8723,6 +8834,12 @@ impl App {
             }
             return;
         }
+        // The command's argument hint is showing but no slash popup is
+        // open: Escape hides the ghost and keeps the draft.
+        if matches!(self.state, RunState::Idle) && self.slash_input_hint().is_some() {
+            self.dismiss_slash_input_hint();
+            return;
+        }
         match self.state {
             RunState::Running | RunState::Starting => {
                 // grok: Esc cancels immediately; the draft survives.
@@ -8741,6 +8858,7 @@ impl App {
                 if !self.input.is_empty() {
                     self.input.history.push(self.input.buf());
                     self.input.clear();
+                    self.dismissed_hint_text = None;
                     self.reconcile_attachments();
                     self.show_tip(self.locale.tr("draft cleared — ↑ recalls it", "草稿已清空 —— ↑ 可找回"));
                     return;
@@ -10862,3 +10980,7 @@ mod additional_directories_tests;
 #[cfg(test)]
 #[path = "../tests/unit/app__fork_tests.rs"]
 mod fork_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/app__slash_input_hint_tests.rs"]
+mod slash_input_hint_tests;

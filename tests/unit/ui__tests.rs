@@ -4298,3 +4298,45 @@ fn auth_picker_clamps_long_labels_before_the_meta_column() {
     }
     assert!(frame.contains('…'), "long labels ellipsize:\n{frame}");
 }
+
+#[test]
+fn the_slash_argument_hint_paints_as_muted_ghost_text() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+    use ratatui::Terminal;
+    let mut app = test_app();
+    app.show_banner = false;
+    app.skills = vec![crate::bus::SkillInfo {
+        name: "review".into(),
+        description: "Review the current changes.".into(),
+        input_hint: Some("optional review instructions".into()),
+        config_action: None,
+        client_command: false,
+    }];
+    app.input.insert_str("/review");
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|f| draw(f, &mut app)).expect("draw frame");
+    let buf = terminal.backend().buffer().clone();
+    let theme = app.theme;
+
+    // The composer well is where the ghost belongs: the hint follows the
+    // typed command on its first row.
+    let well = app.input_area;
+    assert!(well.height > 0, "the composer well was recorded");
+    let row: String = (0..80).map(|x| buf[(x, well.y)].symbol().to_string()).collect();
+    assert!(
+        row.contains("/review optional review instructions"),
+        "the ghost follows the typed command: {row:?}"
+    );
+    // Muted like the placeholder: caption color, italic.
+    let x = row.find("optional review instructions").expect("ghost cell") as u16;
+    let cell = &buf[(x, well.y)];
+    assert_eq!(cell.fg, theme.caption, "the ghost is muted");
+    assert!(
+        cell.modifier.contains(Modifier::ITALIC),
+        "the ghost is italic"
+    );
+    // The hint is a ghost only — the buffer itself never carries it.
+    assert_eq!(app.input.buf(), "/review");
+}

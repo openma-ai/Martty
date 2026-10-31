@@ -11,6 +11,9 @@
 //! * [`composer`] — the main composer editor on `ratatui-textarea`:
 //!   buffer + cursor + undo in the widget, prompt history and the
 //!   screen↔buffer layout mirror beside it.
+//! * [`slash_input_hint`] — the argument hint a slash command declares
+//!   (`AvailableCommand.input.hint`): what to show as ghost text and what
+//!   to insert when the user asks for it.
 //!
 //! `app` only dispatches [`keymap::Action`]s; nothing in here touches
 //! `App`, the transcript, or the controller.
@@ -18,6 +21,7 @@
 pub mod composer;
 pub mod editor;
 pub mod keymap;
+pub mod slash_input_hint;
 pub mod vim;
 #[cfg(target_os = "macos")]
 mod macos_mod;
