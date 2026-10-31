@@ -19,9 +19,11 @@ directly; #174 is their retroactive record. History was not rewritten.)
    gh pr create --title "release: vX.Y.Z" --body "Closes #<release issue>"
    ```
 
-   The release PR targets `main`, so `Closes #<release issue>` is the correct
-   form here. Non-release or stacked PRs use `Refs #N` / `Part of #N` instead —
-   see "Issue linking (Closes vs Refs)" in CONTRIBUTING.md.
+   The release PR targets `main`, so `Closes #<release issue>` closes the
+   release issue on merge, like any PR into `main`. Releases are always tagged
+   from `main`; if a `release-*` maintenance branch is ever needed, fixes land
+   in `main` first and are backported with `Refs #N` — see "Branching and issue
+   linking" in CONTRIBUTING.md.
 
    `release.mjs` creates `release/vX.Y.Z` and commits the version bump of
    `npm/package.json`, `npm/package-lock.json`, `Cargo.toml` and `Cargo.lock`

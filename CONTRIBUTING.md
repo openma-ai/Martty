@@ -38,16 +38,17 @@
 
 lockfile 冲突时可以把多篇依赖更新合成一篇，跑一次完整 CI（#202 包含 #201–#206）。描述里列出被包含的 PR。
 
-## Issue 关联与关闭关键字 / Issue linking (Closes vs Refs)
+## 分支与 Issue 关联 / Branching and issue linking
 
-**关闭关键字只出现在合并进默认分支 `main` 的 PR 正文里。** 子 PR、堆叠 PR 只做关联，不提前关闭。
+本仓库走主干开发（trunk-based）：
 
-1. base 是 `main` → 正文写 `Closes #N`（`Fixes #N` / `Resolves #N` 等价），一个 issue 一个关键字。
-2. base 不是 `main`（例如堆叠进 `feat/*`）→ 正文写 `Refs #N` 或 `Part of #N`，不写 `Closes` / `Fixes` / `Resolves`。
-3. 集成 PR 合并进 `main` 前，必须把子 PR 提到的每个 issue 汇总成 `Closes #…`（或 `Fixes` / `Resolves`）写进集成 PR 正文；漏掉的话 GitHub 不会关闭这些 issue。
-4. 提交主题里单独写 `(#N)` 不会关闭 issue。GitHub 只在 PR 合并进默认分支、且正文里带关闭关键字时才关闭。
+1. **PR 默认直接打 `main`，squash 合并，正文写 `Closes #N`**（`Fixes` / `Resolves` 等价），一个 issue 一个关键字。不开长期的 `feat/*` 集成分支。
+2. **发版从 `main` 打 tag**，流程见 RELEASING.md。
+3. **需要维护 release 分支时，修复先合进 `main`，再 backport。** 能 `git cherry-pick` 就 cherry-pick；冲突太大就针对老代码重写，PR 注明 `backport of #PR`。backport PR 的 base 是 `release-*`，正文写 `Refs #N`，不写关闭关键字（issue 已由进 `main` 的 PR 关闭）。不值得 backport 的修复就不 backport，在 issue 里说明。
+4. **例外：确实要堆叠进临时分支时**，子 PR 写 `Refs #N` / `Part of #N`；合进 `main` 的那篇 PR 必须把每个 issue 汇总成 `Closes #…`，否则 GitHub 不会关闭。临时分支尽快合回并删除。
+5. 提交主题里单独写 `(#N)` 不会关闭 issue。GitHub 只在 PR 合并进默认分支、且正文带关闭关键字时关闭。
 
-#156 是反例：子 PR 的 base 不是 `main`，正文却写了 `Closes`，issue 没有按预期关闭，关联也是错的。
+#156 是反例：#163 的 base 是 `feat/tui-polish`，正文写了 `Closes #156`，不生效；集成 PR #154 又没汇总，issue 一直开着。
 
 填写位置见 `.github/pull_request_template.md` 的「Issue 关联与关闭关键字」一节。
 

@@ -6,18 +6,19 @@
 ## Issue 关联与关闭关键字 / Issue linking
 
 <!--
-base 决定用哪一类关键字：
-- base 是默认分支 main → 写 Closes #N（Fixes / Resolves 等价），一个 issue 一个关键字。
-- base 不是 main（堆叠进 feat/* 等）→ 写 Refs #N 或 Part of #N，不写关闭关键字。
-集成 PR 合并进 main 时，把子 PR 提到的 issue 全部汇总成 Closes #…。
+默认流程：PR 直接打 main，squash 合并，正文写 Closes #N。
+例外：
+- backport 进 release-* 分支 → 写 Refs #N（修复必须先合进 main，issue 由那篇 PR 关闭）。
+- 不得不堆叠进临时分支 → 写 Refs #N / Part of #N；合进 main 的那篇 PR 汇总成 Closes #…。
 -->
 
 - Base 分支:
 - 关联 issue:
 
-- [ ] base 是 `main`：正文写 `Closes #N`（也可用 `Fixes` / `Resolves`）
-- [ ] base 不是 `main`（例如堆叠进 `feat/*`）：正文写 `Refs #N` 或 `Part of #N`，不写 `Closes` / `Fixes` / `Resolves`；关闭由合并进 `main` 的集成 PR 承担
-- [ ] 只在提交主题里写 `(#N)` 不会关闭 issue：GitHub 只在 PR 合并进默认分支时按正文的关闭关键字关闭
+- [ ] base 是 `main`（默认）：正文写 `Closes #N`（也可用 `Fixes` / `Resolves`）
+- [ ] base 是 `release-*`（backport）：对应修复已合进 `main`，正文写 `Refs #N`（backport of #PR）
+- [ ] base 是其他临时分支（例外，需说明原因）：写 `Refs #N` / `Part of #N`，最终合进 `main` 的 PR 汇总 `Closes`
+- [ ] 只在提交主题里写 `(#N)` 不会关闭 issue
 
 ## 问题 / 动机
 
