@@ -1183,6 +1183,9 @@ fn draw_right_slot(f: &mut Frame, app: &App, area: Rect) {
 /// suffix fits on one row.
 fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     const ARROW: &str = "\u{e0b0}";
+    /// A label must fit this many cells; the strip keeps both ends so ids
+    /// that share a prefix (`session-aaaaaaaaaa1`/`…2`) stay distinguishable.
+    const LABEL_MAX: usize = 16;
 
     let theme = app.theme;
     let canvas_bg = app.canvas_background_color();
@@ -1211,7 +1214,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     // the widths only depend on the clamped label.
     let widths: Vec<usize> = tabs
         .iter()
-        .map(|tab| crate::transcript::clamp_str(&tab.label, 16).width() + 6)
+        .map(|tab| crate::transcript::clamp_middle_str(&tab.label, LABEL_MAX).width() + 6)
         .collect();
     let avail = right.saturating_sub(area.x as usize);
 
@@ -1256,7 +1259,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
     let mut x = area.x as usize;
     for (idx, tab) in tabs.iter().enumerate().skip(start) {
-        let label = crate::transcript::clamp_str(&tab.label, 16);
+        let label = crate::transcript::clamp_middle_str(&tab.label, LABEL_MAX);
         let tab_bg = background_for(idx, tab.current);
         let (indicator, indicator_style) = if tab.ask_pending {
             // A session-bound ask outranks every other badge: the agent is
@@ -1325,7 +1328,7 @@ fn draw_session_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         };
         spans.push(Span::styled("×", close_style));
         let next_fits = tabs.get(idx + 1).is_some_and(|next| {
-            let next_label = crate::transcript::clamp_str(&next.label, 16);
+            let next_label = crate::transcript::clamp_middle_str(&next.label, LABEL_MAX);
             // Every native status marker (including the Braille spinner) is
             // one terminal cell wide.
             let next_width = next_label.width() + 5;
@@ -2787,7 +2790,14 @@ fn draw_composer_box(
     // (issue #103): the workspace title ends three cells early so the
     // button never covers title text. The rest of the cap row is the
     // drag-to-resize border (issue #147).
-    let mut workspace = workspace_cap_title(app, area.width as usize);
+    let mut workspace = if app.close_confirm_armed() {
+        // The close instruction is more important than ambient workspace
+        // context: hide the path/branch chip while the confirm is armed so
+        // the full prompt fits on the cap row (issue #155).
+        Line::default()
+    } else {
+        workspace_cap_title(app, area.width as usize)
+    };
     workspace
         .spans
         .push(Span::raw(" ".repeat(JUMP_BTN_W as usize + 1)));

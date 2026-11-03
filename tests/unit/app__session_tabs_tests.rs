@@ -2329,3 +2329,61 @@ fn composer_resize_hover_short_circuits_under_overlays() {
     app.handle_mouse(mouse(MouseEventKind::Moved, 50, 10), &ctl);
     assert!(!app.hover_composer_border);
 }
+
+#[test]
+fn untitled_tabs_keep_the_distinguishing_id_suffix() {
+    let (mut app, _ctl, _rx) = test_app();
+    app.open_new_session("session-1".into(), true);
+    app.open_new_session("session-2".into(), true);
+    app.open_new_session("session-aaaaaaaaaa1".into(), true);
+    app.open_new_session("session-aaaaaaaaaa2".into(), true);
+
+    let frame = crate::ui::dump_frame(&mut app, 120, 30);
+    let row0 = frame.lines().next().unwrap_or_default();
+    for want in [
+        "session-1",
+        "session-2",
+        "session-…aaaaaa1",
+        "session-…aaaaaa2",
+    ] {
+        assert!(
+            row0.contains(want),
+            "tab label {want:?} is distinguishable:\n{frame}"
+        );
+    }
+}
+
+#[test]
+fn close_confirm_hides_the_workspace_chip_so_the_whole_prompt_fits() {
+    let (mut app, _demo_ctl, _rx) = test_app();
+    let (ctl, _commands) = crate::controller::tests::test_controller();
+    app.demo = false;
+    app.show_banner = false;
+    app.cfg.workspace = "/home/user/a-very-long-workspace-directory-name".into();
+    app.git_branch = Some("feature".into());
+    app.state = RunState::Running;
+
+    app.run_slash("close", "", &ctl);
+    assert!(app.close_confirm_armed(), "the close was armed");
+    let prompt = app.tip.as_ref().expect("confirm tip").0.clone();
+    assert!(
+        unicode_width::UnicodeWidthStr::width(prompt.as_str()) > 60,
+        "the prompt exercises the cap row budget: {prompt:?}"
+    );
+    let frame = crate::ui::dump_frame(&mut app, 100, 30);
+    assert!(
+        frame.contains(&prompt),
+        "the full close prompt is readable:\n{frame}"
+    );
+    assert!(
+        !frame.contains("a-very-long-workspace-directory-name"),
+        "the workspace chip yields to the prompt:\n{frame}"
+    );
+
+    app.close_armed = None;
+    let frame = crate::ui::dump_frame(&mut app, 100, 30);
+    assert!(
+        frame.contains("a-very-long-workspace-directory-name"),
+        "the workspace chip returns once the confirm is disarmed:\n{frame}"
+    );
+}

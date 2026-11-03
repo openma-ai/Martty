@@ -1797,6 +1797,48 @@ pub(crate) fn clamp_str(s: &str, max: usize) -> String {
     out
 }
 
+/// Middle ellipsis: keep both ends of `s` within `max` cells. Tail-only
+/// clamping (`clamp_str`) hides the distinguishing part of ids that share a
+/// long prefix (`session-aaaaaaaaaa1` / `session-aaaaaaaaaa2` both became
+/// `session-…`). The head/tail split is slightly head-heavy so the familiar
+/// `session-` prefix survives while a seven-cell suffix still tells tabs
+/// apart.
+pub(crate) fn clamp_middle_str(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let s = expand_tabs(s);
+    if s.width() <= max {
+        return s;
+    }
+    if max == 1 {
+        return "…".into();
+    }
+    let budget = max - 1;
+    let head_budget = budget.div_ceil(2);
+    let tail_budget = budget - head_budget;
+    let mut head = String::new();
+    let mut used = 0usize;
+    for (g, width) in graphemes_with_width(&s) {
+        if used + width > head_budget {
+            break;
+        }
+        head.push_str(g);
+        used += width;
+    }
+    let mut tail: Vec<&str> = Vec::new();
+    used = 0;
+    for (g, width) in graphemes_with_width(&s).rev() {
+        if used + width > tail_budget {
+            break;
+        }
+        tail.push(g);
+        used += width;
+    }
+    tail.reverse();
+    format!("{head}…{}", tail.concat())
+}
+
 /// Expand tabs to spaces at 8-column stops so wrap/layout width matches
 /// what a terminal actually paints (a raw `\t` is otherwise width 0/1).
 fn expand_tabs(s: &str) -> String {
