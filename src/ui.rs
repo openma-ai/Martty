@@ -1936,39 +1936,49 @@ fn status_title(app: &App) -> Line<'static> {
     let theme = app.theme;
     let mut spans: Vec<Span> = Vec::new();
     // Mode chips: folded from the durable event stream (same facts as the
-    // Web UI chips). Stock defaults render until the host reports its own
-    // facts, so the landing screen still advertises preset + permission.
-    // Values only — the bindings live in /keys, not glued to the chips
-    // (issue #148).
-    let preset = app.modes.agent_preset.as_deref().unwrap_or("standard");
-    spans.push(Span::styled(
-        format!("· {}", app.agent_label(preset)),
-        Style::default().fg(theme.fg_tertiary),
-    ));
+    // Web UI chips). Only facts the host actually reported render: a plain
+    // ACP harness (e.g. pi) that never sends a preset / permission must not
+    // inherit DSH labels like `standard · Workspace Write` (issue #170).
+    // Demo mode keeps its stock defaults. Values only — the bindings live
+    // in /keys, not glued to the chips (issue #148).
+    let preset = app
+        .modes
+        .agent_preset
+        .clone()
+        .or_else(|| app.demo.then(|| "standard".to_string()));
+    if let Some(preset) = preset {
+        spans.push(Span::styled(
+            format!("· {}", app.agent_label(&preset)),
+            Style::default().fg(theme.fg_tertiary),
+        ));
+    }
     let perm = app
         .modes
         .permission
         .clone()
         .or_else(|| app.modes.sandbox.clone())
-        .unwrap_or_else(|| app.current_permission().to_string());
-    let label = if app.locale == crate::locale::Locale::Zh {
-        match perm.as_str() {
-            "read-only" => "只读".to_string(),
-            "workspace-write" => "工作区可写".to_string(),
-            "danger-full-access" => "完全访问".to_string(),
-            _ => crate::app::permission_label(&perm),
-        }
-    } else {
-        crate::app::permission_label(&perm)
-    };
-    spans.push(Span::styled(
-        format!(" · {label}"),
-        Style::default().fg(if perm == "danger-full-access" {
-            theme.warn_soft()
+        .or_else(|| app.demo.then(|| app.current_permission().to_string()));
+    if let Some(perm) = perm {
+        let label = if app.locale == crate::locale::Locale::Zh {
+            match perm.as_str() {
+                "read-only" => "只读".to_string(),
+                "workspace-write" => "工作区可写".to_string(),
+                "danger-full-access" => "完全访问".to_string(),
+                _ => crate::app::permission_label(&perm),
+            }
         } else {
-            theme.fg_tertiary
-        }),
-    ));
+            crate::app::permission_label(&perm)
+        };
+        let lead = if spans.is_empty() { "· " } else { " · " };
+        spans.push(Span::styled(
+            format!("{lead}{label}"),
+            Style::default().fg(if perm == "danger-full-access" {
+                theme.warn_soft()
+            } else {
+                theme.fg_tertiary
+            }),
+        ));
+    }
     if let Some(approval) = &app.modes.approval {
         spans.push(Span::styled(
             format!(" · {approval}"),

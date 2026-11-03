@@ -15,6 +15,14 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Non-DSH harnesses (e.g. pi via `@openma/pi-acp`) no longer show DSH-only
+  status chips (`· standard · Workspace Write`): the preset / permission
+  chips render only when the harness actually reports them (demo mode keeps
+  its stock defaults). npx / npm stderr chatter (`npm warn exec … will be
+  installed`, `npm warn deprecated …`) no longer leaks into the input dock;
+  a first install shows a transient `Installing <pkg> <ver>…` status that
+  clears once the agent answers (#170).
+
 - ACP sign-in: choosing a different auth method while another sign-in is
   pending now cancels the in-flight flow (including a hung OAuth request) and
   opens the chosen method's UI, instead of silently doing nothing. Composer

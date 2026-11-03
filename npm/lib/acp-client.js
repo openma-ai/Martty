@@ -126,6 +126,11 @@ function spawnAgent(agent, onDiagnosticLine) {
   child.stdin.on('error', () => {})
   child.stdout.on('error', () => {})
   const diagnostics = drainDiagnostics(child.stderr, onDiagnosticLine)
+  // First agent stdout byte means npx finished installing: clear the
+  // transient `Installing <pkg> <ver>…` notice (issue #170).
+  if (typeof onDiagnosticLine?.ready === 'function') {
+    child.stdout.once('data', () => onDiagnosticLine.ready())
+  }
   return {
     kind: 'spawn',
     command: agent.command,
@@ -163,17 +168,64 @@ function installAgentWarnings(ctx) {
     return undefined
   }
   const shown = []
-  return (line) => {
-    if (!DIAGNOSTIC_NOTICE.test(line)) return
-    shown.push(line.trimEnd())
-    if (shown.length > 4) shown.shift()
+  let installing = null
+  const render = () => {
+    const nodes = []
+    if (installing !== null) {
+      nodes.push({ id: 'installing', kind: 'notice', level: 'info', text: installing })
+    }
+    if (shown.length > 0) {
+      nodes.push({ id: 'latest', kind: 'notice', level: 'warn', text: shown.join('\n') })
+    }
     try {
-      controller.update([{ id: 'latest', kind: 'notice', level: 'warn', text: shown.join('\n') }])
+      controller.update(nodes)
     } catch {
       // The contribution is gone (disposed or re-mounted); stderr keeps
       // flowing to the diagnostics tail regardless.
     }
   }
+  const note = (line) => {
+    // npx / npm's own chatter (`npm warn exec ... will be installed`,
+    // `npm notice ...`) is package-manager output, not an agent warning:
+    // never surface it raw (issue #170). A first-install line becomes a
+    // tidy transient status that clears once the agent speaks.
+    const npm = npmInstallNotice(line)
+    if (npm !== undefined) {
+      if (npm !== null && installing === null) {
+        installing = npm
+        render()
+      }
+      return
+    }
+    if (!DIAGNOSTIC_NOTICE.test(line)) return
+    shown.push(line.trimEnd())
+    if (shown.length > 4) shown.shift()
+    render()
+  }
+  note.ready = () => {
+    if (installing === null) return
+    installing = null
+    render()
+  }
+  return note
+}
+
+const NPM_OUTPUT = /^\s*npm\s+(warn|notice|info|verb|http|timing|ERR!|error)\b/i
+const NPM_WILL_INSTALL = /will be installed:\s*(\S+)/i
+
+/**
+ * Classify an agent stderr line as npm/npx output. Returns undefined when the
+ * line is not npm's, null for npm chatter to drop, or an `Installing <pkg>
+ * <ver>…` status for npx's first-install line.
+ */
+export function npmInstallNotice(line) {
+  if (!NPM_OUTPUT.test(line)) return undefined
+  const match = NPM_WILL_INSTALL.exec(line)
+  if (match === null) return null
+  const spec = match[1].replace(/[.,;]+$/, '')
+  const at = spec.lastIndexOf('@')
+  if (at <= 0) return `Installing ${spec}…`
+  return `Installing ${spec.slice(0, at)} ${spec.slice(at + 1)}…`
 }
 
 function drainDiagnostics(stream, onLine) {
