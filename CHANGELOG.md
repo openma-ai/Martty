@@ -22,7 +22,6 @@ All notable changes to this project are documented here. The project follows
   installed`, `npm warn deprecated …`) no longer leaks into the input dock;
   a first install shows a transient `Installing <pkg> <ver>…` status that
   clears once the agent answers (#170).
-
 - Session tabs with untitled sessions now middle-ellipsize ids, so
   `session-1` and `session-2` stay distinguishable instead of both collapsing
   to `session-`. A still-running close confirmation hides the workspace/branch
