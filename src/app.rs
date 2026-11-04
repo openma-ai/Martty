@@ -147,6 +147,11 @@ pub struct SlashCommand {
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "add-dir",
+        usage: "/add-dir <absolute path>",
+        desc: "add an extra workspace root in a new session",
+    },
+    SlashCommand {
         name: "agent",
         usage: "/agent [id]",
         desc: "switch agent preset · ctrl+shift+a",
@@ -7945,6 +7950,22 @@ impl App {
     /// The `/new` flow, shared by the slash command and the tab strip `+`
     /// cell: reuse an empty tab, otherwise park the conversation in its tab.
     fn new_session_flow(&mut self, arg: &str, ctl: &Controller) {
+        // App owns the root list once `/add-dir` has grown it, so every
+        // later `/new` keeps the extended roots too.
+        let directories = Some(self.cfg.additional_directories.clone());
+        self.new_session_flow_with_directories(arg, ctl, directories);
+    }
+
+    /// `/new` with an optional `additionalDirectories` list for the
+    /// `session/new` it sends. `/add-dir` passes `Some` after growing
+    /// `cfg.additional_directories`; ordinary `/new` passes the same App
+    /// list, which is the launch list until `/add-dir` grows it.
+    fn new_session_flow_with_directories(
+        &mut self,
+        arg: &str,
+        ctl: &Controller,
+        directories: Option<Vec<String>>,
+    ) {
         if self.demo {
             let id = if arg.is_empty() {
                 format!("dsh-{}", timestamp())
@@ -7973,9 +7994,118 @@ impl App {
                 id: placeholder.clone(),
                 open: true,
             });
-            ctl.send(Cmd::NewSession { requester: Some(placeholder), retry_auth: None });
+            ctl.send(Cmd::NewSession {
+                requester: Some(placeholder),
+                retry_auth: None,
+                directories,
+            });
             self.show_tip(self.locale.tr("session/new …", "正在创建会话（session/new）…"));
         }
+    }
+
+    /// `/add-dir <path>`: ACP has no request that grows a live session's
+    /// roots, so a valid path joins `cfg.additional_directories` and a new
+    /// session is opened with the extended list. The current session keeps
+    /// exactly the roots it was created with.
+    fn add_dir_flow(&mut self, arg: &str, ctl: &Controller) {
+        let path = arg.trim();
+        if path.is_empty() {
+            let roots = if self.cfg.additional_directories.is_empty() {
+                self.locale.tr("none", "无").to_string()
+            } else {
+                self.cfg.additional_directories.join(" · ")
+            };
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                self.locale.trf(
+                    "additional directories: {} · usage: /add-dir <absolute path>",
+                    "额外目录：{} · 用法：/add-dir <绝对路径>",
+                    &[roots],
+                ),
+            );
+            return;
+        }
+        if crate::additional_dirs::same_as_workspace(path, &self.cfg.workspace) {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                self.locale
+                    .tr(
+                        "that directory is the workspace — nothing to add",
+                        "该目录就是工作区 —— 无需添加",
+                    )
+                    .to_string(),
+            );
+            return;
+        }
+        let home = crate::additional_dirs::current_home();
+        let mut validated =
+            match crate::additional_dirs::validate(&[path], &self.cfg.workspace, home.as_deref()) {
+                Ok(dirs) => dirs,
+                Err(err) => {
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        self.locale
+                            .trf("/add-dir: {}", "/add-dir：{}", &[err]),
+                    );
+                    return;
+                }
+            };
+        let Some(canonical) = validated.pop() else {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale
+                    .tr("add-dir: no directory to add", "add-dir：没有可添加的目录")
+                    .to_string(),
+            );
+            return;
+        };
+        if self.additional_directories_known && !self.additional_directories_cap {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale
+                    .tr(
+                        "agent does not advertise sessionCapabilities.additionalDirectories — /add-dir cannot extend this session",
+                        "Agent 未声明 sessionCapabilities.additionalDirectories —— /add-dir 无法扩展此会话",
+                    )
+                    .to_string(),
+            );
+            return;
+        }
+        if self
+            .cfg
+            .additional_directories
+            .iter()
+            .any(|dir| dir == &canonical)
+        {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                self.locale.trf(
+                    "/add-dir: {} is already an additional directory",
+                    "/add-dir：{} 已经是额外目录",
+                    &[canonical],
+                ),
+            );
+            return;
+        }
+        self.cfg.additional_directories.push(canonical);
+        let directories = self.cfg.additional_directories.clone();
+        let count = directories.len();
+        // A fresh tab starts from a default connection snapshot; keep what
+        // this connection already advertised so a second `/add-dir` before
+        // the new session binds still validates against the same agent.
+        let cap = self.additional_directories_cap;
+        let known = self.additional_directories_known;
+        self.new_session_flow_with_directories("", ctl, Some(directories));
+        self.additional_directories_cap = cap;
+        self.additional_directories_known = known;
+        self.transcript.push_notice(
+            NoticeLevel::Info,
+            self.locale.trf(
+                "current session keeps its roots — opened the next new session with {} extra root(s)",
+                "当前会话保留原有根目录 —— 已用 {} 个额外根目录打开下一个新会话",
+                &[count.to_string()],
+            ),
+        );
     }
 
     /// `/fork` opens a new tab and asks the agent for `session/fork` of the
@@ -8253,6 +8383,7 @@ impl App {
             ctl.send(Cmd::NewSession {
                 requester: Some(placeholder),
                 retry_auth: None,
+                directories: Some(self.cfg.additional_directories.clone()),
             });
             self.show_tip(self.locale.tr("session/new …", "正在创建会话（session/new）…"));
         }
@@ -9131,6 +9262,7 @@ impl App {
                 }
             }
             "new" => self.new_session_flow(arg, ctl),
+            "add-dir" => self.add_dir_flow(arg, ctl),
             "fork" => self.fork_session_flow(ctl),
             "close" => self.close_session_flow(ctl),
             "session" => match arg {
@@ -9687,6 +9819,7 @@ impl App {
 - /resume · 恢复持久会话并继续写入原日志
 - /fork · Agent 声明 sessionCapabilities.fork 时，用 session/fork 分叉当前会话并打开新标签；原会话保留。不接受参数，也不按 Harness 名称判断
 - --add-dir <绝对路径> · 启动时的额外工作区根（可重复）；仅当 Agent 声明 additionalDirectories 时才会随 session/new、load、resume、fork 发送
+- /add-dir <绝对路径> · 追加额外工作区根并打开新会话；当前会话的根目录不变（不带参数时列出已追加的目录）
 - /image · 暂存本地图片：/image ./pic.png [说明]
 - /clip · 暂存剪贴板图片；ctrl+v 同样可用
 - !cmd · 在会话级本地 shell 中运行命令，不经过 Agent；初始目录为 workspace，cd/环境变量跨命令保留
@@ -9719,6 +9852,7 @@ token 用量（含缓存命中）以及轮次结束原因。";
 - /resume · pick up a durable session — transcript replays, log continues
 - /fork · when the agent advertises sessionCapabilities.fork, session/fork branches the current session into a new tab and leaves the original in place. No arguments, and not gated on the harness name
 - --add-dir <absolute> · extra workspace root at launch (repeatable); sent on session/new, load, resume, and fork only when the agent advertises additionalDirectories
+- /add-dir <absolute> · append an extra workspace root and open a new session; the current session keeps its roots (bare lists them)
 - /image · stage a local image — /image ./pic.png [caption]
 - /clip · stage the clipboard image — /clip [caption] · ctrl+v also works
 - !cmd · run in the session's local shell (not the agent); starts in the workspace, keeps cd/env across commands

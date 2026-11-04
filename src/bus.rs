@@ -533,8 +533,14 @@ pub enum Cmd {
     /// launched so the post-reconnect snapshot can credit it instead of the
     /// advertised first method (issue #160).
     AgentReconnect { method_id: Option<String> },
-    /// Live ACP `/new` → `session/new` (cwd = workspace).
-    NewSession { requester: Option<String>, retry_auth: Option<String> },
+    /// Live ACP `/new` → `session/new` (cwd = workspace). `directories`
+    /// overrides the backend's launch-time `additional_directories` when
+    /// `Some`; `None` keeps that launch list.
+    NewSession {
+        requester: Option<String>,
+        retry_auth: Option<String>,
+        directories: Option<Vec<String>>,
+    },
     /// Live ACP `/fork` → `session/fork` of `source_session_id`.
     /// `requester` is the placeholder tab that receives the new session id.
     ForkSession {
