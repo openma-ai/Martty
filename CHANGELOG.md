@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Session tabs with untitled sessions now middle-ellipsize ids, so
+  `session-1` and `session-2` stay distinguishable instead of both collapsing
+  to `session-`. A still-running close confirmation hides the workspace/branch
+  chip while armed so the full instruction fits the composer cap (#155).
 - ACP sign-in: choosing a different auth method while another sign-in is
   pending now cancels the in-flight flow (including a hung OAuth request) and
   opens the chosen method's UI, instead of silently doing nothing. Composer
