@@ -614,6 +614,8 @@ fn status_chips_show_values_without_inline_key_hints() {
             .collect::<String>()
     };
     let mut app = test_app();
+    app.modes.agent_preset = Some("standard".into());
+    app.modes.permission = Some("workspace-write".into());
 
     app.locale = crate::locale::Locale::Zh;
     let zh = flat(&status_title(&app));
@@ -652,6 +654,33 @@ fn status_chips_show_values_without_inline_key_hints() {
     assert!(value_spans
         .iter()
         .all(|span| span.style.fg == Some(app.theme.fg_tertiary)));
+}
+
+#[test]
+fn status_chips_hide_unreported_dsh_defaults_for_plain_acp_harness() {
+    // Issue #170: a plain ACP harness (pi) never reports a DSH preset or
+    // permission preset — the chip row must not invent `standard · Workspace
+    // Write` for it.
+    let flat = |line: &Line| -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    let mut app = test_app();
+    app.demo = false;
+    app.modes.agent_preset = None;
+    app.modes.permission = None;
+    app.modes.sandbox = None;
+    let s = flat(&status_title(&app));
+    assert!(!s.contains("Standard"), "{s}");
+    assert!(!s.contains("Workspace Write"), "{s}");
+    assert!(s.is_empty(), "{s}");
+
+    // A reported ACP mode still renders, with a leading dot.
+    app.modes.permission = Some("read-only".into());
+    let s = flat(&status_title(&app));
+    assert_eq!(s, "· Read Only");
 }
 
 #[test]

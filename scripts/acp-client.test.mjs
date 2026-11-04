@@ -7,7 +7,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createInterface } from 'node:readline'
 import test from 'node:test'
-import { apply, resolveAgent } from '../npm/lib/acp-client.js'
+import { apply, npmInstallNotice, resolveAgent } from '../npm/lib/acp-client.js'
 import { resolveStackedAgent } from '../npm/lib/agent.js'
 import { parseClientArgv, painterArgs } from '../npm/lib/boot.js'
 
@@ -507,4 +507,36 @@ test('a disposed dock contribution never breaks the stderr drain', async (t) => 
   t.after(() => ctx.acpClient.close())
   await once(ctx.acpClient.child, 'close')
   assert.equal(calls, 2)
+})
+
+test('npx install chatter never reaches the dock raw; first install shows a transient status (#170)', async (t) => {
+  const updates = []
+  const ctx = {
+    tuiSlots: {
+      register() {
+        return { update(nodes) { updates.push(nodes) }, dispose() {} }
+      },
+    },
+  }
+  const script = [
+    `process.stderr.write('npm warn exec The following package was not found and will be installed: @openma/pi-acp@0.1.8\\n')`,
+    `process.stderr.write('npm notice New minor version of npm available!\\n')`,
+    `setTimeout(() => { process.stdout.write('{}\\n'); setTimeout(() => process.exit(0), 50) }, 50)`,
+  ].join('\n')
+  apply(ctx, { agent: { command: process.execPath, args: ['-e', script] } })
+  t.after(() => ctx.acpClient.close())
+  await once(ctx.acpClient.child, 'close')
+  const texts = updates.flat().map((node) => node.text).join('\n')
+  assert.doesNotMatch(texts, /npm warn|npm notice/)
+  assert.ok(updates.some((nodes) => nodes.some((n) => n.text === 'Installing @openma/pi-acp 0.1.8…')))
+  assert.deepEqual(updates.at(-1), [])
+})
+
+test('npmInstallNotice classifies npm lines only', () => {
+  assert.equal(npmInstallNotice('warn: real agent warning'), undefined)
+  assert.equal(npmInstallNotice('npm notice hi'), null)
+  assert.equal(
+    npmInstallNotice('npm warn exec The following package was not found and will be installed: pi-acp@0.1.9'),
+    'Installing pi-acp 0.1.9…',
+  )
 })

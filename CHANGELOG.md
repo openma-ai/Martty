@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Non-DSH harnesses (e.g. pi via `@openma/pi-acp`) no longer show DSH-only
+  status chips (`· standard · Workspace Write`): the preset / permission
+  chips render only when the harness actually reports them (demo mode keeps
+  its stock defaults). npx / npm stderr chatter (`npm warn exec … will be
+  installed`, `npm warn deprecated …`) no longer leaks into the input dock;
+  a first install shows a transient `Installing <pkg> <ver>…` status that
+  clears once the agent answers (#170).
 - Session tabs with untitled sessions now middle-ellipsize ids, so
   `session-1` and `session-2` stay distinguishable instead of both collapsing
   to `session-`. A still-running close confirmation hides the workspace/branch
