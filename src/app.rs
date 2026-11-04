@@ -976,6 +976,8 @@ struct AwaitingBind {
 
 /// One row of the session tab strip (native chrome, `ui::draw_session_tabs`).
 pub struct SessionTab {
+    /// Session title, else the full id — the strip middle-ellipsizes it so
+    /// ids sharing a prefix stay distinguishable (issue #155).
     pub label: String,
     pub running: bool,
     pub completed_unseen: bool,
@@ -2348,7 +2350,7 @@ impl App {
         let base = title
             .clone()
             .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| short_id(id));
+            .unwrap_or_else(|| id.to_string());
         let count = self.cfg.additional_directories.len();
         if self.additional_directories_cap && count > 0 {
             format!("+{count} {base}")
@@ -8054,6 +8056,15 @@ impl App {
         fresh.composer_rows = old.composer_rows;
         self.put_live_slot(fresh);
         self.after_switch();
+    }
+
+    /// True while a still-working tab's close confirm is armed. The painter
+    /// hides the workspace/branch chip so the confirm prompt owns the
+    /// composer cap instead of being ellipsized behind it (issue #155).
+    pub(crate) fn close_confirm_armed(&self) -> bool {
+        self.close_armed
+            .as_ref()
+            .is_some_and(|(_, started)| started.elapsed() < CLOSE_CONFIRM_WINDOW)
     }
 
     /// The `/close`·`×`·ctrl+shift+w flow (issues #94, #146): stop viewing
