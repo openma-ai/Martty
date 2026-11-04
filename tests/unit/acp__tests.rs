@@ -1473,7 +1473,7 @@ async fn harness_new_action_uses_the_native_new_tab_flow_without_reinitializing(
     assert!(requested, "the painter must own creation of the new tab");
     assert_eq!(initializes.load(Ordering::SeqCst), 1);
     assert_eq!(sessions.load(Ordering::SeqCst), 1);
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).unwrap();
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut rebound = false;
     while Instant::now() < deadline {
@@ -2036,6 +2036,7 @@ async fn close_session_stays_local_when_the_agent_did_not_advertise_it() {
         .send(Cmd::NewSession {
             requester: None,
             retry_auth: None,
+            directories: None,
         })
         .expect("open another session");
     assert!(
@@ -2324,6 +2325,7 @@ async fn close_session_drops_unknown_and_non_current_ids_consistently() {
         .send(Cmd::NewSession {
             requester: None,
             retry_auth: None,
+            directories: None,
         })
         .expect("open second session");
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2668,7 +2670,7 @@ async fn elicitation_create_waits_for_the_tui_form_reply() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut form_reply = None;
@@ -2773,7 +2775,7 @@ async fn new_session_binds_before_applying_initial_config() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut order = Vec::new();
@@ -2856,7 +2858,7 @@ async fn set_config_option_response_updates_client_state_without_a_notification(
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("explicit new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).expect("explicit new session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -2967,7 +2969,7 @@ async fn effort_selection_uses_the_advertised_thought_level_config_id() {
     let (bus_tx, bus_rx) = std::sync::mpsc::channel();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).expect("create ACP session");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -3091,7 +3093,7 @@ async fn client_tree_config_set_uses_standard_acp_and_folds_response_only_state(
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("create ACP session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).expect("create ACP session");
 
     let result = tokio::time::timeout(Duration::from_secs(2), result_rx.recv())
         .await
@@ -4999,7 +5001,7 @@ async fn sessions_run_concurrent_prompts_on_one_connection() {
     let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
 
     // Startup binds s1; /new binds s2 and becomes the fallback session.
-    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None }).expect("new session");
+    cmd_tx.send(Cmd::NewSession { requester: None, retry_auth: None, directories: None }).expect("new session");
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut bound = std::collections::HashSet::new();
     while Instant::now() < deadline && !bound.contains("s2") {
@@ -5734,6 +5736,7 @@ async fn setup_refusal_snapshot_names_the_advertised_method() {
         .send(Cmd::NewSession {
             requester: Some("s-old".into()),
             retry_auth: Some("login".into()),
+            directories: None,
         })
         .expect("rebind cmd");
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -7299,10 +7302,10 @@ async fn session_command_edges() {
     // Rebind failures: a non-auth error with a snapshot stays a failure;
     // an auth one re-arms sign-in naming the credential.
     cmd_tx
-        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None })
+        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None, directories: None })
         .expect("rebind non-auth");
     cmd_tx
-        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None })
+        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None, directories: None })
         .expect("rebind auth");
     let deadline = Instant::now() + Duration::from_secs(3);
     let (mut failed_plain, mut failed_auth) = (false, false);
@@ -7324,7 +7327,7 @@ async fn session_command_edges() {
     // A requester-less refused bind reports a bare BindFailed — no
     // session-scoped snapshot exists to name (issue #160).
     cmd_tx
-        .send(Cmd::NewSession { requester: None, retry_auth: None })
+        .send(Cmd::NewSession { requester: None, retry_auth: None, directories: None })
         .expect("anonymous rebind");
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut anon_failed = false;
@@ -7928,7 +7931,7 @@ async fn prompt_success_without_a_reported_credential_set_stays_optimistic() {
     // session creation.
     for want in 1..=3usize {
         cmd_tx
-            .send(Cmd::NewSession { requester: None, retry_auth: None })
+            .send(Cmd::NewSession { requester: None, retry_auth: None, directories: None })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -7949,7 +7952,7 @@ async fn prompt_success_without_a_reported_credential_set_stays_optimistic() {
     // re-opens the picker for that session.
     for want in ["boom", "auth required", "boom no data", "auth required no data"] {
         cmd_tx
-            .send(Cmd::NewSession { requester: Some("s2".into()), retry_auth: None })
+            .send(Cmd::NewSession { requester: Some("s2".into()), retry_auth: None, directories: None })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut failed = false;
@@ -8157,7 +8160,7 @@ async fn prompt_success_credits_its_provider_while_others_wait() {
 
     // s1 binds on openrouter; s2 binds on deepseek.
     cmd_tx
-        .send(Cmd::NewSession { requester: None, retry_auth: None })
+        .send(Cmd::NewSession { requester: None, retry_auth: None, directories: None })
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut bound = std::collections::BTreeSet::new();
@@ -8167,7 +8170,7 @@ async fn prompt_success_credits_its_provider_while_others_wait() {
                 bound.insert(session_id);
                 if bound.len() == 1 {
                     cmd_tx
-                        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None })
+                        .send(Cmd::NewSession { requester: Some("s1".into()), retry_auth: None, directories: None })
                         .unwrap();
                 }
             }
@@ -8702,7 +8705,7 @@ async fn a_success_credits_an_unreported_provider() {
     assert!(wait_bound(&bus_rx, "s1"), "s1 bound");
     for want in ["s5", "s3"] {
         cmd_tx
-            .send(Cmd::NewSession { requester: None, retry_auth: None })
+            .send(Cmd::NewSession { requester: None, retry_auth: None, directories: None })
             .unwrap();
         assert!(wait_bound(&bus_rx, want), "{want} bound");
     }

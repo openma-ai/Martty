@@ -6,11 +6,12 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// Validate `--add-dir` values against the session `cwd`.
+/// Validate `--add-dir` / `/add-dir` values against the session `cwd`.
 ///
 /// Entries equal to `cwd` are dropped. An entry that is only the workspace
 /// is an error, so a flag that changes nothing is not silent. The returned
-/// paths are canonical absolute directories, in first-seen order.
+/// paths are canonical absolute directories, in first-seen order and
+/// deduplicated.
 pub fn validate(
     requested: &[&str],
     cwd: &str,
@@ -43,6 +44,28 @@ pub fn validate(
         ));
     }
     Ok(out)
+}
+
+/// Whether an `--add-dir` / `/add-dir` value resolves to the workspace and
+/// should be dropped before validation.
+pub fn same_as_workspace(entry: &str, cwd: &str) -> bool {
+    let primary = canonicalize_dir(cwd).unwrap_or_else(|_| normalize_lexically(Path::new(cwd)));
+    canonicalize_dir(entry)
+        .map(|path| path == primary)
+        .unwrap_or_else(|_| normalize_lexically(Path::new(entry)) == primary)
+}
+
+/// The user's home directory for the `$HOME` refusal, with the same
+/// precedence the CLI already uses.
+pub fn current_home() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
 }
 
 /// `Ok(None)` when `entry` is the workspace and should be omitted.
