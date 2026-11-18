@@ -60,6 +60,71 @@ fn add_dir_is_repeatable_and_rejects_a_relative_path() {
 }
 
 #[test]
+fn add_dir_rejects_root_and_home_and_drops_the_workspace() {
+    let root =
+        std::env::temp_dir().join(format!("martty-cli-add-dir-guard-{}", std::process::id()));
+    let workspace = root.join("app");
+    let home = root.join("home");
+    let extra = root.join("lib");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&extra).unwrap();
+    let workspace_s = workspace.to_string_lossy().into_owned();
+    let home_s = home.to_string_lossy().into_owned();
+    let extra_s = extra.to_string_lossy().into_owned();
+
+    let args = parse_args_from([
+        "--workspace".into(),
+        workspace_s.clone(),
+        "--add-dir".into(),
+        "/".into(),
+    ])
+    .unwrap();
+    let err = build_config_with_home(&args, Some(&home_s)).unwrap_err();
+    assert!(err.to_string().contains("filesystem root"), "{err:#}");
+
+    let args = parse_args_from([
+        "--workspace".into(),
+        workspace_s.clone(),
+        "--add-dir".into(),
+        home_s.clone(),
+    ])
+    .unwrap();
+    let err = build_config_with_home(&args, Some(&home_s)).unwrap_err();
+    assert!(err.to_string().contains("home directory"), "{err:#}");
+
+    let args = parse_args_from([
+        "--workspace".into(),
+        workspace_s.clone(),
+        "--add-dir".into(),
+        workspace_s.clone(),
+    ])
+    .unwrap();
+    let cfg = build_config_with_home(&args, Some(&home_s)).unwrap();
+    assert!(
+        cfg.additional_directories.is_empty(),
+        "an add-dir equal to the workspace is dropped: {cfg:?}"
+    );
+
+    let args = parse_args_from([
+        "--workspace".into(),
+        workspace_s.clone(),
+        "--add-dir".into(),
+        workspace_s,
+        "--add-dir".into(),
+        extra_s.clone(),
+        "--add-dir".into(),
+        extra_s,
+    ])
+    .unwrap();
+    let cfg = build_config_with_home(&args, Some(&home_s)).unwrap();
+    assert_eq!(cfg.additional_directories.len(), 1, "{cfg:?}");
+    assert!(cfg.additional_directories[0].ends_with("lib"), "{cfg:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn help_mentions_demo_skin() {
     assert!(HELP.contains("--demo-skin"));
     assert!(HELP.contains("--demo"));

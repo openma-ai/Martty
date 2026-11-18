@@ -68,6 +68,20 @@ fn capability_object_is_required() {
 }
 
 #[test]
+fn snake_case_capabilities_are_accepted() {
+    assert!(additional_directories_supported(&json!({
+        "agent_capabilities": {
+            "session_capabilities": { "additional_directories": {} }
+        }
+    })));
+    assert!(!additional_directories_supported(&json!({
+        "agent_capabilities": {
+            "session_capabilities": { "additional_directories": null }
+        }
+    })));
+}
+
+#[test]
 fn the_field_is_omitted_unless_the_agent_advertised_it_and_dirs_exist() {
     let cwd = std::path::Path::new("/tmp/martty-workspace");
     let dirs = vec!["/tmp/martty-lib".into()];
@@ -214,6 +228,120 @@ async fn session_lifecycle_sends_additional_directories_when_advertised() {
     assert_eq!(
         resumed["additionalDirectories"],
         json!(["/tmp/martty-lib", "/tmp/martty-docs"])
+    );
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_new_uses_the_cmd_directories_override_when_advertised() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let record_new = tx.clone();
+    let next = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let agent = Agent.builder()
+        .name("multi-root-override")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(capabilities(true, false, false))
+                        .agent_info(Implementation::new("multi-root-override", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: NewSessionRequest, responder, _cx| {
+                let _ = record_new.send(serde_json::to_value(&request).unwrap());
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                responder.respond(NewSessionResponse::new(SessionId::new(format!("s{index}"))))
+            },
+            on_receive_request!(),
+        );
+    let cfg = cfg_with(vec!["/tmp/martty-launch".into()]);
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    assert!(wait_caps(&bus_rx).await);
+    let startup = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("startup session/new")
+        .expect("request");
+    assert_eq!(
+        startup["additionalDirectories"],
+        json!(["/tmp/martty-launch"])
+    );
+
+    cmd_tx
+        .send(Cmd::NewSession {
+            requester: None,
+            retry_auth: None,
+            directories: Some(vec!["/tmp/martty-lib".into(), "/tmp/martty-docs".into()]),
+        })
+        .unwrap();
+    let created = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("session/new")
+        .expect("request");
+    assert_eq!(
+        created["additionalDirectories"],
+        json!(["/tmp/martty-lib", "/tmp/martty-docs"]),
+        "the Cmd override replaces the launch list, not extends it"
+    );
+    let _ = cmd_tx.send(Cmd::Shutdown);
+    let _ = client.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_new_omits_the_cmd_directories_override_when_unsupported() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let record_new = tx.clone();
+    let next = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let agent = Agent.builder()
+        .name("plain-acp-override")
+        .on_receive_request(
+            async move |init: InitializeRequest, responder, _cx| {
+                responder.respond(
+                    InitializeResponse::new(init.protocol_version)
+                        .agent_capabilities(capabilities(false, false, false))
+                        .agent_info(Implementation::new("plain-acp-override", "0")),
+                )
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: NewSessionRequest, responder, _cx| {
+                let _ = record_new.send(serde_json::to_value(&request).unwrap());
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                responder.respond(NewSessionResponse::new(SessionId::new(format!("s{index}"))))
+            },
+            on_receive_request!(),
+        );
+    let cfg = cfg_with(vec!["/tmp/martty-launch".into()]);
+    let (bus_tx, bus_rx) = std::sync::mpsc::channel();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let client = tokio::spawn(async move { connect_once(agent, cfg, bus_tx, cmd_rx).await });
+    assert!(!wait_caps(&bus_rx).await);
+    let startup = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("startup session/new")
+        .expect("request");
+    assert!(startup.get("additionalDirectories").is_none(), "{startup}");
+
+    cmd_tx
+        .send(Cmd::NewSession {
+            requester: None,
+            retry_auth: None,
+            directories: Some(vec!["/tmp/martty-lib".into()]),
+        })
+        .unwrap();
+    let created = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("session/new")
+        .expect("request");
+    assert!(
+        created.get("additionalDirectories").is_none(),
+        "unsupported agents never receive the override: {created}"
     );
     let _ = cmd_tx.send(Cmd::Shutdown);
     let _ = client.await;

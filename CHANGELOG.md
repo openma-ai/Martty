@@ -12,6 +12,12 @@ All notable changes to this project are documented here. The project follows
   input well inserts the hint as real text (selected). The slash / `@file`
   menus keep owning Tab while open; Escape hides the ghost without clearing
   the draft.
+- `/add-dir <path>` appends a validated extra workspace root and opens a new
+  session whose `session/new` carries the extended `additionalDirectories`
+  list; the current session keeps its roots. A bare `/add-dir` lists the
+  current extra roots. Agents that do not advertise
+  `sessionCapabilities.additionalDirectories` are told so instead of
+  receiving a request they cannot honor.
 
 ### Fixed
 

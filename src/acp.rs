@@ -3808,7 +3808,12 @@ where
                                             retries
                                         };
                                         for session_id in retries {
-                                            controls.enqueue(Cmd::NewSession { requester: Some(session_id), retry_auth: Some(method.id.clone()) },
+                                            controls.enqueue(
+                                                Cmd::NewSession {
+                                                    requester: Some(session_id),
+                                                    retry_auth: Some(method.id.clone()),
+                                                    directories: None,
+                                                },
                                                 &cx, &bus, &surface, &methods, &selected, &cwd,
                                                 load_session, resume_session, list_session,
                                                 additional_directories, &cfg.additional_directories, &control_done_tx);
@@ -3875,7 +3880,12 @@ where
                                         // session (issue #160).
                                         let dead_provider = dead_provider(&surface, &current);
                                         if let (true, Some(cur)) = (dead_provider, current.as_ref()) {
-                                            controls.enqueue(Cmd::NewSession { requester: Some(cur.0.to_string()), retry_auth: Some(method.id.clone()) },
+                                            controls.enqueue(
+                                                Cmd::NewSession {
+                                                    requester: Some(cur.0.to_string()),
+                                                    retry_auth: Some(method.id.clone()),
+                                                    directories: None,
+                                                },
                                                 &cx, &bus, &surface, &methods, &selected, &cwd,
                                                 load_session, resume_session, list_session,
                                                 additional_directories, &cfg.additional_directories, &control_done_tx);

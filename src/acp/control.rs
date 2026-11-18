@@ -217,10 +217,14 @@ async fn run_control(
         .as_ref()
         .map(|snapshot| snapshot.additional_directories)
         .unwrap_or(additional_directories);
-    let (requester, retry_auth) = match &cmd {
-        Cmd::NewSession { requester, retry_auth } => (requester.clone(), retry_auth.clone()),
-        Cmd::ForkSession { requester, .. } => (Some(requester.clone()), None),
-        _ => (None, None),
+    let (requester, retry_auth, new_directories) = match &cmd {
+        Cmd::NewSession {
+            requester,
+            retry_auth,
+            directories,
+        } => (requester.clone(), retry_auth.clone(), directories.clone()),
+        Cmd::ForkSession { requester, .. } => (Some(requester.clone()), None, None),
+        _ => (None, None, None),
     };
     match cmd {
         Cmd::SelectModel {
@@ -747,7 +751,10 @@ async fn run_control(
             let _ = done.send(ControlFinish::LoggedOut { provider, result });
         }
         Cmd::NewSession { .. } => {
-            let mut request = new_session_request(&cwd, additional_directories, &directories);
+            // `/add-dir` grows the list App-side and asks for a fresh
+            // session with it; every other `/new` keeps the launch list.
+            let directories = new_directories.as_deref().unwrap_or(directories.as_slice());
+            let mut request = new_session_request(&cwd, additional_directories, directories);
             if let Some(method) = retry_auth {
                 request = request.meta(json!({"marttyAuthMethod": method}).as_object().unwrap().clone());
             }

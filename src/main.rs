@@ -218,6 +218,11 @@ fn agent_argv(args: &Args) -> Vec<String> {
 }
 
 fn build_config(args: &Args) -> Result<RuntimeConfig> {
+    let home = additional_dirs::current_home();
+    build_config_with_home(args, home.as_deref())
+}
+
+fn build_config_with_home(args: &Args, home: Option<&str>) -> Result<RuntimeConfig> {
     let local = runtime::local_dsh();
     let workspace = match &args.workspace {
         Some(w) => std::fs::canonicalize(w)
@@ -273,16 +278,13 @@ fn build_config(args: &Args) -> Result<RuntimeConfig> {
         base_url: args.base_url.clone(),
         api_key: args.api_key.clone(),
         additional_directories: {
-            let requested: Vec<&str> = args.add_dirs.iter().map(String::as_str).collect();
-            let home = std::env::var("HOME")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    std::env::var("USERPROFILE")
-                        .ok()
-                        .filter(|value| !value.is_empty())
-                });
-            additional_dirs::validate(&requested, &workspace, home.as_deref())
+            let requested: Vec<&str> = args
+                .add_dirs
+                .iter()
+                .map(String::as_str)
+                .filter(|entry| !additional_dirs::same_as_workspace(entry, &workspace))
+                .collect();
+            additional_dirs::validate(&requested, &workspace, home)
                 .map_err(anyhow::Error::msg)?
         },
     })
